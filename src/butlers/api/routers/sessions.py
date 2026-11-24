@@ -327,6 +327,36 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
     same enrichment is shared by the butler-scoped and cross-butler by-id
     detail endpoints so both return an identical ``SessionDetail`` shape.
     """
+    from butlers.api.models.served_identity import ServedAttempt
+    from butlers.core.runtimes.served_identity import bounded
+
+    try:
+        rows = await pool.fetch(
+            """SELECT id,attempt_index,outcome,served_identity,
+                      resolution_receipt->'winner'->>'model_id' AS requested_model_id
+               FROM public.model_dispatch_attempts WHERE session_id=$1
+               ORDER BY attempt_index,ts,id""",
+            session_id,
+        )
+        detail.served_attempts = [
+            ServedAttempt(
+                attempt_id=row["id"],
+                attempt_index=row["attempt_index"],
+                outcome=row["outcome"],
+                requested_model_id=row["requested_model_id"],
+                served_identity=bounded(row["served_identity"])
+                if isinstance(row["served_identity"], dict)
+                else None,
+            ).model_dump()
+            for row in rows
+        ]
+        detail.served_source_state = (
+            "observed" if any(row["served_identity"] is not None for row in rows) else "historical"
+        )
+    except Exception:
+        detail.served_source_state = "unavailable"
+        logger.debug("Session serving evidence unavailable")
+
     # Attach process log if available (best-effort — table may not exist yet)
     try:
         receipt = await pool.fetchval(
@@ -935,12 +965,27 @@ async def get_butler_session_kinds(
 # (see _VALID_WINDOW_DAYS guard below).  With ix_sessions_started_at (core_128)
 # the range filter is index-backed; result set is at most 30 rows (one per day).
 # Budget: O(sessions_in_window) scan → O(30) GROUP BY buckets.  Bounded and safe.
+#
+# Dense window (bu-s11n0s.5.1): one row per UTC day ending today, a quiet day
+# being a measured 0, so a client can draw any day the response omits as
+# unreported rather than as a fabricated zero. Days are pinned to UTC whatever
+# the session TimeZone, matching the frontend's UTC `YYYY-MM-DD` day keys.
 _DAILY_ACTIVITY_SQL = """
-SELECT DATE(started_at) AS d, COUNT(*) AS sessions_count
-FROM sessions
-WHERE started_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
-GROUP BY d
-ORDER BY d
+WITH days AS (
+  SELECT generate_series(
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') - (($1 - 1) * INTERVAL '1 day'),
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC'),
+    '1 day'
+  ) AS day_start
+)
+SELECT
+  days.day_start::date AS d,
+  COUNT(s.id) AS sessions_count
+FROM days
+LEFT JOIN sessions s ON s.started_at >= days.day_start AT TIME ZONE 'UTC'
+                    AND s.started_at < (days.day_start + INTERVAL '1 day') AT TIME ZONE 'UTC'
+GROUP BY days.day_start
+ORDER BY days.day_start
 """
 
 _VALID_WINDOW_DAYS = {7, 30}
@@ -958,9 +1003,9 @@ async def get_butler_daily_activity(
 ) -> ApiResponse[DailyActivity]:
     """Return daily session counts for a butler over a rolling 7- or 30-day window.
 
-    Queries the butler's ``sessions`` table and groups rows by calendar date.
-    Returns one ``DailyActivityBucket`` per day that had at least one session.
-    Days with no sessions are omitted; an empty window yields ``buckets: []``.
+    Queries the butler's ``sessions`` table over a dense window of UTC days
+    ending today. Returns one ``DailyActivityBucket`` per day, oldest first; a
+    day with no sessions is a measured ``sessions_count: 0`` row.
 
     ``window_days`` must be exactly 7 or 30; other values are rejected with 422.
     """

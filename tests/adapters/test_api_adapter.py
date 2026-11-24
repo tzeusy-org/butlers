@@ -214,13 +214,15 @@ async def test_invoke_success_clears_last_process_info_error_fields() -> None:
         prompt="hi", system_prompt="", mcp_servers={}, env={}, model="claude-haiku-4-5-20251001"
     )
     info = adapter.last_process_info
-    assert info == {
+    assert {key: value for key, value in info.items() if key != "served"} == {
         "pid": None,
         "exit_code": 0,
         "command": "api:claude-haiku-4-5-20251001",
         "stderr": "",
         "runtime_type": "api",
     }
+    assert info["served"]["runtime_type"] == "api"
+    assert info["served"]["observation_state"] == "observed"
 
 
 # ---------------------------------------------------------------------------

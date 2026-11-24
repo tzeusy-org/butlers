@@ -1,6 +1,8 @@
 """An empty env mapping never makes Gemini inherit the daemon environment. [bu-9i5uwq]
 
 Only an explicit ``None`` means "inherit". Sentinel values are synthetic and never printed.
+Every invocation stages its own system-settings file (the turn limit lives there), so the
+adapter-owned ``GEMINI_CLI_SYSTEM_SETTINGS_PATH`` is set on top of whichever env applies.
 """
 
 from __future__ import annotations
@@ -34,7 +36,9 @@ async def _gemini_child_env(env):
         patch(_GEMINI_EXEC, return_value=_process(output)) as spawn,
     ):
         await adapter.invoke(prompt="p", system_prompt="", mcp_servers={}, env=env)
-    return spawn.call_args.kwargs["env"]
+    child_env = dict(spawn.call_args.kwargs["env"])
+    assert child_env.pop("GEMINI_CLI_SYSTEM_SETTINGS_PATH").endswith("gemini_mcp.json")
+    return child_env
 
 
 async def test_gemini_empty_mapping_yields_an_empty_child_env_not_inheritance() -> None:
@@ -43,7 +47,7 @@ async def test_gemini_empty_mapping_yields_an_empty_child_env_not_inheritance() 
 
 
 async def test_gemini_none_still_inherits() -> None:
-    assert await _gemini_child_env(None) is None
+    assert await _gemini_child_env(None) == _AMBIENT
 
 
 async def test_gemini_non_empty_mapping_is_filtered_and_used() -> None:

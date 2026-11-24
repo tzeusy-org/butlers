@@ -30,8 +30,8 @@ As an ``asyncio.Task`` inside the dashboard-api FastAPI process (see
 Two reasons: (a) the dashboard-api's ``DatabaseManager`` already reads
 cross-schema catalog data from a single pool for the sibling
 ``/api/system/database`` and ``/api/system/deployments`` endpoints -- a
-butler daemon's own pool is schema-scoped and, once per-butler Postgres role
-enforcement is active (``BUTLERS_POSTURE=hardened``), would not be able to
+butler daemon's own pool is schema-scoped and per-butler Postgres role
+enforcement prevents it from being able to
 read *other* butlers' ``alembic_version`` tables at all; (b) this mirrors the
 established precedent in ``butlers.jobs.secrets_lifecycle`` for "a periodic,
 deterministic, zero-LLM check that doesn't belong to any single butler."
@@ -82,7 +82,7 @@ import asyncpg
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import discover_butlers
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
 from butlers.core.infra_conditions import (
     ConditionTransition,
@@ -91,6 +91,7 @@ from butlers.core.infra_conditions import (
     get_active_condition,
     reconcile_snapshot,
 )
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.migrations import (
     get_all_chains,
     get_chain_head,
@@ -338,6 +339,7 @@ async def _escalate_drift_l1(
             result="escalated",
         )
     except Exception:
+        mark_tick_incomplete()
         logger.exception("migration drift sentinel: QA escalation failed")
         return {
             "fingerprint": transition.fingerprint,
@@ -500,8 +502,12 @@ async def run_migration_drift_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_migration_drift_check(db)
+            await record_tick(
+                failed=not summary.get("available", False) or summary.get("reconciled") is False
+            )
             logger.info("migration_drift_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("migration_drift_check: tick failed")

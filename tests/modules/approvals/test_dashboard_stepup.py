@@ -6,6 +6,7 @@ import pytest
 
 from butlers.core.dashboard_stepup import dashboard_stepup_proof
 from butlers.modules.approvals.stepup import run_rule_write
+from butlers.testing.fake_pool import AsyncCtx
 
 
 @pytest.mark.asyncio
@@ -132,7 +133,6 @@ async def test_suggestion_receipt_has_no_memory_effect_but_demotion_keeps_rule_f
     monkeypatch, decision
 ):
     """Exercise the actual API seam; storage authority remains the PG owner's job."""
-    from contextlib import asynccontextmanager
     from datetime import UTC, datetime
     from uuid import uuid4
 
@@ -156,9 +156,8 @@ async def test_suggestion_receipt_has_no_memory_effect_but_demotion_keeps_rule_f
     class Connection:
         fetchrow = AsyncMock(side_effect=[row, row, updated])
 
-        @asynccontextmanager
-        async def transaction(self):
-            yield self
+        def transaction(self):
+            return AsyncCtx(self)
 
     connection = Connection()
 
@@ -169,9 +168,8 @@ async def test_suggestion_receipt_has_no_memory_effect_but_demotion_keeps_rule_f
             ).to_dict()
         )
 
-        @asynccontextmanager
-        async def acquire(self):
-            yield connection
+        def acquire(self):
+            return AsyncCtx(connection)
 
     pool = Pool()
     memory = AsyncMock()

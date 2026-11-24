@@ -41,7 +41,7 @@ step sequence of each, consult the `patrol-operations` skill.
 - Agent sessions (initial investigation and review follow-up) are spawned with
   `build_agent_env()`, which never carries `GH_TOKEN` or any git credential
   variable. Automated publication fails closed: no `git push`, no `gh pr create`;
-  the attempt fails with `publication_unavailable` (follow-up: `last_follow_up_error`)
+  a committed investigation is sealed and retained as an unpublished proposal (attempt `failed` with `publication_unavailable`, an execution success for the breaker, fingerprint held by Gate 5.6 for 7 days; follow-up: `last_follow_up_error`)
   until the isolated publisher and process/filesystem isolation are proven. The
   dispatcher keeps the token only for read-only PR-status polling, which addresses
   the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the
@@ -53,8 +53,9 @@ step sequence of each, consult the `patrol-operations` skill.
   preparation, the worktree create/remove/reap helpers, the managed-clone refresh and the
   commit diff snapshot (`--no-ext-diff --no-textconv`) and no-op branch detection
   (`--no-show-signature`). Named-remote fetches pin `--upload-pack=git-upload-pack`.
-  Residual, not covered: (a) `url.*.insteadOf` and `filter.*` config; (b) the
-  self-healing `git push` path (bu-uhaiq7). This does not activate the publisher or change live credentials.
+  Residual, not covered: `url.*.insteadOf` and `filter.*` config. The retired local
+  healing dispatcher has no push path. This does not activate the isolated QA publisher
+  or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First

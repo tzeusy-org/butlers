@@ -374,8 +374,12 @@ drop only after code removal is deployed and all old readers and writers stop.
 ## Amendment 3 (2026-09-23): Process Health and Semantic Readiness
 
 **Status:** Approved target contract in
-`openspec/changes/restore-butler-control-plane-liveness`; implementation
-remains separate from this amendment.
+`openspec/changes/restore-butler-control-plane-liveness`. Q4 implements the
+public `GET /ready` handler and its cached controller in
+`src/butlers/api/readiness.py` (supervised loop `fleet_readiness`, 30-second
+samples; a snapshot older than three intervals reads as all-false). The
+`supervisors` check requires the `fleet_shadow_observer` loop to be `ok`.
+Q5 launcher gating remains separate.
 
 `GET /health` and `GET /api/health` remain lightweight process checks. A 200
 there means the dashboard process is serving, not that PostgreSQL, routing,

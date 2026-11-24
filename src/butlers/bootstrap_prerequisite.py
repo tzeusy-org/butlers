@@ -36,6 +36,7 @@ _ADMINS = (
     ("restore_drill_executor_admin", "core_196_restore_drill_executor_boundary.py"),
     ("dnd_generation_admin", "core_197_canonical_dnd_generation_guard.py"),
     ("runtime_attention_admin", "core_198_runtime_attention_outbox.py"),
+    ("perception_admin", "core_322_dark_perception.py"),
 )
 
 
@@ -180,6 +181,19 @@ SELECT NOT EXISTS (
 # predicate instead. Bootstrap-only producer/control tables are not outbox
 # installation and therefore are intentionally not sentinels here.
 _INSTALLED = {
+    "perception_admin": """
+        SELECT to_regnamespace('perception_private') IS NOT NULL
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class AS c
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname IN
+                ('situation_slots','timeline','owner_modes',
+                 'perception_conditions','perception_suppressions'))
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc AS p
+            JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
+            WHERE n.nspname='public' AND p.proname IN
+                ('perception_write','perception_read','perception_timeline',
+                 'perception_bind','perception_registry','perception_purge_place_history'))
+    """,
     "restore_drill_executor_admin": """
         SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n
             WHERE n.nspname = 'restore_drill_executor' AND (
@@ -255,6 +269,14 @@ _CATALOG_NAMES = frozenset(
         "count",
         "unnest",
         "array_length",
+        "array_agg",
+        "encode",
+        "sha256",
+        "convert_to",
+        "format_type",
+        "pg_language",
+        "jsonb_agg",
+        "jsonb_build_array",
         "cardinality",
         "to_regclass",
         "to_regnamespace",
@@ -288,7 +310,7 @@ def _qualified_predicate(sql: str) -> str:
     return _SQL_TOKEN.sub(replace, sql)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def _finalized_predicate(filename: str) -> str:
     # The runner already requires this checked-in Alembic directory. Loading
     # trusted code constants avoids maintaining a weaker duplicate of hundreds
@@ -336,12 +358,12 @@ def _default_profile() -> list[dict[str, str]]:
 def _normal_roles() -> list[str]:
     return (
         [f"butler_{s}_rw" for s in _BUTLERS]
-        + ["connector_writer", "butler_calendar_rw", "dashboard_auth_api"]
+        + ["connector_writer", "butler_calendar_rw", "dashboard_auth_api", "dashboard_vendor_doors"]
         + list(_RESTORE_DRILL_ROLES)
     )
 
 
-def check_bootstrap_connection(connection: Connection) -> None:
+def _admit(connection: Connection) -> None:
     """Inspect this actual connection before online migration side effects.
 
     A managed privileged lifecycle caller may read the trusted private singleton
@@ -401,6 +423,49 @@ def check_bootstrap_connection(connection: Connection) -> None:
     except DBAPIError:
         # Exception chaining would print SQL/driver parameters or private rows.
         raise BootstrapPrerequisiteError("unreadable") from None
+
+
+# The finalized-interface predicates join hundreds of catalog relations. Under the
+# default collapse limits PostgreSQL spends most of admission planning them (about
+# 0.6 s of ~0.6 s for core_198/core_197 on PG16); written join order plans them in
+# milliseconds. Planner settings choose a plan, never a result (bu-rvgzmf.6).
+_PLANNER_BOUNDS = ("join_collapse_limit = 1", "from_collapse_limit = 1")
+
+
+def _autocommit(connection: Connection) -> bool:
+    """Whether the DBAPI connection is in autocommit mode (no transaction block)."""
+    proxied = getattr(connection, "connection", None)
+    return getattr(getattr(proxied, "dbapi_connection", None), "autocommit", False) is True
+
+
+def check_bootstrap_connection(connection: Connection) -> None:
+    """Inspect this actual connection before online migration side effects.
+
+    On a transactional connection (both production callers), admission runs inside
+    its own savepoint with the planner's join search bounded by ``SET LOCAL`` and
+    rolls the savepoint back afterwards, refused or admitted, so the bound reaches no
+    later statement of the caller. Every check is read-only, so the rollback discards
+    nothing. An autocommit connection has no transaction to scope ``SET LOCAL`` to, so
+    it is admitted unbounded, as before. See :func:`_admit` for what is checked.
+    """
+    if _autocommit(connection):
+        _admit(connection)
+        return
+    try:
+        savepoint = connection.begin_nested()
+    except DBAPIError:
+        raise BootstrapPrerequisiteError("unreadable") from None
+    try:
+        for bound in _PLANNER_BOUNDS:
+            connection.execute(text(f"SET LOCAL {bound}"))
+        _admit(connection)
+    except DBAPIError:
+        raise BootstrapPrerequisiteError("unreadable") from None
+    finally:
+        try:
+            savepoint.rollback()
+        except DBAPIError:
+            raise BootstrapPrerequisiteError("unreadable") from None
 
 
 def check_bootstrap_database(db_url: str) -> None:

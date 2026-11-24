@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.stamp_account import account_records
+from butlers.modules.memory.content_authority import catalog_attribution
+from butlers.modules.memory.embedding import embed_async
 from butlers.modules.memory.tools._helpers import (
     _search,
     _serialize_row,
@@ -31,6 +34,7 @@ async def memory_search(
     min_confidence: float = 0.2,
     filters: dict[str, Any] | None = None,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search across memory types using hybrid, semantic, or keyword mode.
 
@@ -40,7 +44,7 @@ async def memory_search(
         filters: Optional dict of AND-conditions applied at the search layer.
             Supported keys: scope, entity_id, predicate, source_butler,
             time_from, time_to, retention_class, sensitivity.
-            Unrecognized keys are silently ignored.
+            An unrecognized key raises an error naming it.
         read_policy: Server-held sensitivity ceiling. MCP closures pass the
             owning runtime policy so a private memory pool cannot substitute
             its own missing or stale runtime_config row.
@@ -56,7 +60,9 @@ async def memory_search(
         min_confidence=min_confidence,
         filters=filters,
         read_policy=read_policy,
+        memory_schema=memory_schema,
     )
+    account_records(results)  # D6: the stamp account a broker-forwarded read reports
     return [_serialize_row(r) for r in results]
 
 
@@ -70,6 +76,7 @@ async def memory_recall(
     filters: dict[str, Any] | None = None,
     request_context: dict[str, Any] | None = None,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -78,7 +85,7 @@ async def memory_recall(
     Args:
         filters: Optional dict of AND-conditions. Supported keys: scope,
             entity_id, predicate, source_butler, time_from, time_to,
-            retention_class, sensitivity. Unrecognized keys are silently ignored.
+            retention_class, sensitivity. An unrecognized key raises an error naming it.
         request_context: Optional dict with 'tenant_id' and 'request_id'.
         read_policy: Server-held sensitivity ceiling. MCP closures pass the
             owning runtime policy so a private memory pool cannot substitute
@@ -100,7 +107,9 @@ async def memory_recall(
         filters=filters,
         tenant_id=tenant_id,
         read_policy=read_policy,
+        memory_schema=memory_schema,
     )
+    account_records(results)
     return [_serialize_row(r) for r in results]
 
 
@@ -110,6 +119,7 @@ async def memory_get(
     memory_id: str,
     *,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> dict[str, Any] | None:
     """Retrieve a specific memory by type and ID.
 
@@ -125,7 +135,9 @@ async def memory_get(
         memory_type,
         uuid.UUID(memory_id),
         allowed_sensitivities=read_policy.allowed_sensitivities,
+        memory_schema=memory_schema,
     )
+    account_records([] if result is None else [result])
     if result is None:
         return None
     return _serialize_row(result)
@@ -144,6 +156,9 @@ async def memory_catalog_search(
     """Search the shared memory catalog for cross-butler memory discovery.
 
     Delegates to _search.search_catalog() and serializes results for JSON output.
+    Each item carries ``content_authority`` and an ``attribution`` label (None
+    for owner/system content) so a non-owner fact is never read as the owner's
+    (REQ-module-memory-013).
 
     MCP callers supply ``read_policy`` loaded from DB-backed runtime config.
     """
@@ -156,7 +171,13 @@ async def memory_catalog_search(
         mode=mode,
         read_policy=read_policy,
     )
-    return [_serialize_row(r) for r in results]
+    return [
+        {
+            **_serialize_row(r),
+            "attribution": catalog_attribution(r.get("content_authority")),
+        }
+        for r in results
+    ]
 
 
 _PREDICATE_RESULT_COLUMNS = (
@@ -318,7 +339,7 @@ async def predicate_search(
     semantic_ranked: list[str] = []
     if embedding_engine is not None:
         try:
-            query_embedding = embedding_engine.embed(query)
+            query_embedding = await embed_async(embedding_engine, query)
             embedding_str = str(query_embedding)
             sem_params: list[Any] = [embedding_str] + scope_params
             sem_sql = (

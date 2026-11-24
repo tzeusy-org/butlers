@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 async def resolve_owner_entity_id(
-    db: asyncpg.Pool | asyncpg.Connection,
+    db: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
 ) -> UUID | None:
     """Return the owner ``entity_id`` from ``public.entities``, or ``None``.
 
@@ -88,7 +88,9 @@ async def resolve_owner_entity_id(
     return None
 
 
-async def _fetch_owner_row(conn: asyncpg.Connection) -> asyncpg.Record | None:
+async def _fetch_owner_row(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> asyncpg.Record | None:
     return await conn.fetchrow(
         """
         SELECT id
@@ -100,7 +102,9 @@ async def _fetch_owner_row(conn: asyncpg.Connection) -> asyncpg.Record | None:
 
 
 @asynccontextmanager
-async def owner_episode_transaction(conn: asyncpg.Connection) -> AsyncIterator[None]:
+async def owner_episode_transaction(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> AsyncIterator[None]:
     """Make an episode upsert and its owner ``episode_entities`` link one unit.
 
     Every owner-only adapter writes the episode and then its owner link. If the link
@@ -131,7 +135,7 @@ async def owner_episode_transaction(conn: asyncpg.Connection) -> AsyncIterator[N
 
 
 async def upsert_owner_episode_entity(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     episode_id: UUID | None,
     *,
     owner_id: UUID | None,

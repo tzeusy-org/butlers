@@ -344,3 +344,94 @@ class TestSpawnerEpisodeStorageIntegration:
             ).trigger(prompt="do task", trigger_source="trigger")
         assert result3.success is False
         mock_store3.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("butler", "trigger", "output", "remember"),
+    [
+        ("chronicler", "schedule:chronicler_day_close", "Delivery deferred by quiet hours.", False),
+        ("chronicler", "schedule:chronicler_day_close", "MCP tools called: notify", False),
+        (
+            "chronicler",
+            "schedule:chronicler_day_close",
+            "The day included reading and a walk.",
+            True,
+        ),
+        ("chronicler", "route", '{"correction": "The walk started at noon"}', True),
+        ("general", "schedule:chronicler_day_close", "Delivery deferred by quiet hours.", True),
+        (
+            "chronicler",
+            "schedule:chronicler_day_close_retry",
+            "Delivery deferred by quiet hours.",
+            True,
+        ),
+        (
+            "chronicler",
+            "schedule:chronicler_day_close",
+            "Delivery of the parcel arrived at noon.",
+            True,
+        ),
+    ],
+    ids=[
+        "day-close-status",
+        "day-close-tool-summary",
+        "real-recap",
+        "interactive-correction",
+        "other-butler",
+        "different-task",
+        "parcel-retrospective",
+    ],
+)
+async def test_day_close_delivery_bookkeeping_never_reaches_session_memory(
+    tmp_path: Path, butler: str, trigger: str, output: str, remember: bool
+) -> None:
+    """Exercise the actual Spawner -> owner runtime -> episode sink, with no DB/model."""
+    from butlers.core import memory_hooks
+
+    written = []
+    pool = AsyncMock()
+    session_id = uuid.uuid4()
+
+    async def context(*_args, **_kwargs):
+        return None
+
+    async def store(owner_pool, owner, content, saved_session_id=None, **_kwargs):
+        written.append((owner_pool, owner, content, saved_session_id))
+        return True
+
+    runtime = memory_hooks.register_memory_session_runtime(
+        butler, context=context, store_episode=store
+    )
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    try:
+        with (
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.session_create",
+                new_callable=AsyncMock,
+                return_value=session_id,
+            ),
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.mcp_warmup.warmup_mcp_urls", new_callable=AsyncMock, return_value=[]
+            ),
+        ):
+            result = await Spawner(
+                config=_make_config(name=butler, modules={"memory": {}}),
+                config_dir=config_dir,
+                pool=pool,
+                runtime=_MockAdapter(result_text=output),
+            ).trigger(prompt="Synthetic retrospective fixture", trigger_source=trigger)
+    finally:
+        memory_hooks.unregister_memory_session_runtime(butler, runtime)
+
+    assert result.success is True
+    assert (
+        result.output == output
+    )  # Session audit/result is preserved even when memory is excluded.
+    assert written == ([(pool, butler, output, session_id)] if remember else [])

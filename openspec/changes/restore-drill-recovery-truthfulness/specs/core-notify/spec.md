@@ -37,33 +37,13 @@ Scope: v1-mandatory
 ## MODIFIED Requirements
 
 ### Requirement: Attention Ledger Reader
-The dashboard API SHALL expose a windowed, filterable reader over
-`public.attention_ledger` and a per-source delivery-vs-suppression summary, so
-that a source silently failing at a notification, insight, discretion, or
-restore-drill boundary is observable instead of requiring direct DB access.
-`GET /api/attention/ledger` SHALL return a paginated, newest-first list of
-ledger rows, filterable by `intent`, `source` (the ledger's boundary vocabulary:
-`notify`/`insight` for proactive egress, `discretion` for the connector
-failover-exhausted inbound suppression, and `restore_drill` for a durable
-recovery-proof failure), `outcome`, and `origin_butler`, and windowed by
-`since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary`
-SHALL return, for a `since`/`until` window (defaulting to the last seven days
-when `since` is omitted), one row per distinct `origin_butler` with
-`delivered`/`coalesced`/`deferred`/`suppressed`/`failed`/`total` counts and a
-`suppressed_never_delivered` boolean: `true` when that `origin_butler` has
-`suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow
-the repo's degraded-envelope convention: a genuinely unreachable ledger pool
-renders `source_available=false` on an otherwise-empty/zero payload, never a
-truthful "no suppression" or "no rows" result.
-The Trust Console panel that renders this summary (`AttentionLedgerPanel`) MUST
-render a non-zero `failed` count in a visually distinct alerting treatment,
-never the same neutral treatment as `coalesced`, `deferred`, or `total`, because
-a failed count represents genuine, un-retried breakage in a user-facing or
-recovery-proof boundary.
-The summary's "per source" grouping is `origin_butler` (the butler or job that
-attempted the work), a distinct dimension from the ledger's `source` boundary
-literal. Both are independently exposed: `origin_butler` is the summary grouping
-key and optional list filter; `source` is a list and summary filter.
+The dashboard API SHALL expose a windowed, filterable reader over `public.attention_ledger` and a per-source delivery-vs-suppression summary, so that a source silently failing at either choke point (`notify()` or `delivery_cycle()`), or at the restore-drill recovery-proof boundary, is observable instead of requiring direct DB access.
+
+`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `source` (the ledger's own choke-point column — `notify`/`insight` for proactive egress, plus `discretion` for the connector discretion layer's failover-exhausted inbound suppression, see connector-base-spec, plus `restore_drill` for a durable recovery-proof failure), `outcome`, and `origin_butler`, and windowed by `since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary` SHALL return, for a `since`/`until` window (defaulting to the last 7 days when `since` is omitted), one row per distinct `origin_butler` with `delivered`/`coalesced`/`deferred`/`suppressed`/`failed`/`total` counts and a `suppressed_never_delivered` boolean: `true` when that `origin_butler` has `suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow the repo's degraded-envelope convention (`butlers/CLAUDE.md` API Conventions): a genuinely unreachable ledger pool renders `source_available=false` on an otherwise-empty/zero payload, never a truthful "no suppression" or "no rows".
+
+The Trust Console panel that renders this summary (`AttentionLedgerPanel`) MUST render a non-zero `failed` count in a visually distinct, red/alerting tone — never the same neutral tone as `coalesced`/`deferred`/`total` — since a `failed` count represents genuine, un-retried delivery or recovery-proof breakage in the exact surface built to prove silence is chosen.
+
+Naming note: the summary's "per source" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `secrets_lifecycle`, `home`), a distinct dimension from the ledger's own `source` column (the `notify`/`insight`/`discretion` choke-point literal, or `restore_drill` for a recovery-proof failure). Both are independently exposed: `origin_butler` as the summary's grouping key and an optional list-endpoint filter, `source` as a list/summary filter on the choke-point column.
 
 ID: REQ-core-notify-008
 Source: RFC 0005 § Workflow and Recovery Telemetry; RFC 0011 Amendment 3
@@ -112,8 +92,7 @@ Scope: v1-mandatory
 
 #### Scenario: Unmigrated table is a true empty result, not a degraded one
 - **WHEN** `public.attention_ledger` does not exist yet on a pre-migration database
-- **THEN** both endpoints return an empty/zero payload with
-  `source_available=true` because this is a genuinely-empty state
+- **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state, not a source failure
 
 ### Source References
 

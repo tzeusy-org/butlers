@@ -100,22 +100,79 @@ partitions accumulate.
 
 ---
 
+### `switchboard.message_inbox` and `switchboard.connector_heartbeat_log`
+
+**Decision: KEEP until a per-source retention contract exists (bu-uhbhzq.7)**
+
+`message_inbox` is a routing buffer, never an evidence surface, yet for several sources
+its rows are the only verbatim copy of what arrived. The heartbeat log is evidence of source
+liveness. Both are monthly partitioned and ship drop functions with a short default
+(`1 month` and `7 days`). Since sw_086 both
+`switchboard_message_inbox_drop_expired_partitions` and
+`switchboard_connector_heartbeat_log_drop_expired_partitions` raise unconditionally, with or
+without arguments, so no caller can drop a partition. Nothing calls them today. A contract
+that names a horizon per source replaces this refusal.
+
+---
+
+### `connectors.evidence_journal`
+
+**Decision: KEEP, append-only, until a per-source retention contract exists (bu-uhbhzq.7)**
+
+The connector-owned verbatim copy for sources with no evidence table (gmail, google-drive,
+google-health, telegram-bot, telegram-user, whatsapp-user). Unpartitioned; one row per
+`(source, endpoint_identity, provider_id, provider_revision)`. UPDATE, DELETE and TRUNCATE are
+refused by trigger; a sanctioned deleter comes with the retention contract. Its downgrade
+refuses while rows exist.
+
+---
+
+### `connectors.calendar_event_revisions`
+
+**Decision: KEEP, append-only, never pruned until a per-source retention contract exists (bu-uhbhzq.7)**
+
+The Google Calendar connector's own history: one row per provider event version, keyed on
+`(endpoint_identity, calendar_id, event_id, etag)`, with `observation` of `baseline`, `change` or
+`resync`. Google keeps no edit history, so this is the only record of what a day's plan looked
+like when it was observed. UPDATE, DELETE and TRUNCATE are refused by trigger. Titles, locations,
+times and attendees are kept verbatim (descriptions are scrubbed of links and passcodes), so only
+`connector_writer` (insert, select) and `butler_chronicler_rw` (select) hold any privilege. A
+policy-blocked event keeps structure and times only. Its downgrade refuses while rows exist.
+
+---
+
 ### `public.insight_candidates`
 
 **Decision: STATUS-GATED — terminal rows after 90 days; pruner [C], disabled by default**
 
 Candidates move from `pending` to a terminal status (`delivered`, `filtered`,
 `expired`, `withdrawn`).  Only terminal rows are eligible for cleanup; `pending` rows are
-never touched.
+never touched.  The Switchboard's daily insight delivery cycle (`cleanup_old_rows()`) never
+deletes candidates; pruner [C] is the only deletion path.
 
 ---
 
 ### `public.insight_amendments`
 
-**Decision: BOUNDED BY INSIGHT LIFECYCLE**
+**Decision: KEEP FOREVER as evidence; orphans settle to `orphaned`** (owner decision 2026-10-27)
 
-One row per (delivered candidate, premise resolution), removed by `ON DELETE
-CASCADE` when the candidate is pruned. No independent retention concern.
+One row per (delivered candidate, premise resolution): the record of an owner-visible
+correction. Since `core_312` the table has no foreign key to `insight_candidates`, so rows
+outlive candidate cleanup and nothing deletes them. The broker's `cleanup_old_rows` settles
+a `pending` or `fold` row whose candidate is gone to the terminal `orphaned` state, so a
+correction with nothing left to correct never waits forever.
+
+---
+
+### `public.insight_outcomes` / `insight_class_efficacy`
+
+**No pruner (bu-s11n0s.15 S1); no owner retention decision yet**
+
+One small row per terminal premise-bound insight candidate (its exposure and premise outcome, no
+message text), plus one verdict row per class, priority band and day the sweep job runs. No
+foreign key to `insight_candidates`, so the evidence outlives the candidate pruner; nothing
+deletes either table. Volume is bounded by premised insights, the same order as
+`insight_amendments`.
 
 ---
 
@@ -159,6 +216,13 @@ Episodes carry a `retention_class`, and the memory module applies its own
 retention policies (see [Memory](../modules/memory.md)).  This page defers to
 that framework.
 
+Superseded facts are closed validity intervals and are kept by default. The horizon is the
+`kind='fact'` row of `public.memory_retention_policies` (`ttl_days`; NULL keeps forever, which
+core_358 set from the seeded 7). A finite horizon deletes only classes whose `memory_policies`
+row has `archive_before_delete = false` and a non-NULL `ttl_days`; an unreadable policy keeps
+everything. Orphaned `ha_state` facts are still deleted nightly. Setting a short horizon through
+`PUT /api/memory/retention-policies` is possible; the class floor bounds the loss.
+
 ---
 
 ## Pruners
@@ -190,3 +254,22 @@ terminal-status rows older than `ttl_days` (default 90).
 `recorded_at` is older than `ttl_days`.  It enforces the 90-day floor:
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+
+**[E] `prune_place_transitions`** (dark, bu-dhloi1.350) — purges perception `owner.place`
+transitions whose `at` is older than 400 days (RFC 0038), with each one's retraction and
+receipts. It is a library job, **not registered on any schedule**, and does nothing unless
+`enabled=True` *and* `butlers.perception.flags.PLACE_RETENTION_LIVE` is on; `dry_run` defaults
+to true and only counts. Its one database call is
+`public.perception_purge_place_history(batch, dry_run)`, executable only by the
+`perception_retention` identity (no table grants). The immutable trigger still refuses every
+other delete, and re-checks kind and age on each row it lets through. Other kinds, younger
+rows, and a transition whose retraction is still inside the horizon are never touched.
+Activation needs a `perception_retention` connection, a schedule entry, and the flag.
+
+## Controlled Switchboard drain
+
+The [controlled retention runbook](controlled-retention-drain.md) separates the
+fixed-cutoff read-only tool and isolated atomic-batch rehearsals from future
+owner-run deletion. Owner choice A on 2026-11-04 permits one content-blind dev
+dry run, not a retention schedule change. The original full tool outcome remains
+open pending target-bound recovery/owner admission, actual evidence and review.

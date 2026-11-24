@@ -72,7 +72,6 @@ async def response_pool(postgres_container):
                 password=parsed.password,
                 min_pool_size=1,
                 max_pool_size=6,
-                strict_role_enforcement=True,
             )
             await database.connect()
             databases[owner] = database
@@ -235,6 +234,10 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     assert module._response_ready is True
 
     class OwningMCPClient:
+        async def ping(self) -> bool:
+            async with Client(mcp) as client:
+                return await client.ping()
+
         async def call_tool(self, name, arguments):
             async with Client(mcp) as client:
                 return await client.call_tool(name, arguments)
@@ -641,7 +644,6 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
         password=source_db.password,
         min_pool_size=1,
         max_pool_size=1,
-        strict_role_enforcement=True,
     )
     await foreign_db.connect()
     try:

@@ -21,7 +21,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from butlers.core.job_health import record_tick
 from butlers.core.mcp_urls import resolve_cross_container_mcp_url
+from butlers.core.switchboard_tls import internal_service_http_options
 
 IDENTITY_PATH = "/internal/control-plane/identity"
 IDENTITY_SCHEMA = "butler.control.v1"
@@ -30,16 +32,43 @@ PROBE_DEADLINE_S = 3.0
 MAX_PROBE_FANOUT = 4
 SUPPORTED_ROUTE_CONTRACT = 1
 
+#: The fixed Boolean check names public ``GET /ready`` reports (REQ-dashboard-api-063).
+#: Deployment gating (``butlers.core.deploy_readiness``) accepts only these as
+#: failure categories, so a readiness body can never carry private content.
+READINESS_CHECK_KEYS: tuple[str, ...] = (
+    "postgres",
+    "roster",
+    "observer",
+    "fleet",
+    "qa_patrol",
+    "supervisors",
+    "route_canary",
+)
+
+#: Per-daemon separated control-plane facts for the expected names (``$1``).
+#: The one reader shared by the shadow observer and Dashboard ``/ready`` sampling;
+#: ``server_now`` lets callers judge TTL freshness on the database clock.
+FLEET_FACTS_SQL = """
+    SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
+           c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
+           c.healthy_observed_at, r.eligibility_state,
+           r.liveness_ttl_seconds, clock_timestamp() AS server_now
+    FROM switchboard.butler_registry_control_plane AS c
+    JOIN switchboard.butler_registry AS r USING (name)
+    WHERE c.name = ANY($1::text[])
+"""
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ExpectedDaemon:
-    """Exact Git-roster identity with a deployment-owned backend hostname."""
+    """Exact Git-roster identity with a deployment-owned backend origin."""
 
     name: str
     port: int
     host: str
+    scheme: str = "http"
 
     @property
     def url(self) -> str:
@@ -47,12 +76,9 @@ class ExpectedDaemon:
             raise ValueError("invalid backend host")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("invalid roster port")
-        return f"http://{self.host}:{self.port}{IDENTITY_PATH}"
-
-
-def _backend_host(port: int) -> str:
-    resolved = urlparse(resolve_cross_container_mcp_url(f"http://localhost:{port}"))
-    return resolved.hostname or "localhost"
+        if self.scheme not in ("http", "https"):
+            raise ValueError("invalid backend scheme")
+        return f"{self.scheme}://{self.host}:{self.port}{IDENTITY_PATH}"
 
 
 def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
@@ -62,21 +88,24 @@ def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
     ``BUTLERS_HOST``; Switchboard's port uses ``SWITCHBOARD_MCP_URL`` when set,
     so its identity is probed where it runs (``butlers-control`` in the stage).
     """
-    targets = tuple(
-        ExpectedDaemon(
-            name=config.name,
-            port=config.port,
-            host=_backend_host(config.port),
+    targets = []
+    for config in configs:
+        resolved = urlparse(resolve_cross_container_mcp_url(f"http://localhost:{config.port}"))
+        targets.append(
+            ExpectedDaemon(
+                name=config.name,
+                port=config.port,
+                host=resolved.hostname or "localhost",
+                scheme=resolved.scheme,
+            )
         )
-        for config in configs
-    )
     if len({target.name for target in targets}) != len(targets):
         raise ValueError("duplicate roster name")
     if len({target.port for target in targets}) != len(targets):
         raise ValueError("duplicate roster port")
     for target in targets:
         _ = target.url  # Validate the complete trusted endpoint before any I/O.
-    return targets
+    return tuple(targets)
 
 
 @dataclass(frozen=True)
@@ -357,18 +386,7 @@ async def run_shadow_cycle(
     healthy_count = 0
     unready: list[UnreadyDaemon] = []
     try:
-        rows = await pool.fetch(
-            """
-            SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
-                   c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
-                   c.healthy_observed_at, r.eligibility_state,
-                   r.liveness_ttl_seconds
-            FROM switchboard.butler_registry_control_plane AS c
-            JOIN switchboard.butler_registry AS r USING (name)
-            WHERE c.name = ANY($1::text[])
-            """,
-            [target.name for target in expected],
-        )
+        rows = await pool.fetch(FLEET_FACTS_SQL, [target.name for target in expected])
         by_name = {row["name"]: row for row in rows}
         now = await pool.fetchval("SELECT clock_timestamp()")
         mismatches = 0
@@ -452,7 +470,9 @@ async def run_shadow_observer_loop(
     if not expected:
         raise RuntimeError("no exact Git-roster targets for shadow observer")
     role_view = DashboardProbeRoleView(pool)
-    async with httpx.AsyncClient(trust_env=False, timeout=PROBE_DEADLINE_S) as client:
+    async with httpx.AsyncClient(
+        timeout=PROBE_DEADLINE_S, **internal_service_http_options(trust_env=False)
+    ) as client:
         prober = SingleFlightProber(role_view, client=client)
         try:
             loop = asyncio.get_running_loop()
@@ -489,5 +509,6 @@ async def run_shadow_observer_loop(
                 )
                 if after_cycle is not None:
                     await after_cycle(role_view, cycle)
+                await record_tick(failed=not cycle.complete, interval_s=interval_s)
         finally:
             await prober.cancel_all()

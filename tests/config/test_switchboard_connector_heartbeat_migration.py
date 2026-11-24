@@ -198,16 +198,20 @@ def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_containe
     assert partition_name == "connector_heartbeat_log_p202708"
     assert _get_partition_count(db_url, "connector_heartbeat_log", schema_name="switchboard") >= 3
 
-    # Cleanup is also a runtime-role responsibility once the maintenance
-    # cron is wired up; verify the role can call it without owning the
-    # parent table.
-    _execute_as_role(
-        db_url,
-        "butler_switchboard_rw",
-        "SELECT switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions("
-        "INTERVAL '7 days', '2027-08-15T00:00:00+00:00'::timestamptz"
-        ")",
-        scalar=True,
+    # The drop is disarmed until a retention contract exists (sw_086, bu-uhbhzq.4): the
+    # runtime role can reach it, and it refuses without dropping anything.
+    before = _get_partition_count(db_url, "connector_heartbeat_log", schema_name="switchboard")
+    with pytest.raises(Exception, match="bu-uhbhzq.7"):
+        _execute_as_role(
+            db_url,
+            "butler_switchboard_rw",
+            "SELECT switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions("
+            "INTERVAL '7 days', '2027-08-15T00:00:00+00:00'::timestamptz"
+            ")",
+            scalar=True,
+        )
+    assert (
+        _get_partition_count(db_url, "connector_heartbeat_log", schema_name="switchboard") == before
     )
 
 

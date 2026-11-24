@@ -20,7 +20,7 @@ pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Every package a contract names must exist, or lint-imports rejects the config outright.
-_PACKAGES = ("api", "connectors", "core", "core_tools", "modules")
+_PACKAGES = ("api", "chronicler", "connectors", "core", "core_tools", "jobs", "modules")
 
 
 def _lint(tmp_path: Path, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -79,6 +79,18 @@ def _lint(tmp_path: Path, files: dict[str, str]) -> subprocess.CompletedProcess[
         (
             {"core_tools/t.py": "from butlers.modules import m\n", "modules/m.py": ""},
             "core_tools does not import modules",
+        ),
+        (
+            {"modules/m.py": "from butlers.connectors import c\n", "connectors/c.py": ""},
+            "modules, jobs and chronicler do not import connectors",
+        ),
+        (
+            {"jobs/j.py": "from butlers.connectors import c\n", "connectors/c.py": ""},
+            "modules, jobs and chronicler do not import connectors",
+        ),
+        (
+            {"chronicler/c.py": "from butlers.connectors import c\n", "connectors/c.py": ""},
+            "modules, jobs and chronicler do not import connectors",
         ),
     ],
 )

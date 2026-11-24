@@ -198,3 +198,22 @@ print(repr(c))
 - [Credential Store](../data_and_storage/credential-store.md) -- `butler_secrets` table
 - [Owner Identity](owner-identity.md) -- Entity-based credential storage
 - [Contacts Module](../modules/contacts.md) -- Google Contacts provider sync
+
+### Shared Google token transport and cache
+
+Google refresh grants use `butlers.google_credentials.exchange_google_refresh`;
+strict token consumers use `mint_access_token` and `GoogleTokenCache`. The cache
+serializes concurrent refreshes, refreshes sixty seconds early, and separates
+credential generations, requested scope sets, event loops and injected clock domains.
+An explicit account identity permits sharing; unknown identities remain owner-local.
+Access tokens and credential fingerprints remain in memory.
+Calendar and Contacts use `GoogleOAuthClient` with their existing typed errors
+and bounded retries. Drive and connector adapters retain their source callbacks
+and account state. Health requests only its three Health scopes.
+
+Read-only OAuth status probes retain their scope-status interpretation, including
+absent/null scope versus blank scope. They do not mark accounts revoked. The
+shared persistent revocation helper is called only by the existing account-owned
+refresh-failure paths; Calendar retains its stale-refresh-token guard, and Calendar
+and Health bind a revoked mark atomically to the still-current stored grant. Neither
+authorization-code failures nor data-API 401 responses revoke a stored grant.

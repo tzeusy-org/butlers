@@ -5,23 +5,18 @@ reproduce the expected gates locally before calling the PR done.
 
 ## CI Gates In This Repo
 
-The active `main-merge-queue` ruleset (id 22281319) requires three contexts:
-`check`, `guards`, and `frontend`. From
-[.github/workflows/ci.yml](../../../../../../.github/workflows/ci.yml):
+The active `main-merge-queue` ruleset (id 22281319) requires `check`, `guards` and
+`frontend` from [.github/workflows/ci.yml](../../../../../../.github/workflows/ci.yml);
+`check` and `frontend` only mirror `alls-green` until the owner switches the ruleset to
+`alls-green` alone. `alls-green` is the fail-closed fan-in over every job: `guards` (structural and privacy
+gates, including `session-link-guard`, bu-mr5t5, plus frontend lint, knip and
+build), `smoke`, five unit and six integration groups, `check-totals`, both
+Vitest children, `frontend-assurance`, Playwright `frontend-e2e` and `go-bridge`.
 
-1. `guards` runs the repository-wide structural and privacy gates, including
-   `session-link-guard` (bu-mr5t5).
-2. `check` is the fail-closed fan-in over `check-preflight`, five unit shards,
-   and five integration shards.
-3. `frontend` runs its lint, copy/coercion guards, knip, build, and unit tests
-   when the diff touches its path-filtered surface.
-
-The pull-request run is path-filtered, so skipped jobs are expected and a fixed
-job count is not a completeness test. `frontend-e2e` remains advisory. After
-review and the PR-head gates complete, the sole merge route is
-`gh pr merge <n> --squash --auto`; the queue reruns the required contexts on the
-exact `merge_group` tree before landing. Do not rebase a clean PR merely to
-refresh it.
+Every event runs the same job set, so a skipped job is a defect, not a neutral
+result. After review and the PR-head gates complete, the sole merge route is
+`gh pr merge <n> --squash --auto`; the queue reruns the pipeline on the exact
+`merge_group` tree before landing. Do not rebase a clean PR merely to refresh it.
 
 ## Local Reproduction Commands
 

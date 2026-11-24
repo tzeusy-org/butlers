@@ -1,0 +1,31 @@
+{{- if .Values.monitoring.podMonitor.enabled }}
+# Scrapes the server's metrics port (9090, GET /metrics, Prometheus text) for the public MCP
+# alert rules (RFC 0039 D16). Nothing is added to ingress: the NetworkPolicy already admits
+# namespace `lgtm` on 9090 (D8 item 2). `monitoring.podMonitor.labels` must match the cluster
+# Prometheus' podMonitorSelector (kube-prometheus-stack in `lgtm`: release=lgtm).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ include "pub.namespace" . }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ include "pub.namespace" . }}
+  selector:
+    matchLabels:
+      {{- include "pub.selector" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.monitoring.podMonitor.interval }}
+      relabelings:
+        # A fixed job name: the alert rules select the server's series by it.
+        - targetLabel: job
+          replacement: {{ .Release.Name }}
+{{- end }}

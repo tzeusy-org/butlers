@@ -3,7 +3,16 @@
 ## MODIFIED Requirements
 
 ### Requirement: Update Type Handling
-The connector SHALL process a defined subset of Telegram update types.
+The connector SHALL process a defined subset of Telegram update types. It SHALL
+also recognize one strictly additive `callback_query` exception: a
+`callback_data` carrying the `cgi:` gap-interview prefix SHALL be routed to the
+chronicler gap-interview resolve path instead of being dropped, while every
+other `callback_query` SHALL retain its existing drop behavior unless it carries
+an approval callback token (see Approval Callback Ingestion).
+
+ID: REQ-connector-telegram-bot-006
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1; design.md D1
+Scope: v1-mandatory
 
 #### Scenario: Processed update types
 - **WHEN** a Telegram update arrives
@@ -12,9 +21,11 @@ The connector SHALL process a defined subset of Telegram update types.
   Ingestion)
 
 #### Scenario: Skipped update types
-- **WHEN** a non-message update other than `callback_query` arrives
-  (`inline_query`, `chosen_inline_result`, etc.)
-- **THEN** it is silently skipped
+- **WHEN** a non-message update arrives (`callback_query`, `inline_query`, `chosen_inline_result`, etc.)
+- **THEN** it is silently skipped — no ingest submission — UNLESS it is a
+  `callback_query` whose `callback_data` carries the `cgi:` gap-interview
+  prefix, which is handled per the gap-interview scenario, or an approval
+  callback token, which is handled per Approval Callback Ingestion
 
 #### Scenario: Non-approval callback queries are acknowledged and dropped
 - **WHEN** a `callback_query` arrives whose data does not parse as an approval

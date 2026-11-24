@@ -23,6 +23,11 @@ non-goals, and non-negotiable rules.
 - **Switchboard** is the single ingress: it classifies each request and dispatches to domain
   butlers over MCP. Butlers never call each other directly.
 - **Dashboard** is a FastAPI API plus a web frontend behind owner authentication.
+- **Public MCP read surface** (accepted design, not yet built) gives the owner's own AI clients
+  read access through the owner's gateway, from a one-way replica, with no LLM on the path:
+  [RFC 0039](../about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md). Setting up an
+  environment includes its second database `butlers_public` and replication:
+  [setup procedure](operations/public-mcp-read-surface.md).
 - **PostgreSQL** is one database with one schema per butler; cross-butler data (identity,
   credentials) lives in `public`, and each butler's role sees only its schema plus `public`.
 

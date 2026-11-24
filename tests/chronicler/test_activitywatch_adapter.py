@@ -32,6 +32,8 @@ from butlers.chronicler.adapters.activitywatch import (
     ActivityWatchWindowAdapter,
 )
 from butlers.chronicler.models import PointEvent, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record, row
 
 _NOW = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "activitywatch:desktop"
@@ -42,7 +44,7 @@ _ENDPOINT = "activitywatch:desktop"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _focus_row(
     ts: datetime = _NOW,
     duration_seconds: float = 30.0,
     app_class: str = "ide",
@@ -50,41 +52,26 @@ def _make_row(
     endpoint_identity: str = _ENDPOINT,
     idempotency_key: str | None = None,
     browser_domain: str | None = None,
-) -> dict:
+) -> Record:
     ikey = idempotency_key or f"activitywatch:{endpoint_identity}:bucket:{ts.isoformat()}"
-    return {
-        "id": "some-uuid",
-        "idempotency_key": ikey,
-        "ts": ts,
-        "duration_seconds": duration_seconds,
-        "app_class": app_class,
-        "is_afk": is_afk,
-        "endpoint_identity": endpoint_identity,
-        "browser_domain": browser_domain,
-    }
+    return row(
+        id="some-uuid",
+        idempotency_key=ikey,
+        ts=ts,
+        duration_seconds=duration_seconds,
+        app_class=app_class,
+        is_afk=is_afk,
+        endpoint_identity=endpoint_identity,
+        browser_domain=browser_domain,
+    )
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
-def _pool_returning(*rows: dict) -> AsyncMock:
+def _pool_returning(*rows: Record) -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=list(rows))
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -93,7 +80,7 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -101,7 +88,7 @@ def _chronicler_pool() -> AsyncMock:
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -139,7 +126,7 @@ def test_no_llm_imports_in_activitywatch_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_project_single_active_row_produces_one_point_event() -> None:
-    row = _make_row()
+    row = _focus_row()
     adapter = ActivityWatchWindowAdapter()
 
     upserted_events: list[PointEvent] = []
@@ -175,7 +162,7 @@ async def test_project_single_active_row_produces_one_point_event() -> None:
 
 @pytest.mark.asyncio
 async def test_afk_row_excluded_from_point_events_but_advances_watermark() -> None:
-    row = _make_row(is_afk=True)
+    row = _focus_row(is_afk=True)
     adapter = ActivityWatchWindowAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -197,7 +184,7 @@ async def test_afk_row_excluded_from_point_events_but_advances_watermark() -> No
 @pytest.mark.asyncio
 async def test_null_afk_row_treated_as_active() -> None:
     """No AFK bucket on this machine (is_afk=NULL) — must not silently drop activity."""
-    row = _make_row(is_afk=None)
+    row = _focus_row(is_afk=None)
     adapter = ActivityWatchWindowAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -217,7 +204,7 @@ async def test_null_afk_row_treated_as_active() -> None:
 @pytest.mark.asyncio
 async def test_point_event_payload_never_contains_app_name_or_title() -> None:
     """Privacy: only app_class + duration reach the point event payload."""
-    row = _make_row()
+    row = _focus_row()
     adapter = ActivityWatchWindowAdapter()
     upserted_events: list[PointEvent] = []
 
@@ -244,7 +231,7 @@ async def test_point_event_payload_never_contains_app_name_or_title() -> None:
 
 @pytest.mark.asyncio
 async def test_browser_point_event_projects_validated_hostname_only() -> None:
-    row = _make_row(app_class="browser", browser_domain="docs.example.test")
+    row = _focus_row(app_class="browser", browser_domain="docs.example.test")
     adapter = ActivityWatchWindowAdapter()
     upserted_events: list[PointEvent] = []
 
@@ -271,7 +258,7 @@ async def test_browser_point_event_projects_validated_hostname_only() -> None:
 async def test_browser_point_event_rejects_raw_url_shaped_domain() -> None:
     """Projection fails closed if an evidence row contains a raw URL by mistake."""
     raw_url = "https://docs.example.test/private?token=secret"
-    row = _make_row(app_class="browser", browser_domain=raw_url)
+    row = _focus_row(app_class="browser", browser_domain=raw_url)
     adapter = ActivityWatchWindowAdapter()
     upserted_events: list[PointEvent] = []
 
@@ -294,7 +281,7 @@ async def test_browser_point_event_rejects_raw_url_shaped_domain() -> None:
 
 @pytest.mark.asyncio
 async def test_malformed_app_class_defaults_to_other_with_warning() -> None:
-    row = _make_row(app_class="not-a-real-class")
+    row = _focus_row(app_class="not-a-real-class")
     adapter = ActivityWatchWindowAdapter()
     upserted_events: list[PointEvent] = []
 
@@ -339,7 +326,7 @@ async def test_missing_evidence_table_skips_gracefully() -> None:
 
 @pytest.mark.asyncio
 async def test_single_active_row_produces_one_screen_episode() -> None:
-    row = _make_row()
+    row = _focus_row()
     adapter = ActivityWatchWindowAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -363,8 +350,8 @@ async def test_single_active_row_produces_one_screen_episode() -> None:
 
 @pytest.mark.asyncio
 async def test_contiguous_rows_collapse_into_one_episode_with_breakdown() -> None:
-    row1 = _make_row(ts=_NOW, app_class="ide", duration_seconds=60.0, idempotency_key="k1")
-    row2 = _make_row(
+    row1 = _focus_row(ts=_NOW, app_class="ide", duration_seconds=60.0, idempotency_key="k1")
+    row2 = _focus_row(
         ts=_NOW + timedelta(minutes=2),
         app_class="browser",
         duration_seconds=120.0,
@@ -392,21 +379,21 @@ async def test_contiguous_rows_collapse_into_one_episode_with_breakdown() -> Non
 
 @pytest.mark.asyncio
 async def test_browser_domain_seconds_are_aggregated_in_screen_episode() -> None:
-    row1 = _make_row(
+    row1 = _focus_row(
         ts=_NOW,
         app_class="browser",
         browser_domain="docs.example.test",
         duration_seconds=60.0,
         idempotency_key="k1",
     )
-    row2 = _make_row(
+    row2 = _focus_row(
         ts=_NOW + timedelta(minutes=2),
         app_class="browser",
         browser_domain="search.example.test",
         duration_seconds=30.0,
         idempotency_key="k2",
     )
-    row3 = _make_row(
+    row3 = _focus_row(
         ts=_NOW + timedelta(minutes=3),
         app_class="browser",
         browser_domain="docs.example.test",
@@ -440,7 +427,7 @@ async def test_fetch_events_reads_safe_domain_without_selecting_sensitive_eviden
 
     await adapter._fetch_events(pool, since=None)
 
-    sql = str(pool.acquire.return_value._obj.fetch.await_args.args[0])
+    sql = str(pool.acquire().value.fetch.await_args.args[0])
     assert "browser_domain" in sql
     assert "window_title" not in sql
     assert "raw_payload" not in sql
@@ -448,8 +435,8 @@ async def test_fetch_events_reads_safe_domain_without_selecting_sensitive_eviden
 
 @pytest.mark.asyncio
 async def test_gap_beyond_threshold_starts_new_episode() -> None:
-    row1 = _make_row(ts=_NOW, idempotency_key="k1")
-    row2 = _make_row(
+    row1 = _focus_row(ts=_NOW, idempotency_key="k1")
+    row2 = _focus_row(
         ts=_NOW + timedelta(minutes=SCREEN_GAP_MINUTES + 5),
         idempotency_key="k2",
     )
@@ -479,8 +466,8 @@ async def test_gap_measured_from_prior_row_end_not_start() -> None:
     gap on start-to-start instead of end-to-start would incorrectly split
     this into two episodes.
     """
-    row1 = _make_row(ts=_NOW, app_class="ide", duration_seconds=3600.0, idempotency_key="k1")
-    row2 = _make_row(
+    row1 = _focus_row(ts=_NOW, app_class="ide", duration_seconds=3600.0, idempotency_key="k1")
+    row2 = _focus_row(
         ts=_NOW + timedelta(minutes=61),
         app_class="ide",
         duration_seconds=30.0,

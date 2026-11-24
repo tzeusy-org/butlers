@@ -81,8 +81,10 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ApiResponse
+from butlers.api.projection_grants import ACTIVE_GRANTS_LIVENESS_SQL, liveness_attention_items
 from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
+from butlers.core.qa.breaker_state import cause_label
 from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.credential_store import CredentialStore
 
@@ -218,6 +220,7 @@ async def _fetch_dashboard_state(
         pending approvals across all butler pools
         failed-notification count (GET /api/notifications/stats)
         QA state (circuit breaker, recent failed patrol, active investigations)
+        ambient projection liveness (one item per grant whose surface lapsed)
 
     The public API still returns the six-field Briefing object. This richer
     state is intentionally internal so the local runtime has enough context to
@@ -240,7 +243,7 @@ async def _fetch_dashboard_state(
         },
     }
 
-    # Run all five independent fetches concurrently; each is internally
+    # Run all six independent fetches concurrently; each is internally
     # guarded and never raises (a failure degrades that source's contribution
     # to empty/None plus a `degraded=True` flag -- see classify.classify).
     (
@@ -249,12 +252,14 @@ async def _fetch_dashboard_state(
         approvals_result,
         notifications_result,
         qa_result,
+        projections_result,
     ) = await asyncio.gather(
         _fetch_audit_issues(pool),
         _fetch_board_state(configs, mgr, db, pricing),
         _fetch_approvals_state(db),
         _fetch_notifications_state(db, now=now),
         _fetch_qa_state(db),
+        _fetch_projection_liveness(pool, now),
         return_exceptions=False,
     )
 
@@ -263,6 +268,7 @@ async def _fetch_dashboard_state(
     approvals_pending, approvals_degraded = approvals_result
     failed_notifications, notifications_degraded = notifications_result
     qa_state, qa_degraded = qa_result
+    projection_attention, projections_degraded = projections_result
 
     attention_items: list[dict] = []
 
@@ -312,6 +318,8 @@ async def _fetch_dashboard_state(
     if qa_item is not None:
         attention_items.append(qa_item)
 
+    attention_items.extend(projection_attention)
+
     degraded_sources = []
     if audit_degraded:
         degraded_sources.append("audit")
@@ -323,6 +331,8 @@ async def _fetch_dashboard_state(
         degraded_sources.append("notifications")
     if qa_degraded:
         degraded_sources.append("qa")
+    if projections_degraded:
+        degraded_sources.append("projections")
 
     state["attention_items"] = attention_items
     state["audit_issues"] = audit_issues
@@ -357,6 +367,23 @@ async def _fetch_audit_issues(pool: Any) -> tuple[list, list, bool]:
     except Exception as exc:
         logger.warning("Could not fetch audit-derived attention items: %s", exc)
         return [], [], True
+
+
+async def _fetch_projection_liveness(pool: Any, now: datetime) -> tuple[list[dict], bool]:
+    """Return (attention_items, degraded) for ambient projections that stopped fetching.
+
+    REQ-ambient-projections-004: derived at read time from
+    ``public.ambient_projections``, so it writes nothing and needs no schedule.
+    """
+    try:
+        rows = await pool.fetch(ACTIVE_GRANTS_LIVENESS_SQL)
+        current = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        return liveness_attention_items(list(rows), current), False
+    except Exception as exc:
+        if _is_missing_relation_error(exc, "ambient_projections"):
+            return [], False
+        logger.warning("Could not fetch ambient projection liveness: %s", exc)
+        return [], True
 
 
 def _map_board_rows(
@@ -591,17 +618,29 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     # per-pool-failure-but-keep-going pattern in _fetch_approvals_state.
     circuit_breaker_tripped = False
     circuit_breaker_consecutive_failures = 0
+    circuit_breaker_dominant_cause: str | None = None
     try:
         from butlers.api.routers.qa import (
             _CIRCUIT_BREAKER_THRESHOLD,
+            _breaker_cause_fields,
             _compute_circuit_breaker_state,
             _fetch_recent_circuit_breaker_rows,
         )
+        from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF
 
-        cb_rows = await _fetch_recent_circuit_breaker_rows(pool, limit=_CIRCUIT_BREAKER_THRESHOLD)
-        _, circuit_breaker_consecutive_failures, circuit_breaker_tripped = (
-            _compute_circuit_breaker_state(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
+        cb_rows = await _fetch_recent_circuit_breaker_rows(
+            pool,
+            limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+            include_detail=True,
         )
+        _, circuit_breaker_consecutive_failures, circuit_breaker_tripped = (
+            _compute_circuit_breaker_state(
+                cb_rows[:_CIRCUIT_BREAKER_THRESHOLD], threshold=_CIRCUIT_BREAKER_THRESHOLD
+            )
+        )
+        circuit_breaker_dominant_cause = _breaker_cause_fields(
+            cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD
+        )["dominant_cause"]
     except Exception as exc:
         if _is_missing_relation_error(exc, "healing_attempts") or _is_missing_relation_error(
             exc, "breaker_resets"
@@ -620,6 +659,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
         {
             "circuit_breaker_tripped": circuit_breaker_tripped,
             "circuit_breaker_consecutive_failures": circuit_breaker_consecutive_failures,
+            "circuit_breaker_dominant_cause": circuit_breaker_dominant_cause,
             # ``error`` is the canonical terminal patrol failure.  Detail is
             # optional diagnostic context, never a second failure signal.
             "last_patrol_failed": bool(last_patrol_status == "error"),
@@ -648,6 +688,8 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
 
     if qa_state.get("circuit_breaker_tripped"):
         n = qa_state.get("circuit_breaker_consecutive_failures", 0)
+        cause = cause_label(qa_state.get("circuit_breaker_dominant_cause"))
+        failures = f"{n} consecutive failure{'' if n == 1 else 's'}"
         # severity="high" -- the briefing's attention-item vocabulary tops
         # out at "high" (no "critical" tier); this mirrors
         # attention_item_from_audit_group_row's "briefing maps critical to
@@ -659,7 +701,9 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
             "type": "qa",
             "butler": "qa",
             "description": (
-                f"QA circuit breaker tripped ({n} consecutive failure{'' if n == 1 else 's'})"
+                f"QA circuit breaker open: {cause} ({failures})"
+                if cause
+                else f"QA circuit breaker tripped ({failures})"
             ),
             "link": "/qa",
             "occurrences": n,

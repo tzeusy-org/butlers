@@ -35,3 +35,46 @@ A projection adapter whose read surface has a rolling retention policy (a TTL/pa
   TTL-free connector table (the existing convention for every adapter
   predating this requirement)
 - **THEN** no retention-lag monitoring obligation applies to that adapter
+
+## MODIFIED Requirements
+
+### Requirement: Owner-Day Narrative Composition
+
+Chronicler SHALL compose bounded day-close recaps from supported owner activity
+with explicit uncertainty, preserving producer ownership and machine provenance.
+
+ID: REQ-butler-chronicler-023
+Source: bu-uhbhzq.2 slices 4-5; owner decision run24-outage-clause = D
+Scope: v1-mandatory
+
+#### Scenario: Day-close describes supported owner activity
+
+- **WHEN** the bounded day-close bundle contains source inventories alongside
+  supported owner-day observations
+- **THEN** the recap SHALL foreground supported place, movement, sleep and
+  interaction evidence with explicit uncertainty rather than raw source counts
+- **AND** automated Butler processing SHALL NOT be narrated as owner activity
+- **AND** inbound email alone SHALL NOT establish social interaction, and an
+  owner outbound message alone SHALL NOT establish a two-way exchange
+- **AND** playback overlapping recorded sleep SHALL be background or uncertain
+  playback, never confirmed listening
+- **AND** unknown places, destinations, travel modes and evidence gaps SHALL
+  remain unknown, with machine provenance retained independently of prose
+- **AND** this narration view SHALL NOT alter the underlying source producers,
+  time aggregates, privacy projection or local-day coverage authority
+- **AND** recognized delivery-status/tool-summary bookkeeping from the exact
+  scheduled day-close SHALL NOT enter automatic session-episode memory; session
+  audit and legitimate corrections or retrospective interactions SHALL remain intact
+
+#### Scenario: Uncaptured lanes appear as unknowns
+
+Owner decision `run24-outage-clause` = D (bead bu-uhbhzq.2 notes).
+
+- **WHEN** the day's frozen source availability marks a lane uncaptured
+- **THEN** the bundle's `owner_day.unknowns` SHALL carry one deterministic line
+  for that lane, for example "Meals not captured (source retired since 13 Aug)",
+  in addition to the standing partial-evidence line
+- **AND** the line SHALL be stored in the day's unknowns every day, while the
+  delivered recap SHALL mention a dark lane on its first dark day and weekly
+  after, and a retired or unconfigured lane only once (`owner_day.recap_mention`)
+- **AND** the bundle SHALL NOT carry endpoint, source or connector identity

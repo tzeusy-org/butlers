@@ -24,6 +24,8 @@ class ActionStatus(enum.StrEnum):
     EXPIRED = "expired"
     EXECUTED = "executed"
     ABANDONED = "abandoned"
+    # A Stop cancelled the goal that parked this effect (RFC 0038 D13).
+    CANCELLED = "cancelled"
 
 
 EvidenceReference = dict[str, str]
@@ -125,6 +127,20 @@ class PendingAction:
     # actually notified (bu-mda0r); callers must not read that combination as
     # a normal row.
     push_outcome: str | None = None
+    # RFC 0038 goal lineage, set only when the capability broker parked the
+    # action (``id`` is then the broker's effect id). ``goal_origin`` is
+    # separate from the producer ``origin``; ``legacy`` marks pre-cutover rows.
+    goal_id: uuid.UUID | None = None
+    goal_invocation_id: uuid.UUID | None = None
+    goal_depth: int | None = None
+    goal_exposed: bool | None = None
+    goal_origin: str | None = None
+    goal_exposure_cause: str | None = None
+    goal_rule_possible: bool | None = None
+    # Producer-chosen semantic key. ``external_mcp:<proposal_id>`` marks an
+    # outside proposal, which the approve paths exempt from autonomy history,
+    # promotion and rule creation (REQ-module-approvals-010). Read-side only.
+    deduplication_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -148,6 +164,16 @@ class PendingAction:
             "origin": self.origin,
             "push_outcome": self.push_outcome,
         }
+        if self.goal_origin is not None:
+            d["goal"] = {
+                "goal_id": str(self.goal_id) if self.goal_id else None,
+                "invocation_id": str(self.goal_invocation_id) if self.goal_invocation_id else None,
+                "depth": self.goal_depth,
+                "exposed": self.goal_exposed,
+                "origin": self.goal_origin,
+                "exposure_cause": self.goal_exposure_cause,
+                "rule_possible": self.goal_rule_possible,
+            }
         return d
 
     @classmethod
@@ -199,6 +225,14 @@ class PendingAction:
             reversibility=_get("reversibility"),
             origin=_get("origin"),
             push_outcome=_get("push_outcome"),
+            goal_id=_parse_optional_uuid(_get("goal_id")),
+            goal_invocation_id=_parse_optional_uuid(_get("goal_invocation_id")),
+            goal_depth=_get("goal_depth"),
+            goal_exposed=_get("goal_exposed"),
+            goal_origin=_get("goal_origin"),
+            goal_exposure_cause=_get("goal_exposure_cause"),
+            goal_rule_possible=_get("goal_rule_possible"),
+            deduplication_key=_get("deduplication_key"),
         )
 
 

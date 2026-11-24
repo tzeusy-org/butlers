@@ -23,6 +23,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.stamp_account import account_records, account_unstamped
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,14 @@ def _fact_to_note(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str, Any]:
         "content": note_text,
         "emotion": meta.get("emotion"),
         "created_at": row.get("created_at"),
+        # RFC 0038 D6: the exposed goal lineage that wrote this note, if any.
+        "taint_goal_id": _str_or_none(row.get("taint_goal_id")),
+        "taint_invocation_id": _str_or_none(row.get("taint_invocation_id")),
     }
+
+
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value is not None else None
 
 
 async def note_create(
@@ -211,7 +219,8 @@ async def note_list(
     """
     rows = await pool.fetch(
         """
-        SELECT id, content, created_at, metadata
+        SELECT id, content, created_at, metadata, content_authority,
+               taint_goal_id, taint_invocation_id
         FROM facts
         WHERE subject = ANY($1::text[])
           AND predicate = 'contact_note'
@@ -224,7 +233,15 @@ async def note_list(
         limit,
         offset,
     )
+    account_records(rows)  # D6: the stamp account a broker-forwarded read reports
     return [_fact_to_note(dict(r), contact_id) for r in rows]
+
+
+def _account_note_search(rows: list[Any]) -> None:
+    """D6: account the notes; ``contact_name`` comes from unstamped ``public.entities``."""
+    account_records(rows)
+    if rows:
+        account_unstamped()
 
 
 async def note_search(
@@ -234,7 +251,8 @@ async def note_search(
     if contact_id is not None:
         rows = await pool.fetch(
             """
-            SELECT f.id, f.content, f.created_at, f.metadata,
+            SELECT f.id, f.content, f.created_at, f.metadata, f.content_authority,
+                   f.taint_goal_id, f.taint_invocation_id,
                    COALESCE(e.canonical_name, 'Unknown') AS contact_name
             FROM facts f
             JOIN contact_entity_map cem ON f.subject = 'contact:' || cem.contact_id::text
@@ -249,6 +267,7 @@ async def note_search(
             f"contact:{contact_id}",
             query,
         )
+        _account_note_search(rows)
         results = []
         for row in rows:
             d = _fact_to_note(dict(row), contact_id)
@@ -258,7 +277,8 @@ async def note_search(
 
     rows = await pool.fetch(
         """
-        SELECT f.id, f.content, f.created_at, f.metadata,
+        SELECT f.id, f.content, f.created_at, f.metadata, f.content_authority,
+               f.taint_goal_id, f.taint_invocation_id,
                COALESCE(e.canonical_name, 'Unknown') AS contact_name,
                cem.contact_id AS _contact_id
         FROM facts f
@@ -272,6 +292,7 @@ async def note_search(
         """,
         query,
     )
+    _account_note_search(rows)
     results = []
     for row in rows:
         cid = row["_contact_id"]

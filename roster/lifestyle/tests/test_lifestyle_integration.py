@@ -151,148 +151,32 @@ pytestmark_integration = [
 
 
 @pytest.fixture
-async def lifestyle_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the facts/predicate tables for memory tests.
+async def lifestyle_pool(db):
+    """A private clone migrated with the real core and memory chains.
 
-    SCHEMA DRIFT WARNING: This fixture manually recreates a subset of the production
-    schema to keep tests lightweight and avoid adding Alembic as a test dependency.
-    If any of the following migrations are updated, this fixture must be updated too:
-      - src/butlers/modules/memory/migrations/001_memory_baseline.py  (facts table)
-      - src/butlers/modules/memory/migrations/002_entities.py         (public.entities)
-      - src/butlers/modules/memory/migrations/005_predicate_registry.py (predicate_registry)
-      - src/butlers/modules/memory/migrations/007_bitemporal_facts.py  (valid_at, observed_at)
-      - src/butlers/modules/memory/migrations/014_tenant_request_lineage.py (tenant_id, request_id)
-      - src/butlers/modules/memory/migrations/015_consolidation_state_machine.py (memory_links)
-      - src/butlers/modules/memory/migrations/017_memory_policies.py   (retention_class, sens.)
-      - src/butlers/modules/memory/migrations/026_preferences_predicates.py (lifestyle predicates)
+    The lifestyle domain predicates are registered here because the memory chain
+    seeds only the shared taxonomy.
     """
-    async with provisioned_postgres_pool() as p:
-        # public.entities required by store_fact (entity resolution)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id TEXT NOT NULL DEFAULT '',
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID REFERENCES public.entities(id),
-                roles JSONB NOT NULL DEFAULT '[]'
-            )
-        """)
-
-        # predicate_registry — required by store_fact registry enforcement
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-
-        # Register lifestyle domain predicates
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('likes_genre', false),
-                ('likes_artist', false),
-                ('likes_cuisine', false),
-                ('favorite_restaurant', false),
-                ('favorite_recipe', false),
-                ('hobby', false),
-                ('food_preference', false),
-                ('food_dislike', false),
-                ('routine', false),
-                ('watches', false),
-                ('reads', false),
-                ('plays', false),
-                ('listens_to', false),
-                ('listening_pattern', false)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # facts table (TEXT embedding avoids pgvector in unit tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-
-        # memory_links table — required by store_fact supersession path
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
-                ON facts (predicate, valid_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-                ON facts (subject, predicate)
-        """)
-
-        yield p
+    pool = await db("core", "memory")
+    await pool.execute("""
+        INSERT INTO predicate_registry (name, is_temporal) VALUES
+            ('likes_genre', false),
+            ('likes_artist', false),
+            ('likes_cuisine', false),
+            ('favorite_restaurant', false),
+            ('favorite_recipe', false),
+            ('hobby', false),
+            ('food_preference', false),
+            ('food_dislike', false),
+            ('routine', false),
+            ('watches', false),
+            ('reads', false),
+            ('plays', false),
+            ('listens_to', false),
+            ('listening_pattern', false)
+        ON CONFLICT (name) DO NOTHING
+    """)
+    return pool
 
 
 def _make_mock_embedding_engine() -> MagicMock:
@@ -890,7 +774,7 @@ class TestLifestyleMemoryMaintenanceSchedule:
         """All module-default memory maintenance schedules dispatch as jobs.
 
         ``ensure_module_default_schedule`` always inserts with
-        ``dispatch_mode='job'`` (see ``src/butlers/core/scheduler.py``) — this
+        ``dispatch_mode='job'`` (see ``src/butlers/core/scheduler/``) — this
         is not configurable per schedule, unlike the old toml blocks.
         """
         memory_jobs = [

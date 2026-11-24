@@ -48,9 +48,9 @@ Semantics:
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
 - Missing evidence table degrades gracefully (connector not deployed /
   migration not run on this deployment).
-- Watermark on ``ts`` only. ``connectors.activitywatch_events.id`` is a
-  UUID, not an integer serial, so this adapter must not use the integer
-  ``watermark_id`` tuple-watermark path (mirrors the OwnTracks adapter).
+- Pages by ``(ts, id)``. ``connectors.activitywatch_events.id`` is a UUID,
+  not an integer serial, so the tiebreaker is stored in the checkpoint
+  carryover (``watermark_key``) rather than the BIGINT ``watermark_id``.
 """
 
 from __future__ import annotations
@@ -68,7 +68,13 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    KeyCols,
+    ProjectionAdapter,
+    cursor_key,
+    keyset_page,
+)
 from butlers.chronicler.confidence import (
     EvidenceKind,
     derive_confidence,
@@ -140,6 +146,8 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
     ``screen_episode`` spans with a per-app-class duration breakdown.
     """
 
+    keyset_cols: KeyCols = (("id", "uuid"),)
+
     def __init__(
         self,
         *,
@@ -159,10 +167,12 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
+        del since_id  # UUID PK: the tiebreaker is ``since_key``.
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_events(pool, since)
+        rows = await self._fetch_events(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -217,6 +227,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     def _normalize_row(
@@ -293,15 +304,12 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
-        since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        """Fetch the next page of evidence rows after ``(since, since_key)``.
 
-        ``since_id`` is intentionally ignored (see module docstring — the
-        evidence table primary key is UUID). Returns ``None`` if the
-        evidence table is missing — degrade gracefully.
+        Returns ``None`` if the evidence table is missing — degrade gracefully.
         """
-        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -316,30 +324,19 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, ts, duration_seconds,
-                               app_class, browser_domain, is_afk, endpoint_identity
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, ts, duration_seconds,
-                               app_class, browser_domain, is_afk, endpoint_identity
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE ts > $1
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
-                    )
+                sql, args = keyset_page(
+                    columns=(
+                        "id, idempotency_key, ts, duration_seconds, app_class, "
+                        "browser_domain, is_afk, endpoint_identity"
+                    ),
+                    table=_EVIDENCE_TABLE,
+                    ts_col="ts",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
+                )
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

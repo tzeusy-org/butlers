@@ -1,6 +1,8 @@
 """Tests for the CLI commands."""
 
 import logging
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from click.testing import CliRunner
@@ -201,7 +203,147 @@ memory_schema = "chronicler_mem"
         assert calls == [("core", "chronicler"), ("memory", "chronicler_mem")]
 
 
+class TestChroniclerMemoryPreparation:
+    def _write_config(self, root, *, memory_schema="chronicler_mem"):
+        butler_dir = root / "chronicler"
+        butler_dir.mkdir(parents=True)
+        (butler_dir / "butler.toml").write_text(
+            '[butler]\nname = "chronicler"\nport = 41111\n'
+            'description = "Retrospective time butler"\n'
+            '[butler.db]\nname = "butlers"\nschema = "chronicler"\n'
+            f'[modules.memory]\nmemory_schema = "{memory_schema}"\n'
+        )
+        return root
+
+    def test_prepare_runs_core_then_memory_in_the_declared_private_schema(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        calls = []
+
+        async def record_migration(db_url, chain="core", schema=None):
+            del db_url
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {
+                "user": "user",
+                "password": "private-password",
+                "host": "localhost",
+                "port": 5432,
+            },
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: False
+        )
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code == 0, result.output
+        assert calls == [("core", "chronicler_mem"), ("memory", "chronicler_mem")]
+        assert "private-password" not in result.output
+
+    def test_prepare_skips_core_when_the_private_schema_is_already_installed(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        calls = []
+
+        async def record_migration(db_url, chain="core", schema=None):
+            del db_url
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: True
+        )
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code == 0, result.output
+        assert calls == [("memory", "chronicler_mem")]
+
+    def test_prepare_failure_reports_inner_class_and_sqlstate_without_content(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+
+        class InsufficientPrivilege(Exception):
+            pgcode = "42501"
+
+        async def failing_migration(db_url, chain="core", schema=None):
+            del db_url, chain, schema
+            from sqlalchemy.exc import ProgrammingError
+
+            raise ProgrammingError(
+                "UPDATE secret-row-content", {}, InsufficientPrivilege("secret-row-content")
+            )
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", failing_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: False
+        )
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code != 0
+        assert "ProgrammingError, inner=InsufficientPrivilege, sqlstate=42501" in result.output
+        assert "secret-row-content" not in result.output
+
+    def test_prepare_dry_run_does_not_connect(self, runner, tmp_path, monkeypatch):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: pytest.fail("dry-run must not load database credentials"),
+        )
+        result = runner.invoke(
+            cli,
+            ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir), "--dry-run"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "chronicler (schema=chronicler_mem): core, memory" in result.output
+
+    def test_prepare_refuses_a_missing_or_different_private_schema(self, runner, tmp_path):
+        butlers_dir = self._write_config(tmp_path / "butlers", memory_schema="chronicler")
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code != 0
+        assert "must explicitly be chronicler_mem" in result.output
+
+
 class TestUpCommand:
+    @pytest.mark.parametrize("service_auth", ["0", "1"])
+    def test_up_requires_service_auth_for_health_tls(
+        self, runner, tmp_path, monkeypatch, service_auth
+    ):
+        start = AsyncMock()
+        monkeypatch.setattr("butlers.cli._start_all", start)
+        monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", service_auth)
+        result = runner.invoke(
+            cli,
+            [
+                "up",
+                "--only",
+                "health",
+                "--health-tls-dir",
+                str(tmp_path),
+                "--health-tls-bind",
+                "192.0.2.80",
+            ],
+        )
+        if service_auth == "1":
+            assert result.exit_code == 0, result.exception
+            start.assert_awaited_once_with(
+                {"health": Path("roster/health")}, health_tls=(tmp_path, "192.0.2.80")
+            )
+        else:
+            assert result.exit_code != 0
+            assert "requires BUTLERS_SERVICE_PLANE_AUTH=1" in result.output
+            start.assert_not_awaited()
+
     def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
         """up fails with no configs and with nonexistent --only target."""
         empty = tmp_path / "empty"
@@ -326,3 +468,24 @@ class TestListCommandStatus:
         assert result3.exit_code == 0
         assert "running" in result3.output.lower()
         assert "stopped" in result3.output.lower()
+
+
+def test_public_mcp_reconcile_is_explicit(runner, monkeypatch):
+    """Help is connection-free; explicit reconcile calls only the primary entrypoint."""
+    from butlers.migrations import public_mcp as projection
+
+    calls = []
+
+    def params():
+        calls.append("params")
+        return dict(host="localhost", port=5432, user="migration", password="synthetic")
+
+    monkeypatch.setattr("butlers.db.db_params_from_env", params)
+    monkeypatch.setattr(projection, "reconcile", lambda url: calls.append(url) or True)
+    result = runner.invoke(cli, ["public-mcp", "--help"])
+    assert result.exit_code == 0
+    assert "reconcile" in result.output
+    assert calls == []
+    result = runner.invoke(cli, ["public-mcp", "reconcile", "--database", "primary_test"])
+    assert result.exit_code == 0 and "reconciled" in result.output
+    assert calls == ["params", "postgresql://migration:synthetic@localhost:5432/primary_test"]

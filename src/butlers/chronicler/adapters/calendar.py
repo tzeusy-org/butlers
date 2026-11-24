@@ -80,6 +80,7 @@ Multi-entity participant resolution (bu-3zve1):
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -91,6 +92,7 @@ from prometheus_client import Counter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
+from butlers.core.temporal.invitation_quarantine import QUARANTINED_INVITATION_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -449,13 +451,16 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                i.metadata, i.updated_at,
                                e.title AS event_title,
                                e.description AS event_description,
-                               e.location AS event_location
+                               e.location AS event_location,
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
                         WHERE i.ends_at <= $1
                           AND i.status != 'cancelled'
                           AND cs.lane != 'butler'
+                          AND NOT {QUARANTINED_INVITATION_SQL}
                         ORDER BY i.ends_at ASC
                         LIMIT $2
                         """,
@@ -470,7 +475,9 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                i.metadata, i.updated_at,
                                e.title AS event_title,
                                e.description AS event_description,
-                               e.location AS event_location
+                               e.location AS event_location,
+                               e.metadata AS event_metadata,
+                               cs.metadata ->> 'account_email' AS account_email
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -478,6 +485,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                           AND i.ends_at > $2
                           AND i.status != 'cancelled'
                           AND cs.lane != 'butler'
+                          AND NOT {QUARANTINED_INVITATION_SQL}
                         ORDER BY i.ends_at ASC
                         LIMIT $3
                         """,
@@ -576,6 +584,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         event_title = self._maybe(row, "event_title")
         event_description = self._maybe(row, "event_description")
         event_location = self._maybe(row, "event_location")
+        event_metadata = self._maybe(row, "event_metadata")
 
         payload = {
             "schema": schema,
@@ -588,6 +597,10 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             "title": event_title,
             "description": event_description,
             "location": event_location,
+            # Producer provenance (bu-2tsgqb.7): the calendar module's own
+            # butler-written marker, so reconciliation can tell a butler's plan
+            # from the owner's schedule (travel_location.plan_producer).
+            **self._butler_provenance(event_metadata),
         }
 
         resolved_title = (
@@ -597,6 +610,16 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             or self._truncate(self._clean_text(event_description), 80)
             or f"{schema}: calendar block"
         )
+        # Location and description are the inviter's free text, so the public projection withholds
+        # a title built from them (chronicler_031). A summary is published only for an event the
+        # owner organised or was invited to (owner decision 2026-11-08, bu-y66o00.20); one seen on
+        # someone else's shared calendar stays private.
+        if not (title or self._clean_text(event_title)):
+            payload["title_source"] = "fallback"
+        elif self._owner_attends(event_metadata, self._maybe(row, "account_email")):
+            payload["title_source"] = "summary"
+        else:
+            payload["title_source"] = "unattended"
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
@@ -627,6 +650,56 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 participant_ids=participant_ids or [],
             )
         return episode
+
+    @staticmethod
+    def _butler_provenance(event_metadata: Any) -> dict[str, Any]:
+        """``butler_generated``/``butler_name`` from ``calendar_events.metadata``."""
+        if isinstance(event_metadata, str):
+            try:
+                event_metadata = json.loads(event_metadata)
+            except ValueError:
+                return {"butler_generated": False}
+        if (
+            not isinstance(event_metadata, dict)
+            or event_metadata.get("butler_generated") is not True
+        ):
+            return {"butler_generated": False}
+        provenance: dict[str, Any] = {"butler_generated": True}
+        if isinstance(event_metadata.get("butler_name"), str):
+            provenance["butler_name"] = event_metadata["butler_name"]
+        return provenance
+
+    @staticmethod
+    def _owner_attends(event_metadata: Any, account_email: Any) -> bool:
+        """Whether the owner organised or was invited to the event (any response).
+
+        The owner is the synced Google account (``calendar_sources.metadata.account_email``), not
+        the calendar the event appears on: a subscribed colleague's calendar is synced too, and
+        Google's attendee ``self`` flag marks that calendar's entry. An event a butler wrote for
+        the owner counts as the owner's. Anything unreadable counts as not attended.
+        """
+        if isinstance(event_metadata, str):
+            try:
+                event_metadata = json.loads(event_metadata)
+            except ValueError:
+                return False
+        if not isinstance(event_metadata, dict):
+            return False
+        if event_metadata.get("butler_generated") is True:
+            return True
+        if not isinstance(account_email, str) or not account_email.strip():
+            return False
+        owner = account_email.strip().casefold()
+
+        def is_owner(email: Any) -> bool:
+            return isinstance(email, str) and email.strip().casefold() == owner
+
+        if is_owner(event_metadata.get("organizer")):
+            return True
+        attendees = event_metadata.get("attendees")
+        return isinstance(attendees, list) and any(
+            isinstance(a, dict) and is_owner(a.get("email")) for a in attendees
+        )
 
     @staticmethod
     def _maybe(row: asyncpg.Record, key: str) -> Any:

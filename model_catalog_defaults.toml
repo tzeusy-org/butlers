@@ -83,9 +83,9 @@ priority = 0
 enabled = true
 
 # ---------------------------------------------------------------------------
-# Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.1 Sol low for
-# sub-medium work (workhorse), and GPT-6.1 Sol high for medium/high work
-# (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.1
+# Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.2 Sol low for
+# sub-medium work (workhorse), and GPT-6.2 Sol high for medium/high work
+# (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.2
 # Sol supersedes GPT-6 Sol and accepts low/medium/high/xhigh/max effort; routing
 # stays at high by policy, not because a higher effort is unavailable.
 # Luna max and the specialty row rank below the direct-API rows so
@@ -102,32 +102,37 @@ priority = 26
 enabled = true
 
 [[models]]
-alias = "gpt-6.1-sol-low"
+alias = "gpt-6.2-sol-low"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"low\""]
 complexity_tier = "workhorse"
 priority = 31
 enabled = true
 
 [[models]]
-alias = "gpt-6.1-sol-high"
+alias = "gpt-6.2-sol-high"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "reasoning"
 priority = 30
 enabled = true
 
 [[models]]
-alias = "healing-gpt-6.1-sol"
+alias = "healing-gpt-6.2-sol"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "specialty"
 priority = 5
 enabled = true
 
+# Gemini: each model_id must be probed against the pinned gemini-cli before its
+# entry is enabled (tests/fixtures/gemini_stream_json/model_resolution.json).
+# gemini-cli 0.66.0 serves gemini-3.8-flash and gemini-4-argon as requested
+# (0.46.0 sent gemini-3.8-flash as gemini-3.5-flash; 0.66.0 sends
+# gemini-3.5-flash as gemini-3.8-flash).
 [[models]]
 alias = "gemini-3.8-flash"
 runtime_type = "gemini"
@@ -135,7 +140,7 @@ model_id = "gemini-3.8-flash"
 extra_args = []
 complexity_tier = "cheap"
 priority = 10
-enabled = false
+enabled = true
 
 [[models]]
 alias = "gemini-4-argon"

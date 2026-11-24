@@ -29,7 +29,13 @@ import { useTickingNow } from "@/hooks/use-ticking-now";
 import { DAY_MS, buildTimeSeries } from "@/lib/time-series";
 import { chartColor } from "@/lib/chart-colors";
 import { HomeAtmosphereLocationPanel } from "@/components/home/HomeAtmosphereLocationPanel";
+import { HomePlacesPanel } from "@/components/home/HomePlacesPanel";
+import { PresenceTimeline } from "@/components/home/PresenceTimeline.tsx";
+import { HomePresenceOwnerPanel } from "@/components/home/HomePresenceOwnerPanel";
 import { HomeSafetyWatchPanel } from "@/components/home/HomeSafetyWatchPanel";
+import { HomeAwaySafetyPanel } from "@/components/home/HomeAwaySafetyPanel";
+import { HomeCriticalEntitiesPanel } from "@/components/home/HomeCriticalEntitiesPanel";
+import { HomeDepartureFixesPanel } from "@/components/home/HomeDepartureFixesPanel";
 import { HomePersonMappingPanel } from "@/components/home/HomePersonMappingPanel";
 import {
   useHomeSnapshotStatus,
@@ -623,6 +629,18 @@ export default function ButlerHomeDevicesTab() {
       <HomeAtmosphereLocationPanel />
 
       <HomeSafetyWatchPanel />
+
+      <HomeDepartureFixesPanel />
+
+      <HomeCriticalEntitiesPanel />
+
+      <HomeAwaySafetyPanel />
+
+      <HomePlacesPanel />
+
+      <HomePresenceOwnerPanel />
+
+      <PresenceTimeline />
 
       <Panel title="Person mappings" span={4} testId="home-person-mapping-card">
         <HomePersonMappingPanel />

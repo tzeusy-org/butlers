@@ -101,6 +101,7 @@ export function setWorkspaceState(state?: Partial<UseWorkspaceResult>) {
             staleness_ms: 500,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: true,
           },
         ],
         lanes: [],
@@ -150,6 +151,7 @@ export function setWorkspaceMetaState(
             staleness_ms: 1000,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: true,
           },
           {
             source_id: "source-2",
@@ -172,6 +174,7 @@ export function setWorkspaceMetaState(
             staleness_ms: 1000,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: true,
           },
         ],
         writable_calendars: [

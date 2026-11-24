@@ -371,7 +371,7 @@ class TestComputeCatchupDeliverAt:
 
 
 @pytest.mark.parametrize("failed_read", ["policy", "context"])
-async def test_unavailable_cycle_only_selects_existing_urgent_work(monkeypatch, failed_read):
+async def test_unavailable_cycle_never_promotes_model_ranked_work(monkeypatch, failed_read):
     """REQ-context-bus-016: no caller priority promotion or routine destructive transition."""
     from unittest.mock import MagicMock
 
@@ -406,8 +406,7 @@ async def test_unavailable_cycle_only_selects_existing_urgent_work(monkeypatch, 
     assert result["reason"] == "attention_store_unavailable"
     assert result["skipped"] is True
     assert result["delivered"] == []
-    revalidate.assert_awaited_once_with(pool, now=_NOW, urgent_only=True)
-    query, threshold = pool.fetch.await_args.args
-    assert "priority >= $1" in query and threshold == broker.URGENT_PRIORITY_THRESHOLD
+    revalidate.assert_not_awaited()
+    pool.fetch.assert_not_awaited()
     pool.execute.assert_not_awaited()
     notify.assert_not_awaited()

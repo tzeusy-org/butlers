@@ -19,11 +19,14 @@
 //   Defaults to "bg-foreground/60" when omitted.
 //
 // Aria: role="img" with aria-label describing total and max.
+//
+// A null day (bu-s11n0s.5.1) is unreported: a dashed outline, left out of the
+// total and the peak, never drawn as a measured zero.
 // ---------------------------------------------------------------------------
 
 interface DayBarsProps {
-  /** Daily session / spend counts, one per day, oldest first. Any length. */
-  data: number[]
+  /** Daily session / spend counts, one per day, oldest first; null = unreported. Any length. */
+  data: (number | null)[]
   /** Container height in pixels. Defaults to 32. */
   height?: number
   /**
@@ -52,10 +55,16 @@ export function DayBars({ data, height = 32, color = "bg-foreground/60", classNa
     return null
   }
 
-  const max = data.reduce((a, b) => Math.max(a, b), 0)
-  const total = data.reduce((s, n) => s + n, 0)
+  const reported = data.filter((count): count is number => count !== null)
+  const unreported = data.length - reported.length
+  const max = reported.reduce((a, b) => Math.max(a, b), 0)
+  const total = reported.reduce((s, n) => s + n, 0)
 
-  const ariaLabel = `${data.length}-day activity, total ${total}, peak ${max}`
+  const unreportedSuffix =
+    unreported > 0 ? `, ${unreported} day${unreported === 1 ? "" : "s"} not reported` : ""
+  const ariaLabel = reported.length === 0
+    ? `${data.length}-day activity not reported`
+    : `${data.length}-day activity, total ${total}, peak ${max}${unreportedSuffix}`
 
   return (
     <div
@@ -66,6 +75,15 @@ export function DayBars({ data, height = 32, color = "bg-foreground/60", classNa
       className={["flex items-end gap-px w-full", className].filter(Boolean).join(" ")}
     >
       {data.map((count, i) => {
+        if (count === null) {
+          return (
+            <div
+              key={i}
+              data-slot="unreported"
+              className="flex-1 self-stretch rounded-[1px] border border-dashed border-border"
+            />
+          )
+        }
         if (max === 0) {
           // All-zero: render a minimal visible bar so the row has presence.
           return (

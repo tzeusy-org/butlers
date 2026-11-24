@@ -21,6 +21,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.core.audit import write_audit_entry
+from butlers.core.custody_egress import email_targets, require_custody_clear
 from butlers.core.permissions import EMAIL_SEND_PERMISSION, require_permission
 from butlers.modules.base import Module, ToolMeta
 
@@ -310,6 +311,17 @@ class EmailModule(Module):
             )
         return address, password
 
+    def _sending_account(self) -> str | None:
+        """The cached SMTP account address ``_smtp_send`` logs in as, or ``None`` if absent.
+
+        Read from the bot-scope startup cache, never inferred from the recipient or any
+        receiving mailbox. Only the address is returned; the password never leaves the cache.
+        """
+        if not self._config.bot.enabled:
+            return None
+        address = self._resolved_credentials.get(self._config.bot.address_env)
+        return address if isinstance(address, str) and address.strip() else None
+
     def _smtp_send(self, to: str, subject: str, body: str) -> dict:
         """Blocking SMTP send — intended to be run via ``asyncio.to_thread``."""
         address, password = self._get_credentials()
@@ -433,9 +445,13 @@ class EmailModule(Module):
         (which calls ``module._send_email`` directly).
         """
         _perm_pool = self._pool or self._audit_pool
-        await require_permission(
-            _perm_pool, self._butler_name, EMAIL_SEND_PERMISSION, fail_closed=True
-        )
+        await require_permission(_perm_pool, self._butler_name, EMAIL_SEND_PERMISSION)
+        # Endpoint custody (REQ-endpoint-custody-holds-007): refuse before SMTP when the
+        # recipient or the cached sending account is held, or custody cannot be read. Without
+        # cached credentials no SMTP session can start, so only the recipient is checked.
+        sender = self._sending_account()
+        targets = email_targets([to] if sender is None else [to, sender])
+        await require_custody_clear(_perm_pool, targets)
         if render_links_inert:
             from butlers.core.delivery_rendering import defang_delivery_text
 

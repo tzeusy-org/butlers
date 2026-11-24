@@ -599,11 +599,13 @@ async def record_transaction(
     external_id: str | None = None,
     *,
     _expected_signal_source: FinanceSignalSource | None = None,
+    _include_insert_status: bool = False,
 ) -> dict[str, Any]:
     """Record a transaction through the public Finance tool surface.
 
     Provenance remains an internal concern so existing MCP callers retain the
-    established signature and manual-source behavior.
+    established signature and manual-source behavior. ``_include_insert_status``
+    is internal: bulk import uses it to tell fresh rows from dedup replays.
     """
     return await _record_transaction(
         pool,
@@ -622,6 +624,7 @@ async def record_transaction(
         metadata,
         external_id,
         source="manual",
+        include_insert_status=_include_insert_status,
         expected_signal_source=_expected_signal_source,
     )
 
@@ -2110,9 +2113,12 @@ async def bulk_record_transactions(
 
     Returns:
         {total, imported, skipped, errors, error_details, large_transaction_alerts}
+        imported counts fresh inserts only; dedup replays count as skipped.
         error_details items have: {index, reason}
         reason is "duplicate" for dedup skips, "invalid_date" for
-        unparseable dates, "invalid_amount" for non-numeric amounts.
+        unparseable dates, "invalid_amount" for non-numeric amounts,
+        "invalid_row: ..." for per-row ValueErrors (unresolvable account,
+        bad direction).
         large_transaction_alerts lists rows whose amount exceeded the configured
         `large_transaction` alert threshold, each as
         {index, threshold, amount, merchant, exceeds_by}.
@@ -2203,7 +2209,14 @@ async def bulk_record_transactions(
                 external_id=external_id,
                 metadata=extra_metadata if extra_metadata else None,
                 _expected_signal_source=_expected_signal_source,
+                _include_insert_status=True,
             )
+            # record_transaction swallows dedup hits and returns the existing row,
+            # flagged ``_inserted=False``; only fresh inserts count as imported.
+            if _recorded.get("_inserted") is False:
+                skipped += 1
+                error_details.append({"index": idx, "reason": "duplicate"})
+                continue
             imported += 1
             _lta = _recorded.get("large_transaction_alert")
             if _lta is not None:
@@ -2215,6 +2228,11 @@ async def bulk_record_transactions(
             logger.warning("bulk_record_transactions: row %d failed: %s", idx, exc)
             errors += 1
             error_details.append({"index": idx, "reason": f"db_error: {exc}"})
+        except ValueError as exc:
+            # Unresolvable account label or invalid direction: fail this row only,
+            # earlier rows are already committed.
+            errors += 1
+            error_details.append({"index": idx, "reason": f"invalid_row: {exc}"})
 
     return {
         "total": len(transactions),

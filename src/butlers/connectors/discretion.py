@@ -324,7 +324,7 @@ class ContactWeightResolver:
 class DiscretionLLMCaller(Protocol):
     """Protocol for dispatching a single-turn discretion LLM call.
 
-    Implementations include :class:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher`
+    Implementations include :class:`~butlers.core.discretion_dispatcher.DiscretionDispatcher`
     for production use and lightweight mock objects for testing.
     """
 
@@ -334,7 +334,7 @@ class DiscretionLLMCaller(Protocol):
         """Invoke the LLM with *prompt* and return the raw response text.
 
         ``identity`` is an optional per-connector spend-attribution label
-        (see :meth:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher.call`);
+        (see :meth:`~butlers.core.discretion_dispatcher.DiscretionDispatcher.call`);
         implementations that don't care about spend attribution may ignore it.
         """
         ...
@@ -371,7 +371,7 @@ def _classify_default_error(exc: Exception) -> str:
     auth token with zero discrimination from any other error):
 
     - ``"failover_exhausted"``: every same-tier model candidate failed (the
-      ``RuntimeError`` :class:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher`
+      ``RuntimeError`` :class:`~butlers.core.discretion_dispatcher.DiscretionDispatcher`
       raises when its own same-tier failover loop is exhausted).
     - ``"auth_failure"``: a genuine provider/auth-classified failure (e.g. a
       missing or revoked CLI auth token). Reuses

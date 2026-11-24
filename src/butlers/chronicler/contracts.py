@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+from datetime import date
 
 import asyncpg
 
@@ -117,12 +118,24 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         optional_schema=True,
     ),
     SourceAdapterState(
+        source_name="steam.status_history",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.steam_status_history",
+        boundary_semantics=(
+            "play_session evidence from in-game changes; minute precision; "
+            "open sessions provisional, capped at 12 hours, refreshed every run"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
         source_name="owntracks.points",
         chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.owntracks_points",
         boundary_semantics=(
-            "one location point event per GPS fix; "
-            "contiguous fixes within 30 min → movement_episode rollup"
+            "one location point event per GPS fix (impossible jumps kept but "
+            "flagged trail_outlier); contiguous accepted fixes within 30 min → "
+            "movement_episode rollup of at least two fixes, never overlapping "
+            "another for the same endpoint"
         ),
         optional_schema=True,
     ),
@@ -136,8 +149,12 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         read_surface="connectors.owntracks_points",
         boundary_semantics=(
             "contiguous stationary point runs (radius+dwell clustering) → "
-            "place_episode; (start_at, end_at) span the dwell; labeled "
-            "against owner-declared reference points or 'place_unknown'"
+            "evidence-layer place_episode; (start_at, end_at) span the dwell, "
+            "bridging silent reporting gaps up to 16 h at the same place and "
+            "ending a bridged stay at the departure fix; labeled "
+            "against owner-declared reference points, then owner OwnTracks "
+            "regions, else 'place_unknown'; fixes beyond 50 km of the owner's "
+            "home reference → evidence-layer away_episode"
         ),
         optional_schema=True,
     ),
@@ -173,6 +190,10 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "eaten_at only (no end_at) — point events, not episodes"
         ),
         optional_schema=True,
+        # The meals table was dropped (d9c4e3abf); last projection 2026-08-13 per the
+        # bu-uhbhzq.2 baseline. A retired source is never a feeder outage from this date.
+        retired_at=date(2026, 8, 13),
+        retired_reason="evidence surface dropped (d9c4e3abf)",
     ),
     # Inferred chronicler-derived sources (bu-i29ix). Both read from
     # chronicler's own episodes table to derive higher-level shapes
@@ -248,6 +269,20 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # Plan changes from the calendar revision journal (bu-uhbhzq.1 slice 3): intent evidence,
+    # times and status only, never attendance and never counted as activity.
+    SourceAdapterState(
+        source_name="calendar.revisions",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.calendar_event_revisions",
+        boundary_semantics=(
+            "one plan_changed intent point event per change/resync revision of an instance "
+            "starting on or before the local day it was observed (prior and new start, end, "
+            "status; prior_known=false without an earlier version); baseline rows and "
+            "no-op revisions emit nothing; never attendance, never counted as activity"
+        ),
+        optional_schema=True,
+    ),
     # Owner-outbound-message point events (bu-whhll.8, epic bu-whhll Tier 1).
     # Metadata-only "phone in hand" signal: timestamp + channel, never
     # content, never counterpart identity (see the adapter module docstring
@@ -280,6 +315,39 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "(window_start_local, window_end_local) in its own timezone; "
             "requires >=1 weak corroborator and no contradictor; "
             "layer=activity, confidence=low, precision=hour"
+        ),
+        optional_schema=False,
+    ),
+    # Situational blocks (bu-r3fmja, REQ-butler-chronicler-016): where the
+    # owner was, laned by anchor place, minus higher-precedence activity.
+    SourceAdapterState(
+        source_name="chronicler.situation_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface=(
+            "chronicler.episodes + chronicler.point_events (own-schema); anchors from "
+            "public.owner_places, relationship.entity_facts + address_geocodes"
+        ),
+        boundary_semantics=(
+            "one block per place stay (or provisional hold at the last fix) per "
+            "owner-local day, minus every higher-ranked lane's activity "
+            "(sleep > exercise > travel > work > play > eat > social > rest) and "
+            "owner answers; work anchor → work_presence_block, airport → "
+            "airport_block, home → home_block, elsewhere within 50 km of home → "
+            "outing_block; pieces under 15 min dropped; layer=activity, "
+            "precision=minute; re-derived per day, stale blocks tombstoned"
+        ),
+        optional_schema=False,
+    ),
+    # Owner gap-interview answers (bu-r3fmja, REQ-butler-chronicler-017).
+    # Written by the gap-interview resolver, not by a scheduled projection.
+    SourceAdapterState(
+        source_name="chronicler.owner_answer",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="gap-interview answers (chronicler KV state)",
+        boundary_semantics=(
+            "one owner_<lane>_block over the interviewed block when the owner "
+            "answers with a lane; layer=activity, confidence=high, "
+            "precision=minute; dismiss records nothing"
         ),
         optional_schema=False,
     ),

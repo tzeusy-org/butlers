@@ -2,9 +2,9 @@
 
 Unified investigation lifecycle management for all QA-originated issues
 regardless of discovery source.  Creates worktrees, spawns LLM agents,
-monitors timeouts, creates anonymized PRs, and records outcomes.
+monitors timeouts, and records outcomes.
 
-The dispatcher applies the same 10-gate sequence as the self-healing dispatcher
+The dispatcher applies the central investigation 10-gate sequence
 but with QA-specific wiring:
  - Gate 0: QA self-recursion barrier (suppress findings from QA self-healing/investigation sessions)
  - Gate 1: No-recursion guard (trigger_source == "healing" → skip)
@@ -39,7 +39,10 @@ proceeding to Gate 6.
 
 Investigation agents run in sandboxed worktree environments with only PATH and
 build-tool variables; they never receive a GitHub credential.  Automated
-publication (push / PR create) is unavailable until the isolated publisher lands.
+publication goes only through an injected trusted publisher
+(``QaDispatchConfig.publisher``, sealed export over a closed transport); with
+none configured, which is the production default until isolation is proven
+(bu-mc01y5.7), nothing is pushed and the attempt fails ``publication_unavailable``.
 
 Spec reference
 --------------
@@ -56,16 +59,19 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
+from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_git_env
-from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
-from butlers.core.healing.dispatch import (
+from butlers.core.healing.anonymizer import anonymize, validate_anonymized
+from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
+    QA_BREAKER_WHERE_SQL,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
@@ -74,6 +80,8 @@ from butlers.core.healing.tracking import (
     create_dispatch_event,
     create_or_join_attempt,
     delete_orphaned_attempt,
+    get_paused_proposal,
+    get_publication_hold,
     get_recent_attempt,
     record_phase_session,
     update_attempt_status,
@@ -81,17 +89,27 @@ from butlers.core.healing.tracking import (
 )
 from butlers.core.healing.worktree import (
     WorktreeCreationError,
+    _branch_name,
     create_healing_worktree,
     remove_healing_worktree,
 )
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
+    hold_findings_for_retry,
     update_finding_attempt,
     update_finding_dedup_reason,
-    update_finding_dispatch_queued,
+)
+from butlers.core.qa.job_isolation import (
+    LIVE_ATTEMPTS,
+    JobIsolation,
+    active_job_count,
+    cleanup_attempt,
+    import_artifacts,
+    prepare_attempt_clone,
 )
 from butlers.core.qa.journal import (
     record_escalated_event,
@@ -100,10 +118,35 @@ from butlers.core.qa.journal import (
     record_pr_merged_event,
     record_wait_event_once,
 )
+from butlers.core.qa.known_issue_links import sync_qa_pr_link
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
-from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
+from butlers.core.qa.publication.diff_snapshot import (
+    derive_diff_snapshot,
+    record_snapshot_failure,
+)
+from butlers.core.qa.publication.export import (
+    ExportRefused,
+    GitIdentity,
+    SealedExport,
+    build_sealed_export,
+)
+from butlers.core.qa.publication.proposal import (
+    _NOTES_FILE as _PR_NOTES_FILE,
+)
+from butlers.core.qa.publication.proposal import (
+    publish_investigation,
+    resolve_branch_head,
+    retain_unpublished_proposal,
+)
+from butlers.core.qa.publication.publisher import (
+    PublicationResult,
+    PublicationStatus,
+    QaPublisher,
+)
+from butlers.core.qa.publication.retention import EXPORT_RETENTION
+from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
 from butlers.core.qa.sources.infra_state import condition_source_for
@@ -168,43 +211,25 @@ def _flagged_event_detail(finding: QaFinding) -> str:
 
 
 #: PR labels applied to QA-originated investigation PRs.
-_DEFAULT_PR_LABELS = ["self-healing", "automated"]
+#: The default QA PR labels; the reconciliation script binds ``pr_labels`` holds with them.
+DEFAULT_PR_LABELS = ("self-healing", "automated")
 
-#: CredentialStore key for the GitHub token used by QA investigations.
+#: CredentialStore key of the read-only GitHub token used only for PR-status polling
+#: (fine-grained: pull requests, commit statuses and metadata read).
+QA_GH_READ_TOKEN_KEY = "BUTLERS_QA_GH_READ_TOKEN"
+#: Legacy WRITE-scoped token key.  Investigators run as root in the daemon's pod, so a
+#: write credential is reachable by construction; the daemon never resolves this key
+#: (bu-ejow5p.1).  It is referenced only to detect and refuse a leftover secret.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
 QA_GIT_AUTHOR_NAME_KEY = "BUTLERS_QA_GIT_AUTHOR_NAME"
 QA_GIT_AUTHOR_EMAIL_KEY = "BUTLERS_QA_GIT_AUTHOR_EMAIL"
 
-#: Temporary environment variable consumed by the git askpass helper.
-_GIT_AUTH_TOKEN_ENV_VAR = "BUTLERS_QA_GIT_TOKEN"
-
 #: Sentinel file placed by investigation agent to signal unfixable error.
 _UNFIXABLE_FILE = UNFIXABLE_SENTINEL_FILENAME
-
-#: Filename written by the investigation agent (in its CWD, which is
-#: ``{worktree}/.tmp/qa-agent``) to populate the PR body's Root Cause / Fix
-#: Summary / Test Coverage sections.  The agent is instructed to write here
-#: by ``build_investigation_prompt``.  See ``_load_investigation_notes``.
-_INVESTIGATION_NOTES_FILE = "INVESTIGATION_NOTES.md"
 
 #: Structured investigation notes artifact written at worktree root by the QA
 #: investigation agent. Persisted before terminal worktree teardown.
 _INVESTIGATION_NOTES_JSON = Path(".qa") / "investigation_notes.json"
-
-#: Mapping from H2 header text (lowercased, no leading "## ") to the section
-#: key returned by ``_load_investigation_notes``.
-_NOTES_HEADER_TO_KEY: dict[str, str] = {
-    "root cause": "root_cause",
-    "fix summary": "fix_summary",
-    "test coverage": "test_coverage",
-}
-
-#: Markers that indicate raw evidence-collection structures, not harmless
-#: prose that merely names an implementation detail.
-_FORBIDDEN_QA_PR_BODY_MARKERS = ("\n### Evidence\n", "\n## Evidence\n", "evidence_lines:")
-
-#: Substituted into the PR body for any section the agent did not provide.
-_NOTES_PLACEHOLDER = "*(The investigation agent did not provide this section.)*"
 
 
 def _get_qa_investigation_notes_parse_total():
@@ -226,26 +251,7 @@ def _get_qa_investigation_notes_parse_total():
         return None
 
 
-def _get_qa_anonymization_failed_total():
-    """Return the qa_anonymization_failed_total Prometheus Counter."""
-    try:
-        from prometheus_client import Counter
-
-        return Counter(
-            "qa_anonymization_failed_total",
-            "Total QA PR payloads rejected by anonymization validation",
-        )
-    except (ImportError, ValueError):
-        logger.debug(
-            "Failed to initialize Prometheus counter "
-            "'qa_anonymization_failed_total'; metric will not be exported",
-            exc_info=True,
-        )
-        return None
-
-
 _qa_investigation_notes_parse_total = _get_qa_investigation_notes_parse_total()
-_qa_anonymization_failed_total = _get_qa_anonymization_failed_total()
 
 
 def _set_investigation_notes_span_attributes(
@@ -277,64 +283,6 @@ def _record_investigation_notes_parse(status: ParseStatus) -> None:
             "Failed to record qa_investigation_notes_parse_total metric",
             exc_info=True,
         )
-
-
-def _record_qa_anonymization_failed() -> None:
-    if _qa_anonymization_failed_total is None:
-        return
-    try:
-        _qa_anonymization_failed_total.inc()
-    except Exception:  # noqa: BLE001
-        logger.debug(
-            "Failed to record qa_anonymization_failed_total metric",
-            exc_info=True,
-        )
-
-
-_ANONYMIZATION_FAILED_ERROR = "anonymization_failed"
-_ANONYMIZATION_FAILURE_EVENT_TEXT = "anonymization validator rejected PR payload"
-
-
-def _is_anonymization_failure_error(error: str | None) -> bool:
-    return error == _ANONYMIZATION_FAILED_ERROR or bool(
-        error and error.startswith(f"{_ANONYMIZATION_FAILED_ERROR}:")
-    )
-
-
-def _clean_validator_reason(reason: str) -> str:
-    """Keep validator reason metadata while dropping raw surrounding context."""
-    one_line = " ".join(reason.split())
-    return one_line.split("; context:", 1)[0].strip()
-
-
-def _format_anonymization_validator_detail(violations: list[str]) -> str:
-    if not violations:
-        return "validator reported residual sensitive content"
-
-    cleaned = [
-        detail for violation in violations[:3] if (detail := _clean_validator_reason(violation))
-    ]
-    if not cleaned:
-        return "validator reported residual sensitive content"
-
-    if len(violations) > len(cleaned):
-        cleaned.append(f"{len(violations) - len(cleaned)} additional validator reason(s)")
-
-    return "; ".join(cleaned)
-
-
-def _anonymization_failure_error(detail: str | None = None) -> str:
-    if not detail:
-        return _ANONYMIZATION_FAILED_ERROR
-    return f"{_ANONYMIZATION_FAILED_ERROR}: {detail}"
-
-
-def _anonymization_failure_detail(error: str | None) -> str:
-    if error and error.startswith(f"{_ANONYMIZATION_FAILED_ERROR}:"):
-        return _clean_validator_reason(
-            error.removeprefix(f"{_ANONYMIZATION_FAILED_ERROR}:").strip()
-        )
-    return "validator reported residual sensitive content"
 
 
 #: Environment variables that must never leak into investigation agent sandboxes.
@@ -376,6 +324,10 @@ _ALLOWED_ENV_VARS = frozenset(
     }
 )
 
+#: Default rung for an engineering executor (owner decision, bu-ejow5p.5): ``workhorse``, resolved
+#: exactly (no fallthrough). One reasoning escalation per incident generation is move C's budget.
+EXECUTOR_COMPLEXITY: Final = Complexity.WORKHORSE
+
 _QA_AGENT_SUBDIR = Path(".tmp/qa-agent")
 _QA_AGENT_OVERRIDE = """# QA Agent Override
 
@@ -390,6 +342,12 @@ Rules specific to this workspace:
 - Do not push branches or open PRs yourself.
 - Stay within the scope of the current QA investigation or PR-review follow-up.
 """
+
+
+def _launch_identity(spawner: Any, fallback: str) -> str:
+    """Butler identity the launching spawner resolves models under (else the finding's butler)."""
+    name = getattr(getattr(spawner, "_config", None), "name", None)
+    return name if isinstance(name, str) and name else fallback
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +377,8 @@ class QaDispatchConfig:
         Maximum wall-clock minutes for an investigation agent session.
         Default 30.
     pr_labels:
-        Labels to apply to QA investigation PRs.
+        Fixed labels for QA investigation PRs; the publisher sanitizes them and
+        the transport applies exactly these.
     dashboard_base_url:
         Optional dashboard URL for inclusion in investigation prompts and PRs.
         When ``None``, links are omitted (dashboard may be on private tailnet).
@@ -428,17 +387,21 @@ class QaDispatchConfig:
     severity_threshold: int = 2
     cooldown_minutes: int = 60
     max_concurrent: int = 2
-    circuit_breaker_threshold: int = 5
+    circuit_breaker_threshold: int = QA_BREAKER_THRESHOLD
     timeout_minutes: int = 30
-    pr_labels: list[str] = field(default_factory=lambda: list(_DEFAULT_PR_LABELS))
+    pr_labels: list[str] = field(default_factory=lambda: list(DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None
     repo_whitelist: RepoWhitelist | None = None
-    """Repository whitelist instance for PR creation enforcement.
-
-    When ``None``, a new ``RepoWhitelist(db_pool=None)`` is used, which
-    blocks all PR creation (fail-closed with no DB pool).  Callers should
-    supply a pre-loaded ``RepoWhitelist`` backed by the DB pool.
-    """
+    """Repository whitelist the publisher enforces; ``None`` refuses publication."""
+    publication_hold_days: int = 7
+    """Days a retained unpublished proposal holds its fingerprint while no publisher exists;
+    capped at the 30-day export retention."""
+    job_isolation: JobIsolation | None = None
+    """Run each attempt in a per-attempt credential-free Job (bu-ejow5p.11). ``None`` (the
+    default) keeps the in-daemon worktree path; the isolated path ships dark."""
+    publisher: QaPublisher | None = None
+    """Trusted deterministic publisher.  ``None`` (the production default) disables
+    publication: a committed investigation fails ``publication_unavailable``."""
 
 
 # ---------------------------------------------------------------------------
@@ -461,12 +424,16 @@ class QaDispatchResult:
         Short machine-readable reason code (``"dispatched"`` on success).
     attempt_id:
         UUID of the created ``healing_attempts`` row, or ``None``.
+    gate:
+        The halting gate that stopped this finding when ``reason`` is ``"hold_failed"`` (the
+        write that queues it failed), so the patrol still records why remediation stopped.
     """
 
     accepted: bool
     fingerprint: str | None
     reason: str
     attempt_id: uuid.UUID | None = None
+    gate: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +510,7 @@ def build_agent_env(
 
     Agents run in an agent-controlled worktree, so they get the sandbox allowlist
     without ``GH_TOKEN`` or any git credential helper variable.  Only the trusted
-    dispatcher (:func:`build_git_auth_env`, PR-status polling) holds the token.
+    dispatcher (PR-status polling) holds the token.
     """
     return build_sandbox_env(
         None, git_author_name=git_author_name, git_author_email=git_author_email
@@ -565,80 +532,23 @@ def _prepare_agent_workspace(worktree_path: Path) -> Path:
     return agent_dir
 
 
-@lru_cache(maxsize=1)
-def _git_askpass_script() -> Path:
-    """Create and cache a minimal askpass helper for git HTTPS auth."""
-    script_dir = Path(tempfile.mkdtemp(prefix="butlers-qa-git-askpass-"))
-    script_path = script_dir / "git-askpass.sh"
-    script_path.write_text(
-        "#!/bin/sh\n"
-        'prompt="${1:-}"\n'
-        'case "$prompt" in\n'
-        "  *Username*|*username*) printf '%s\\n' \"x-access-token\" ;;\n"
-        f"  *) printf '%s\\n' \"${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}\" ;;\n"
-        "esac\n",
-        encoding="ascii",
-    )
-    script_path.chmod(0o700)
-    return script_path
-
-
-def build_git_auth_env(
-    gh_token: str | None, *, base_env: dict[str, str] | None = None
-) -> dict[str, str]:
-    """Build subprocess env for non-interactive git-over-HTTPS commands."""
-    env = dict(base_env) if base_env is not None else build_sandbox_env(gh_token)
+def _build_git_prep_env() -> dict[str, str]:
+    """Build a token-free, hardened, non-interactive env for dispatcher git commands."""
+    env = build_sandbox_env(None)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    if gh_token:
-        env["GH_TOKEN"] = gh_token
-        env[_GIT_AUTH_TOKEN_ENV_VAR] = gh_token
-        env["GIT_ASKPASS"] = str(_git_askpass_script())
-    else:
-        env.pop("GIT_ASKPASS", None)
-        env.pop(_GIT_AUTH_TOKEN_ENV_VAR, None)
     return harden_git_env(env)
 
 
-_AUTH_ERROR_MARKERS: tuple[str, ...] = (
-    "could not read username",
-    "authentication failed",
-    "repository not found",
-    "access denied",
-    "permission to ",
-    "requested url returned error: 403",
-    "http 403:",
-)
-"""Lowercase substrings that identify authentication-related git/gh errors.
-
-Shared by :func:`_classify_git_push_error` and the ``gh pr create`` error
-classifier so that both code paths remain consistent without duplication.
-"""
-
 _PUBLICATION_UNAVAILABLE = "publication_unavailable"
+_PUBLICATION_UNRETAINED = "publication_unretained"
+#: Retention-store refusals: nothing was kept and no receipt exists, so the attempt fails closed.
+_RETENTION_REFUSALS = frozenset(
+    {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
+)
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
 )
-
-_GIT_AUTH_FAILURE_DETAIL = (
-    "git_auth_failed: QA GitHub authentication or repository write authorization failed; "
-    "verify the configured token's repository scope and organization authorization"
-)
-
-
-def _content_blind_git_error(error: str) -> str:
-    """Collapse auth failures before they reach logs or durable QA state."""
-    if error.startswith("git_auth_failed:"):
-        return _GIT_AUTH_FAILURE_DETAIL
-    return error[:_MAX_FOLLOWUP_ERROR_LEN]
-
-
-def _classify_git_push_error(push_err: str) -> str:
-    """Return a stable error code prefix for git push failures."""
-    lowered = push_err.lower()
-    if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
-        return f"git_auth_failed: {push_err}"
-    return f"git push failed: {push_err}"
 
 
 def _follow_up_backoff_delay(follow_up_count: int) -> timedelta:
@@ -666,108 +576,9 @@ def _follow_up_dispatch_due(
     return (now - last_follow_up_at) >= _follow_up_backoff_delay(follow_up_count)
 
 
-async def _run_subprocess(
-    *args: str,
-    cwd: Path,
-    env: dict[str, str],
-) -> tuple[int, str, str]:
-    """Run a subprocess and return ``(returncode, stdout, stderr)``."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
-    return (
-        proc.returncode or 0,
-        stdout.decode("utf-8", errors="replace").strip(),
-        stderr.decode("utf-8", errors="replace").strip(),
-    )
-
-
-async def _push_branch_with_gh_auth(
-    repo_root: Path,
-    branch_name: str,
-    owner_repo: str,
-    env: dict[str, str],
-) -> str | None:
-    """Push a branch over HTTPS using ``gh`` as the Git credential helper."""
-    rc, _, stderr = await _run_subprocess("gh", "auth", "setup-git", cwd=repo_root, env=env)
-    if rc != 0:
-        return f"gh auth setup-git failed: {stderr}"
-
-    push_target = f"https://github.com/{owner_repo}.git"
-    rc, _, stderr = await _run_subprocess(
-        "git",
-        "push",
-        push_target,
-        branch_name,
-        cwd=repo_root,
-        env=env,
-    )
-    if rc != 0:
-        return _classify_git_push_error(stderr)
-    return None
-
-
-async def _delete_remote_branch_with_gh_auth(
-    repo_root: Path,
-    branch_name: str,
-    owner_repo: str,
-    env: dict[str, str],
-) -> str | None:
-    """Delete a remote branch over HTTPS using ``gh`` as the credential helper."""
-    rc, _, stderr = await _run_subprocess("gh", "auth", "setup-git", cwd=repo_root, env=env)
-    if rc != 0:
-        return f"gh auth setup-git failed: {stderr}"
-
-    push_target = f"https://github.com/{owner_repo}.git"
-    rc, _, stderr = await _run_subprocess(
-        "git",
-        "push",
-        push_target,
-        "--delete",
-        branch_name,
-        cwd=repo_root,
-        env=env,
-    )
-    if rc != 0:
-        return f"git push --delete failed: {stderr}"
-    return None
-
-
 # ---------------------------------------------------------------------------
-# PR creation
+# Branch inspection
 # ---------------------------------------------------------------------------
-
-
-async def _get_remote_owner_repo(repo_root: Path, env: dict[str, str]) -> str | None:
-    """Return the ``owner/repo`` string from the ``origin`` remote, or ``None``."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            "remote",
-            "get-url",
-            "origin",
-            cwd=str(repo_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode != 0:
-            return None
-        remote_url = stdout.decode("utf-8", errors="replace").strip()
-        parsed = parse_repo_url(remote_url)
-        if parsed is None:
-            return None
-        owner, repo = parsed
-        return f"{owner}/{repo}"
-    except Exception:  # noqa: BLE001
-        logger.warning("_get_remote_owner_repo: failed to get origin URL", exc_info=True)
-        return None
 
 
 async def _detect_no_op_branch(
@@ -803,6 +614,57 @@ async def _detect_no_op_branch(
     except Exception:  # noqa: BLE001
         logger.debug("_detect_no_op_branch: subprocess failed, assuming not a no-op", exc_info=True)
         return False
+
+
+async def _job_branch_is_no_op(seal_root: Path, branch_name: str, base_sha: str | None) -> bool:
+    """No-op detection for an isolated attempt, without running git in the pod-written clone.
+
+    The branch head is read straight from the ref files (no symlinks, 40-hex only); it equals the
+    trusted base commit exactly when the agent committed nothing. Anything unreadable is "not a
+    no-op", so the sealer decides (and refuses) rather than this check guessing.
+    """
+    try:
+        _objects, head = resolve_branch_head(seal_root, branch_name)
+    except ExportRefused:
+        return False
+    return base_sha is not None and head == base_sha
+
+
+async def _seal_isolated_export(
+    seal_root: Path,
+    branch_name: str,
+    base_sha: str | None,
+    identity: GitIdentity | None,
+) -> SealedExport | None:
+    """Seal an isolated attempt's branch once, for the diff snapshot and the publisher alike.
+
+    ``None`` means it could not be sealed (no bound base or identity, a refusal, or an error):
+    the diff snapshot is then empty and the publisher seals again, so it records the refusal
+    itself. Never raises, and never logs more than the refusal code or exception class.
+    """
+    if base_sha is None or identity is None:
+        return None
+    try:
+        objects_dir, head_sha = resolve_branch_head(seal_root, branch_name)
+        return await build_sealed_export(
+            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+        )
+    except Exception as exc:  # noqa: BLE001 — a hostile branch must not fail dispatch here
+        record_snapshot_failure("seal", exc)
+        return None
+
+
+async def _isolated_diff_snapshot(
+    repo_root: Path, export: SealedExport | None
+) -> list[dict[str, str]]:
+    """The dossier diff of an isolated attempt, from its sealed export, never from pod git.
+
+    Base blobs come from the dispatcher's own ``repo_root``. A snapshot is display, so no
+    export, or anything that cannot be derived, records ``[]`` and the publisher still decides.
+    """
+    if export is None:
+        return []
+    return await derive_diff_snapshot(export, repo_root / ".git" / "objects")
 
 
 async def _resolve_pr_by_head(
@@ -868,125 +730,6 @@ async def _resolve_pr_by_head(
     except Exception:  # noqa: BLE001
         logger.debug("_resolve_pr_by_head: lookup failed for branch %r", branch_name, exc_info=True)
         return None, None
-
-
-def _parse_github_datetime(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
-
-
-async def _fetch_pr_created_at(
-    repo_root: Path,
-    *,
-    pr_number: int | None,
-    pr_url: str | None,
-    env: dict[str, str],
-) -> datetime | None:
-    """Fetch GitHub's PR creation timestamp for journal backdating.
-
-    Missing metadata is non-fatal: callers should pass ``None`` through so
-    ``record_event`` retains its explicit current-time fallback.
-    """
-    import json as _json
-
-    target = str(pr_number) if pr_number is not None else pr_url
-    if not target:
-        return None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "gh",
-            "pr",
-            "view",
-            target,
-            "--json",
-            "createdAt",
-            cwd=str(repo_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode != 0:
-            return None
-        data = _json.loads(stdout.decode("utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            return None
-        return _parse_github_datetime(data.get("createdAt"))
-    except Exception:  # noqa: BLE001
-        logger.debug(
-            "_fetch_pr_created_at: lookup failed for PR %r",
-            target,
-            exc_info=True,
-        )
-        return None
-
-
-def _load_investigation_notes(worktree_path: Path | None) -> dict[str, str]:
-    """Read and parse the agent's ``INVESTIGATION_NOTES.md`` file.
-
-    The agent's CWD is ``{worktree}/.tmp/qa-agent``; the prompt instructs it
-    to write ``INVESTIGATION_NOTES.md`` there with three H2 sections:
-    "## Root Cause", "## Fix Summary", "## Test Coverage".
-
-    Returns a dict keyed by section (``root_cause``, ``fix_summary``,
-    ``test_coverage``) with the section body (whitespace-stripped) as the
-    value.  Sections the agent omitted are simply absent from the dict.
-    Returns an empty dict if ``worktree_path`` is ``None``, the file does
-    not exist, or the file is unreadable / not UTF-8.
-
-    The parser is intentionally lenient: header matching is case-insensitive,
-    extra H2 sections are ignored, and the three expected sections may appear
-    in any order.  Empty sections (header present but no body) are dropped so
-    the caller falls back to placeholder text.
-    """
-    if worktree_path is None:
-        return {}
-    notes_path = worktree_path / _QA_AGENT_SUBDIR / _INVESTIGATION_NOTES_FILE
-    try:
-        raw = notes_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
-        return {}
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.warning(
-            "_load_investigation_notes: failed to read %s (%s); falling back to placeholders",
-            notes_path,
-            exc,
-        )
-        return {}
-
-    sections: dict[str, str] = {}
-    current_key: str | None = None
-    buf: list[str] = []
-
-    def _flush() -> None:
-        if current_key is None:
-            return
-        body = "\n".join(buf).strip()
-        if body:
-            sections[current_key] = body
-
-    for line in raw.splitlines():
-        if line.startswith("## "):
-            _flush()
-            header = line[3:].strip().lower()
-            current_key = _NOTES_HEADER_TO_KEY.get(header)
-            buf = []
-            continue
-        if current_key is not None:
-            buf.append(line)
-    _flush()
-    return sections
-
-
-def _qa_pr_body_contains_raw_evidence_marker(pr_body: str) -> bool:
-    return any(marker in pr_body for marker in _FORBIDDEN_QA_PR_BODY_MARKERS)
 
 
 async def _emit_investigation_notes_journal_events(
@@ -1145,21 +888,6 @@ async def _capture_commit_diff_snapshot(worktree_path: Path) -> list[dict[str, s
     return [line.model_dump(mode="json") for line in parse_unified_diff(diff_text)]
 
 
-def _diff_snapshot_stats(diff_snapshot: list[dict[str, str]]) -> tuple[int, int, int]:
-    additions = 0
-    deletions = 0
-    file_count = 0
-    for line in diff_snapshot:
-        kind = line.get("kind")
-        if kind == "+":
-            additions += 1
-        elif kind == "-":
-            deletions += 1
-        elif kind == "meta" and line.get("text", "").startswith("diff --git "):
-            file_count += 1
-    return additions, deletions, file_count
-
-
 def _human_action_error_detail(error_detail: str | None) -> bool:
     if not error_detail:
         return False
@@ -1178,6 +906,9 @@ def _human_action_error_detail(error_detail: str | None) -> bool:
             "git_auth_failed",
             "repo_not_whitelisted",
             "gh_pr_create_failed",
+            "publication_refused",
+            "publication_failed",
+            "publication_ambiguous",
         )
     )
 
@@ -1211,14 +942,44 @@ async def _record_escalation_for_terminal(
         )
 
 
+def _get_qa_anonymization_failed_total():
+    """Return the qa_anonymization_failed_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_anonymization_failed_total",
+            "Total QA PR payloads rejected by anonymization validation",
+        )
+    except (ImportError, ValueError):
+        logger.debug("qa_anonymization_failed_total counter unavailable", exc_info=True)
+        return None
+
+
+_qa_anonymization_failed_total = _get_qa_anonymization_failed_total()
+
+_ANONYMIZATION_FAILURE_EVENT_TEXT = "anonymization validator rejected PR payload"
+
+
+def _record_qa_anonymization_failed() -> None:
+    if _qa_anonymization_failed_total is not None:
+        _qa_anonymization_failed_total.inc()
+
+
 async def _transition_anonymization_failed_with_journal(
     pool: asyncpg.Pool,
     *,
     attempt_id: uuid.UUID,
-    pr_error: str | None,
+    category: str,
     healing_session_id: uuid.UUID | None,
 ) -> None:
-    async def _record(session: asyncpg.Pool | asyncpg.Connection) -> None:
+    """Move to ``anonymization_failed`` and journal the escalation in one transaction.
+
+    The escalated event carries only the fixed, content-free refusal category;
+    no validator context or source content reaches the journal.
+    """
+
+    async def _record(session: Any) -> None:
         transitioned = await update_attempt_status(
             session,
             attempt_id,
@@ -1226,31 +987,130 @@ async def _transition_anonymization_failed_with_journal(
             error_detail="PR blocked: residual PII or credentials detected after anonymization",
             healing_session_id=healing_session_id,
         )
-        if not transitioned:
-            return
-        try:
+        if transitioned:
             await record_event(
                 session,
                 attempt_id=attempt_id,
                 step="escalated",
                 text=_ANONYMIZATION_FAILURE_EVENT_TEXT,
-                detail=_anonymization_failure_detail(pr_error),
-            )
-        except Exception as _journal_exc:  # noqa: BLE001
-            logger.debug(
-                "QA dispatch: failed to record anonymization failure journal event "
-                "(attempt=%s): %s",
-                attempt_id,
-                _journal_exc,
+                detail=category,
             )
 
-    if isinstance(pool, asyncpg.Pool):
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await _record(conn)
+    if not isinstance(pool, asyncpg.Pool):
+        await _record(pool)
+        return
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await _record(conn)
+    except Exception:  # noqa: BLE001 — the terminal status must land even if the journal fails
+        logger.warning("QA anonymization journal failed (attempt=%s)", attempt_id, exc_info=True)
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "anonymization_failed",
+            error_detail="PR blocked: residual PII or credentials detected after anonymization",
+            healing_session_id=healing_session_id,
+        )
+
+
+def _diff_snapshot_stats(diff_snapshot: list[dict[str, str]]) -> tuple[int, int, int]:
+    additions = sum(1 for line in diff_snapshot if line.get("kind") == "+")
+    deletions = sum(1 for line in diff_snapshot if line.get("kind") == "-")
+    files = sum(
+        1
+        for line in diff_snapshot
+        if line.get("kind") == "meta" and line.get("text", "").startswith("diff --git ")
+    )
+    return additions, deletions, files
+
+
+async def _record_publication_outcome(
+    pool: asyncpg.Pool,
+    publication: PublicationResult,
+    *,
+    attempt_id: uuid.UUID,
+    branch_name: str,
+    diff_snapshot: list[dict[str, str]],
+    healing_session_id: uuid.UUID | None,
+    phase_session_id: uuid.UUID | None,
+    metrics: ButlerMetrics | None,
+    elapsed_ms: float,
+) -> None:
+    """Record the terminal state, journal events and metrics for one publication."""
+    status = publication.status
+    published = status is PublicationStatus.PUBLISHED
+    outcome = "pr_open" if published else status.value
+    if metrics is not None:
+        metrics.record_recovery_phase_duration(
+            workflow="qa", phase="investigate", outcome=outcome, duration_ms=elapsed_ms
+        )
+        if not published:
+            metrics.record_recovery_execution_failure(
+                workflow="qa", phase="investigate", error_class=f"publication_{status.value}"
+            )
+    if phase_session_id is not None:
+        try:
+            if published:
+                await update_phase_session_status(pool, phase_session_id, "completed")
+            else:
+                await update_phase_session_status(
+                    pool,
+                    phase_session_id,
+                    "failed",
+                    error_detail=f"publication_{status.value}: {publication.category}",
+                )
+        except Exception as _pss_exc:  # noqa: BLE001
+            logger.debug("Failed to update phase session after publication: %s", _pss_exc)
+
+    if published:
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "pr_open",
+            pr_url=publication.pr_url,
+            pr_number=publication.pr_number,
+            healing_session_id=healing_session_id,
+        )
+        additions, deletions, file_count = _diff_snapshot_stats(diff_snapshot)
+        try:
+            await record_pr_drafted_event(
+                pool,
+                attempt_id=attempt_id,
+                pr_number=publication.pr_number,
+                branch_name=branch_name,
+                additions=additions,
+                deletions=deletions,
+                file_count=file_count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "QA dispatch: drafted journal event failed (attempt=%s): %s", attempt_id, exc
+            )
         return
 
-    await _record(pool)
+    if status is PublicationStatus.ANONYMIZATION_FAILED:
+        _record_qa_anonymization_failed()
+        await _transition_anonymization_failed_with_journal(
+            pool,
+            attempt_id=attempt_id,
+            category=publication.category,
+            healing_session_id=healing_session_id,
+        )
+        return
+
+    # Refused, failed or ambiguous: an ambiguous ledger operation keeps holding the
+    # lineage until an exact read-only reconciliation; nothing is retried or deleted.
+    error_detail = f"publication_{status.value}: {publication.category}"
+    await update_attempt_status(
+        pool,
+        attempt_id,
+        "failed",
+        error_detail=error_detail,
+        healing_session_id=healing_session_id,
+    )
+    await _record_escalation_for_terminal(
+        pool, attempt_id=attempt_id, status="failed", error_detail=error_detail
+    )
 
 
 async def _persist_diff_snapshot(
@@ -1325,328 +1185,6 @@ async def _persist_notes_and_remove_worktree(
     )
 
 
-async def _create_qa_pr(
-    repo_root: Path,
-    branch_name: str,
-    finding: QaFinding,
-    attempt_id: uuid.UUID,
-    labels: list[str],
-    gh_token: str | None,
-    dashboard_base_url: str | None = None,
-    whitelist: RepoWhitelist | None = None,
-    worktree_path: Path | None = None,
-) -> tuple[str | None, int | None, datetime | None, str | None]:
-    """Push branch and create a QA investigation GitHub PR.
-
-    Dormant: no dispatch path calls this while automated publication is disabled
-    (``publication_unavailable``); the isolated publisher slices replace it.
-
-    When ``worktree_path`` is provided, the dispatcher reads
-    ``{worktree_path}/.tmp/qa-agent/INVESTIGATION_NOTES.md`` (written by the
-    investigation agent) and substitutes its Root Cause / Fix Summary / Test
-    Coverage sections into the PR body.  Missing file or missing sections fall
-    back to a placeholder string.
-
-    Returns
-    -------
-    tuple[str | None, int | None, datetime | None, str | None]
-        ``(pr_url, pr_number, pr_created_at, error_message)``  — *error_message* is:
-        - ``None`` on success,
-        - ``"anonymization_failed"`` when PII validation blocks the PR; may
-          include a sanitized validator reason after ``": "``.
-        - ``"no_gh_token"`` when no GitHub token is available,
-        - ``"repo_not_whitelisted:remote_unavailable"`` when the origin
-          remote URL cannot be resolved; PR creation is blocked fail-closed,
-        - ``"repo_not_whitelisted:{reason}:{owner/repo}"`` when whitelist
-          enforcement blocks PR creation for a resolved repository; ``reason``
-          is the whitelist failure code (e.g. ``whitelist_empty`` or
-          ``not_in_whitelist``),
-        - Any other string for push/gh failures.
-    """
-    env: dict[str, str] = build_git_auth_env(gh_token)
-
-    # Step 0: No-op detection — abort before pushing an empty branch.
-    # An investigation that produced no commits should not create a remote branch
-    # or open a PR; classify explicitly so the caller can transition to unfixable
-    # rather than leaving a leaked remote branch.
-    if await _detect_no_op_branch(repo_root, branch_name, env):
-        logger.info(
-            "_create_qa_pr: branch %r has no commits ahead of main — no-op investigation "
-            "(attempt=%s); skipping push and PR creation",
-            branch_name,
-            attempt_id,
-        )
-        return None, None, None, "no_op_branch"
-
-    if not gh_token:
-        return None, None, None, "no_gh_token"
-
-    # Step 0: Whitelist enforcement — check before git push
-    # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
-    effective_whitelist = whitelist if whitelist is not None else RepoWhitelist(db_pool=None)
-    # Ensure the whitelist has been loaded at least once (idempotent, guarded by lock).
-    await effective_whitelist.ensure_loaded()
-    owner_repo = await _get_remote_owner_repo(repo_root, env)
-    if owner_repo is None:
-        logger.warning(
-            "_create_qa_pr: could not determine repository from origin remote; "
-            "blocking PR creation (fail-closed)"
-        )
-        return None, None, None, "repo_not_whitelisted:remote_unavailable"
-
-    allowed, wl_reason = effective_whitelist.is_allowed(owner_repo)
-    if not allowed:
-        logger.info(
-            "_create_qa_pr: PR blocked for repo %r — whitelist reason: %s",
-            owner_repo,
-            wl_reason,
-        )
-        # Return a reason code that the caller can use for owner notification.
-        return None, None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
-
-    # Step 1: git push over HTTPS using GH_TOKEN-backed gh auth.
-    push_error = await _push_branch_with_gh_auth(repo_root, branch_name, owner_repo, env)
-    if push_error is not None:
-        return None, None, None, push_error
-
-    # Step 2: Build PR content
-    fp_short = finding.fingerprint[:12]
-
-    # Build dashboard link for PR body
-    dashboard_link = ""
-    if dashboard_base_url:
-        dashboard_url = f"{dashboard_base_url.rstrip('/')}/qa/investigations/{attempt_id}"
-        dashboard_link = f"\n\n[View investigation details]({dashboard_url})"
-
-    raw_title = f"fix(qa): {finding.exception_type} in {finding.call_site} [{fp_short}]"
-
-    notes = _load_investigation_notes(worktree_path)
-    root_cause = notes.get("root_cause", _NOTES_PLACEHOLDER)
-    fix_summary = notes.get("fix_summary", _NOTES_PLACEHOLDER)
-    test_coverage = notes.get("test_coverage", _NOTES_PLACEHOLDER)
-
-    raw_body = f"""\
-## QA Investigation Fix: {fp_short}
-
-**Butler:** {finding.source_butler}
-**Error:** {finding.exception_type}
-**Call site:** {finding.call_site}
-**Fingerprint:** `{finding.fingerprint}`
-**Attempt ID:** `{attempt_id}`
-**Discovery source:** {finding.source_type}
-**Occurrences:** {finding.occurrence_count}
-**First seen:** {finding.first_seen.isoformat()}
-**Last seen:** {finding.last_seen.isoformat()}
-
-### Root Cause
-{root_cause}
-
-### Fix Summary
-{fix_summary}
-
-### Test Coverage
-{test_coverage}
-
----
-*Automated fix proposed by QA Staffer. Review carefully before merging.*
-
-*Fingerprint: `{finding.fingerprint}`*{dashboard_link}
-"""
-
-    # Step 3: Anonymize
-    pr_title = anonymize(raw_title, repo_root)
-    pr_body = anonymize(raw_body, repo_root)
-
-    # Step 4: Validate for residual PII
-    title_clean, title_violations = validate_anonymized(pr_title)
-    body_clean, body_violations = validate_anonymized(pr_body)
-    if not title_clean or not body_clean:
-        violations = title_violations + body_violations
-        validator_detail = _format_anonymization_validator_detail(violations)
-        _record_qa_anonymization_failed()
-        logger.warning(
-            "Anonymization validation failed for QA investigation PR (attempt=%s): "
-            "%d violation(s): %s",
-            attempt_id,
-            len(violations),
-            violations[:3],
-        )
-        # Delete the remote branch (await to avoid leaking the child process)
-        delete_error = await _delete_remote_branch_with_gh_auth(
-            repo_root, branch_name, owner_repo, env
-        )
-        if delete_error is not None:
-            logger.warning(
-                "Failed to delete remote branch %s after anonymization failure: %s",
-                branch_name,
-                delete_error,
-            )
-        return None, None, None, _anonymization_failure_error(validator_detail)
-
-    if _qa_pr_body_contains_raw_evidence_marker(pr_body):
-        logger.warning(
-            "QA investigation PR body contained a raw-evidence marker after anonymization "
-            "(attempt=%s); blocking GitHub PR creation",
-            attempt_id,
-        )
-        delete_error = await _delete_remote_branch_with_gh_auth(
-            repo_root, branch_name, owner_repo, env
-        )
-        if delete_error is not None:
-            logger.warning(
-                "Failed to delete remote branch %s after raw-evidence guard failure: %s",
-                branch_name,
-                delete_error,
-            )
-        return (
-            None,
-            None,
-            None,
-            _anonymization_failure_error("raw evidence marker detected in PR body"),
-        )
-
-    # Step 4c: Sanitize + validate labels — labels are externally visible on the
-    # public destination and must clear the same gate as the title/body.
-    sanitized_labels, label_violations = sanitize_labels(labels, repo_root)
-    if label_violations:
-        validator_detail = _format_anonymization_validator_detail(label_violations)
-        _record_qa_anonymization_failed()
-        logger.warning(
-            "Anonymization validation failed for QA investigation PR labels (attempt=%s): "
-            "%d violation(s): %s",
-            attempt_id,
-            len(label_violations),
-            label_violations[:3],
-        )
-        delete_error = await _delete_remote_branch_with_gh_auth(
-            repo_root, branch_name, owner_repo, env
-        )
-        if delete_error is not None:
-            logger.warning(
-                "Failed to delete remote branch %s after label anonymization failure: %s",
-                branch_name,
-                delete_error,
-            )
-        return None, None, None, _anonymization_failure_error(validator_detail)
-
-    # Gate passed across every externally-visible field. Record that the gate ran
-    # (pass) for audit without persisting any sanitized/raw field content.
-    logger.info(
-        "QA publication sanitization gate PASSED (attempt=%s): title, body, and %d label(s) clean",
-        attempt_id,
-        len(sanitized_labels),
-    )
-
-    # Step 5: gh pr create
-    label_args: list[str] = []
-    for label in sanitized_labels:
-        label_args.extend(["--label", label])
-
-    gh_cmd = [
-        "gh",
-        "pr",
-        "create",
-        "--base",
-        "main",
-        "--head",
-        branch_name,
-        "--title",
-        pr_title,
-        "--body",
-        pr_body,
-        *label_args,
-    ]
-
-    gh_proc = await asyncio.create_subprocess_exec(
-        *gh_cmd,
-        cwd=str(repo_root),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    gh_stdout, gh_stderr = await gh_proc.communicate()
-    if gh_proc.returncode != 0:
-        raw_err = gh_stderr.decode("utf-8", errors="replace").strip()
-        # Classify the error to a stable prefix rather than exposing raw stderr.
-        # Auth errors get the git_auth_failed prefix (shared with push errors);
-        # other failures use a stable "gh_pr_create_failed" prefix.
-        lowered = raw_err.lower()
-        if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
-            classified_err = f"git_auth_failed: {raw_err}"
-        else:
-            classified_err = f"gh_pr_create_failed: {raw_err}"
-        # Best-effort remote branch cleanup: push succeeded but PR creation failed,
-        # so we now own a leaked remote branch.  Clean it up before returning.
-        try:
-            delete_error = await _delete_remote_branch_with_gh_auth(
-                repo_root, branch_name, owner_repo, env
-            )
-            if delete_error is not None:
-                logger.warning(
-                    "_create_qa_pr: best-effort branch cleanup after PR creation failure "
-                    "could not delete remote branch %r: %s",
-                    branch_name,
-                    delete_error,
-                )
-            else:
-                logger.debug(
-                    "_create_qa_pr: cleaned up remote branch %r after PR creation failure",
-                    branch_name,
-                )
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "_create_qa_pr: branch cleanup subprocess raised (attempt=%s)",
-                attempt_id,
-                exc_info=True,
-            )
-        return None, None, None, classified_err
-
-    pr_url = gh_stdout.decode("utf-8", errors="replace").strip()
-    pr_number: int | None = None
-    try:
-        pr_number = int(pr_url.rstrip("/").split("/")[-1])
-    except (ValueError, IndexError):
-        pass
-
-    # Fallback: if URL parsing did not yield a valid pr_number, query gh directly
-    # using the head branch so that non-canonical stdout (e.g. extra lines from
-    # hooks or warnings) does not strand the attempt with pr_number=NULL.
-    if pr_number is None:
-        logger.debug(
-            "_create_qa_pr: pr_number parse failed from stdout %r; "
-            "falling back to head-branch lookup (attempt=%s)",
-            pr_url,
-            attempt_id,
-        )
-        fallback_url, fallback_number = await _resolve_pr_by_head(
-            repo_root, branch_name, env, repo=owner_repo
-        )
-        if fallback_number is not None:
-            pr_url = fallback_url or pr_url
-            pr_number = fallback_number
-            logger.info(
-                "_create_qa_pr: resolved PR identity via head-branch fallback "
-                "(attempt=%s pr_number=%s)",
-                attempt_id,
-                pr_number,
-            )
-        else:
-            logger.warning(
-                "_create_qa_pr: could not resolve pr_number for attempt=%s "
-                "(stdout=%r); persisting pr_url without pr_number",
-                attempt_id,
-                pr_url,
-            )
-
-    pr_created_at = await _fetch_pr_created_at(
-        repo_root,
-        pr_number=pr_number,
-        pr_url=pr_url,
-        env=env,
-    )
-    return pr_url, pr_number, pr_created_at, None
-
-
 # ---------------------------------------------------------------------------
 # Timeout watchdog
 # ---------------------------------------------------------------------------
@@ -1702,6 +1240,18 @@ async def _qa_timeout_watchdog(
 # ---------------------------------------------------------------------------
 
 
+async def _label_containment(pool: asyncpg.Pool, attempt_id: uuid.UUID, containment: str) -> None:
+    """Record how the attempt is contained (``job`` or ``none``); a failed write never blocks it."""
+    try:
+        await pool.execute(
+            "UPDATE public.healing_attempts SET containment = $2 WHERE id = $1",
+            attempt_id,
+            containment,
+        )
+    except Exception:  # noqa: BLE001 - a label is bookkeeping, not a gate
+        logger.warning("QA containment label not recorded for attempt=%s", attempt_id)
+
+
 async def _run_investigation_session(
     pool: asyncpg.Pool,
     repo_root: Path,
@@ -1716,14 +1266,21 @@ async def _run_investigation_session(
     git_author_name: str | None = None,
     git_author_email: str | None = None,
     metrics: ButlerMetrics | None = None,
+    base_sha: str | None = None,
 ) -> None:
-    """Run the QA investigation agent and handle PR creation.
+    """Run the QA investigation agent and record its terminal outcome.
 
     This coroutine is scheduled as an ``asyncio.Task`` and monitored by a
     separate timeout watchdog task.
     """
     import time as _time
 
+    await _label_containment(
+        pool, attempt_id, "job" if config.job_isolation is not None else "none"
+    )
+
+    if config.job_isolation is not None:
+        LIVE_ATTEMPTS.add(str(attempt_id))
     investigation_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
     _phase_start = _time.monotonic()
@@ -1755,7 +1312,14 @@ async def _run_investigation_session(
             attempt_id=attempt_id,
             dashboard_base_url=config.dashboard_base_url,
         )
-        agent_cwd = _prepare_agent_workspace(worktree_path)
+        isolation = config.job_isolation
+        seal_root = repo_root
+        agent_cwd: Path | None = None
+        job_launch = None
+        if isolation is None:
+            agent_cwd = _prepare_agent_workspace(worktree_path)
+        else:
+            job_launch = isolation.launch(attempt_id, deadline_s=config.timeout_minutes * 60)
 
         # Build sandboxed environment for the agent
         sandbox_env = build_agent_env(
@@ -1775,18 +1339,32 @@ async def _run_investigation_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
-            cwd=str(agent_cwd),
+            complexity=EXECUTOR_COMPLEXITY,
+            cwd=str(agent_cwd) if agent_cwd is not None else None,
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
             timeout_override=config.timeout_minutes * 60,
+            qa_job_launch=job_launch,
         )
+
+        if isolation is not None:
+            # The pod is terminal (or never ran). Everything the daemon reads from the attempt
+            # from here on comes from the daemon-owned scratch copy; the pod-written clone is
+            # only ever opened by the in-process sealer, never by git.
+            scratch = await asyncio.to_thread(
+                import_artifacts,
+                isolation,
+                attempt_id,
+                [_UNFIXABLE_FILE, _INVESTIGATION_NOTES_JSON, _PR_NOTES_FILE],
+            )
+            seal_root = worktree_path
+            worktree_path = scratch
 
         if result.session_id is not None:
             # Capture the session_id locally; do NOT call update_attempt_status here because
             # create_or_join_attempt already inserts rows in the 'investigating' state and the
             # state machine rejects 'investigating → investigating' transitions.  The session_id
-            # will be attached on the next valid status transition (pr_open / failed / timeout).
+            # will be attached on the next valid status transition (unfixable / failed / timeout).
             investigation_session_id = result.session_id
             # Record the phase session to link this launched session to the attempt with lineage.
             # QA investigations start with a single "investigate" phase; phased workflows
@@ -1907,222 +1485,13 @@ async def _run_investigation_session(
 
         # Agent succeeded — publication fails closed: the trusted dispatcher must not
         # push or open a PR from the agent-controlled worktree until the isolated
-        # publisher lands (bu-mc01y5.5-.7).  Only no-op detection (local git log,
+        # publisher lands (bu-mc01y5.6-.7).  Only no-op detection (local git log,
         # no credential) still runs so empty investigations stay "unfixable".
-        pr_url, pr_number, pr_created_at = None, None, None
-        pr_error = (
-            "no_op_branch"
-            if await _detect_no_op_branch(repo_root, branch_name, build_agent_env())
-            else _PUBLICATION_UNAVAILABLE
-        )
-        diff_snapshot = (
-            [] if pr_error == "no_op_branch" else await _capture_commit_diff_snapshot(worktree_path)
-        )
-
-        if _is_anonymization_failure_error(pr_error):
-            if metrics is not None:
-                _elapsed = (_time.monotonic() - _phase_start) * 1000
-                metrics.record_recovery_phase_duration(
-                    workflow="qa",
-                    phase="investigate",
-                    outcome="anonymization_failed",
-                    duration_ms=_elapsed,
-                )
-                metrics.record_recovery_execution_failure(
-                    workflow="qa",
-                    phase="investigate",
-                    error_class="anonymization_failed",
-                )
-            if phase_session_id is not None:
-                try:
-                    await update_phase_session_status(
-                        pool,
-                        phase_session_id,
-                        "failed",
-                        error_detail="PR blocked: anonymization_failed",
-                    )
-                except Exception as _pss_exc:
-                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
-            await _transition_anonymization_failed_with_journal(
-                pool,
-                attempt_id=attempt_id,
-                pr_error=pr_error,
-                healing_session_id=investigation_session_id,
-            )
-            await _persist_notes_and_remove_worktree(
-                pool,
-                attempt_id,
-                repo_root,
-                branch_name,
-                worktree_path,
-                delete_branch=True,
-                delete_remote=False,
-                diff_snapshot=diff_snapshot,
-                otel_span=_inv_span,
-            )
-            return
-
-        if pr_error == _PUBLICATION_UNAVAILABLE:
-            if metrics is not None:
-                _elapsed = (_time.monotonic() - _phase_start) * 1000
-                metrics.record_recovery_phase_duration(
-                    workflow="qa",
-                    phase="investigate",
-                    outcome="failed",
-                    duration_ms=_elapsed,
-                )
-                metrics.record_recovery_execution_failure(
-                    workflow="qa",
-                    phase="investigate",
-                    error_class=_PUBLICATION_UNAVAILABLE,
-                )
-            if phase_session_id is not None:
-                try:
-                    await update_phase_session_status(
-                        pool,
-                        phase_session_id,
-                        "failed",
-                        error_detail=_PUBLICATION_UNAVAILABLE,
-                    )
-                except Exception as _pss_exc:
-                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
-                healing_session_id=investigation_session_id,
-            )
-            await _record_escalation_for_terminal(
-                pool,
-                attempt_id=attempt_id,
-                status="failed",
-                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
-            )
-            await _persist_notes_and_remove_worktree(
-                pool,
-                attempt_id,
-                repo_root,
-                branch_name,
-                worktree_path,
-                delete_branch=True,
-                delete_remote=False,
-                diff_snapshot=diff_snapshot,
-                otel_span=_inv_span,
-            )
-            return
-
-        if pr_error is not None and pr_error.startswith("git_auth_failed:"):
-            if metrics is not None:
-                _elapsed = (_time.monotonic() - _phase_start) * 1000
-                metrics.record_recovery_phase_duration(
-                    workflow="qa",
-                    phase="investigate",
-                    outcome="failed",
-                    duration_ms=_elapsed,
-                )
-                metrics.record_recovery_execution_failure(
-                    workflow="qa",
-                    phase="investigate",
-                    error_class="git_auth_failed",
-                )
-            if phase_session_id is not None:
-                try:
-                    await update_phase_session_status(
-                        pool,
-                        phase_session_id,
-                        "failed",
-                        error_detail=_GIT_AUTH_FAILURE_DETAIL,
-                    )
-                except Exception as _pss_exc:
-                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail=_GIT_AUTH_FAILURE_DETAIL,
-                healing_session_id=investigation_session_id,
-            )
-            await _record_escalation_for_terminal(
-                pool,
-                attempt_id=attempt_id,
-                status="failed",
-                error_detail=_GIT_AUTH_FAILURE_DETAIL,
-            )
-            await _persist_notes_and_remove_worktree(
-                pool,
-                attempt_id,
-                repo_root,
-                branch_name,
-                worktree_path,
-                delete_branch=True,
-                delete_remote=False,
-                diff_snapshot=diff_snapshot,
-                otel_span=_inv_span,
-            )
-            return
-
-        if pr_error is not None and pr_error.startswith("repo_not_whitelisted"):
-            # Whitelist enforcement: PR blocked for this repository.
-            # Error formats:
-            #   "repo_not_whitelisted:remote_unavailable"  — remote URL could not be resolved
-            #   "repo_not_whitelisted:{reason}:{owner/repo}" — whitelist check failed
-            parts = pr_error.split(":", 2)
-            if len(parts) == 3:
-                wl_detail = (
-                    f"repository '{parts[2]}' is not in the QA whitelist (reason: {parts[1]})"
-                )
-            elif len(parts) == 2 and parts[1] == "remote_unavailable":
-                wl_detail = "could not determine repository from origin remote URL"
-            else:
-                wl_detail = "repository is not in the QA whitelist"
-            if metrics is not None:
-                _elapsed = (_time.monotonic() - _phase_start) * 1000
-                metrics.record_recovery_phase_duration(
-                    workflow="qa",
-                    phase="investigate",
-                    outcome="failed",
-                    duration_ms=_elapsed,
-                )
-                metrics.record_recovery_execution_failure(
-                    workflow="qa",
-                    phase="investigate",
-                    error_class="repo_not_whitelisted",
-                )
-            if phase_session_id is not None:
-                try:
-                    await update_phase_session_status(
-                        pool, phase_session_id, "failed", error_detail=f"PR blocked: {wl_detail}"
-                    )
-                except Exception as _pss_exc:
-                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail=f"PR blocked: {wl_detail}",
-                healing_session_id=investigation_session_id,
-            )
-            await _record_escalation_for_terminal(
-                pool,
-                attempt_id=attempt_id,
-                status="failed",
-                error_detail=f"PR blocked: {wl_detail}",
-            )
-            await _persist_notes_and_remove_worktree(
-                pool,
-                attempt_id,
-                repo_root,
-                branch_name,
-                worktree_path,
-                delete_branch=True,
-                delete_remote=False,
-                diff_snapshot=diff_snapshot,
-                otel_span=_inv_span,
-            )
-            return
-
-        if pr_error == "no_op_branch":
+        if (
+            await _job_branch_is_no_op(seal_root, branch_name, base_sha)
+            if isolation is not None
+            else await _detect_no_op_branch(repo_root, branch_name, build_agent_env())
+        ):
             # The investigation agent produced no commits — classify as unfixable
             # so the fingerprint is not left in an active state and a future
             # investigation cycle will not re-attempt the same finding.
@@ -2169,39 +1538,130 @@ async def _run_investigation_session(
             )
             return
 
-        if pr_error is not None:
+        # No git runs in a pod-written clone: an isolated attempt's snapshot is derived from its
+        # sealed export plus the trusted base objects.
+        seal_identity = (
+            GitIdentity(git_author_name.strip(), git_author_email.strip())
+            if git_author_name and git_author_email
+            else None
+        )
+        sealed_export = (
+            await _seal_isolated_export(seal_root, branch_name, base_sha, seal_identity)
+            if isolation is not None
+            else None
+        )
+        diff_snapshot = (
+            await _isolated_diff_snapshot(repo_root, sealed_export)
+            if isolation is not None
+            else await _capture_commit_diff_snapshot(worktree_path)
+        )
+        if config.publisher is not None:
+            publication = await publish_investigation(
+                config.publisher,
+                repo_root=seal_root,
+                worktree_path=worktree_path,
+                attempt_id=attempt_id,
+                finding=finding,
+                branch_name=branch_name,
+                base_sha=base_sha,
+                identity=seal_identity,
+                labels=list(config.pr_labels),
+                whitelist=config.repo_whitelist,
+                dashboard_base_url=config.dashboard_base_url,
+                sealed_export=sealed_export,
+            )
+            await _record_publication_outcome(
+                pool,
+                publication,
+                attempt_id=attempt_id,
+                branch_name=branch_name,
+                diff_snapshot=diff_snapshot,
+                healing_session_id=investigation_session_id,
+                phase_session_id=phase_session_id,
+                metrics=metrics,
+                elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
+            )
+            # Teardown is safe only once the publisher reached egress: a push or PR creation
+            # that fails or ends ambiguous left the sealed export retained outside agent
+            # control (core_294).  A refusal before retention (anonymization, whitelist)
+            # retains nothing; only the diff snapshot and notes persisted below survive.
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                # The local branch is kept only when it backs a published PR.
+                delete_branch=publication.status is not PublicationStatus.PUBLISHED,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+
+        # No publisher: keep the work as an unpublished proposal (bu-ejow5p.2).  Sealing and
+        # retention need no credential and no egress.  A validator refusal is recorded as the
+        # publisher records it; an unretainable export falls through to the fail-closed path.
+        identity = (
+            GitIdentity(git_author_name.strip(), git_author_email.strip())
+            if git_author_name and git_author_email
+            else None
+        )
+        refusal = await retain_unpublished_proposal(
+            pool,
+            repo_root=seal_root,
+            attempt_id=attempt_id,
+            branch_name=branch_name,
+            base_sha=base_sha,
+            identity=identity,
+            isolated=config.job_isolation is not None,
+            sealed_export=sealed_export,
+        )
+        if refusal is None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
             if metrics is not None:
-                _elapsed = (_time.monotonic() - _phase_start) * 1000
                 metrics.record_recovery_phase_duration(
                     workflow="qa",
                     phase="investigate",
-                    outcome="failed",
+                    outcome="proposal_retained",
                     duration_ms=_elapsed,
-                )
-                metrics.record_recovery_execution_failure(
-                    workflow="qa",
-                    phase="investigate",
-                    error_class="pr_error",
                 )
             if phase_session_id is not None:
                 try:
-                    await update_phase_session_status(
-                        pool, phase_session_id, "failed", error_detail=pr_error
-                    )
-                except Exception as _pss_exc:
-                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:  # noqa: BLE001
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=pr_error,
+                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
                 healing_session_id=investigation_session_id,
             )
-            await _record_escalation_for_terminal(
+            await _persist_notes_and_remove_worktree(
                 pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                # The sealed bytes live in the retention store; the agent branch is not needed.
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+        if refusal.category not in _RETENTION_REFUSALS:
+            await _record_publication_outcome(
+                pool,
+                refusal,
                 attempt_id=attempt_id,
-                status="failed",
-                error_detail=pr_error,
+                branch_name=branch_name,
+                diff_snapshot=diff_snapshot,
+                healing_session_id=investigation_session_id,
+                phase_session_id=phase_session_id,
+                metrics=metrics,
+                elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
             )
             await _persist_notes_and_remove_worktree(
                 pool,
@@ -2216,64 +1676,56 @@ async def _run_investigation_session(
             )
             return
 
-        # PR created successfully
+        # Retention did not succeed for THIS attempt (an export row from a re-run does not
+        # count), so the reason must not match the breaker's retained-success marker.
+        unretained_detail = f"{_PUBLICATION_UNRETAINED}: {refusal.category}; nothing was pushed"
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="qa",
+                phase="investigate",
+                outcome="failed",
+                duration_ms=_elapsed,
+            )
+            metrics.record_recovery_execution_failure(
+                workflow="qa",
+                phase="investigate",
+                error_class=_PUBLICATION_UNRETAINED,
+            )
         if phase_session_id is not None:
             try:
-                await update_phase_session_status(pool, phase_session_id, "completed")
+                await update_phase_session_status(
+                    pool,
+                    phase_session_id,
+                    "failed",
+                    error_detail=unretained_detail,
+                )
             except Exception as _pss_exc:
-                logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+                logger.debug("Failed to mark phase session failed: %s", _pss_exc)
         await update_attempt_status(
             pool,
             attempt_id,
-            "pr_open",
-            pr_url=pr_url,
-            pr_number=pr_number,
+            "failed",
+            error_detail=unretained_detail,
             healing_session_id=investigation_session_id,
         )
-        additions, deletions, file_count = _diff_snapshot_stats(diff_snapshot)
-        try:
-            await record_pr_drafted_event(
-                pool,
-                attempt_id=attempt_id,
-                pr_number=pr_number,
-                branch_name=branch_name,
-                additions=additions,
-                deletions=deletions,
-                file_count=file_count,
-                ts=pr_created_at,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "QA dispatch: failed to record drafted journal event (attempt=%s): %s",
-                attempt_id,
-                exc,
-            )
-        # Note: finding was already linked to attempt in dispatch_qa_investigation
-        # (via update_finding_attempt at gate 6). No redundant call needed here.
-
-        logger.info("QA investigation PR created: attempt=%s pr_url=%s", attempt_id, pr_url)
-        # Remove worktree; keep branch (backs the open PR)
+        await _record_escalation_for_terminal(
+            pool,
+            attempt_id=attempt_id,
+            status="failed",
+            error_detail=unretained_detail,
+        )
         await _persist_notes_and_remove_worktree(
             pool,
             attempt_id,
             repo_root,
             branch_name,
             worktree_path,
-            delete_branch=False,
+            delete_branch=True,
             delete_remote=False,
             diff_snapshot=diff_snapshot,
             otel_span=_inv_span,
         )
-        # Record success only after DB status update and worktree cleanup succeed,
-        # so that no conflicting failure metric is emitted for the same attempt.
-        if metrics is not None:
-            _elapsed = (_time.monotonic() - _phase_start) * 1000
-            metrics.record_recovery_phase_duration(
-                workflow="qa",
-                phase="investigate",
-                outcome="success",
-                duration_ms=_elapsed,
-            )
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
@@ -2349,6 +1801,9 @@ async def _run_investigation_session(
             otel_span=_inv_span,
         )
     finally:
+        if config.job_isolation is not None:
+            await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+            LIVE_ATTEMPTS.discard(str(attempt_id))
         if metrics is not None:
             metrics.recovery_workflow_end(workflow="qa")
         if _HAS_OTEL and _inv_span is not None:
@@ -2360,6 +1815,14 @@ async def _run_investigation_session(
 # ---------------------------------------------------------------------------
 # PR status tracking
 # ---------------------------------------------------------------------------
+
+
+async def _sync_pr_link(pool: asyncpg.Pool, fingerprint: str, pr_url: str, pr_state: str) -> None:
+    """Best-effort: a link-store failure must never fail the PR status check."""
+    try:
+        await sync_qa_pr_link(pool, fingerprint=fingerprint, pr_url=pr_url, pr_state=pr_state)
+    except Exception as exc:
+        logger.warning("QA PR link sync failed (fingerprint=%s): %s", fingerprint[:12], exc)
 
 
 async def check_open_pr_statuses(
@@ -2606,6 +2069,7 @@ async def check_open_pr_statuses(
 
             if state == "MERGED":
                 await update_attempt_status(pool, attempt_id, "pr_merged")
+                await _sync_pr_link(pool, fingerprint, pr_url, "merged")
                 try:
                     await record_pr_merged_event(
                         pool,
@@ -2630,6 +2094,7 @@ async def check_open_pr_statuses(
                     "failed",
                     error_detail="pr_closed_without_merge",
                 )
+                await _sync_pr_link(pool, fingerprint, pr_url, "closed")
                 counts["closed"] += 1
                 logger.info(
                     "QA PR closed without merge: attempt=%s pr_number=%s",
@@ -2637,6 +2102,8 @@ async def check_open_pr_statuses(
                     pr_number,
                 )
                 continue
+
+            await _sync_pr_link(pool, fingerprint, pr_url, "open")
 
             pending_check_names = _extract_pending_check_names(pr_data)
             if pending_check_names:
@@ -2931,6 +2398,16 @@ async def _dispatch_pr_review_followup(
     bool
         ``True`` if a follow-up agent task was dispatched, ``False`` otherwise.
     """
+    if config.job_isolation is not None:
+        # A follow-up checks the PR branch out into a shared-.git worktree and runs the agent
+        # in the daemon. With isolation configured that is exactly what must not happen, and
+        # the isolated follow-up is not built yet: refuse rather than run un-isolated.
+        logger.warning(
+            "PR review follow-up refused (follow_up_isolation_unavailable): attempt=%s",
+            attempt_id,
+        )
+        return False
+
     if not pr_branch_name:
         logger.warning(
             "PR review follow-up: no existing branch recorded for attempt=%s — skipping",
@@ -2978,7 +2455,7 @@ async def _dispatch_pr_review_followup(
         # written (hooks, config).  It therefore never holds the GitHub token: the env is
         # token-free and hardened, so a private remote fails the fetch closed (publication
         # is unavailable anyway) instead of exposing the token to agent-written config.
-        git_prep_env = build_git_auth_env(None)
+        git_prep_env = _build_git_prep_env()
 
         async def _run_git_here(*args: str) -> tuple[int, str]:
             proc = await asyncio.create_subprocess_exec(
@@ -3144,7 +2621,7 @@ async def _run_review_followup_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
+            complexity=EXECUTOR_COMPLEXITY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -3262,24 +2739,18 @@ async def _is_circuit_breaker_tripped(
     dispatch events do not have a ``healing_session_id`` and remain excluded
     from the circuit-breaker signal.
 
-    Kept byte-identical to the dashboard filter in
-    ``butlers.api.routers.qa._QA_CIRCUIT_BREAKER_WHERE_CLAUSE``.
+    Shares its SQL with the dashboard
+    (``butlers.core.healing.constants.QA_BREAKER_*``). A failed attempt that retained a sealed
+    proposal reads as ``proposal_retained``, an execution success.
     """
     # Check only QA-originated terminal attempts where an investigation actually
     # launched (healing_session_id IS NOT NULL).  Admission-control rejections
     # were never inserted as attempts (they use healing_dispatch_events instead),
     # so this filter is defensive against any legacy rows.
     rows = await pool.fetch(
-        """
-        SELECT status
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-          AND healing_session_id IS NOT NULL
-          AND closed_at > COALESCE(
-                (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-                '-infinity'::timestamptz
-              )
+        f"""
+        SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status
+        {QA_BREAKER_WHERE_SQL}
         ORDER BY closed_at DESC
         LIMIT $1
         """,
@@ -3374,7 +2845,8 @@ async def dispatch_qa_investigation(
     spawner:
         The QA staffer's ``Spawner`` instance.
     gh_token:
-        GitHub token from CredentialStore.resolve("BUTLERS_QA_GH_TOKEN").
+        Always ``None`` from the QA module: investigation dispatch needs no GitHub token
+        (the read-only polling token never reaches it).
     task_registry:
         Optional list to which watchdog tasks will be appended.
 
@@ -3501,6 +2973,38 @@ async def dispatch_qa_investigation(
                 )
 
         # ---------------------------------------------------------------
+        # Gate 5.6: Publication paused (bu-ejow5p.2)
+        # ---------------------------------------------------------------
+        # While no publisher is injected, a fingerprint whose committed investigation is
+        # retained as an unpublished proposal is not investigated again inside the hold
+        # window.  It pairs with the breaker treating that proposal as an execution success:
+        # neutrality without this hold is unbounded spend.  A non-atomic pre-check; the
+        # authoritative claim stays create_or_join_attempt.
+        if config.publisher is None:
+            hold_days = min(config.publication_hold_days, EXPORT_RETENTION.days)
+            held_attempt = await get_paused_proposal(pool, fp, hold_days)
+            if held_attempt is not None:
+                await update_finding_dedup_reason(pool, finding_id, "publication_paused")
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="publication_paused",
+                    reason=(
+                        "A retained unpublished proposal already exists for this fingerprint; "
+                        "publication is disabled, so it is not investigated again within the "
+                        f"{hold_days}-day hold window"
+                    ),
+                    attempt_id=None,
+                    event_id=uuid.uuid5(uuid.NAMESPACE_URL, f"qa:publication-paused:{finding_id}"),
+                )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="qa", decision="publication_paused"
+                    )
+                return QaDispatchResult(accepted=False, fingerprint=fp, reason="publication_paused")
+
+        # ---------------------------------------------------------------
         # Gate 6: Novelty gate — atomic check+insert
         # ---------------------------------------------------------------
         # Use a synthetic session_id since QA dispatch has no session_id.
@@ -3605,9 +3109,20 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         # Gate 7: Cooldown gate
         # ---------------------------------------------------------------
-        recent = await get_recent_attempt(pool, fp, config.cooldown_minutes)
-        if recent is not None:
-            logger.debug("QA dispatch skipped: cooldown active for fingerprint=%s", fp[:12])
+        # An unresolved publication outlives the cooldown window, so it is checked
+        # explicitly and never inferred from the (expired) attempt window.
+        publication_held = await get_publication_hold(pool, fp)
+        recent = (
+            None
+            if publication_held
+            else await get_recent_attempt(pool, fp, config.cooldown_minutes)
+        )
+        if publication_held or recent is not None:
+            logger.debug(
+                "QA dispatch skipped: %s for fingerprint=%s",
+                "publication hold" if publication_held else "cooldown active",
+                fp[:12],
+            )
             await delete_orphaned_attempt(pool, attempt_id)
             try:
                 await update_finding_dedup_reason(pool, finding_id, "cooldown")
@@ -3651,64 +3166,35 @@ async def dispatch_qa_investigation(
                 fp[:12],
             )
 
-        # ---------------------------------------------------------------
-        # Gate 9: Circuit breaker
-        # ---------------------------------------------------------------
-        if config.circuit_breaker_threshold > 0:
-            tripped = await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
-            if tripped:
-                logger.warning(
-                    "QA dispatch skipped: circuit breaker tripped (threshold=%d, fingerprint=%s)",
-                    config.circuit_breaker_threshold,
-                    fp[:12],
-                )
-                await delete_orphaned_attempt(pool, attempt_id)
-                try:
-                    await update_finding_dedup_reason(pool, finding_id, "circuit_breaker")
-                except Exception as _dr_exc:
-                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
-                try:
-                    await create_dispatch_event(
-                        pool,
-                        fingerprint=fp,
-                        butler_name=finding.source_butler,
-                        decision="circuit_breaker",
-                        reason=(
-                            f"Circuit breaker tripped:"
-                            f" {config.circuit_breaker_threshold} consecutive failures"
-                        ),
-                    )
-                except Exception as _evt_exc:
-                    logger.debug(
-                        "QA dispatch: failed to record circuit_breaker event: %s", _evt_exc
-                    )
-                if metrics is not None:
-                    metrics.record_recovery_dispatch_decision(
-                        workflow="qa", decision="circuit_breaker"
-                    )
-                return QaDispatchResult(
-                    accepted=False,
-                    fingerprint=fp,
-                    reason="circuit_breaker",
-                )
+        # Gate 9 (circuit breaker) is the batch dispatcher's: ``dispatch_novel_findings`` reads the
+        # breaker before each launch and holds the rest of the patrol as one decision, so a
+        # tripped breaker never reaches a claim here.
 
         # ---------------------------------------------------------------
         # Gate 10: Model resolution
         # ---------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(pool, finding.source_butler, Complexity.SPECIALTY)
+            # Same identity (the launching spawner's butler), exact rung and intent that
+            # ``Spawner._run`` resolves under at launch, so admission cannot pass on a model
+            # the launch would then refuse.
+            model_result = await resolve_model_with_effective_tier(
+                pool,
+                _launch_identity(spawner, finding.source_butler),
+                EXECUTOR_COMPLEXITY,
+                allow_tier_fallthrough=False,
+                intent=derive_dispatch_intent("qa", EXECUTOR_COMPLEXITY),
+            )
         except Exception as model_exc:
             logger.warning(
-                "Model resolution failed for specialty tier (butler=%s): %s",
+                "Model resolution failed for the executor rung (butler=%s): %s",
                 finding.source_butler,
                 model_exc,
             )
 
         if model_result is None:
             logger.warning(
-                "QA dispatch skipped: no self_healing tier model available "
-                "(butler=%s, fingerprint=%s)",
+                "QA dispatch skipped: no executor-rung model available (butler=%s, fingerprint=%s)",
                 finding.source_butler,
                 fp[:12],
             )
@@ -3723,7 +3209,7 @@ async def dispatch_qa_investigation(
                     fingerprint=fp,
                     butler_name=finding.source_butler,
                     decision="no_model",
-                    reason="No self_healing tier model available",
+                    reason="No executor-rung (workhorse) model available",
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record no_model event: %s", _evt_exc)
@@ -3752,15 +3238,37 @@ async def dispatch_qa_investigation(
             )
         logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
+        if config.job_isolation is not None:
+            # Owned from before the directory exists, so a sweep cannot race its creation.
+            LIVE_ATTEMPTS.add(str(attempt_id))
         try:
-            worktree_path, branch_name = await create_healing_worktree(
-                repo_root,
-                finding.source_butler,
-                fp,
-                prefix=_QA_PREFIX,
-                base_ref=_base_ref,
-            )
-        except WorktreeCreationError as wt_exc:
+            if config.job_isolation is not None:
+                # Independent clone in the exchange: no shared .git with the daemon's repository.
+                branch_name = _branch_name(finding.source_butler, fp, prefix=_QA_PREFIX)
+                worktree_path = await prepare_attempt_clone(
+                    config.job_isolation,
+                    attempt_id=attempt_id,
+                    trusted_repo=repo_root,
+                    base_sha=_base_ref,
+                    branch_name=branch_name,
+                    author=(
+                        (git_author_name.strip(), git_author_email.strip())
+                        if git_author_name and git_author_email
+                        else None
+                    ),
+                )
+            else:
+                worktree_path, branch_name = await create_healing_worktree(
+                    repo_root,
+                    finding.source_butler,
+                    fp,
+                    prefix=_QA_PREFIX,
+                    base_ref=_base_ref,
+                )
+        except (WorktreeCreationError, RuntimeError, OSError) as wt_exc:
+            if config.job_isolation is not None:
+                await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+                LIVE_ATTEMPTS.discard(str(attempt_id))
             logger.warning(
                 "QA dispatch failed: worktree creation error (fingerprint=%s): %s",
                 fp[:12],
@@ -3770,7 +3278,9 @@ async def dispatch_qa_investigation(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=f"Worktree creation failed: {wt_exc.git_output or str(wt_exc)}",
+                error_detail=(
+                    f"Worktree creation failed: {getattr(wt_exc, 'git_output', None) or wt_exc}"
+                ),
             )
             return QaDispatchResult(
                 accepted=False,
@@ -3821,6 +3331,7 @@ async def dispatch_qa_investigation(
                 git_author_name=git_author_name,
                 git_author_email=git_author_email,
                 metrics=metrics,
+                base_sha=_base_ref,
             ),
             name=f"qa-investigation-{attempt_id}",
         )
@@ -3865,6 +3376,188 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 # Batch dispatch helper
 # ---------------------------------------------------------------------------
+
+
+async def _breaker_halt_state(pool: asyncpg.Pool, threshold: int) -> str | None:
+    """``"open"``, ``"unreadable"`` or ``None``: whether dispatch must halt, and why.
+
+    Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
+    rather than raising out of the batch or launching with the safeguard unreadable.
+    """
+    try:
+        return "open" if await _is_circuit_breaker_tripped(pool, threshold) else None
+    except Exception as exc:
+        logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
+        return "unreadable"
+
+
+#: Session advisory lock that serializes the half-open probe across dispatchers and daemons.
+_PROBE_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_PROBE_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_BREAKER_ROWS_SQL = f"""
+    SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status, error_detail, closed_at
+    {QA_BREAKER_WHERE_SQL}
+    ORDER BY closed_at DESC
+    LIMIT $1
+"""
+
+
+async def _breaker_probe_blocker(pool: asyncpg.Pool, config: QaDispatchConfig) -> str | None:
+    """Why the open breaker cannot admit a probe now, or ``None`` when one is due.
+
+    ``"backoff"``: the wait since the newest failure has not elapsed. ``"in_flight"``: a QA
+    investigation (a row or a cluster Job, counted as the cap gate counts them) is running.
+    ``"unreadable"``: the schedule could not be read, so nothing probes through a broken read.
+    """
+    try:
+        rows = await pool.fetch(
+            _BREAKER_ROWS_SQL, config.circuit_breaker_threshold + EXTRA_ROWS_FOR_BACKOFF
+        )
+        state = derive_breaker_state(rows, config.circuit_breaker_threshold)
+        if not state.open or state.next_probe_at is None:
+            return "backoff"
+        if await pool.fetchval("SELECT clock_timestamp()") < state.next_probe_at:
+            return "backoff"
+        if await count_active_attempts(pool, qa_only=True) > 0:
+            return "in_flight"
+        if config.job_isolation is not None:
+            jobs = await active_job_count(config.job_isolation)
+            if jobs is None:
+                return "unreadable"
+            if jobs > 0:
+                return "in_flight"
+        return None
+    except Exception as exc:
+        logger.warning("QA dispatch: breaker probe schedule unreadable: %s", exc)
+        return "unreadable"
+
+
+async def _acquire_probe_lock(pool: asyncpg.Pool) -> asyncpg.pool.PoolConnectionProxy | None:
+    """Take the probe lock on a dedicated connection, or return ``None`` when another holds it."""
+    conn = await pool.acquire()
+    try:
+        if await conn.fetchval(_PROBE_LOCK_SQL):
+            return conn
+    except Exception:
+        await pool.release(conn)
+        raise
+    await pool.release(conn)
+    return None
+
+
+async def _release_probe_lock(pool: asyncpg.Pool, conn: asyncpg.pool.PoolConnectionProxy) -> None:
+    try:
+        await conn.fetchval(_PROBE_UNLOCK_SQL)
+    finally:
+        await pool.release(conn)
+
+
+async def _record_probe(
+    pool: asyncpg.Pool,
+    triaged: TriagedFinding,
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> None:
+    """Record that one finding is admitted through the open breaker as its half-open probe."""
+    finding = triaged.finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=finding.fingerprint,
+            butler_name=finding.source_butler,
+            decision="breaker_probe",
+            reason=(
+                f"Half-open probe: {config.circuit_breaker_threshold} consecutive failures, "
+                "backoff elapsed"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record breaker_probe event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="breaker_probe")
+
+
+async def _hold_for_retry(
+    pool: asyncpg.Pool,
+    findings: list[TriagedFinding],
+    reason: str,
+    metrics: ButlerMetrics | None,
+) -> bool:
+    """Stamp ``reason`` on the findings and queue them for the next patrol.
+
+    Returns whether the hold was written. A failed hold is counted as its own dispatch decision
+    so the loss is visible, and the caller must not report the findings as held.
+    """
+    try:
+        await hold_findings_for_retry(pool, [t.finding_id for t in findings], reason)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "QA dispatch: failed to hold %d finding(s) (%s): %s", len(findings), reason, exc
+        )
+        if metrics is not None:
+            metrics.record_recovery_dispatch_decision(workflow="qa", decision="hold_failed")
+        return False
+
+
+def _halt_cause(why: str, config: QaDispatchConfig) -> str:
+    """The event's account of why the breaker held the patrol (``why`` from the blocker)."""
+    if why == "unreadable":
+        return "Circuit breaker unreadable"
+    if why == "in_flight":
+        return "Circuit breaker open, probe in progress"
+    return f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive failures"
+
+
+async def _halt_batch(
+    pool: asyncpg.Pool,
+    remaining: list[TriagedFinding],
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+    *,
+    why: str = "backoff",
+) -> list[QaDispatchResult]:
+    """Hold the rest of a patrol behind an open breaker: no claims, one event.
+
+    The breaker is read before this write, so an owner reset in between leaves the findings
+    held for one patrol; the next patrol admits them. The worst case is a one-patrol delay.
+    """
+    logger.warning(
+        "QA dispatch halted: circuit breaker tripped (threshold=%d, findings=%d)",
+        config.circuit_breaker_threshold,
+        len(remaining),
+    )
+    if not await _hold_for_retry(pool, remaining, "circuit_breaker", metrics):
+        return [
+            QaDispatchResult(
+                accepted=False,
+                fingerprint=t.finding.fingerprint,
+                reason="hold_failed",
+                gate="circuit_breaker",
+            )
+            for t in remaining
+        ]
+    lead = remaining[0].finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=lead.fingerprint,
+            butler_name=lead.source_butler,
+            decision="circuit_breaker",
+            reason=(
+                f"{_halt_cause(why, config)}; {len(remaining)} finding(s) held for a later patrol"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record circuit_breaker event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="circuit_breaker")
+    return [
+        QaDispatchResult(
+            accepted=False, fingerprint=t.finding.fingerprint, reason="circuit_breaker"
+        )
+        for t in remaining
+    ]
 
 
 async def dispatch_novel_findings(
@@ -3912,68 +3605,111 @@ async def dispatch_novel_findings(
     """
     results: list[QaDispatchResult] = []
     cap_skipped = 0
+    held: list[TriagedFinding] = []
 
-    for triaged in novel_findings:
-        active_count = await count_active_attempts(pool, qa_only=True)
-        if active_count >= config.max_concurrent:
-            results.append(
-                QaDispatchResult(
-                    accepted=False,
-                    fingerprint=triaged.finding.fingerprint,
-                    reason="concurrency_cap",
-                )
-            )
-            cap_skipped += 1
-            continue
-
-        # Once the concurrency cap is reached, stop calling dispatch for remaining
-        # findings.  Continuing would cause each subsequent finding to go through
-        # create_or_join_attempt (inserting a new row) before being rejected — these
-        # orphaned 'failed' rows can then trigger cooldown for the next patrol cycle.
-        if cap_skipped > 0:
-            results.append(
-                QaDispatchResult(
-                    accepted=False,
-                    fingerprint=triaged.finding.fingerprint,
-                    reason="concurrency_cap",
-                )
-            )
-            cap_skipped += 1
-            # Record authoritative suppression reason and queue finding for retry
-            # in the next patrol cycle.  Without this the qa_findings row stays
-            # with dedup_reason=NULL (misleading) and the finding is silently lost
-            # for one-shot errors that won't be re-discovered by a source.
-            try:
-                await update_finding_dedup_reason(pool, triaged.finding_id, "concurrency_cap")
-            except Exception as _dr_exc:
-                logger.debug(
-                    "QA dispatch: failed to update finding dedup_reason (cap skip): %s", _dr_exc
-                )
-            try:
-                await update_finding_dispatch_queued(pool, triaged.finding_id, True)
-            except Exception as _dq_exc:
-                logger.debug(
-                    "QA dispatch: failed to mark finding dispatch_queued (cap skip): %s", _dq_exc
-                )
-            continue
-
-        result = await dispatch_qa_investigation(
-            pool=pool,
-            triaged_finding=triaged,
-            patrol_id=patrol_id,
-            config=config,
-            repo_root=repo_root,
-            spawner=spawner,
-            gh_token=gh_token,
-            git_author_name=git_author_name,
-            git_author_email=git_author_email,
-            task_registry=task_registry,
-            metrics=metrics,
+    for index, triaged in enumerate(novel_findings):
+        # An open breaker is a property of the patrol, not of each finding, and it outranks the
+        # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
+        # the rest as one decision instead of dropping them. Once the cap has been reached
+        # nothing more launches, so the remainder stays a cap hold.
+        probing = False
+        halt_state = (
+            await _breaker_halt_state(pool, config.circuit_breaker_threshold)
+            if cap_skipped == 0 and config.circuit_breaker_threshold > 0
+            else None
         )
+        if halt_state is not None:
+            # Open. Once its backoff has elapsed this finding may go through as the one probe;
+            # otherwise the rest of the patrol is held. An unreadable breaker never probes.
+            blocker = "unreadable" if halt_state == "unreadable" else None
+            if blocker is None:
+                blocker = await _breaker_probe_blocker(pool, config)
+            if blocker is not None:
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+            probing = True
+
+        # Once the cap is reached, stop calling dispatch for the remaining findings.
+        # Continuing would insert a claim row per finding before rejecting it, and those
+        # orphaned 'failed' rows would trigger cooldown on the next patrol.
+        at_cap = cap_skipped > 0
+        if not at_cap:
+            active_count = await count_active_attempts(pool, qa_only=True)
+            if config.job_isolation is not None:
+                # Jobs the cluster still runs count too: a restart may have orphaned one. An
+                # unreadable fleet reads as "at cap", never as empty.
+                job_count = await active_job_count(config.job_isolation)
+                active_count = (
+                    config.max_concurrent if job_count is None else max(active_count, job_count)
+                )
+            at_cap = active_count >= config.max_concurrent
+        if at_cap:
+            results.append(
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=triaged.finding.fingerprint,
+                    reason="concurrency_cap",
+                )
+            )
+            cap_skipped += 1
+            held.append(triaged)
+            continue
+
+        probe_conn: asyncpg.pool.PoolConnectionProxy | None = None
+        if probing:
+            # The lock is held across the claim, so two dispatchers cannot both probe: the second
+            # finds the first's in-flight attempt when it re-checks.
+            probe_conn = await _acquire_probe_lock(pool)
+            blocker = (
+                "in_flight" if probe_conn is None else await _breaker_probe_blocker(pool, config)
+            )
+            if blocker is not None:
+                if probe_conn is not None:
+                    await _release_probe_lock(pool, probe_conn)
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+        try:
+            result = await dispatch_qa_investigation(
+                pool=pool,
+                triaged_finding=triaged,
+                patrol_id=patrol_id,
+                config=config,
+                repo_root=repo_root,
+                spawner=spawner,
+                gh_token=gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                task_registry=task_registry,
+                metrics=metrics,
+            )
+        finally:
+            if probe_conn is not None:
+                await _release_probe_lock(pool, probe_conn)
+        if probing and result.accepted:
+            # Recorded only for a probe that launched: a finding a gate refused spent nothing.
+            await _record_probe(pool, triaged, config, metrics)
         results.append(result)
 
-        if result.reason == "concurrency_cap":
-            cap_skipped += 1
+    if held:
+        # Record the authoritative reason and queue every capped finding for the next patrol:
+        # a one-shot error that no source rediscovers would otherwise be lost.
+        if not await _hold_for_retry(pool, held, "concurrency_cap", metrics):
+            lost = {t.finding.fingerprint for t in held}
+            results = [
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=r.fingerprint,
+                    reason="hold_failed",
+                    gate="concurrency_cap",
+                )
+                if (r.reason == "concurrency_cap" and r.fingerprint in lost)
+                else r
+                for r in results
+            ]
 
     if cap_skipped > 0:
         logger.info(

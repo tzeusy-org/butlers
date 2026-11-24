@@ -42,6 +42,8 @@ def _check_degenerate_tool_loop(
     A degenerate loop is defined as ``consecutive_threshold`` or more
     back-to-back tool calls with identical ``(name, input)`` signatures.
     Only adjacent duplicates count — non-identical calls reset the streak.
+    Adjacency is per thread: calls sharing a ``parent_tool_use_id`` (one
+    subagent) form a thread, and the session's own calls form another.
 
     Parameters
     ----------
@@ -80,21 +82,22 @@ def _check_degenerate_tool_loop(
             payload_fingerprint = fingerprint_tool_call_payload(payload)
         return f"{name}|{payload_fingerprint}"
 
-    streak = 1
-    prev_sig = _call_signature(tool_calls[0])
-    for call in tool_calls[1:]:
+    # Subagent calls interleave with their parent's (and with parallel siblings')
+    # in the runtime stream, so adjacency is judged within one thread at a time.
+    last_by_thread: dict[str | None, tuple[str, int]] = {}
+    for call in tool_calls:
+        thread = call.get("parent_tool_use_id")
+        thread_key = thread if isinstance(thread, str) and thread else None
         sig = _call_signature(call)
-        if sig == prev_sig:
-            streak += 1
-            if streak >= consecutive_threshold:
-                return (
-                    f"degenerate_tool_loop: {streak} consecutive identical calls to "
-                    f"{str(call.get('name', '') or '')!r} detected; "
-                    "session terminated to prevent runaway loop"
-                )
-        else:
-            streak = 1
-            prev_sig = sig
+        prev = last_by_thread.get(thread_key)
+        streak = prev[1] + 1 if prev is not None and prev[0] == sig else 1
+        last_by_thread[thread_key] = (sig, streak)
+        if streak >= consecutive_threshold:
+            return (
+                f"degenerate_tool_loop: {streak} consecutive identical calls to "
+                f"{str(call.get('name', '') or '')!r} detected; "
+                "session terminated to prevent runaway loop"
+            )
     return None
 
 

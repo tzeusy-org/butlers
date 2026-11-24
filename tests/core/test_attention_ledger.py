@@ -19,6 +19,7 @@ from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     attention_event_recorded_since,
     count_attention_events_since,
+    failed_attempts,
     find_notify_dispatch_for_session,
     get_suppressing_context,
     get_suppressing_context_signal,
@@ -96,6 +97,43 @@ class TestIsPriorityUrgent:
 
 
 class TestRecordAttentionEvent:
+    @pytest.mark.parametrize("registered_codec", [False, True], ids=["bare", "registered-codec"])
+    async def test_metadata_stays_an_object_across_jsonb_bind_boundaries(self, registered_codec):
+        """Model parameter encoding with the actual codec, without claiming native SQL proof."""
+        from butlers.db import encode_jsonb
+
+        class BoundaryPool:
+            stored_metadata = None
+
+            async def fetchval(self, query, *args):
+                value = args[10]
+                if "$11::text::jsonb" in query:
+                    # PostgreSQL first receives text; the JSONB codec is not selected.
+                    assert isinstance(value, str)
+                else:
+                    assert "$11::jsonb" in query
+                    if registered_codec:
+                        value = encode_jsonb(value)[1:].decode()
+                self.stored_metadata = json.loads(value)
+                return "boundary-row"
+
+        pool = BoundaryPool()
+        result = await record_attention_event(
+            pool,
+            origin_butler="health",
+            source="notify",
+            outcome="failed",
+            session_id="boundary-session",
+            metadata={"partial_delivery": True, "retryable": False},
+        )
+
+        assert result == "boundary-row"
+        assert pool.stored_metadata == {
+            "partial_delivery": True,
+            "retryable": False,
+            ATTENTION_LEDGER_SESSION_KEY: "boundary-session",
+        }
+
     async def test_none_pool_returns_none_without_error(self):
         result = await record_attention_event(
             None,
@@ -274,6 +312,19 @@ class TestAttentionEventRecordedSince:
             pool, dedup_key="fleet_case:health:owner:x", since=datetime.now(UTC)
         )
         assert result is False
+
+
+class TestFailedAttempts:
+    """bu-jv1moa.54: ledger trouble never blocks a retrying send (real-PG counting lives in
+    tests/integration/test_attention_ledger_roundtrip.py)."""
+
+    @pytest.mark.parametrize("broken", ["no_pool", "query_error"])
+    async def test_fails_open_to_no_failures(self, broken):
+        pool = None
+        if broken == "query_error":
+            pool = AsyncMock()
+            pool.fetchrow = AsyncMock(side_effect=Exception("boom"))
+        assert await failed_attempts(pool, dedup_key="job:k") == (0, None)
 
 
 class TestGetSuppressingContextSignal:
@@ -629,3 +680,26 @@ class TestFindNotifyDispatchForSession:
             await find_notify_dispatch_for_session(
                 pool, origin_butler="education", session_id="sess-abc"
             )
+
+
+async def test_record_failure_omits_chained_delivery_and_database_payload(caplog):
+    pool = AsyncMock()
+    pool.fetchval.side_effect = ValueError("sentinel-ledger-private-row")
+    try:
+        raise RuntimeError("sentinel-original-private-message-recipient")
+    except RuntimeError:
+        assert (
+            await record_attention_event(
+                pool,
+                origin_butler="home",
+                source="notify",
+                outcome="failed",
+                reason="delivery_error:RuntimeError",
+            )
+            is None
+        )
+    pool.fetchval.assert_awaited_once()
+    assert "ValueError" in caplog.text
+    assert "sentinel-original-private-message-recipient" not in caplog.text
+    assert "sentinel-ledger-private-row" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)

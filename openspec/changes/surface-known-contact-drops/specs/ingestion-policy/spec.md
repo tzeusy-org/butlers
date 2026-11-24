@@ -150,3 +150,37 @@ Scope: v1-mandatory
 
 - **WHEN** a rule is created or changed so `except_known_contacts` sits on any other action
 - **THEN** the API refuses it with 422
+
+### Requirement: WhatsApp and Drive drops from known contacts are marked like Gmail drops
+
+The WhatsApp user-client and Google Drive connectors SHALL stamp a stored filtered row's `drop_context` at every drop site exactly as Gmail does: `important_dropped` with basis `known_contact` only when the sender is in a loaded known-contact snapshot, plus a frozen content-free `classification` captured at the drop. WhatsApp SHALL classify a 1:1 chat by the peer phone derived from the chat JID (through the LID map for `@lid`) against priority-contact `has-phone` facts, and Drive SHALL classify the file's sharer (`sharingUser.emailAddress`, else the first non-self owner) against `has-email` facts. Both SHALL set the envelope's `known_contact` from a loaded snapshot only, so the per-rule "Except people I know" option of REQ-ingestion-policy-004 is honored there. A drop with no single person behind it (a WhatsApp group or broadcast batch, an owner-only Drive file) SHALL record the classification state `not_applicable`, which is certain: it SHALL NOT be counted as a known-contact drop and SHALL NOT raise the uncertainty count. A WhatsApp 1:1 chat whose peer cannot be resolved SHALL record no classification and so count as uncertain. No new known-contact source, no group marking and no change to replay safety or rule precedence is introduced.
+
+ID: REQ-ingestion-policy-006
+Source: bu-q7vx1q.42; surface-known-contact-drops tasks 4.3
+Scope: v1-mandatory
+
+#### Scenario: A known 1:1 WhatsApp chat or Drive sharer is marked
+
+- **WHEN** a 1:1 WhatsApp chat or a Drive file shared by a known contact is dropped by a block or skip rule with a loaded snapshot
+- **THEN** the stored row carries `important_dropped` with basis `known_contact` and a frozen classification
+
+#### Scenario: Strangers carry a classification but no marker
+
+- **WHEN** the peer or sharer is not in the loaded snapshot
+- **THEN** the row carries the classification and no positive marker
+
+#### Scenario: Not applicable drops are certain and uncounted
+
+- **WHEN** a WhatsApp group chat or an owner-only Drive file is dropped
+- **THEN** the row records classification state `not_applicable`
+- **AND** it adds nothing to the dropped-known count or the uncertainty count
+
+#### Scenario: An unloaded snapshot is unknown, never all clear
+
+- **WHEN** the snapshot is unloaded or stale at drop time
+- **THEN** the row's classification is that unknown state and `known_contact` stays absent, so a flagged rule remains in force
+
+#### Scenario: A known contact passes a flagged rule on both connectors
+
+- **WHEN** a known 1:1 WhatsApp chat or Drive sharer matches a flagged block rule with a loaded snapshot
+- **THEN** the rule is passed over and the event is ingested

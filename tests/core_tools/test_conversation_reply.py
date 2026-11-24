@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.core_tools._base import ToolContext
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -413,8 +414,7 @@ def _gap_env(monkeypatch, *, routing_context, hook_result=None):
     )
     hook = AsyncMock(return_value=hook_result or {"status": "recorded", "gap_id": "g1"})
     monkeypatch.setattr("butlers.core.memory_hooks.record_knowledge_gap", hook)
-    pool = AsyncMock()
-    pool.fetchval.return_value = "What is Mei's daughter's name?"
+    pool = fake_pool(fetchval="What is Mei's daughter's name?")
     return SimpleNamespace(
         conv_id=conv_id, request_id=request_id, entity_id=entity_id, hook=hook, pool=pool
     )

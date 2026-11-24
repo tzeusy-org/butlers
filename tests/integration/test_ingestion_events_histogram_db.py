@@ -35,8 +35,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -48,30 +46,6 @@ pytestmark = [
 
 HISTOGRAM_PATH = "/api/ingestion/events/histogram"
 BASE_URL = "http://test"
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — public.ingestion_events + connectors.filtered_events."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
-    await p.execute("TRUNCATE TABLE connectors.filtered_events CASCADE")
-    yield p
-    await p.close()
 
 
 # ---------------------------------------------------------------------------
@@ -157,14 +131,14 @@ async def _seed_filtered_event(
 
 
 async def test_window_rollup_counts_all_matching_sessions_and_rejects_missing_source(
-    pool, migrated_db_url
+    db_pool, fresh_db
 ):
     """A large window must include sessions beyond the former 10,000-ID cap."""
     from butlers.core.ingestion_events import ingestion_window_rollup
 
     ts = datetime(2026, 6, 30, 12, tzinfo=UTC)
-    await pool.execute("TRUNCATE TABLE public.sessions CASCADE")
-    await pool.execute(
+    await db_pool.execute("TRUNCATE TABLE public.sessions CASCADE")
+    await db_pool.execute(
         """
         INSERT INTO public.ingestion_events (
             id, received_at, source_channel, source_provider,
@@ -177,8 +151,8 @@ async def test_window_rollup_counts_all_matching_sessions_and_rejects_missing_so
         """,
         ts,
     )
-    filtered_id = await _seed_filtered_event(pool, received_at=ts)
-    await pool.execute(
+    filtered_id = await _seed_filtered_event(db_pool, received_at=ts)
+    await db_pool.execute(
         """
         INSERT INTO public.sessions (prompt, trigger_source, request_id, cost)
         SELECT 'test', 'test', id::text, '{"total_usd": 0.01}'::jsonb
@@ -189,18 +163,19 @@ async def test_window_rollup_counts_all_matching_sessions_and_rejects_missing_so
         str(filtered_id),
     )
     db = DatabaseManager()
-    db._pools = {"test": pool}
-    result = await ingestion_window_rollup(pool, from_dt=ts, to_dt=ts + timedelta(days=1), db=db)
+    db._pools = {"test": db_pool}
+    result = await ingestion_window_rollup(db_pool, from_dt=ts, to_dt=ts + timedelta(days=1), db=db)
     assert result["events"] == 10002
     assert result["sessions"] == 10002
     assert result["cost"] == pytest.approx(100.03)
-    filtered = await ingestion_window_rollup(pool, statuses=["filtered"], db=db)
+    filtered = await ingestion_window_rollup(db_pool, statuses=["filtered"], db=db)
     assert filtered["events"] == filtered["sessions"] == 1
     assert filtered["cost"] == pytest.approx(0.02)
 
-    # A genuinely failing owning source must not fabricate a zero subtotal.
+    # A genuinely failing owning source must not fabricate a zero subtotal: its
+    # pg_catalog-only search path hides sessions on any clone.
     missing_source = await asyncpg.create_pool(
-        migrated_db_url,
+        fresh_db("core"),
         min_size=1,
         max_size=1,
         server_settings={"search_path": "pg_catalog"},
@@ -208,12 +183,12 @@ async def test_window_rollup_counts_all_matching_sessions_and_rejects_missing_so
     try:
         db._pools["missing"] = missing_source
         with pytest.raises(RuntimeError, match="session sources unavailable"):
-            await ingestion_window_rollup(pool, db=db)
+            await ingestion_window_rollup(db_pool, db=db)
     finally:
         await missing_source.close()
 
 
-async def test_histogram_stacks_counts_across_both_tables_and_partitions(pool):
+async def test_histogram_stacks_counts_across_both_tables_and_partitions(db_pool):
     """A window straddling a month boundary correctly reads BOTH partitions.
 
     Seeds ingestion_events (unpartitioned) and filtered_events (partitioned,
@@ -230,19 +205,19 @@ async def test_histogram_stacks_counts_across_both_tables_and_partitions(pool):
     july_1_0001_30 = datetime(2026, 7, 1, 0, 1, 30, tzinfo=UTC)
 
     # ingestion_events: one plain ingest + one skip-triaged (derived 'skipped') in June.
-    await _seed_ingestion_event(pool, received_at=june_30_2359, status="ingested")
+    await _seed_ingestion_event(db_pool, received_at=june_30_2359, status="ingested")
     await _seed_ingestion_event(
-        pool, received_at=june_30_2359_30, status="ingested", triage_decision="skip"
+        db_pool, received_at=june_30_2359_30, status="ingested", triage_decision="skip"
     )
     # ingestion_events: one plain ingest in July.
-    await _seed_ingestion_event(pool, received_at=july_1_0001, status="ingested")
+    await _seed_ingestion_event(db_pool, received_at=july_1_0001, status="ingested")
 
     # filtered_events: one filtered row in June's partition, one error row in July's.
-    await _seed_filtered_event(pool, received_at=june_30_2359_30, status="filtered")
-    await _seed_filtered_event(pool, received_at=july_1_0001_30, status="error")
+    await _seed_filtered_event(db_pool, received_at=june_30_2359_30, status="filtered")
+    await _seed_filtered_event(db_pool, received_at=july_1_0001_30, status="error")
 
     # Sanity: the two rows really landed in different partitions.
-    partitions = await pool.fetch(
+    partitions = await db_pool.fetch(
         "SELECT tableoid::regclass::text AS partition FROM connectors.filtered_events "
         "ORDER BY partition"
     )
@@ -252,7 +227,7 @@ async def test_histogram_stacks_counts_across_both_tables_and_partitions(pool):
     }
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=june_30_2358,
         to_dt=datetime(2026, 7, 1, 0, 3, 0, tzinfo=UTC),
         bucket="1m",
@@ -282,15 +257,15 @@ async def test_histogram_stacks_counts_across_both_tables_and_partitions(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_histogram_respects_channel_filter(pool):
+async def test_histogram_respects_channel_filter(db_pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-    await _seed_ingestion_event(pool, received_at=ts, source_channel="email")
-    await _seed_ingestion_event(pool, received_at=ts, source_channel="telegram")
+    await _seed_ingestion_event(db_pool, received_at=ts, source_channel="email")
+    await _seed_ingestion_event(db_pool, received_at=ts, source_channel="telegram")
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -301,15 +276,15 @@ async def test_histogram_respects_channel_filter(pool):
     assert result["buckets"][0]["counts"]["ingested"] == 1
 
 
-async def test_histogram_respects_statuses_filter(pool):
+async def test_histogram_respects_statuses_filter(db_pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-    await _seed_ingestion_event(pool, received_at=ts, status="ingested")
-    await _seed_filtered_event(pool, received_at=ts, status="error")
+    await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")
+    await _seed_filtered_event(db_pool, received_at=ts, status="error")
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -322,18 +297,18 @@ async def test_histogram_respects_statuses_filter(pool):
     assert counts["ingested"] == 0
 
 
-async def test_histogram_counts_failed_status_against_real_backend(pool):
+async def test_histogram_counts_failed_status_against_real_backend(db_pool):
     """'failed' (routing failure post-ingestion, ingestion_event_mark_failed's
     'ingested' -> 'failed' transition) is counted in the histogram rather than
     being dropped by the union query's status vocabulary (bu-lkzsf.2)."""
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-    await _seed_ingestion_event(pool, received_at=ts, status="ingested")
-    await _seed_ingestion_event(pool, received_at=ts, status="failed")
+    await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(db_pool, received_at=ts, status="failed")
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -345,15 +320,15 @@ async def test_histogram_counts_failed_status_against_real_backend(pool):
     assert counts["ingested"] == 1
 
 
-async def test_histogram_respects_q_filter(pool):
+async def test_histogram_respects_q_filter(db_pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
-    await _seed_ingestion_event(pool, received_at=ts, sender="alice@example.com")
-    await _seed_ingestion_event(pool, received_at=ts, sender="bob@example.com")
+    await _seed_ingestion_event(db_pool, received_at=ts, sender="alice@example.com")
+    await _seed_ingestion_event(db_pool, received_at=ts, sender="bob@example.com")
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -364,7 +339,7 @@ async def test_histogram_respects_q_filter(pool):
     assert result["buckets"][0]["counts"]["ingested"] == 1
 
 
-async def test_histogram_respects_event_ids_filter(pool):
+async def test_histogram_respects_event_ids_filter(db_pool):
     """event_ids' `id = ANY($N::uuid[])` cast is valid against the real UNION ALL
     of the unpartitioned public.ingestion_events and the partitioned
     connectors.filtered_events (bu-q750c: trace-scoped hour strip).
@@ -376,12 +351,12 @@ async def test_histogram_respects_event_ids_filter(pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
-    keep_id = await _seed_ingestion_event(pool, received_at=ts, status="ingested")
-    await _seed_ingestion_event(pool, received_at=ts, status="ingested")
-    await _seed_filtered_event(pool, received_at=ts, status="error")
+    keep_id = await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")
+    await _seed_filtered_event(db_pool, received_at=ts, status="error")
 
     result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -396,7 +371,7 @@ async def test_histogram_respects_event_ids_filter(pool):
     # An explicit empty list restricts to zero rows (a trace that matched no
     # session), not "no filter" — no buckets at all should come back.
     empty_result = await ingestion_events_histogram(
-        pool,
+        db_pool,
         from_dt=ts - timedelta(minutes=1),
         to_dt=ts + timedelta(minutes=1),
         bucket="1m",
@@ -411,13 +386,13 @@ async def test_histogram_respects_event_ids_filter(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_histogram_guardrail_enforced_against_real_pool(pool):
+async def test_histogram_guardrail_enforced_against_real_pool(db_pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     from_dt = datetime(2026, 1, 1, tzinfo=UTC)
     with pytest.raises(ValueError, match="too wide for bucket '1m'"):
         await ingestion_events_histogram(
-            pool,
+            db_pool,
             from_dt=from_dt,
             to_dt=from_dt + timedelta(hours=48, minutes=1),
             bucket="1m",
@@ -431,9 +406,9 @@ async def test_histogram_guardrail_enforced_against_real_pool(pool):
 
 
 @pytest.fixture
-def histogram_app(pool: asyncpg.Pool) -> FastAPI:
+def histogram_app(db_pool: asyncpg.Pool) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = db_pool
 
     application = create_app()
 
@@ -441,9 +416,9 @@ def histogram_app(pool: asyncpg.Pool) -> FastAPI:
     return application
 
 
-async def test_histogram_endpoint_200_against_real_backend(histogram_app, pool):
+async def test_histogram_endpoint_200_against_real_backend(histogram_app, db_pool):
     ts = datetime(2026, 4, 1, 9, 0, 0, tzinfo=UTC)
-    await _seed_ingestion_event(pool, received_at=ts)
+    await _seed_ingestion_event(db_pool, received_at=ts)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=histogram_app), base_url=BASE_URL
@@ -480,7 +455,7 @@ async def test_histogram_endpoint_422_on_guardrail_against_real_backend(histogra
     assert "too wide" in resp.json()["detail"]
 
 
-async def test_histogram_endpoint_trace_id_filters_to_matching_events(pool):
+async def test_histogram_endpoint_trace_id_filters_to_matching_events(db_pool):
     """?trace_id= resolves to matching event ids and filters the histogram (bu-q750c).
 
     Proves the router-level wiring end to end against the real backend: the
@@ -490,11 +465,11 @@ async def test_histogram_endpoint_trace_id_filters_to_matching_events(pool):
     reflects only the trace's events, not the whole window.
     """
     ts = datetime(2026, 4, 2, 9, 0, 0, tzinfo=UTC)
-    traced_id = await _seed_ingestion_event(pool, received_at=ts, status="ingested")
-    await _seed_ingestion_event(pool, received_at=ts, status="ingested")  # untraced, same window
+    traced_id = await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(db_pool, received_at=ts, status="ingested")  # untraced, same window
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = db_pool
     mock_db.fan_out_with_status = AsyncMock(
         return_value=({"atlas": [{"request_id": str(traced_id)}]}, [])
     )

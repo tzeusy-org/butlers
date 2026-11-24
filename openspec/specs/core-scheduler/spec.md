@@ -133,7 +133,7 @@ The `tick()` function SHALL query all due tasks (`enabled=true AND next_run_at <
 Additionally, `tick()` SHALL perform three new evaluation passes:
 
 1. **Deadline evaluation**: For each enabled task with `task_type='deadline'`, compute `days_remaining` and evaluate alert thresholds. Dispatch deadline tasks whose thresholds are newly satisfied.
-2. **Event chain trigger detection**: Query calendar projection for events whose `end_at` has passed since last tick. Check for deadline status transitions. Fire matching event chains by materializing their actions as one-shot scheduled tasks.
+2. **Event chain trigger detection**: Check deadline status transitions and threshold matches. Fire matching deadline event chains by materializing their actions as one-shot scheduled tasks. Historical calendar-end chains remain readable and removable, without querying calendar projection, marking an event or materializing work.
 3. **Deferred notification flush**: Query `deferred_notifications` where `status='pending' AND deliver_at <= now()`, pass a solo row's stored envelope verbatim to the standard notify pipeline, and update a row to delivered only after successful delivery. The flush SHALL NOT re-evaluate approvals-policy quiet hours or context for a stored envelope; `deliver_at` is the durable admission decision. Existing same-target coalescing and pending-row retry behavior remain unchanged.
 
 The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, and `deferred_flushed` in addition to the existing `tasks_due` and `tasks_run`.
@@ -147,6 +147,19 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the error is captured in `last_result` as `{"error": "..."}` and the remaining due tasks continue dispatching
 - **AND** the failed task's `next_run_at` is still advanced to the next cron occurrence
 
+#### Scenario: A CancelledError with no cancel of the running task is a dispatch failure
+- **WHEN** a cron or deadline dispatch raises `asyncio.CancelledError` and `Task.cancelling()` is zero for the task running `tick()`
+- **THEN** it is handled as that dispatch's failure and the remaining due tasks continue dispatching
+
+#### Scenario: A real cancel of the running task propagates
+- **WHEN** the task running `tick()` is itself cancelled during a dispatch
+- **THEN** `CancelledError` propagates out of `tick()` and no later due task is dispatched
+
+#### Scenario: Only its own cancel ends the scheduler loop
+- **WHEN** a tick or the work after it ends with `CancelledError` and the scheduler loop's task was not cancelled
+- **THEN** the loop logs an error and runs its next tick
+- **AND** when the loop's own task is cancelled it lets an in-progress tick finish, then ends
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing
@@ -154,9 +167,9 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 
 #### Scenario: Event chain detection runs each tick
 - **WHEN** `tick()` is called
-- **THEN** calendar projection is checked for recently ended events
-- **AND** deadline status transitions are checked
-- **AND** matching event chains with `status='active'` are fired
+- **THEN** deadline status transitions and threshold matches are checked
+- **AND** matching deadline event chains with `status='active'` are fired
+- **AND** historical calendar-end chains remain inert without calendar projection reads or event marking
 
 #### Scenario: Deferred notification flush runs each tick
 - **WHEN** `tick()` is called
@@ -173,11 +186,11 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** `get_active_seasons()` returns non-empty results
 - **THEN** the dispatch context includes `active_seasons` metadata
 
-#### Scenario: Legacy schema without until_at continues cron dispatch
-- **WHEN** `tick()` runs against a deployed legacy `scheduled_tasks` table that does not yet include the `until_at` column
-- **THEN** it logs a warning that `scheduled_tasks.until_at` is missing
-- **AND** the due-task query projects `NULL::timestamptz AS until_at`
-- **AND** due cron tasks continue dispatching without applying an auto-disable boundary until the schema is backfilled
+#### Scenario: Migrated scheduler schema is required
+- **WHEN** `tick()` runs against storage missing a required migrated column or table
+- **THEN** the actual database fault remains visible instead of a schema probe, NULL projection or silent pass skip
+- **AND** the scheduler does not reinterpret missing `task_type`, `until_at`, `max_token_budget`, `continuity`, deadline, event-chain or deferred-notification storage as a usable legacy schema
+- **AND** current-schema claims, CAS, dispatch ordering, attention, continuity, quiet-window decisions, retry/coalescing and expiry remain unchanged
 
 ### Requirement: Auto-Disable via until_at Boundary
 When a task has `until_at` set and the computed `next_run_at` exceeds it, the scheduler SHALL automatically set the task to `enabled=false` and `next_run_at=NULL` after its final dispatch.
@@ -282,6 +295,10 @@ Continuity lookup SHALL be fail-open, not fail-closed: any exception during look
 
 Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior change: `tick()` SHALL NOT query `task_continuity` for them and SHALL NOT alter their dispatched prompt.
 
+ID: REQ-core-scheduler-002
+Source: RFC 0038 D5, D6 and D7
+Scope: v1-mandatory
+
 #### Scenario: Opted-in task with no prior run gets an honest empty state
 - **WHEN** a `continuity=true` task fires for the first time (no live row in `public.task_continuity`)
 - **THEN** the dispatched prompt includes a continuity block reading "the last run recorded no carry-forward"
@@ -316,10 +333,10 @@ Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior
 - **THEN** `carry_forward` is NOT among them
 - **AND** this does not affect any other butler's tool registration
 
-#### Scenario: Legacy schema without the continuity column
-- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`
-- **THEN** the column probe treats `continuity` as absent
-- **AND** every task is treated as `continuity_enabled=False`, with no behavior change from before the ledger existed
+#### Scenario: Missing migrated continuity column is a storage fault
+- **WHEN** `tick()` runs against a `scheduled_tasks` table missing `continuity`
+- **THEN** the database error remains visible without a column probe or implicit opt-out
+- **AND** migrated rows with `continuity=false` still dispatch without a continuity block
 
 #### Scenario: The ledger is excluded from the nightly backup, by design
 - **WHEN** the nightly `pg_dump` backup runs
@@ -389,3 +406,20 @@ arguments, or other schedule runtime payload.
 - **THEN** it returns `SCHEDULE_TOML_MANAGED` for TOML or
   `SCHEDULE_MANAGED` for the other source
 - **AND** it leaves the row unchanged
+
+### Requirement: Administrative Hold Gate Fails Closed
+
+A butler under an administrative hold (paused or quarantined eligibility, or a non-active policy row under the receiver cutover) SHALL NOT dispatch scheduled work: `tick()` SHALL skip its deadline and cron dispatch and leave `next_run_at` unchanged. When the gate is given an eligibility pool and the registry or policy lookup fails, the tick SHALL be gated the same way with the reason `eligibility unavailable: registry lookup failed`, SHALL log at ERROR, and the preserved due work SHALL run once on the first tick after the registry is readable. A caller that supplies no eligibility pool opts that butler out of gating.
+
+ID: REQ-core-scheduler-005
+Source: bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D10
+Scope: v1-mandatory
+
+#### Scenario: Paused butler does not dispatch
+- **WHEN** the butler's eligibility is quarantined or its policy is not active
+- **THEN** the tick dispatches no deadline or cron work and `next_run_at` is unchanged
+
+#### Scenario: Unreadable registry gates the tick
+- **WHEN** the eligibility lookup raises
+- **THEN** the tick dispatches nothing, logs at ERROR, and `next_run_at` stays due
+- **AND** the first tick after the registry is readable dispatches the preserved work once

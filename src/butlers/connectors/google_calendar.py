@@ -20,8 +20,6 @@ Key behaviors:
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=google_calendar (required)
-- CONNECTOR_CHANNEL=google_calendar (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40085)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -43,8 +41,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Thread
@@ -53,39 +51,76 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
-from pydantic import BaseModel
+from prometheus_client import Counter
 
+from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.calendar_event_revisions import record_calendar_revisions
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.evidence_journal import EvidenceNotCommitted
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
+from butlers.connectors.google_fleet import (
+    AccountHealthStatus,
+    GoogleAccountFleet,
+    MultiAccountHealthStatus,
+    _classify_source_api_error,
+    _redact_email,
+)
+from butlers.connectors.google_fleet import (
+    _format_google_error as _format_google_error,
+)
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.core.temporal.calendar_provenance import is_status_event
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
-from butlers.google_credentials import InvalidGoogleCredentialsError, load_google_credentials
+from butlers.egress.http_transport import external_async_client
+from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
+    InvalidGoogleCredentialsError,
+    load_google_credentials,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_MESSAGE
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
+
+_DESCRIPTOR = connector_descriptor("google_calendar")
 
 if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
 
+#: Filters every events.list sync request sends. Google issues a ``nextSyncToken`` only to a
+#: request without ``orderBy``, and a sync-token request must repeat the initial request's
+#: filters, so the full and the incremental pass share this one set (bu-uhbhzq.1).
+_SYNC_FILTER_PARAMS: dict[str, str] = {"singleEvents": "true", "showDeleted": "true"}
+
+_NO_SYNC_TOKEN_REASON = "Google Calendar full sync returned no sync token"
+_CURSOR_LOAD_FAILED_REASON = "Google Calendar cursor could not be loaded"
+
+calendar_resync_full_ingest_total = Counter(
+    "connector_calendar_resync_full_ingest_total",
+    "Full syncs that ingest events (410 recovery or a pending resync)",
+    labelnames=["endpoint_identity"],
+)
+_JOURNAL_FAILED_REASON = "Google Calendar revision journal write failed"
+_PRIMARY_CALENDAR_ID = "primary"
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "google_calendar"
-_CONNECTOR_CHANNEL = "google_calendar"
-_CONNECTOR_PROVIDER = "google_calendar"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Calendar scope required for event access
 _GCAL_SCOPE = "https://www.googleapis.com/auth/calendar"
@@ -93,7 +128,7 @@ _GCAL_SCOPE_READONLY = "https://www.googleapis.com/auth/calendar.readonly"
 
 # Google Calendar API base URL
 _GCAL_API_BASE = "https://www.googleapis.com/calendar/v3"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 
 # Default config values
 _DEFAULT_POLL_INTERVAL_S = 60
@@ -110,78 +145,6 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 2.0
 _RATE_LIMIT_MAX_DELAY_S = 30.0
 
-_OAUTH_ACTION_REQUIRED_ERROR_CODES = frozenset({"invalid_grant", "unauthorized_client"})
-
-
-def _format_google_error(response: httpx.Response | None) -> str | None:
-    """Return compact Google OAuth/API error detail without leaking request secrets."""
-    if response is None:
-        return None
-
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            parts: list[str] = []
-            code = error.get("code")
-            if code is not None:
-                parts.append(f"code={code}")
-            status = error.get("status")
-            if isinstance(status, str) and status:
-                parts.append(f"status={status}")
-            message = error.get("message")
-            if isinstance(message, str) and message:
-                parts.append(f"message={message}")
-            if parts:
-                return ", ".join(parts)
-        if isinstance(error, str) and error:
-            description = payload.get("error_description")
-            if isinstance(description, str) and description:
-                return f"error={error}, description={description}"
-            return f"error={error}"
-
-    body = response.text.strip()
-    if body:
-        return f"HTTP {response.status_code}: {body[:200]}"
-    return f"HTTP {response.status_code}"
-
-
-def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
-    """Classify Calendar source failures without confusing API errors for revocation.
-
-    Google only proves refresh-token revocation at the OAuth token endpoint via
-    a top-level ``invalid_grant``/``unauthorized_client`` error.  Calendar API
-    401/403 responses can clear after token refresh or reflect scope-local
-    configuration, so they stay degraded and do not mutate shared account state.
-    """
-    response = getattr(exc, "response", None)
-    detail = _format_google_error(response) if isinstance(response, httpx.Response) else None
-    is_auth_revocation = False
-    if isinstance(response, httpx.Response):
-        try:
-            request = response.request
-        except RuntimeError:
-            request = None
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        if (
-            request is not None
-            and request.method == "POST"
-            and str(request.url) == _GOOGLE_TOKEN_URL
-            and isinstance(payload, dict)
-        ):
-            error_code = payload.get("error")
-            if isinstance(error_code, str) and error_code in _OAUTH_ACTION_REQUIRED_ERROR_CODES:
-                is_auth_revocation = True
-
-    return is_auth_revocation, detail or f"{type(exc).__name__}: {exc}"
-
 
 def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStatusError:
     """Attach a response to a status error even when a unit-test response lacks a request."""
@@ -195,28 +158,6 @@ def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStat
 # ---------------------------------------------------------------------------
 # Health status models
 # ---------------------------------------------------------------------------
-
-
-class AccountHealthStatus(BaseModel):
-    """Per-account health status for the multi-account calendar connector."""
-
-    email: str | None
-    endpoint_identity: str
-    status: Literal["healthy", "degraded", "error"]
-    last_checkpoint_save_at: str | None
-    last_ingest_submit_at: str | None
-    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
-    error: str | None = None
-
-
-class MultiAccountHealthStatus(BaseModel):
-    """Aggregated health status across all calendar account loops."""
-
-    status: Literal["healthy", "degraded", "error"]
-    uptime_seconds: float
-    active_accounts: int
-    account_health: list[AccountHealthStatus]
-    timestamp: str
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +410,8 @@ class GoogleCalendarConnectorConfig:
         gcal_client_id: str,
         gcal_client_secret: str,
         gcal_refresh_token: str,
-        connector_provider: str = "google_calendar",
-        connector_channel: str = "google_calendar",
+        connector_provider: str = _DESCRIPTOR.provider,
+        connector_channel: str = _DESCRIPTOR.channel,
         connector_max_inflight: int = _DEFAULT_MAX_INFLIGHT,
         gcal_starting_soon_lead_minutes: int = _DEFAULT_STARTING_SOON_LEAD_MINUTES,
         gcal_poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
@@ -515,8 +456,8 @@ def build_event_envelope(
     *,
     event_type: str,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a Google Calendar event change.
@@ -576,8 +517,8 @@ def build_starting_soon_envelope(
     *,
     lead_minutes: int,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for an 'event starting soon' notification.
@@ -640,6 +581,14 @@ def _is_event_cancelled(event: dict[str, Any]) -> bool:
     return event.get("status") == "cancelled"
 
 
+def _never_starts_soon(event: dict[str, Any]) -> bool:
+    """A cancelled event or a declared status (out of office, working location).
+
+    A status is not a meeting, so it never earns a starting-soon notice.
+    """
+    return _is_event_cancelled(event) or is_status_event(event.get("eventType"))
+
+
 def scan_starting_soon(
     events: list[dict[str, Any]],
     seen_set: StartingSoonSeenSet,
@@ -647,8 +596,8 @@ def scan_starting_soon(
     lead_minutes: int,
     now: datetime | None = None,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
 ) -> list[dict[str, Any]]:
     """Scan upcoming events and return starting-soon ingest envelopes.
 
@@ -679,7 +628,7 @@ def scan_starting_soon(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
-        if _is_event_cancelled(event):
+        if _never_starts_soon(event):
             continue
 
         # Skip all-day events — only timed events can have starting-soon notifications
@@ -741,8 +690,8 @@ def scan_starting_soon_on_restart(
     lead_minutes: int,
     now: datetime | None = None,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
 ) -> list[dict[str, Any]]:
     """Emit starting-soon notifications on connector restart for events not yet started.
 
@@ -764,7 +713,7 @@ def scan_starting_soon_on_restart(
     window_end = now + timedelta(minutes=lead_minutes)
 
     for event in events:
-        if _is_event_cancelled(event):
+        if _never_starts_soon(event):
             continue
 
         # Skip all-day events
@@ -884,7 +833,7 @@ class GoogleCalendarAccountRuntime:
             raise RuntimeError("MCP client not initialized")
 
         for envelope in envelopes:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +931,21 @@ class CalendarConnectorRuntime:
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
         )
+        # A failed ingest keeps the sync token where it is, so the next cycle
+        # reads the event again, until the event's attempts are spent and it is
+        # parked as a replayable error row (bu-dhloi1.149).
+        self._ingest_retry = IngestRetryBudget()
+        self._hold_sync_token = False
+        # Set while an ingestion-policy evaluation is failing; cleared by the
+        # next event whose evaluation succeeds (bu-5ii4gj.19).
+        self._policy_error: str | None = None
+        # Set when a full sync's last page carried no nextSyncToken: capture is not working.
+        self._missing_sync_token = False
+        self._resync_pending = False
+        # Set when the stored cursor could not be read; the cycle is skipped until it can.
+        self._cursor_load_failed = False
+        # Set when the revision journal could not be written; cleared by the next success.
+        self._journal_failed = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1007,7 +971,7 @@ class CalendarConnectorRuntime:
         )
 
         self._running = True
-        self._http_client = httpx.AsyncClient(timeout=30)
+        self._http_client = external_async_client(timeout=30)
 
         try:
             # Load ingestion policy rules (lazy background refresh after this)
@@ -1079,6 +1043,11 @@ class CalendarConnectorRuntime:
                 # instead of killing the account loop permanently.
                 if self._sync_token is None:
                     await self._ensure_sync_token()
+                    if self._sync_token is None:
+                        # No token to poll with (a full sync yields none, or one failed to
+                        # hold): wait a poll interval, never repeat the full sync back to back.
+                        await asyncio.sleep(self._config.poll_interval_s)
+                        continue
                 await self._run_one_poll_cycle()
             except asyncio.CancelledError:
                 raise
@@ -1117,6 +1086,8 @@ class CalendarConnectorRuntime:
             await self._perform_full_sync(ingest_events=True)
             return
 
+        if events and not await self._journal_events(events, "change"):
+            return
         if not events and next_sync_token == self._sync_token:
             # No changes; just update any starting-soon notifications
             await self._check_starting_soon()
@@ -1124,15 +1095,26 @@ class CalendarConnectorRuntime:
 
         # Process changed events
         ingested_count = 0
+        self._hold_sync_token = False
         for event in events:
-            if not self._running:
+            if not self._running or self._hold_sync_token:
                 break
             ingested = await self._process_event(event)
             if ingested:
                 ingested_count += 1
 
-        # Advance checkpoint only after processing
-        if next_sync_token and next_sync_token != self._sync_token:
+        # A cycle that evaluated every event without a hold clears a policy error.
+        if not self._hold_sync_token:
+            self._policy_error = None
+
+        # Advance checkpoint only after processing, and never past an event
+        # whose ingest failed and is waiting for a retry.
+        if self._hold_sync_token:
+            logger.info(
+                "Calendar: keeping syncToken for email=%s until a failed event is retried",
+                self._config.email,
+            )
+        elif next_sync_token and next_sync_token != self._sync_token:
             self._sync_token = next_sync_token
             await self._save_sync_token(next_sync_token)
 
@@ -1153,30 +1135,100 @@ class CalendarConnectorRuntime:
     # SyncToken management
     # ------------------------------------------------------------------
 
+    def _policy_blocks(self, event: Mapping[str, Any]) -> bool:
+        """Whether source policy blocks this event (no side effects).
+
+        The global deny is evaluated on its own, so a connector-local policy error never skips a
+        known global block. An error that leaves the answer open raises: the journal batch is then
+        held, because a permanent blocked row for an event that might be allowed is worse.
+        """
+        organizer_email = (event.get("organizer") or {}).get("email", "unknown")
+        envelope = IngestionEnvelope(
+            sender_address=organizer_email,
+            source_channel=_DESCRIPTOR.channel,
+            raw_key=event.get("id", ""),
+        )
+        unresolved = False
+        try:
+            global_decision = self._global_ingestion_policy.evaluate(envelope)
+            if global_decision is not None and global_decision.action == "skip":
+                return True
+        except Exception:  # noqa: BLE001
+            unresolved = True
+        try:
+            decision = self._ingestion_policy.evaluate(envelope)
+            if decision is not None and not decision.allowed:
+                return True
+        except Exception:  # noqa: BLE001
+            unresolved = True
+        if unresolved:
+            raise _PolicyUnresolvedError("policy evaluation failed")
+        return False
+
+    async def _journal_events(self, events: list[dict[str, Any]], observation: str) -> bool:
+        """Append every observed event version to the revision journal; False when it failed.
+
+        This is the commit point: it runs before any Switchboard submission and before the sync
+        token moves. On failure nothing proceeds, health is degraded, and the next cycle fetches
+        and journals the same delta again (the unique key dedupes it).
+        """
+        try:
+            await record_calendar_revisions(
+                self._cursor_pool,
+                endpoint_identity=self._config.endpoint_identity,
+                calendar_id=_PRIMARY_CALENDAR_ID,
+                events=events,
+                observation=observation,
+                parse=_parse_dt,
+                blocked=self._policy_blocks,
+            )
+        except EvidenceNotCommitted as exc:
+            self._journal_failed = True
+            logger.error(
+                "Calendar: revision journal write failed for email=%s (failure_class=%s); "
+                "the sync token is held",
+                self._config.email,
+                exc.reason,
+            )
+            return False
+        self._journal_failed = False
+        return True
+
     async def _ensure_sync_token(self) -> None:
         """Load syncToken from cursor store; if missing, perform full sync."""
         if self._sync_token is not None:
             return
 
-        # Try loading from cursor store
-        if self._cursor_pool is not None:
+        # Try loading from cursor store. The baseline below runs only when the store positively
+        # answered "no row": on a load error the cycle is skipped (health degrades, the next poll
+        # retries), because a baseline token saved now would overwrite a "" recovery marker or
+        # drop the events after a stored token.
+        if self._cursor_pool is not None and not self._resync_pending:
             try:
                 stored_token = await load_cursor(
                     self._cursor_pool, _CONNECTOR_TYPE, self._config.endpoint_identity
                 )
-                if stored_token:
-                    self._sync_token = stored_token
-                    logger.info(
-                        "Calendar: loaded syncToken from cursor store: email=%s",
-                        self._config.email,
-                    )
-                    return
             except Exception as exc:
+                self._cursor_load_failed = True
                 logger.warning(
                     "Calendar: failed to load cursor from store for email=%s: %s",
                     self._config.email,
                     exc,
                 )
+                return
+            self._cursor_load_failed = False
+            self._resync_pending = stored_token == ""
+            if stored_token:
+                self._sync_token = stored_token
+                logger.info(
+                    "Calendar: loaded syncToken from cursor store: email=%s",
+                    self._config.email,
+                )
+                return
+
+        if self._resync_pending:
+            await self._perform_full_sync(ingest_events=True)
+            return
 
         # No stored token — perform initial full sync to establish baseline
         logger.info(
@@ -1184,6 +1236,11 @@ class CalendarConnectorRuntime:
             self._config.email,
         )
         await self._perform_full_sync(ingest_events=False)
+
+    async def _clear_sync_token(self) -> None:
+        """Blank the stored cursor so an expired token is not loaded again after a restart."""
+        self._resync_pending = True
+        await self._save_sync_token("")
 
     async def _save_sync_token(self, token: str) -> None:
         """Persist syncToken to cursor store."""
@@ -1200,9 +1257,10 @@ class CalendarConnectorRuntime:
                 token,
                 parent_endpoint_identity=NO_PARENT,
             )
-            self._last_checkpoint_save = time.time()
-            self._metrics.record_checkpoint_save("success")
-            logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
+            if token:
+                self._last_checkpoint_save = time.time()
+                self._metrics.record_checkpoint_save("success")
+                logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
         except Exception as exc:
             self._metrics.record_checkpoint_save("error")
             logger.warning(
@@ -1214,46 +1272,40 @@ class CalendarConnectorRuntime:
     # ------------------------------------------------------------------
 
     async def _get_access_token(self) -> str:
-        """Return a valid access token, refreshing if needed."""
-        now = datetime.now(UTC)
-        if (
-            self._access_token is not None
-            and self._token_expires_at is not None
-            and now < self._token_expires_at - timedelta(seconds=60)
-        ):
-            return self._access_token
-
-        # Refresh the token
+        """Return an account token through the shared locked 60-second cache."""
         assert self._http_client is not None
-        resp = await self._http_client.post(
-            _GOOGLE_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": self._config.refresh_token,
-                "client_id": self._config.client_id,
-                "client_secret": self._config.client_secret,
-            },
-            timeout=15,
-        )
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(
+                self,
+                account=self._config.email,
+                current_credentials=lambda: (
+                    self._config.client_id,
+                    self._config.client_secret,
+                    self._config.refresh_token,
+                ),
+            )
 
-        if resp.status_code != 200:
-            error = _http_status_error(resp, "Calendar token refresh failed")
-            self._record_source_api_failure(error)
-            raise error
+        async def refreshed() -> None:
+            self._record_source_api_success()
 
-        # Validate the whole payload before touching connector state, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
         try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+            token = await cache.get_token(
+                self._http_client,
+                on_refreshed=refreshed,
+                client_id=self._config.client_id,
+                client_secret=self._config.client_secret,
+                refresh_token=self._config.refresh_token,
+                timeout=15,
+            )
+        except httpx.HTTPStatusError as exc:
+            error = _http_status_error(exc.response, "Calendar token refresh failed")
+            self._record_source_api_failure(error)
+            raise error from exc
+        except Exception as exc:
             self._record_source_api_failure(exc)
             raise
-
-        self._access_token = token.access_token
-        self._token_expires_at = now + timedelta(seconds=token.expires_in)
-        self._record_source_api_success()
-        logger.debug("Calendar: token refreshed for email=%s", self._config.email)
-        return self._access_token
+        return token
 
     async def _gcal_api_get(
         self,
@@ -1337,16 +1389,17 @@ class CalendarConnectorRuntime:
         establish the baseline syncToken. On syncToken expiry (ingest_events=True),
         events are ingested during the full sync.
         """
+        if ingest_events:
+            calendar_resync_full_ingest_total.labels(
+                endpoint_identity=self._config.endpoint_identity
+            ).inc()
         logger.info(
             "Calendar: starting full sync (ingest_events=%s) for email=%s",
             ingest_events,
             self._config.email,
         )
 
-        params: dict[str, Any] = {
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
+        params: dict[str, Any] = dict(_SYNC_FILTER_PARAMS)
 
         page_token: str | None = None
         all_events: list[dict[str, Any]] = []
@@ -1369,6 +1422,14 @@ class CalendarConnectorRuntime:
             if not page_token:
                 break
 
+        # Health follows the final page, set before any event is processed: a retry hold below
+        # must not leave a missing token looking healthy (REQ-connector-google-calendar-011).
+        self._missing_sync_token = not next_sync_token
+        # Evidence first: the baseline (or 410 recovery) is journaled before anything is routed
+        # or the token saved, so a failed write repeats this sync instead of losing history.
+        if not await self._journal_events(all_events, "resync" if ingest_events else "baseline"):
+            return
+
         # Populate upcoming events cache for "starting soon" detection
         self._upcoming_events.clear()
         now = datetime.now(UTC)
@@ -1376,18 +1437,54 @@ class CalendarConnectorRuntime:
         for event in all_events:
             event_id = event.get("id", "")
             start_dt = _parse_event_start(event)
+            if event.get("status") == "cancelled":
+                continue  # showDeleted returns cancelled instances; they are not upcoming
             if start_dt and now <= start_dt <= window_end:
                 self._upcoming_events[event_id] = (event, start_dt)
 
+        self._hold_sync_token = False
         if ingest_events:
             for event in all_events:
-                if not self._running:
+                if not self._running or self._hold_sync_token:
                     break
+                if event.get("status") == "cancelled":
+                    # A full sync lists the calendar as it stands; cancellations are processed
+                    # only from incremental sync (REQ-connector-google-calendar-010).
+                    continue
                 await self._process_event(event)
+            if not self._hold_sync_token:
+                self._policy_error = None
 
-        if next_sync_token:
-            self._sync_token = next_sync_token
-            await self._save_sync_token(next_sync_token)
+        if self._hold_sync_token:
+            # The old token stays, so the next cycle repeats this full sync.
+            logger.info(
+                "Calendar: full sync kept the old syncToken for email=%s; a failed "
+                "event waits for a retry",
+                self._config.email,
+            )
+            return
+        if not next_sync_token:
+            # Failure never impersonates health: no token means no incremental capture.
+            self._missing_sync_token = True
+            if ingest_events:
+                # After a 410 the expired token must not be reused: drop it from memory and
+                # blank the stored cursor (a recovery marker). The loop degrades and waits a poll
+                # interval between attempts; while Google keeps returning no token each attempt
+                # ingests the whole calendar again, which is counted by
+                # connector_calendar_resync_full_ingest_total and deduped downstream.
+                self._sync_token = None
+                await self._clear_sync_token()
+            logger.error(
+                "Calendar: full sync for email=%s returned no nextSyncToken (%d events); "
+                "no cursor saved, capture is not incremental",
+                self._config.email,
+                len(all_events),
+            )
+            return
+        self._missing_sync_token = False
+        self._resync_pending = False
+        self._sync_token = next_sync_token
+        await self._save_sync_token(next_sync_token)
 
         logger.info(
             "Calendar: full sync complete for email=%s: %d events, syncToken saved",
@@ -1401,10 +1498,7 @@ class CalendarConnectorRuntime:
         Returns (events, next_sync_token).
         Raises _SyncTokenExpiredError on 410 Gone.
         """
-        params: dict[str, Any] = {
-            "syncToken": sync_token,
-            "showDeleted": "true",
-        }
+        params: dict[str, Any] = {"syncToken": sync_token, **_SYNC_FILTER_PARAMS}
 
         all_events: list[dict[str, Any]] = []
         next_sync_token: str | None = None
@@ -1432,6 +1526,21 @@ class CalendarConnectorRuntime:
     # ------------------------------------------------------------------
     # Event processing and ingestion
     # ------------------------------------------------------------------
+
+    def _hold_on_policy_error(self, event_id: str, exc: Exception) -> bool:
+        """Fail closed: an event whose policy cannot be evaluated is not submitted.
+
+        The sync token is held so the next cycle reads the event again, and
+        health reports degraded until an evaluation succeeds.
+        """
+        self._hold_sync_token = True
+        self._policy_error = f"Ingestion policy evaluation failed: {type(exc).__name__}"
+        logger.warning(
+            "Calendar: policy evaluation failed for event %s; keeping the syncToken: %s",
+            event_id,
+            exc,
+        )
+        return False
 
     async def _process_event(self, event: dict[str, Any]) -> bool:
         """Process a single calendar event: classify, evaluate policy, ingest.
@@ -1473,7 +1582,7 @@ class CalendarConnectorRuntime:
         # Build ingestion policy envelope for pre-ingest evaluation
         policy_envelope = IngestionEnvelope(
             sender_address=organizer_email,
-            source_channel=_CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             raw_key=event_id,
         )
 
@@ -1481,13 +1590,12 @@ class CalendarConnectorRuntime:
         try:
             decision = self._ingestion_policy.evaluate(policy_envelope)
         except Exception as exc:
-            logger.warning("Calendar: policy evaluation failed for event %s: %s", event_id, exc)
-            decision = None
+            return self._hold_on_policy_error(event_id, exc)
 
         if decision is not None and not decision.allowed:
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=organizer_email,
                 subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1496,8 +1604,8 @@ class CalendarConnectorRuntime:
                     decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self._config.endpoint_identity,
                     external_event_id=event_id,
                     external_thread_id=None,
@@ -1516,15 +1624,12 @@ class CalendarConnectorRuntime:
         try:
             global_decision = self._global_ingestion_policy.evaluate(policy_envelope)
         except Exception as exc:
-            logger.warning(
-                "Calendar: global policy evaluation failed for event %s: %s", event_id, exc
-            )
-            global_decision = None
+            return self._hold_on_policy_error(event_id, exc)
 
         if global_decision is not None and global_decision.action == "skip":
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=organizer_email,
                 subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1533,8 +1638,8 @@ class CalendarConnectorRuntime:
                     global_decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self._config.endpoint_identity,
                     external_event_id=event_id,
                     external_thread_id=None,
@@ -1575,11 +1680,20 @@ class CalendarConnectorRuntime:
         return await self._submit_envelope(event_id, envelope, summary)
 
     async def _submit_envelope(self, event_id: str, envelope: dict[str, Any], preview: str) -> bool:
-        """Submit an ingest.v1 envelope to the Switchboard."""
+        """Submit an ingest.v1 envelope to the Switchboard.
+
+        A failure with attempts left sets ``_hold_sync_token`` so the cycle
+        keeps its sync token and reads the event again. A failure that spends
+        the event's last attempt parks the exact envelope as a replayable
+        error row, committed before the cycle moves on; a park that is not
+        written holds the sync token like a failure with attempts left.
+        """
+        retry_key = str((envelope.get("control") or {}).get("idempotency_key") or event_id)
         try:
             async with self._semaphore:
                 await self._submit_to_ingest_api(envelope)
 
+            self._ingest_retry.succeeded(retry_key)
             self._metrics.record_ingest_submission("success")
             self._last_ingest_submit = time.time()
             logger.debug(
@@ -1601,27 +1715,37 @@ class CalendarConnectorRuntime:
             # envelope's sender.identity is exactly that resolved value ("unknown" when the
             # event had no organizer); fall back to "" only if the envelope lacks a sender.
             sender_identity = envelope.get("sender", {}).get("identity", "")
-            # Record in filtered buffer for replay
-            self._filtered_event_buffer.record(
-                external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
-                sender_identity=sender_identity,
-                subject_or_preview=preview,
-                filter_reason=FilteredEventBuffer.reason_submission_error(),
-                status="error",
-                error_detail=str(exc),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
-                    endpoint_identity=self._config.endpoint_identity,
-                    external_event_id=event_id,
-                    external_thread_id=None,
-                    observed_at=datetime.now(UTC).isoformat(),
+            if not self._ingest_retry.failed(retry_key):
+                self._hold_sync_token = True
+                logger.warning(
+                    "Calendar: failed to ingest event %s for email=%s; keeping the "
+                    "syncToken for a retry: %s",
+                    event_id,
+                    self._config.email,
+                    exc,
+                )
+                return False
+            # Attempts spent: park the exact envelope (idempotency key included)
+            # as a replayable error row, committed before the cycle can move on.
+            try:
+                await self._filtered_event_buffer.park(
+                    self._db_pool,
+                    external_message_id=event_id,
+                    source_channel=_DESCRIPTOR.channel,
                     sender_identity=sender_identity,
-                    raw=envelope.get("payload", {}).get("raw", {}),
-                    normalized_text=envelope.get("payload", {}).get("normalized_text"),
-                ),
-            )
+                    subject_or_preview=preview,
+                    error_detail=str(exc),
+                    full_payload=FilteredEventBuffer.stored_envelope(envelope),
+                )
+            except ParkNotDurableError:
+                self._hold_sync_token = True
+                logger.error(
+                    "Calendar: event %s for email=%s failed every retry and could not be "
+                    "parked; keeping the syncToken",
+                    event_id,
+                    self._config.email,
+                )
+                return False
             logger.warning(
                 "Calendar: failed to ingest event %s for email=%s: %s",
                 event_id,
@@ -1632,20 +1756,7 @@ class CalendarConnectorRuntime:
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit the ingest.v1 envelope to the Switchboard via MCP."""
-        result = await self._mcp_client.call_tool("ingest", envelope)
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"Switchboard returned non-dict result for ingest envelope: result={result!r}"
-            )
-        status = result.get("status", "")
-        if not status:
-            raise RuntimeError(
-                f"Switchboard result missing or empty status for ingest envelope: result={result!r}"
-            )
-        if status not in ("accepted", "duplicate", "queued"):
-            raise RuntimeError(
-                f"Switchboard rejected envelope: status={status!r}, result={result!r}"
-            )
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # "Starting soon" synthetic notifications
@@ -1670,6 +1781,8 @@ class CalendarConnectorRuntime:
             del self._upcoming_events[eid]
 
         for event_id, (event, start_dt) in list(self._upcoming_events.items()):
+            if is_status_event(event.get("eventType")):
+                continue
             summary = event.get("summary", "(no title)")
             for lead_minutes in self._config.all_lead_minutes:
                 notify_at = start_dt - timedelta(minutes=lead_minutes)
@@ -1748,8 +1861,16 @@ class CalendarConnectorRuntime:
 
     def _get_health_state(self) -> tuple[str, str | None]:
         """Return (state, error_message) tuple for heartbeat."""
+        if self._policy_error is not None:
+            return "degraded", self._policy_error
         if self._source_api_ok is None:
             return "degraded", "Starting up, API not yet checked"
+        if self._source_api_ok and self._cursor_load_failed:
+            return "degraded", _CURSOR_LOAD_FAILED_REASON
+        if self._source_api_ok and self._journal_failed:
+            return "degraded", _JOURNAL_FAILED_REASON
+        if self._source_api_ok and self._missing_sync_token:
+            return "degraded", _NO_SYNC_TOKEN_REASON
         if self._source_api_ok:
             return "healthy", None
         if self._auth_error:
@@ -1863,11 +1984,13 @@ class CalendarAccountLoop:
             connectivity = "disconnected"
 
         terminal_error = self._error
-        error_msg = terminal_error or runtime._source_api_error_message
+        error_msg = terminal_error or runtime._source_api_error_message or runtime._policy_error
         if not self.is_running and terminal_error:
             account_status: Literal["healthy", "degraded", "error"] = "error"
         elif runtime._source_api_ok is False:
             account_status = "error" if runtime._auth_error else "degraded"
+        elif runtime._policy_error is not None:
+            account_status = "degraded"
         else:
             account_status = "healthy"
 
@@ -1883,11 +2006,11 @@ class CalendarAccountLoop:
 
 
 # ---------------------------------------------------------------------------
-# CalendarConnectorManager — top-level multi-account orchestrator
+# CalendarAccountSource — top-level multi-account orchestrator
 # ---------------------------------------------------------------------------
 
 
-class CalendarConnectorManager:
+class CalendarAccountSource(GoogleAccountFleet[CalendarAccountLoop]):
     """Top-level orchestrator for the multi-account Google Calendar connector.
 
     Discovers all active Google accounts with calendar scopes from
@@ -1902,28 +2025,18 @@ class CalendarConnectorManager:
     - Per-account error isolation
     """
 
+    restart_dead_accounts = True
+
     def __init__(
         self,
         process_config: CalendarProcessConfig,
         db_pool: asyncpg.Pool,
         cursor_pool: asyncpg.Pool | None,
     ) -> None:
+        super().__init__()
         self._process_config = process_config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
-
-        # Active account loops keyed by email
-        self._loops: dict[str, CalendarAccountLoop] = {}
-
-        # State
-        self._start_time = time.time()
-        self._running = False
-        self._reload_event = asyncio.Event()
-        self._main_loop: asyncio.AbstractEventLoop | None = None
-
-        # Health server
-        self._health_server: uvicorn.Server | None = None
-        self._health_thread: Thread | None = None
 
         # Credential store (shared across accounts for app creds)
         self._credential_store: CredentialStore | None = None
@@ -2020,88 +2133,52 @@ class CalendarConnectorManager:
             )
             return None
 
-    async def _sync_accounts(
-        self,
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Discover qualifying accounts and reconcile running loops.
+    async def _make_account_loop(self, email: str, metadata: dict[str, Any] | None):
+        creds = await self._resolve_credentials_for_account(email)
+        if creds is None:
+            return None
 
-        Returns (added, removed, unchanged) email lists.
-        """
-        qualifying = await self._discover_qualifying_accounts()
-
-        # Compute desired set
-        desired_emails: set[str] = set()
-        account_metadata: dict[str, dict[str, Any] | None] = {}
-        for email, metadata_calendar in qualifying:
-            if email is None:
-                continue
-            desired_emails.add(email)
-            account_metadata[email] = metadata_calendar
-
-        current_emails = set(self._loops.keys())
-
-        # Detect dead loops: account still in self._loops but task has finished
-        # (e.g. crashed due to token error).  Remove them so they get re-added.
-        dead_emails: set[str] = set()
-        for email in current_emails & desired_emails:
-            loop = self._loops[email]
-            if not loop.is_running:
-                logger.warning(
-                    "Calendar manager: account loop for %r is dead (error=%s) — will restart",
-                    email,
-                    loop._error,
-                )
-                await loop.stop()
-                del self._loops[email]
-                dead_emails.add(email)
-
-        current_emails -= dead_emails
-        to_add = (desired_emails - current_emails) | dead_emails
-        to_remove = current_emails - desired_emails
-        unchanged = current_emails & desired_emails
-
-        # Stop removed loops (graceful: complete in-flight, checkpoint, stop)
-        for email in to_remove:
-            loop = self._loops.pop(email)
-            logger.info("Calendar manager: stopping loop for removed account %r", email)
-            await loop.stop()
-
-        # Start new loops
-        added: list[str] = []
-        for email in to_add:
-            creds = await self._resolve_credentials_for_account(email)
-            if creds is None:
-                continue
-
-            metadata_calendar = account_metadata.get(email)
-            try:
-                account_config = self._process_config.make_account_config(
-                    email=email,
-                    client_id=creds["client_id"],
-                    client_secret=creds["client_secret"],
-                    refresh_token=creds["refresh_token"],
-                    metadata_calendar=metadata_calendar,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Calendar manager: failed to build config for account %r (skipping): %s",
-                    email,
-                    exc,
-                )
-                continue
-
-            loop = CalendarAccountLoop(
+        metadata_calendar = metadata
+        try:
+            account_config = self._process_config.make_account_config(
                 email=email,
-                config=account_config,
-                db_pool=self._db_pool,
-                cursor_pool=self._cursor_pool,
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+                refresh_token=creds["refresh_token"],
+                metadata_calendar=metadata_calendar,
             )
-            self._loops[email] = loop
-            loop.start()
-            added.append(email)
-            logger.info("Calendar manager: started loop for new account %r", email)
+        except Exception as exc:
+            logger.warning(
+                "Calendar manager: failed to build config for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        return added, list(to_remove), list(unchanged)
+        loop = CalendarAccountLoop(
+            email=email,
+            config=account_config,
+            db_pool=self._db_pool,
+            cursor_pool=self._cursor_pool,
+        )
+        return loop
+
+    async def _discover_accounts(self) -> dict[str, Any]:
+        return {
+            email: metadata
+            for email, metadata in await self._discover_qualifying_accounts()
+            if email is not None
+        }
+
+    async def _fleet_ready(self) -> None:
+        try:
+            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning("Switchboard readiness probe timed out; proceeding")
+
+    @property
+    def rescan_interval(self) -> float:
+        return self._process_config.account_rescan_interval_s
 
     def _start_health_server(self) -> None:
         """Start aggregated health/metrics endpoint in background thread."""
@@ -2112,8 +2189,8 @@ class CalendarConnectorManager:
             return self._get_multi_account_health()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics():
+            return prometheus_metrics_response()
 
         @app.post("/reload")
         async def reload_accounts() -> dict[str, Any]:
@@ -2129,6 +2206,7 @@ class CalendarConnectorManager:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(config)
 
@@ -2163,98 +2241,14 @@ class CalendarConnectorManager:
             timestamp=datetime.now(UTC).isoformat(),
         )
 
-    def _setup_sighup(self) -> None:
-        """Register SIGHUP handler to trigger immediate account re-scan."""
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _on_sighup() -> None:
-                logger.info("Calendar manager: SIGHUP received — triggering account reload")
-                self._reload_event.set()
-
-            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
-        except (OSError, NotImplementedError):
-            logger.debug("Calendar manager: SIGHUP not available on this platform")
-
-    async def start(self) -> None:
-        """Start the connector manager: discover accounts, start loops, run rescan loop."""
-        self._running = True
-        self._main_loop = asyncio.get_running_loop()
-
-        # Start health server
-        self._start_health_server()
-
-        # Register SIGHUP for reload
-        self._setup_sighup()
-
-        # Initial account discovery
-        added, removed, unchanged = await self._sync_accounts()
-        logger.info(
-            "Calendar manager: initial account sync — added=%d removed=%d unchanged=%d",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        if not self._loops:
-            logger.warning(
-                "Calendar manager: no qualifying accounts found at startup. "
-                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
-                self._process_config.account_rescan_interval_s,
-            )
-
-        # Wait for Switchboard readiness
-        try:
-            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
-        except TimeoutError:
-            logger.warning(
-                "Calendar manager: Switchboard readiness probe timed out; proceeding anyway."
-            )
-
-        # Main rescan loop
-        try:
-            await self._run_rescan_loop()
-        finally:
-            await self.stop()
-
-    async def _run_rescan_loop(self) -> None:
-        """Periodically re-scan for account changes, also triggered by reload events."""
-        rescan_interval = self._process_config.account_rescan_interval_s
-        while self._running:
-            try:
-                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
-                logger.info("Calendar manager: reload triggered — re-scanning accounts")
-                self._reload_event.clear()
-            except TimeoutError:
-                logger.debug("Calendar manager: periodic re-scan triggered")
-
-            if not self._running:
-                break
-
-            added, removed, unchanged = await self._sync_accounts()
-            if added or removed:
-                logger.info(
-                    "Calendar manager: account sync — added=%s removed=%s unchanged=%d",
-                    added,
-                    removed,
-                    len(unchanged),
-                )
-
-    async def stop(self) -> None:
-        """Gracefully stop all account loops and the manager."""
-        self._running = False
-
-        for email, loop in list(self._loops.items()):
-            logger.info("Calendar manager: stopping loop for %r", email)
-            await loop.stop()
-        self._loops.clear()
-
-        logger.info("Calendar manager: all account loops stopped")
-
 
 # ---------------------------------------------------------------------------
 # Internal exceptions
 # ---------------------------------------------------------------------------
+
+
+class _PolicyUnresolvedError(Exception):
+    """Source policy could not be evaluated; the journal batch is held."""
 
 
 class _SyncTokenExpiredError(Exception):
@@ -2380,8 +2374,8 @@ def _build_ingest_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -2402,22 +2396,6 @@ def _build_ingest_envelope(
             "policy_tier": "default",
         },
     }
-
-
-def _redact_email(email: str | None) -> str | None:
-    """Redact an email address for safe inclusion in health responses.
-
-    Shows the first 2 characters of the local part, then ***, then @domain.
-    """
-    if email is None:
-        return None
-    at_pos = email.find("@")
-    if at_pos <= 0:
-        return "***"
-    local = email[:at_pos]
-    domain = email[at_pos:]
-    visible = local[:2]
-    return f"{visible}***{domain}"
 
 
 # ---------------------------------------------------------------------------
@@ -2497,7 +2475,7 @@ async def run_google_calendar_connector() -> None:
         cursor_pool = None
 
     try:
-        manager = CalendarConnectorManager(
+        manager = CalendarAccountSource(
             process_config=process_config,
             db_pool=db_pool or _NullPool(),  # type: ignore[arg-type]
             cursor_pool=cursor_pool,

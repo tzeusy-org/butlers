@@ -32,6 +32,10 @@ import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 import { readNumberSetting, writeNumberSetting } from "@/lib/local-settings.ts";
 import { WIDGET_BUTLER } from "./chat-constants.ts";
+import {
+  firstResumableConversation,
+  useSelectedConversation,
+} from "@/hooks/use-conversation-metadata.ts";
 
 const DOCK_WIDTH_KEY = "butlers.chat-dock-width";
 const DOCK_MIN_WIDTH = 360;
@@ -139,15 +143,16 @@ export function ChatDock({ onClose }: ChatDockProps) {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (hasResumedRef.current) return;
-    if (conversations.length === 0) return;
+    const resumable = firstResumableConversation(conversations);
+    if (!resumable) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
-      setActiveConversationId(conversations[0].id);
+      setActiveConversationId(resumable.id);
     }
   }, [conversations, activeConversationId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
+  const activeConversation = useSelectedConversation(activeConversationId, conversations);
 
   async function handleSend() {
     const text = inputValue.trim();

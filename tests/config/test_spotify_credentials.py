@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from butlers.credential_store import CredentialStore
@@ -12,28 +10,10 @@ from butlers.spotify_credentials import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_MANAGED_ENTITY_INFO_TYPES,
 )
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import row as _make_row
 
 pytestmark = pytest.mark.unit
-
-
-def _make_pool(*, fetchrow_return=None, execute_return: str = "DELETE 0") -> MagicMock:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = fetchrow_return
-    conn.fetch.return_value = []
-    conn.execute.return_value = execute_return
-    cm = AsyncMock()
-    cm.__aenter__ = AsyncMock(return_value=conn)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    pool = MagicMock()
-    pool.acquire.return_value = cm
-    pool._conn = conn
-    return pool
-
-
-def _make_row(**kwargs) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: kwargs[key]
-    return row
 
 
 async def test_credential_store_owns_only_spotify_client_configuration() -> None:
@@ -45,17 +25,16 @@ async def test_credential_store_owns_only_spotify_client_configuration() -> None
         "spotify_oauth_expires_at",
     }
 
-    pool = _make_pool(execute_return="INSERT 0 1")
+    pool = fake_pool(execute="INSERT 0 1")
     store = CredentialStore(pool)
     await store.store(SPOTIFY_CLIENT_ID, "client-config", category=SPOTIFY_CATEGORY)
-    assert len(pool._conn.execute.call_args_list) == 1
-    assert pool._conn.execute.call_args.args[3] == "spotify"
+    assert len(pool.connection.execute.call_args_list) == 1
+    assert pool.connection.execute.call_args.args[3] == "spotify"
 
     row = _make_row(secret_value="client-config")
     assert (
-        await CredentialStore(_make_pool(fetchrow_return=row)).resolve(SPOTIFY_CLIENT_ID)
-        == "client-config"
+        await CredentialStore(fake_pool(fetchrow=row)).resolve(SPOTIFY_CLIENT_ID) == "client-config"
     )
 
-    pool2 = _make_pool(execute_return="DELETE 1")
+    pool2 = fake_pool(execute="DELETE 1")
     assert await CredentialStore(pool2).delete(SPOTIFY_CLIENT_ID)

@@ -95,18 +95,23 @@ import {
   useArchiveRelationshipEntity,
   useEntityActivity,
   useEntityActivityBins,
+  useEntityCommitments,
   useEntityDeltaFacts,
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
   useEntityMessageThreads,
   useEntityNeighbours,
+  useEntitySharedChronicles,
   useRelationshipEntities,
   useRelationshipEntitiesByIds,
   useRelationshipEntityQueue,
   useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
 import { MergeCompareDialog } from "@/components/relationship/MergeCompareDialog";
+import { CommitmentRow } from "@/components/calendar/MeetingPrepRail";
+import { useTimezone } from "@/components/ui/timezone-context";
+import { dayKeyInTimeZone } from "@/lib/day-window";
 import {
   useEntity,
   useForgetRelationshipEntity,
@@ -171,7 +176,9 @@ function RebindReceiptCohort({ receipts }: { receipts: EntityRebindReceipt[] }) 
                 ? `Failed${receipt.error_class ? ` · ${receipt.error_class}` : ""}`
                 : receipt.status === "pending"
                   ? "Not yet reported"
-                  : "No local table";
+                  : receipt.status === "skipped_forgotten"
+                    ? "Forgotten, not moved"
+                    : "No local table";
           return (
             <li key={`${receipt.rebind_id}:${receipt.target_schema}`} className="flex items-center gap-1">
               <span className="text-xs text-foreground">{receipt.target_schema}</span>
@@ -542,6 +549,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   }, [pages]);
   const total = pages[0]?.total ?? 0;
   const isDegraded = pages.some((page) => page.degraded);
+  const chroniclerTruncated = pages.some((page) => page.chronicler_truncated === true);
   const hasUnloaded = items.length < total;
   const activityChanged = entityActivityNeedsRefresh(pages, hasNextPage === true, items.length);
   const retryActivity = () => void refetch({ cancelRefetch: false });
@@ -623,6 +631,12 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           );
         })}
       </div>
+
+      {chroniclerTruncated && (
+        <p className="text-muted-foreground text-xs" data-testid="entity-activity-truncated">
+          Showing the latest 500 chronicle episodes. Older episodes are not counted.
+        </p>
+      )}
 
       {activityChanged && (
         <div
@@ -707,8 +721,26 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   );
 }
 
+/**
+ * Where a timeline row opens, or null when it has no honest destination.
+ * Chronicler rows open their episode on its owner-local day (a null ts has no
+ * day, so no link). Only narrative facts resolve at /memory/facts/:id; identity
+ * triples live in relationship.entity_facts, which that endpoint does not read.
+ */
+function timelineRowHref(item: EntityActivityItem, day: string | null): string | null {
+  if (item.src === "chronicler") {
+    if (!day) return null;
+    const qs = new URLSearchParams({ date: day, episode: item.episode_id ?? item.id });
+    return `/chronicles?${qs.toString()}`;
+  }
+  if (item.store === "narrative") return `/memory/facts/${encodeURIComponent(item.id)}`;
+  return null;
+}
+
 function TimelineRow({ item }: { item: EntityActivityItem }) {
+  const tz = useTimezone();
   const date = item.ts ? new Date(item.ts) : null;
+  const href = timelineRowHref(item, date ? dayKeyInTimeZone(date, tz) : null);
   const predicate = item.predicate ?? item.kind;
   const subtitle =
     item.src === "chronicler"
@@ -727,9 +759,18 @@ function TimelineRow({ item }: { item: EntityActivityItem }) {
         {timelineKindGlyph(item.kind)}
       </span>
       <div className="min-w-0 flex-1">
-        {item.summary && (
-          <p className="text-sm leading-snug">{item.summary}</p>
-        )}
+        {item.summary &&
+          (href ? (
+            <Link
+              to={href}
+              className="text-sm leading-snug underline-offset-2 hover:underline"
+              data-testid="timeline-row-link"
+            >
+              {item.summary}
+            </Link>
+          ) : (
+            <p className="text-sm leading-snug">{item.summary}</p>
+          ))}
         {item.store === "identity" && (
           <FactReporterLine fact={item} />
         )}
@@ -741,6 +782,114 @@ function TimelineRow({ item }: { item: EntityActivityItem }) {
         {date ? <Time value={date} mode="relative" /> : "—"}
       </span>
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared Chronicles — bounded preview of the Chronicler rows already in the
+// unified activity aggregate. It does not replace the ActivityTimeline above;
+// showing an episode in both places is intentional.
+// ---------------------------------------------------------------------------
+
+function SharedChroniclesSection({ entityId }: { entityId: string }) {
+  const { data, isLoading, isError, isRefetching, refetch } = useEntitySharedChronicles(entityId);
+  const tz = useTimezone();
+  const retry = () => void refetch({ cancelRefetch: false });
+  // A non-object or missing items array is unreadable evidence, not empty history.
+  const readable = !isError && data != null && Array.isArray(data.items);
+  const items = readable ? data.items.filter((item) => item.src === "chronicler") : [];
+  const degraded = !isLoading && (!readable || data.degraded);
+
+  return (
+    <section className="space-y-2" data-testid="entity-shared-chronicles">
+      <h3 className="text-sm font-semibold uppercase tracking-wide">Shared Chronicles</h3>
+      {isLoading ? (
+        <Skeleton className="h-10 w-full" />
+      ) : (
+        <>
+          {degraded ? (
+            <SourceDegradedNote
+              testId="entity-shared-chronicles-degraded"
+              label="Shared Chronicles"
+              detail="unavailable"
+              onRetry={retry}
+              retryLabel={isRefetching ? "Retrying…" : undefined}
+            />
+          ) : items.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No shared episodes yet.</p>
+          ) : null}
+          {items.length > 0 ? (
+            <ul className="space-y-1.5">
+              {items.slice(0, 5).map((item) => {
+                const episodeId = item.episode_id ?? item.id;
+                const when = item.ts ? new Date(item.ts) : null;
+                const day = when ? dayKeyInTimeZone(when, tz) : null;
+                const qs = new URLSearchParams();
+                if (day) qs.set("date", day);
+                qs.set("episode", episodeId);
+                return (
+                  <li
+                    key={`${item.src}:${item.store ?? ""}:${item.id}`}
+                    className="flex items-baseline gap-3 text-sm"
+                    data-testid="entity-shared-chronicle"
+                  >
+                    <Link
+                      to={`/chronicles?${qs.toString()}`}
+                      className="flex-1 truncate underline-offset-2 hover:underline"
+                    >
+                      {item.summary ?? "Untitled episode"}
+                    </Link>
+                    {when ? (
+                      <span className="text-muted-foreground text-xs tabular-nums">
+                        <Time value={when} mode="absolute" precision="day" />
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Commitments — read-only entity view of the owner condition ledger, in the
+// same row vocabulary as Meeting Prep. No create/resolve/edit affordance.
+// ---------------------------------------------------------------------------
+
+function CommitmentsSection({ entityId }: { entityId: string }) {
+  const { data, isLoading, isError, isRefetching, refetch } = useEntityCommitments(entityId);
+  const retry = () => void refetch({ cancelRefetch: false });
+  const readable = !isError && data != null && Array.isArray(data.items);
+  const degraded = !isLoading && (!readable || data.degraded);
+  const items = readable && !data.degraded ? data.items : [];
+
+  return (
+    <section className="space-y-2" data-testid="entity-commitments">
+      <h3 className="text-sm font-semibold uppercase tracking-wide">Commitments</h3>
+      {isLoading ? (
+        <Skeleton className="h-10 w-full" />
+      ) : degraded ? (
+        <SourceDegradedNote
+          testId="entity-commitments-degraded"
+          label="Commitments"
+          detail="unavailable"
+          onRetry={retry}
+          retryLabel={isRefetching ? "Retrying…" : undefined}
+        />
+      ) : items.length === 0 ? (
+        <p className="text-muted-foreground text-sm">No open commitments.</p>
+      ) : (
+        <ul aria-label="Commitments" className="min-w-0 list-none p-0">
+          {items.map((item) => (
+            <CommitmentRow key={item.fingerprint} commitment={item} />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -2879,7 +3028,7 @@ export default function EntityDetailPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {["person", "organization", "place", "other"].map((t) => (
+                  {["person", "organization", "place", "animal", "other"].map((t) => (
                     <SelectItem key={t} value={t} className="text-xs capitalize">
                       {t}
                     </SelectItem>
@@ -3118,6 +3267,13 @@ export default function EntityDetailPage() {
               {/* Profile snapshot — place, work, family (date-kind facts moved
                   to <CoreDatesBlock> above). */}
               <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
+
+              {/* What is owed between the owner and this entity, and the
+                  most recent shared episodes (entity-chronicles doors). */}
+              <div className="grid gap-6 sm:grid-cols-2">
+                <CommitmentsSection entityId={entityId} />
+                <SharedChroniclesSection entityId={entityId} />
+              </div>
 
               {/* Activity timeline — primary content */}
               <ActivityTimeline entityId={entityId} />

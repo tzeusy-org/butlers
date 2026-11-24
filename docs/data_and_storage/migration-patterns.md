@@ -64,7 +64,7 @@ Individual butlers can have their own migration chains for butler-specific table
 
 ## Discovery and Resolution
 
-The `migrations.py` module (`src/butlers/migrations.py`) handles chain discovery:
+The `butlers.migrations` package (`src/butlers/migrations/__init__.py`) handles chain discovery:
 
 1. **`_discover_module_chains()`** -- Scans `src/butlers/modules/*/migrations/` for Python files.
 2. **`_discover_butler_chains()`** -- Scans `roster/*/migrations/` for Python files.
@@ -120,6 +120,78 @@ To create a new module migration chain:
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
 4. CLI and daemon discover the non-empty directory through `get_module_migration_chains()`; no hook override is needed.
 
+### Granting to runtime roles
+
+Never spell the runtime-role fleet out by hand. A literal "every butler" tuple
+freezes the fleet on the day it was written: the lists written before the
+concierge existed all omit `butler_concierge_rw`. Grant through
+`butlers.db_authority.roles`: `butler_roles()` (every `butler_<schema>_rw`,
+derived from `roster/*/butler.toml`) or `runtime_roles()` (those plus
+`connector_writer`). Both raise rather than return a partial list when the
+roster is unreadable. A narrow, deliberate reader list (one or two named
+butlers) stays literal.
+
+`tests/config/test_literal_role_list_ratchet.py` fails on a new literal fleet
+list in a revision: seven or more runtime roles or roster schema names in one
+tuple, list or set, or seven or more roles in one SQL string. Existing sites are
+frozen in its baseline, which only shrinks. `tests/config/test_db_authority_roles.py`
+holds the four fleet arrays in `scripts/init-db.sql` and
+`butlers.bootstrap_prerequisite._BUTLERS` equal to the roster.
+
+### Public grant manifest
+
+`butlers.db_authority.grants.PUBLIC_RELATIONS` has one row per `public`
+relation stating each runtime role's table privileges. A migration that creates
+a `public` table, view or partitioned parent adds its row in the same PR;
+partitions follow their parent. Most rows are still `LEGACY_FLEET_DML`, the
+blanket DML `scripts/init-db.sql` grants: an unreviewed inheritance waiting for
+a per-table decision, not an approval. Boundary rows (DND fencing, the
+runtime-attention outbox, cost claims, consolidation runs, `state`) are spelled
+out with a reason so a deny-by-default rebuild cannot widen them.
+
+Rows record migration intent: what a freshly migrated database grants. Where an
+`init-db.sql` replay re-widens (or otherwise changes) a relation, its row also
+carries the replay result and is listed in `REPLAY_WIDENED`. A migration that
+narrows a `public` table must therefore add a boundary or replay-widened row, not
+leave the legacy blanket in place.
+
+`tests/integration/test_db_authority_grants_catalog.py` diffs a migrated
+database against the manifest, before and after an `init-db.sql` replay.
+`butlers db check-grants` runs the same read-only, content-blind diff against
+a real database (`--database`, default `butlers`) and exits non-zero on any
+difference. A deployed database has been through init-db replays, so pass
+`--after-init-db-replay` to compare with the replay result. `butlers db apply-grants`
+(below) converges a database to the manifest; removing init-db's blanket grants is a
+later slice of bu-dss7he.6.
+
+The CNPG-managed `butlers_projection_publisher` (RFC 0039 D9) is declared beside the runtime
+roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state that it holds
+`SELECT` on exactly the `public` tables of the projection manifest, and nothing once
+publication `butlers_public_v1` does not exist. `butlers db check-grants` diffs it too, and
+skips it where the role is absent (Compose, testcontainers).
+
+CNPG's metrics exporter is declared the same way, as `CNPG_METRICS_EXPORTER`: it holds `CONNECT`
+on the database, granted by `init-db.sql` when the role exists, and no privilege on any `public`
+relation, so it has no manifest row. The manifest is relation-level, so neither
+`check-grants` nor `apply-grants` reads or revokes that database grant.
+
+`butlers db apply-grants` converges a live database to the manifest: it revokes
+whatever exceeds a row (the migration-intent ceiling) and grants only what the
+row and an `init-db.sql` replay both allow, so it narrows and never re-grants a
+privilege the bootstrap removed. The default is a dry run that prints one
+REVOKE/GRANT line per change (relation, role and privilege names only);
+`--execute` runs it in one transaction under an advisory lock and rolls back
+unless a re-plan is empty. Relations the connecting login neither owns nor is a
+member of (definer-owned boundary tables) cannot be revoked by it, so their
+changes print as `SKIPPED (login does not own it)` and are never claimed;
+the [migrator login](migrator-login.md) transfer leaves purpose-owned relations
+with their owners, so these stay skipped. Column-level grants are outside the
+manifest: a table-level REVOKE drops them, so apply snapshots and restores them
+and fails if they differ afterwards. A plan containing GRANT lines (widening) is
+refused under `--execute` unless `--allow-grants` is passed. The migrations initContainer runs the dry run on every
+deploy and `--execute` only when `database.applyGrants` is true (off by default;
+enabling it is an owner act).
+
 ### Database-global protected public boundaries
 
 Core migrations may be replayed once for each target schema even when they
@@ -167,6 +239,28 @@ protected boundary only when it is empty and has no active consumer; a nonempty
 outbox must refuse rollback with forward-remediation guidance. Avoid foreign
 keys/cascades to mutable source records when the evidence must survive source
 catalog or attempt deletion.
+
+`core_291` applies this rule to the shared ambient projection grant store. Its
+transaction advisory lock serializes the schema-version census with other
+291 upgrades and downgrades. A schema leaving 291 retains the entire table,
+rows, owner, RLS, policies and ACLs while another schema is still at 291 or
+later. An unknown core revision or missing current consumer refuses rollback
+with migration-history remediation. Exclude only the literal reserved `pg_`
+namespace prefix from the census: supported user schemas such as `pgpeer` and
+`pga` remain consumers. SQL `LIKE 'pg_%'` also matches those user schemas because
+its underscore is a wildcard. The last consumer takes an exclusive table
+lock before checking emptiness, so minting cannot race an empty-store drop.
+Any row, including a revoked grant, refuses rollback with roll-forward guidance;
+revoking grants does not erase their history or authorize deletion. Only a
+genuinely empty store without another migrated consumer can be removed. Reapply
+291 as the established ordinary migration owner to recreate an empty store with
+its existing creator ACLs. Full-chain peer-schema replay uses the original
+ordinary migration login: core196 proves the exact finalized read-only interface
+for that caller and skips its absence-only installer. A bootstrap superuser
+defeats that normal-caller proof and re-enters the installer, which correctly
+refuses pre-existing authority objects. Keep managed rollback/catalogue
+observation separate from full-chain replay; do not stamp past the installers or
+broaden the ordinary login to make a fixture pass.
 
 A string literal inside a stored function body is not reachable the way a schema
 object is. `ALTER ... RENAME` is expressible against an existing object, so a
@@ -293,15 +387,16 @@ bootstrap change and disposable-PG validation of first install, retained-table
 replay, repeated convergence and the same positive/negative role controls.
 It is a proposal, not an adopted owner change or a verified repair. No applied
 core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
-is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+is authorized here. Function-owner convergence landed separately (`bu-jjv2du`; see
+Managed amendment-owner convergence below).
 
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
 candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
 folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
 recover the removed candidate fields. The surviving table does not mean that older
-code can deliver corrections. Its existing candidate FK still cascades on deletion;
-this decision is not a promise of indefinite evidence retention.
+code can deliver corrections. From `core_312` the table has no candidate FK, so its rows
+also outlive candidate cleanup; the retention rule is in `docs/operations/data-retention.md`.
 
 Retaining a table also does not converge function ownership. A managed-bootstrap
 reupgrade can recreate the two definers under the bootstrap owner. An ordinary
@@ -311,9 +406,17 @@ them through schema ownership; the function is then unavailable (`42883`) until
 ordinary reupgrade recreates it under the ordinary owner. Record the actual
 database/schema authority and function absence or ownership at each step. Do not
 extrapolate this DROP authority to a migration login that lacks schema ownership.
-Broader caller/source validation, FK lifecycle, FORCE RLS and
-definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
-authority or waiver for those choices.
+The `bu-q7vx1q.33` items were merged into `bu-q7vx1q.32` and settled by `core_312`: caller
+validation (the definer inserts only for a resolved `owner_conditions` row with exactly that
+source, fingerprint and `resolved_at`), FK lifecycle (the candidate FK is dropped; orphaned
+rows settle to `orphaned`) and FORCE RLS (declined: the table owner is the migration role,
+so it would change nothing for runtime callers). The definer also pins TimeZone/DateStyle
+(session-independent dedup keys) and ignores the caller's summary. Function-owner
+convergence is not part of that scope, but `core_312` no longer hides it: its upgrade
+asserts that the replacement, the dropped key and the widened CHECK took effect and raises
+otherwise, so a database whose definer is bootstrap-owned fails `core_312` until the
+privileged bootstrap converges its owner (`bu-jjv2du`, below). This investigation adds no
+authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
@@ -344,7 +447,18 @@ owned-sequence ownership follows the table. These expected effects are measured 
 unchanged row values, logical definitions, FK, runtime effective privileges/grant options,
 policies and RLS flags. The trusted migration owner bypasses the current non-FORCE RLS as an
 owner; actual runtime `SET ROLE` acquisitions must retain their own row and write restrictions.
-Table ownership does not converge the separately installed function owners or caller authority.
+The same atomic block then converges the table's two core_255 SECURITY DEFINER functions,
+`public.enqueue_premise_amendments(text, text, timestamptz, text)` and
+`public.resolve_finance_bill_status(uuid)` (`bu-jjv2du`). The rule is the table's: an absent
+function or one the target already owns is a no-op, only the bootstrap owner is transferred
+(`ALTER FUNCTION ... OWNER TO`, which keeps the body, `proconfig` and EXECUTE grants; owner
+references in the ACL follow the new owner), and a third owner refuses in the read-only preflight
+and again in the block. They converge only while the table exists, because core_255 installs them
+with it. Without this, a bootstrap-owned definer runs as the superuser and blocks every ordinary
+`CREATE OR REPLACE`, and `core_312` fails loud. Run the bootstrap before migrating: dev's
+`bootstrap-dev` does it on every deploy; prod's operator runs `scripts/init-db.sql` before
+`deploy-prod` ([kubernetes-deployment.md](../operations/kubernetes-deployment.md)). Ownership is
+not caller authority: the definer still verifies its caller's claim (core_312).
 
 The existing real-PG node preserves its 43-row/45-role/six-variant/two-replay historical failure
 by neutralizing only the uniquely delimited owner block in a complete source-bound fixture. Its
@@ -413,10 +527,17 @@ their separate authority contract or equate the trusted migration owner with run
   reads ids/count/provenance through a separate connection, and compares the final schema and
   vocabulary with a fresh dynamic-head database. Test downgrade/reupgrade separately at each
   bounded revision, preserving every row and all provenance outside the documented outcome fold.
+- A shared-DDL downgrade that counts schema-local consumers selects `alembic_version` namespaces
+  with `left(namespace.nspname, 3) <> 'pg_'`, never `NOT LIKE 'pg_%'`: LIKE's `_` is a wildcard, so
+  supported names such as `pgpeer` or `pga` would be omitted, undercounting retained consumers and
+  dropping shared objects they still use. The core246-305 consumer scans were corrected in place
+  (a forward revision cannot change an earlier downgrade); the real-PG pgpeer control in
+  `tests/migrations/test_dashboard_job_health_migration.py` executes every core scan and rejects the
+  old clause.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through
-  `src/butlers/migrations.py::_build_alembic_config`, which escapes `%` as `%%` in
+  `src/butlers/migrations/__init__.py::_build_alembic_config`, which escapes `%` as `%%` in
   `sqlalchemy.url`; percent-encoded libpq options
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
@@ -512,3 +633,9 @@ the existing complete backup and restore scripts retain every ledger row, owner,
 policy and constraint. No backup exclusion or new privileged owner is needed.
 Downgrade refuses durable goals/admission history. `core_273` likewise refuses
 to discard configured admission limits. These migrations do not activate callers.
+
+### Served identity evidence
+
+Serving evidence is additive core-owned data (`core_290`). Do not edit historical revisions or backfill serving from requested labels. Multiple schema replays must preserve the public table checks and exact data. Keep existing one aggregate partitioned ledger record; per-model usage belongs in a separate evidence table so every quota/ceiling read does not double count. A populated downgrade refuses instead of deleting serving receipts; prove refusal with planted sentinels and separate readback. Replaying bootstrap/runtime roles is required for SQL evidence; a mock and a role string are not grant/RLS proof.
+
+Managed reapplication creates `public.model_served_usage` as the actual established owner of `public.model_dispatch_attempts`, using that owner's existing per-creator default ACLs and then restoring the calling role. This preserves ordinary writer visibility after privileged empty downgrade/re-upgrade without adding a grant profile or principal. Discretion's pool fixtures must install the same `register_jsonb_codec` initializer as runtime pools: the atomic attempt/usage recorder binds structured JSONB evidence. An unconfigured-pool refusal is a fixture diagnostic, not permission to stringify evidence, weaken atomicity or change the runtime outcome.

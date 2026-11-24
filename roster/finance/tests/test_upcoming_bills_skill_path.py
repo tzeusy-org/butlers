@@ -25,9 +25,6 @@ from datetime import UTC, date, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -41,28 +38,10 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + finance migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool; truncate finance tables between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE bills, transactions, subscriptions, accounts CASCADE")
-    yield p
-    await p.close()
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance")
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +110,7 @@ async def _insert_txn(
 class TestSkillPathReconcileComposeNotify:
     """Full skill path: reconcile → compose → notify exactly once."""
 
-    async def test_reconcile_compose_notify_single_call(self, pool):
+    async def test_reconcile_compose_notify_single_call(self, finance_pool):
         """Settled bill lands in auto-settled section; notify called exactly once.
 
         Scenario:
@@ -151,17 +130,17 @@ class TestSkillPathReconcileComposeNotify:
 
         # Seed: one bill with a matching payment → will be auto-settled
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=350.00,
             currency="SGD",
             due_date=date.today() - timedelta(days=5),
         )
-        await _insert_txn(pool, merchant="HSBC Credit Card", amount=350.00, currency="SGD")
+        await _insert_txn(finance_pool, merchant="HSBC Credit Card", amount=350.00, currency="SGD")
 
         # Seed: one overdue bill with no payment → stays in needs-action
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="SP Services",
             amount=95.00,
             currency="SGD",
@@ -170,13 +149,13 @@ class TestSkillPathReconcileComposeNotify:
         )
 
         # Step 0: reconcile
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
         assert len(sweep["auto_settled"]) == 1, "HSBC bill must be auto-settled"
         assert sweep["auto_settled"][0]["payee"] == "HSBC Credit Card"
 
         # Step 1: post-reconcile view
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        predictions = await predict_bills(pool=pool, days_ahead=30)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
+        predictions = await predict_bills(pool=finance_pool, days_ahead=30)
 
         # Settled bill must not appear as pending/overdue
         action_payees = [i["bill"]["payee"] for i in bills["needs_action"]]
@@ -196,26 +175,26 @@ class TestSkillPathReconcileComposeNotify:
         assert call["intent"] == "send"
         assert call["message"] == digest
 
-    async def test_digest_reflects_settled_state(self, pool):
+    async def test_digest_reflects_settled_state(self, finance_pool):
         """Auto-settled bill appears in digest auto-settled section, not in needs-action."""
         from butlers.tools.finance.bills import compose_upcoming_bills_digest, upcoming_bills
         from butlers.tools.finance.pattern_recognition import predict_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Singtel",
             amount=80.00,
             currency="SGD",
             due_date=date.today() - timedelta(days=3),
         )
-        await _insert_txn(pool, merchant="Singtel", amount=80.00, currency="SGD")
+        await _insert_txn(finance_pool, merchant="Singtel", amount=80.00, currency="SGD")
 
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
         assert len(sweep["auto_settled"]) == 1
 
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        predictions = await predict_bills(pool=pool, days_ahead=30)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
+        predictions = await predict_bills(pool=finance_pool, days_ahead=30)
 
         digest = compose_upcoming_bills_digest(sweep, bills, predictions)
         assert digest is not None
@@ -243,7 +222,7 @@ class TestSkillPathReconcileComposeNotify:
         assert settled_mentions >= 1, "Singtel must appear in the auto-settled section"
         assert action_mentions == 0, "Singtel must NOT appear in the needs-action section"
 
-    async def test_early_exit_nothing_to_report(self, pool):
+    async def test_early_exit_nothing_to_report(self, finance_pool):
         """Empty bills + empty sweep → compose returns None → notify never called."""
         from butlers.tools.finance.bills import compose_upcoming_bills_digest, upcoming_bills
         from butlers.tools.finance.pattern_recognition import predict_bills
@@ -255,9 +234,9 @@ class TestSkillPathReconcileComposeNotify:
             notify_calls.append(dict(kwargs))
 
         # No bills, no transactions
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        predictions = await predict_bills(pool=pool, days_ahead=30)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
+        predictions = await predict_bills(pool=finance_pool, days_ahead=30)
 
         digest = compose_upcoming_bills_digest(sweep, bills, predictions)
 
@@ -270,14 +249,14 @@ class TestSkillPathReconcileComposeNotify:
 
         assert len(notify_calls) == 0, "notify must not be called when there is nothing to send"
 
-    async def test_autopay_bills_appear_in_digest_not_needs_action(self, pool):
+    async def test_autopay_bills_appear_in_digest_not_needs_action(self, finance_pool):
         """Autopay bills surface as informational in digest, never as action items."""
         from butlers.tools.finance.bills import compose_upcoming_bills_digest, upcoming_bills
         from butlers.tools.finance.pattern_recognition import predict_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="GIRO - CPF",
             amount=500.00,
             currency="SGD",
@@ -285,9 +264,9 @@ class TestSkillPathReconcileComposeNotify:
             autopay=True,
         )
 
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        predictions = await predict_bills(pool=pool, days_ahead=30)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
+        predictions = await predict_bills(pool=finance_pool, days_ahead=30)
 
         # Autopay bill must not appear in needs_action
         assert bills["needs_action"] == []
@@ -302,7 +281,7 @@ class TestSkillPathReconcileComposeNotify:
         assert "GIRO - CPF" in digest
         assert "Needs action" not in digest
 
-    async def test_single_notify_with_mixed_settled_and_pending(self, pool):
+    async def test_single_notify_with_mixed_settled_and_pending(self, finance_pool):
         """Mixed scenario: one settled + one pending → digest has both sections, notify once."""
         from butlers.tools.finance.bills import compose_upcoming_bills_digest, upcoming_bills
         from butlers.tools.finance.pattern_recognition import predict_bills
@@ -315,26 +294,26 @@ class TestSkillPathReconcileComposeNotify:
 
         # Will be settled
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Netflix",
             amount=15.49,
             currency="USD",
             due_date=date.today() - timedelta(days=2),
         )
-        await _insert_txn(pool, merchant="Netflix", amount=15.49, currency="USD")
+        await _insert_txn(finance_pool, merchant="Netflix", amount=15.49, currency="USD")
 
         # Will remain pending (needs action)
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Hulu",
             amount=17.99,
             currency="USD",
             due_date=date.today() + timedelta(days=7),
         )
 
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
-        predictions = await predict_bills(pool=pool, days_ahead=30)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
+        predictions = await predict_bills(pool=finance_pool, days_ahead=30)
 
         digest = compose_upcoming_bills_digest(sweep, bills, predictions)
         assert digest is not None

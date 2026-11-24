@@ -48,18 +48,27 @@ export function CaseDossier({
 
   const dossier = caseQuery.data?.data;
   const notes = dossier?.investigation_notes ?? null;
-  const hasUnpublishedProposal = dossier?.proposal_state === "unpublished";
+  // A retained proposal without a PR: proven unpublished, or ambiguous when a
+  // publication outcome (e.g. a lost PR-create response) awaits reconciliation.
+  const publicationAmbiguous = dossier?.proposal_state === "ambiguous";
+  const hasUnpublishedProposal =
+    dossier?.proposal_state === "unpublished" || publicationAmbiguous;
   const rawJournalEvents = journalQuery.data?.data ?? dossier?.journal ?? [];
   const journalEvents = useMemo(
     () =>
       hasUnpublishedProposal
         ? rawJournalEvents.map((event) =>
             event.step === "concluded" && event.detail
-              ? { ...event, detail: "Proposal remained unpublished." }
+              ? {
+                  ...event,
+                  detail: publicationAmbiguous
+                    ? "Proposal publication outcome unresolved."
+                    : "Proposal remained unpublished.",
+                }
               : event,
           )
         : rawJournalEvents,
-    [hasUnpublishedProposal, rawJournalEvents],
+    [hasUnpublishedProposal, publicationAmbiguous, rawJournalEvents],
   );
 
   const claimOrder = useMemo(
@@ -108,7 +117,12 @@ export function CaseDossier({
           {dossier.state_track_stage === "failed" ? (
             <div className="space-y-2" data-testid="qa-case-failure-banner">
               <DossierEyebrow>Failure</DossierEyebrow>
-              {hasUnpublishedProposal ? (
+              {publicationAmbiguous ? (
+                <p className="font-serif text-[17px] italic leading-8 text-destructive">
+                  The investigation produced a local proposal; whether it was published is
+                  unresolved.
+                </p>
+              ) : hasUnpublishedProposal ? (
                 <p className="font-serif text-[17px] italic leading-8 text-destructive">
                   The investigation produced a local proposal, but publication failed.
                 </p>

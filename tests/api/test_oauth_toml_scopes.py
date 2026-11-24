@@ -292,9 +292,14 @@ def _make_app_with_mocked_creds(app):
     async def _acquire():
         yield conn
 
+    async def _fetchval(query, *args):
+        if query.startswith("INSERT INTO public.audit_log ") and query.endswith("RETURNING id"):
+            return 1
+        return None
+
     pool = MagicMock()
     pool.acquire = _acquire
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(side_effect=_fetchval)
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
 

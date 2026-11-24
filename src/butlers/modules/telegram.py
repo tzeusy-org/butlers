@@ -10,9 +10,12 @@ Configured via [modules.telegram] with optional
 
 from __future__ import annotations
 
-import html
+import asyncio
 import logging
 import re
+import time
+from collections import deque
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -24,14 +27,32 @@ from butlers.core.channel_reactions import (
     REACTION_IN_PROGRESS,
     REACTION_SUCCESS,
 )
+from butlers.core.custody_egress import (
+    CustodyEgressRefused,
+    require_custody_clear,
+    telegram_chat_target,
+)
+from butlers.core.notify_attachments import (
+    CAPTION_LIMIT,
+    AttachmentError,
+    ResolvedAttachment,
+    attachment_audit_summary,
+    resolve_attachments,
+    validate_attachment_specs,
+)
 from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
+from butlers.core.telegram_identity import resolve_telegram_endpoint_identity
 from butlers.modules.base import Module
 from butlers.telegram_api import (
+    TelegramPartialDeliveryError,
     TelegramReplyMarkupValidationError,
     edit_telegram_message_text,
     remove_telegram_inline_keyboard,
+    telegram_parse_rejection,
+    telegram_retry_after,
     validate_telegram_reply_markup,
 )
+from butlers.telegram_text import render_markdown, split_telegram_text, text_units
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +68,15 @@ REACTION_TO_EMOJI = {
     REACTION_SUCCESS: "\U0001f44d",
     REACTION_FAILURE: "\U0001f47e",
 }
+
+
+@dataclass
+class _TelegramRetryBudget:
+    used: int = 0
+
+
+class _TelegramParseRejected(Exception):
+    """A proven parse rejection permits one bounded plain-source fallback phase."""
 
 
 class TelegramProviderResponseError(RuntimeError):
@@ -127,47 +157,8 @@ class TelegramConfig(BaseModel):
 
 
 def _markdown_to_telegram_html(text: str) -> str:
-    """Convert common Markdown formatting to Telegram-compatible HTML.
-
-    Handles ``**bold**``, ``*italic*``, `` `code` ``, ``` ```code blocks``` ```,
-    and ``~~strikethrough~~``.  Other constructs (lists, links) pass through
-    as-is — Telegram renders them acceptably as plain text.
-
-    Uses HTML parse_mode rather than MarkdownV2 because HTML requires escaping
-    only ``<``, ``>``, ``&`` (handled by :func:`html.escape`), whereas
-    MarkdownV2 demands backslash-escaping of ``.-()!+=|{}~>#_`` which makes
-    LLM-generated text fragile.
-    """
-    placeholders: list[str] = []
-
-    def _save_code(match: re.Match[str]) -> str:
-        idx = len(placeholders)
-        placeholders.append(match.group(0))
-        return f"\x00PH{idx}\x00"
-
-    # Protect code blocks from further processing
-    text = re.sub(r"```(.*?)```", _save_code, text, flags=re.DOTALL)
-    text = re.sub(r"`([^`\n]+)`", _save_code, text)
-
-    # HTML-escape remaining text
-    text = html.escape(text)
-
-    # Markdown → HTML (order matters: bold before italic)
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"(?<!\*)\*(?!\*)(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text)
-    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
-
-    # Re-insert code placeholders with proper HTML tags
-    for idx, original in enumerate(placeholders):
-        if original.startswith("```"):
-            content = original[3:-3].lstrip("\n")
-            replacement = f"<pre>{html.escape(content)}</pre>"
-        else:
-            content = original[1:-1]
-            replacement = f"<code>{html.escape(content)}</code>"
-        text = text.replace(f"\x00PH{idx}\x00", replacement)
-
-    return text
+    """Compatibility entry point for the single shared safe renderer."""
+    return render_markdown(text)
 
 
 def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
@@ -178,6 +169,23 @@ def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
         return str(exc)
     description = body.get("description") if isinstance(body, dict) else None
     return description if isinstance(description, str) else str(exc)
+
+
+_PHOTO_REJECTION_MARKERS = ("PHOTO_INVALID_DIMENSIONS", "IMAGE_PROCESS_FAILED", "PHOTO_INVALID")
+
+
+def _telegram_photo_rejected(response: httpx.Response) -> bool:
+    """Only an explicit 400 photo-processing rejection permits a document resend."""
+    if response.status_code != 400:
+        return False
+    try:
+        data = response.json()
+    except (ValueError, TypeError):
+        return False
+    description = data.get("description") if isinstance(data, dict) else None
+    return isinstance(description, str) and any(
+        marker in description.upper() for marker in _PHOTO_REJECTION_MARKERS
+    )
 
 
 class TelegramModule(Module):
@@ -198,6 +206,8 @@ class TelegramModule(Module):
         # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
+        self._chat_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        self._blob_store: Any = None
 
     name = "telegram"
 
@@ -231,6 +241,23 @@ class TelegramModule(Module):
             )
         return token
 
+    async def bot_endpoint_identity(self) -> str | None:
+        """The bot's ``telegram:bot:@<username>`` identity, as its inbound connector stamps it.
+
+        Resolved once through ``getMe`` and cached. ``None`` when it cannot be resolved right now;
+        a failure is never cached, and never turns a delivered message into an error.
+        """
+        cached = getattr(self, "_endpoint_identity", None)
+        if cached:
+            return cached
+        try:
+            identity = await resolve_telegram_endpoint_identity(self._get_bot_token())
+        except Exception:
+            logger.warning("Telegram bot endpoint identity could not be resolved", exc_info=True)
+            return None
+        self._endpoint_identity = identity
+        return identity
+
     def _base_url(self) -> str:
         """Build the Telegram API base URL using the bot token."""
         token = self._get_bot_token()
@@ -258,7 +285,7 @@ class TelegramModule(Module):
             """Send a Telegram message."""
             try:
                 return await module._send_message(chat_id, text, reply_markup=reply_markup)
-            except TelegramReplyMarkupValidationError as exc:
+            except (TelegramReplyMarkupValidationError, TelegramPartialDeliveryError) as exc:
                 return exc.to_tool_error()
 
         async def telegram_reply_to_message(
@@ -272,7 +299,7 @@ class TelegramModule(Module):
                 return await module._reply_to_message(
                     chat_id, message_id, text, reply_markup=reply_markup
                 )
-            except TelegramReplyMarkupValidationError as exc:
+            except (TelegramReplyMarkupValidationError, TelegramPartialDeliveryError) as exc:
                 return exc.to_tool_error()
 
         async def telegram_react_to_message(
@@ -320,6 +347,7 @@ class TelegramModule(Module):
         )
         self._client = httpx.AsyncClient()
         self._db = db
+        self._blob_store = blob_store
         self._resolved_credentials = {}
 
         # --- Bot-scope: CredentialStore (ecosystem-wide Tier 1 credential) ----
@@ -385,6 +413,9 @@ class TelegramModule(Module):
                 message_id=message_id,
                 reaction=reaction,
             )
+        except CustodyEgressRefused as exc:
+            # A held (or unreadable) chat gets no lifecycle reaction; ingest carries on.
+            logger.info("react_for_ingest: reaction skipped, custody %s", exc.reason)
         except Exception:
             logger.debug(
                 "react_for_ingest: failed to set reaction %r for %s",
@@ -401,11 +432,21 @@ class TelegramModule(Module):
 
         Prefers the switchboard audit pool (cross-butler, reads ``public``);
         falls back to the butler's own pool (which can also read ``public``).
-        ``None`` when neither is wired, which fails the gate open.
+        ``None`` when neither is wired; the send gate refuses before traffic.
         """
         if self._audit_pool is not None:
             return self._audit_pool
         return getattr(self._db, "pool", None) if self._db is not None else None
+
+    async def _require_custody_clear(self, chat_id: str) -> None:
+        """Refuse before any Telegram traffic when the chat is a held owner target.
+
+        REQ-endpoint-custody-holds-007. The outgoing account is the configured bot, which is
+        not an owner channel fact and so cannot be held; only the recipient chat is checked.
+        Fails closed: an unreadable custody state refuses with ``eligibility_unknown``.
+        """
+        target = telegram_chat_target(chat_id)
+        await require_custody_clear(self._permission_pool(), None if target is None else [target])
 
     async def _send_message(
         self,
@@ -439,52 +480,75 @@ class TelegramModule(Module):
                 render_links_inert=render_links_inert,
                 server_built=server_built_reply_markup,
             )
-            await require_permission(
-                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-            )
-            url = f"{self._base_url()}/sendMessage"
-            payload: dict[str, Any] = {
-                "chat_id": chat_id,
-                "text": _markdown_to_telegram_html(text),
-                "parse_mode": "HTML",
-            }
-            if render_links_inert:
-                # Explicit preformatted entities exclude URL/text_link entities.
-                # Telegram offsets/lengths count UTF-16 code units, not codepoints.
-                payload.pop("parse_mode")
-                payload["text"] = text
-                payload["entities"] = [
-                    {"type": "pre", "offset": 0, "length": len(text.encode("utf-16-le")) // 2}
-                ]
-                payload["link_preview_options"] = {"is_disabled": True}
-            if reply_to_message_id is not None:
-                payload["reply_to_message_id"] = reply_to_message_id
-            if validated_reply_markup is not None:
-                payload["reply_markup"] = validated_reply_markup
-            client = self._get_client()
-            resp = await client.post(url, json=payload)
-            response_status = resp.status_code
-            resp.raise_for_status()
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            await self._require_custody_clear(chat_id)
+            chunks = split_telegram_text(text, inert=render_links_inert)
+            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
+            self._chat_locks[chat_id] = (lock, users + 1)
+            message_ids: list[int] = []
             try:
-                data = resp.json()
-            except Exception as exc:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: invalid JSON"
-                ) from exc
-            if not isinstance(data, dict) or data.get("ok") is not True:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: provider did not confirm delivery",
-                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
-                )
-            result = data.get("result")
-            message_id = result.get("message_id") if isinstance(result, dict) else None
-            if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
-                raise TelegramProviderResponseError(
-                    "telegram_provider_response: invalid message_id"
-                )
+                async with lock:
+                    deadline = time.monotonic() + 30
+                    pending = deque((chunk, False, _TelegramRetryBudget()) for chunk in chunks)
+                    while pending:
+                        chunk, plain, retry_budget = pending.popleft()
+                        payload: dict[str, Any] = {
+                            "chat_id": chat_id,
+                            "text": chunk.html,
+                            "parse_mode": "HTML",
+                        }
+                        if render_links_inert:
+                            payload.pop("parse_mode")
+                            payload["text"] = chunk.source
+                            payload["entities"] = [
+                                {"type": "pre", "offset": 0, "length": text_units(chunk.source)}
+                            ]
+                            payload["link_preview_options"] = {"is_disabled": True}
+                        if plain:
+                            payload.pop("parse_mode")
+                            payload["text"] = chunk.source
+                        if not message_ids and reply_to_message_id is not None:
+                            payload["reply_to_message_id"] = reply_to_message_id
+                        if not pending and validated_reply_markup is not None:
+                            payload["reply_markup"] = validated_reply_markup
+                        try:
+                            data = await self._send_chunk(payload, deadline, retry_budget)
+                        except _TelegramParseRejected:
+                            # A fitting visible code line can include >4000 raw
+                            # units of fence syntax. Preserve that source in
+                            # separately bounded, once-only plain requests.
+                            fallback = split_telegram_text(chunk.source, inert=True)
+                            pending.extendleft(
+                                (part, True, retry_budget) for part in reversed(fallback)
+                            )
+                            continue
+                        message_ids.append(data["result"]["message_id"])
+            except (Exception, asyncio.CancelledError) as exc:
+                if message_ids:
+                    raise TelegramPartialDeliveryError(message_ids) from exc
+                raise
+            finally:
+                _, users = self._chat_locks[chat_id]
+                if users == 1:
+                    del self._chat_locks[chat_id]
+                else:
+                    self._chat_locks[chat_id] = (lock, users - 1)
+            message_id = message_ids[-1]
+            if len(message_ids) > 1:
+                data = {**data, "result": {**data["result"], "message_ids": message_ids}}
+
         except Exception as exc:
-            failure_category = _telegram_send_failure_category(exc)
-            if isinstance(exc, PermissionUnavailable):
+            if isinstance(exc, CustodyEgressRefused):
+                failure_category = f"custody_{exc.reason}"
+            elif isinstance(exc, TelegramPartialDeliveryError):
+                failure_category = "telegram_partial_delivery"
+            else:
+                failure_category = _telegram_send_failure_category(exc)
+            if isinstance(exc, TelegramPartialDeliveryError):
+                audit_summary["provider_message_ids"] = list(exc.message_ids)
+            if isinstance(exc, PermissionUnavailable) or (
+                isinstance(exc, CustodyEgressRefused) and exc.reason == "eligibility_unknown"
+            ):
                 logger.error("Telegram sendMessage blocked: category=%s", failure_category)
                 # The guard already logged this refusal. An audit retry through the
                 # unavailable pool could expose the raw DB traceback in its fallback log.
@@ -506,6 +570,7 @@ class TelegramModule(Module):
             raise
 
         audit_summary["provider_message_id"] = message_id
+        audit_summary["provider_message_ids"] = message_ids
         await write_audit_entry(
             self._audit_pool,
             self._butler_name,
@@ -513,6 +578,236 @@ class TelegramModule(Module):
             audit_summary,
         )
         return data
+
+    async def _send_files(
+        self,
+        chat_id: str,
+        text: str,
+        attachments: list[dict[str, Any]],
+        reply_to_message_id: int | None = None,
+        *,
+        origin_butler: str,
+        render_links_inert: bool = False,
+    ) -> dict[str, Any]:
+        """Deliver files with sendPhoto/sendDocument, text as caption when it fits.
+
+        Every attachment is fetched and verified (size, pinned sha256) before
+        the first Telegram call, so a missing blob or a changed one sends
+        nothing.  Text of at most ``CAPTION_LIMIT`` characters becomes the first
+        file's caption; longer text (or inert-rendered text) goes first through
+        :meth:`_send_message` and the files follow as replies to its last chunk.
+        A failure after any accepted message is a terminal partial delivery.
+        Audit rows carry media type, size, digest and message ids only.
+        """
+        audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
+        message_ids: list[int] = []
+        try:
+            specs = validate_attachment_specs(attachments)
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            await self._require_custody_clear(chat_id)
+            # origin_butler is the Messenger-verified notify.v1 sender; refs
+            # outside its RFC 0016 key prefix (or the connector prefix) refuse.
+            resolved = await resolve_attachments(
+                specs, self._blob_store, origin_butler=origin_butler
+            )
+            audit_summary["attachments"] = attachment_audit_summary(resolved)
+            text_chunks = split_telegram_text(text) if text.strip() else []
+            caption_first = (
+                not render_links_inert
+                and resolved[0].caption is None
+                and len(text_chunks) == 1
+                and text_units(text) <= CAPTION_LIMIT
+            )
+            anchor = reply_to_message_id
+            if text_chunks and not caption_first:
+                lead_text = text
+                if render_links_inert:
+                    # Captions cannot be rendered inert; fold them into the
+                    # inert text instead of dropping or sending them live.
+                    lead_text += "".join(
+                        f"\n\n{item.filename}: {item.caption}" for item in resolved if item.caption
+                    )
+                sent = await self._send_message(
+                    chat_id,
+                    lead_text,
+                    reply_to_message_id=reply_to_message_id,
+                    render_links_inert=render_links_inert,
+                )
+                result = sent.get("result", {})
+                message_ids.extend(result.get("message_ids") or [result["message_id"]])
+                anchor = message_ids[-1]
+            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
+            self._chat_locks[chat_id] = (lock, users + 1)
+            try:
+                async with lock:
+                    deadline = time.monotonic() + 120
+                    for index, item in enumerate(resolved):
+                        caption = text if index == 0 and caption_first else item.caption
+                        if render_links_inert:
+                            caption = None
+                        data = await self._upload_file(chat_id, item, caption, anchor, deadline)
+                        message_ids.append(data["result"]["message_id"])
+            finally:
+                _, users = self._chat_locks[chat_id]
+                if users == 1:
+                    del self._chat_locks[chat_id]
+                else:
+                    self._chat_locks[chat_id] = (lock, users - 1)
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, TelegramPartialDeliveryError):
+                message_ids = list(exc.message_ids)
+            if message_ids:
+                partial = TelegramPartialDeliveryError(message_ids)
+                failure_category = "telegram_partial_delivery"
+                audit_summary["provider_message_ids"] = message_ids
+            else:
+                partial = None
+                if isinstance(exc, AttachmentError):
+                    failure_category = exc.code
+                elif isinstance(exc, CustodyEgressRefused):
+                    failure_category = f"custody_{exc.reason}"
+                else:
+                    failure_category = _telegram_send_failure_category(exc)
+            if isinstance(exc, PermissionUnavailable) or (
+                isinstance(exc, CustodyEgressRefused) and exc.reason == "eligibility_unknown"
+            ):
+                logger.error("Telegram file send blocked: category=%s", failure_category)
+                raise
+            logger.error(
+                "Telegram file send failed: category=%s chat_id=%r", failure_category, chat_id
+            )
+            await write_audit_entry(
+                self._audit_pool,
+                self._butler_name,
+                "telegram_send_files",
+                audit_summary,
+                result="error",
+                error=failure_category,
+            )
+            if partial is not None and partial is not exc:
+                raise partial from exc
+            raise
+
+        audit_summary["provider_message_id"] = message_ids[-1]
+        audit_summary["provider_message_ids"] = message_ids
+        await write_audit_entry(
+            self._audit_pool, self._butler_name, "telegram_send_files", audit_summary
+        )
+        return {
+            "ok": True,
+            "result": {"message_id": message_ids[-1], "message_ids": message_ids},
+        }
+
+    async def _upload_file(
+        self,
+        chat_id: str,
+        item: ResolvedAttachment,
+        caption: str | None,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Upload one file; a caption parse rejection falls back to plain once.
+
+        A photo Telegram refuses to process (dimensions or image decoding) is
+        re-sent once as a document: an explicit 400 means nothing was posted.
+        """
+        if item.is_photo:
+            try:
+                return await self._upload_as(
+                    "sendPhoto", "photo", chat_id, item, caption, reply_to_message_id, deadline
+                )
+            except httpx.HTTPStatusError as exc:
+                if not _telegram_photo_rejected(exc.response):
+                    raise
+        return await self._upload_as(
+            "sendDocument", "document", chat_id, item, caption, reply_to_message_id, deadline
+        )
+
+    async def _upload_as(
+        self,
+        method: str,
+        field: str,
+        chat_id: str,
+        item: ResolvedAttachment,
+        caption: str | None,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id}
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+        rendered = split_telegram_text(caption) if caption else []
+        if len(rendered) == 1:
+            payload["caption"] = rendered[0].html
+            payload["parse_mode"] = "HTML"
+        elif caption:
+            payload["caption"] = caption
+        files = {field: (item.filename, item.data, item.media_type)}
+        retry_budget = _TelegramRetryBudget()
+        try:
+            return await self._send_chunk(
+                payload, deadline, retry_budget, method=method, files=files
+            )
+        except _TelegramParseRejected:
+            payload.pop("parse_mode")
+            payload["caption"] = caption
+            return await self._send_chunk(
+                payload, deadline, retry_budget, method=method, files=files
+            )
+
+    async def _send_chunk(
+        self,
+        payload: dict[str, Any],
+        deadline: float,
+        retry_budget: _TelegramRetryBudget,
+        *,
+        method: str = "sendMessage",
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> dict[str, Any]:
+        """One request: only proven rejection permits a bounded resend.
+
+        ``files`` switches the request to a multipart upload (sendPhoto /
+        sendDocument); ``payload`` then holds the form fields.
+        """
+        client = self._get_client()
+        url = f"{self._base_url()}/{method}"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Telegram logical-send deadline expired.")
+            async with asyncio.timeout(remaining):
+                if files is None:
+                    response = await client.post(url, json=payload)
+                else:
+                    response = await client.post(
+                        url, data={k: str(v) for k, v in payload.items()}, files=files
+                    )
+            if "parse_mode" in payload and telegram_parse_rejection(response):
+                raise _TelegramParseRejected()
+            delay = telegram_retry_after(response)
+            if delay is not None and retry_budget.used < 2 and delay < deadline - time.monotonic():
+                retry_budget.used += 1
+                await asyncio.sleep(delay)
+                continue
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid JSON"
+                ) from exc
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: provider did not confirm delivery",
+                    provider_rejected=isinstance(data, dict) and data.get("ok") is False,
+                )
+            result = data.get("result")
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if type(message_id) is not int or message_id <= 0:
+                raise TelegramProviderResponseError(
+                    "telegram_provider_response: invalid message_id"
+                )
+            return data
 
     async def _reply_to_message(
         self,
@@ -534,15 +829,15 @@ class TelegramModule(Module):
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        # New text into a held chat is new egress; removing a keyboard is not.
+        await self._require_custody_clear(chat_id)
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
             chat_id=chat_id,
             message_id=message_id,
-            text=_markdown_to_telegram_html(text),
+            text=text,
         )
 
     async def _edit_message_text_or_reject(
@@ -559,9 +854,7 @@ class TelegramModule(Module):
 
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         return await remove_telegram_inline_keyboard(
             self._get_client(),
             self._base_url(),
@@ -589,6 +882,8 @@ class TelegramModule(Module):
 
     async def _react_to_message(self, chat_id: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Call Telegram setMessageReaction API with an arbitrary emoji."""
+        # A reaction is a visible signal into the chat, so a held chat gets none.
+        await self._require_custody_clear(chat_id)
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
         resp = await client.post(

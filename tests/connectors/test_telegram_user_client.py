@@ -19,14 +19,23 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import butlers.connectors.owner_outbound_events as owner_outbound_events
 import butlers.connectors.telegram_user_client as telegram_user_client
+from butlers.connectors.filtered_event_buffer import REPLAY_UNAVAILABLE_KEY
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
+)
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
 )
 
 _ENDPOINT = "telegram_user_client:telegram:user123"
@@ -173,6 +182,80 @@ def test_batch_history_uses_shared_structured_sender_contract(
             "reply_to": None,
         }
     ]
+
+
+def test_batch_history_carries_authorship_and_forward_facts(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Spec: REQ-connector-base-spec-013 (Message.out and Message.fwd_from, omitted if absent)."""
+
+    def _msg(msg_id: int, sender_id: int, text: str, **flags: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=msg_id,
+            chat_id=200,
+            sender_id=sender_id,
+            sender=SimpleNamespace(first_name="Alice", username=None),
+            message=text,
+            text=text,
+            date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+            reply_to_msg_id=flags.pop("reply_to", None),
+            **flags,
+        )
+
+    counterparty = _msg(1, 777, "Can you send the deck?", out=False, fwd_from=None)
+    owner = _msg(2, 555, "I'll send it tomorrow", out=True, fwd_from=None)
+    forwarded = _msg(3, 555, "I will pay you back", out=True, fwd_from=_fwd_header(888))
+    reply = _msg(4, 555, "yes, that one", out=True, fwd_from=None, reply_to=1)
+    no_flags = _msg(5, 555, "no provider flags")
+    odd_out = _msg(6, 555, "odd flag", out="yes")
+
+    messages = [counterparty, owner, forwarded, reply, no_flags, odd_out]
+    envelope = connector._build_batch_envelope(
+        "200", messages, messages, participant_count=2, chat_type="private"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert (history["1"]["is_from_me"], history["1"]["forwarded"]) == (False, False)
+    assert (history["2"]["is_from_me"], history["2"]["forwarded"]) == (True, False)
+    assert (history["3"]["is_from_me"], history["3"]["forwarded"]) == (True, True)
+    assert history["4"]["text"] == "yes, that one"
+    assert history["4"]["reply_to"] == 1
+    assert "Can you send the deck?" not in history["4"]["text"]
+    assert "is_from_me" not in history["5"] and "forwarded" not in history["5"]
+    assert "is_from_me" not in history["6"]
+
+
+def test_batch_history_carries_the_via_bot_fact(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Message.via_bot_id: inline-bot output is posted under the owner's account."""
+
+    def _msg(msg_id: int, **flags: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=msg_id,
+            chat_id=200,
+            sender_id=555,
+            sender=SimpleNamespace(first_name="Owner", username=None),
+            message="text",
+            text="text",
+            date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+            reply_to_msg_id=None,
+            **flags,
+        )
+
+    typed = _msg(1, out=True, fwd_from=None, via_bot_id=None)
+    via_bot = _msg(2, out=True, fwd_from=None, via_bot_id=93372553)
+    no_attr = _msg(3, out=True, fwd_from=None)
+
+    messages = [typed, via_bot, no_attr]
+    envelope = connector._build_batch_envelope(
+        "200", messages, messages, participant_count=2, chat_type="private"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert history["1"]["via_bot"] is False
+    assert history["2"]["via_bot"] is True
+    assert "via_bot" not in history["3"]
 
 
 def test_batch_history_missing_date_warning_is_content_blind(
@@ -540,8 +623,10 @@ async def test_missing_message_date_does_not_record(
 
 async def test_backfill_records_owner_points_with_live_replay_dedup_and_no_content(
     owner_connector: TelegramUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Startup replay preserves the live recorder's owner/privacy/dedup contract."""
+    monkeypatch.setattr(owner_outbound_events, "_dedup_key", b"test-dedup-key")
     owner_message = _make_message(
         msg_id=42,
         chat_id=100,
@@ -811,18 +896,22 @@ async def test_error_status_retains_full_raw_payload(
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
     connector._discretion_dispatcher = None
     connector._normalize_to_ingest_v1 = AsyncMock(  # type: ignore[method-assign]
-        return_value={"schema_version": "ingest.v1"}
+        return_value={
+            "schema_version": "ingest.v1",
+            "payload": {"raw": {"id": 9, "message": "hi"}},
+        }
     )
     connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._filtered_event_buffer.park = AsyncMock()  # type: ignore[method-assign]
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    # Park on the first failure, so the error row is written now (bu-dhloi1.149).
+    connector._ingest_retry = IngestRetryBudget(1)
 
     msg = _make_message(msg_id=9, chat_id=100, sender_id=999, text="hi")
     await connector._process_message(msg)
 
-    connector._filtered_event_buffer.record.assert_called_once()
-    kwargs = connector._filtered_event_buffer.record.call_args.kwargs
-    assert kwargs["status"] == "error"
+    connector._filtered_event_buffer.park.assert_awaited_once()
+    kwargs = connector._filtered_event_buffer.park.call_args.kwargs
     assert kwargs["full_payload"]["payload"]["raw"] == {"id": 9, "message": "hi"}
 
 
@@ -1176,9 +1265,12 @@ async def test_forwarded_message_is_one_forwarded_span(
     ]
     parse_ingest_envelope(env)
 
+    # Park on the first submission failure, so its error row is written now.
+    connector._ingest_retry = IngestRetryBudget(1)
     # Exercise the real single-message policy, discretion and error producers.
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission"):
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1204,14 +1296,17 @@ async def test_forwarded_message_is_one_forwarded_span(
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._process_message(msg)
-        row = connector._filtered_event_buffer._rows[-1]
+        row = stored_rows(connector._filtered_event_buffer, pool)[-1]
         assert row[8] == ("error" if stage == "submission" else "filtered")
         stored = row[9]
         assert stored["sender"]["identity"] == "999"
+        # A parked submission stores the envelope it tried to send, text intact
+        # (bu-dhloi1.149); filtered rows keep only the privacy-tier placeholder.
+        text_len = len(msg.message) if stage == "submission" else len("[no text]")
         assert stored["payload"]["untrusted_spans"][0] == {
             "kind": "forwarded",
             "start": 0,
-            "end": len("[no text]"),
+            "end": text_len,
             "origin_identity": "555",
             "origin_display_name": "Mallory",
         }
@@ -1246,9 +1341,13 @@ async def test_batch_marks_only_the_forwarded_message_text(
     assert (span["kind"], span["origin_identity"]) == ("forwarded", "555")
     assert text[span["start"] : span["end"]] == "Claim your prize here"
     parse_ingest_envelope(envelope)
+    # A failed batch is held, then parked per message once its attempts are spent
+    # (bu-dhloi1.277); park on the first failure here.
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission", "build"):
         await _prime_flush_buffer(connector, "200", forwarded)
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1281,9 +1380,19 @@ async def test_batch_marks_only_the_forwarded_message_text(
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._flush_chat_buffer("200")
-        row = connector._filtered_event_buffer._rows[-1]
+        row = stored_rows(connector._filtered_event_buffer, pool)[-1]
         stored = row[9]
         assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
+        if stage == "submission":
+            # A parked message replays as a batch of one: its envelope is retained.
+            assert stored["payload"]["raw"]
+            assert stored["control"]["idempotency_key"]
+            (span,) = stored["payload"]["untrusted_spans"]
+            assert (span["kind"], span["origin_identity"]) == ("forwarded", "555")
+            continue
+        if stage == "build":
+            # The envelope could not be built: replay refuses the row with a reason.
+            assert REPLAY_UNAVAILABLE_KEY in stored
         assert stored["payload"]["raw"] == {}
         assert "normalized_text" not in stored["payload"]
         assert stored["payload"]["untrusted_spans"] == [
@@ -1340,8 +1449,11 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
     parse_ingest_envelope(batch)
 
     # Real policy/error producer loses text on purpose but must retain exposure.
+    # Park on the first submission failure, so its error row is written now.
+    connector._ingest_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "submission"):
-        connector._filtered_event_buffer._rows.clear()
+        clear_stored_rows(connector._filtered_event_buffer, pool)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
             allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
@@ -1363,11 +1475,15 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._process_message(msg)
-        stored = connector._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(connector._filtered_event_buffer, pool)[-1][9]
         _sanitize_replay_payload(stored)
-        assert stored["payload"]["untrusted_spans"] == [
-            {"kind": "quoted", "start": 0, "end": len("[no text]")}
-        ]
+        if stage == "submission":
+            # A parked submission stores the envelope it tried to send (bu-dhloi1.149).
+            assert stored["payload"]["untrusted_spans"] == env["payload"]["untrusted_spans"]
+        else:
+            assert stored["payload"]["untrusted_spans"] == [
+                {"kind": "quoted", "start": 0, "end": len("[no text]")}
+            ]
         assert stored["event"]["in_reply_to_ref"] == "200:7"
 
     # Known quote with missing/malformed boundaries is conservative, not dropped.
@@ -1397,9 +1513,12 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
         )
     ]
     msg.reply_to = MessageReplyHeader(reply_to_msg_id=7)
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission", "build"):
         await _prime_flush_buffer(connector, "200", msg)
         connector._filtered_event_buffer._rows.clear()
+        pool.written.clear()
         connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
         connector._discretion_evaluators["200"] = SimpleNamespace(
             evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
@@ -1428,9 +1547,18 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._flush_chat_buffer("200")
-        row = connector._filtered_event_buffer._rows[-1]
+        row = [*pool.written, *connector._filtered_event_buffer._rows][-1]
         assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
         stored = row[9]
+        if stage == "submission":
+            # A parked message replays as a batch of one: its envelope is retained.
+            assert stored["payload"]["raw"]
+            assert [s["kind"] for s in stored["payload"]["untrusted_spans"]] == ["quoted"]
+            continue
+        if stage == "build":
+            assert REPLAY_UNAVAILABLE_KEY in stored
+            assert [s["kind"] for s in stored["payload"]["untrusted_spans"]] == ["quoted"]
+            continue
         _sanitize_replay_payload(stored)
         assert stored["payload"]["raw"] == {}
         assert stored["payload"]["untrusted_spans"] == [
@@ -1449,9 +1577,12 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
         message="ordinary new reply",
         reply_to=MessageReplyHeader(reply_to_msg_id=7),
     )
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("success", "connector", "global", "discretion", "submission", "build"):
         await _prime_flush_buffer(connector, "200", ordinary_reply)
         connector._filtered_event_buffer._rows.clear()
+        pool.written.clear()
         connector._discretion_dispatcher = AsyncMock() if stage == "discretion" else None
         connector._discretion_evaluators["200"] = SimpleNamespace(
             evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
@@ -1487,11 +1618,16 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
             assert "untrusted_spans" not in delivered["payload"]
             parse_ingest_envelope(delivered)
         else:
-            row = connector._filtered_event_buffer._rows[-1]
+            row = [*pool.written, *connector._filtered_event_buffer._rows][-1]
             assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
             stored = row[9]
             _sanitize_replay_payload(stored)
             assert stored["event"]["in_reply_to_ref"] == "200:7"
+            if stage in ("submission", "build"):
+                # Parked per message (bu-dhloi1.277): the envelope, or the raw message
+                # with a replay refusal, is kept so the message can be recovered.
+                assert stored["payload"]["raw"]
+                continue
             assert stored["payload"]["raw"] == {}
             assert "untrusted_spans" not in stored["payload"]
             assert "ordinary new reply" not in str(stored)
@@ -1546,3 +1682,254 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
         await connector._perform_backfill()
     submitted.assert_awaited_once()
     assert submitted.await_args.args[0]["payload"]["untrusted_spans"][0]["kind"] == "quoted"
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import telegram_user_client as module
+
+    monkeypatch.setattr(module, "TELETHON_AVAILABLE", True)
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.TelegramUserClientConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("telegram_user_client", "telegram")
+    assert config.max_inflight == 17
+
+
+# --- A failed batch keeps a replayable copy (bu-dhloi1.277) ---
+
+
+def _held_msg(msg_id: int, chat_id: int = 300) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=msg_id,
+        chat_id=chat_id,
+        sender_id=777,
+        sender=SimpleNamespace(first_name="Alice", username=None),
+        message=f"text {msg_id}",
+        text=f"text {msg_id}",
+        date=datetime(2026, 8, 24, 10, msg_id, tzinfo=UTC),
+        reply_to_msg_id=None,
+        fwd_from=None,
+    )
+
+
+_FAILED = ValueError("failed")
+
+
+async def _flush_failing(
+    connector: TelegramUserClientConnector,
+    chat: str,
+    *,
+    final: bool = False,
+    retry: bool = False,
+    only: Any = None,
+    submit_error: Exception | None = _FAILED,
+    block: str | None = None,
+) -> None:
+    """Flush the chat buffer (or run the held-batch retry timer) with a stubbed pipeline.
+
+    ``block`` ends the batch at a drop return: ``connector``, ``global`` or ``discretion``.
+    """
+    allow = SimpleNamespace(allowed=True, action="pass_through")
+    deny = SimpleNamespace(
+        allowed=False, action="skip", matched_rule_type="chat_id", reason="synthetic rule"
+    )
+    connector._discretion_dispatcher = AsyncMock() if block == "discretion" else None
+    connector._discretion_evaluators[chat] = SimpleNamespace(
+        evaluate=AsyncMock(return_value=SimpleNamespace(verdict="IGNORE", reason="noise"))
+    )
+    with (
+        patch.object(
+            connector._ingestion_policy,
+            "evaluate",
+            return_value=deny if block == "connector" else allow,
+        ),
+        patch.object(
+            connector._global_ingestion_policy,
+            "evaluate",
+            return_value=deny if block == "global" else allow,
+        ),
+        patch.object(connector, "_resolve_batch_weight", AsyncMock(return_value=1.0)),
+        patch.object(connector, "_submit_to_ingest", AsyncMock(side_effect=submit_error)),
+        patch.object(connector, "_flush_and_drain", AsyncMock()),
+        patch.object(connector, "_save_checkpoint", AsyncMock()),
+    ):
+        if only is not None:
+            await connector._flush_batch(chat, only.messages, None, final, only)
+        elif retry:
+            await connector._retry_held_batches(final=final)
+        else:
+            await connector._flush_chat_buffer(chat, final=final)
+
+
+async def _prime_two(connector: TelegramUserClientConnector) -> list[SimpleNamespace]:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    msgs = [_held_msg(10), _held_msg(11)]
+    connector._chat_buffers["300"] = ChatBuffer(messages=list(msgs))
+    connector._fetch_conversation_history = AsyncMock(return_value=msgs)  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=msgs)  # type: ignore[method-assign]
+    return msgs
+
+
+async def test_failed_batch_is_held_and_the_checkpoint_stays_below_it(connector) -> None:
+    msgs = await _prime_two(connector)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+
+    await _flush_failing(connector, "300")
+
+    # Membership is frozen outside the buffer, so new arrivals cannot join the held batch.
+    assert not connector._chat_buffers["300"].messages
+    assert connector._held_batches["300"][0].messages == msgs
+    assert connector._held_batches["300"][0].key == "batch:300:10-11"
+    assert not pool.written
+    # Another chat succeeding past the held ids must not move the checkpoint over them.
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(50)
+    assert connector._last_message_id == 9
+
+
+async def test_spent_attempts_park_each_message_then_advance(connector) -> None:
+    await _prime_two(connector)
+    connector._batch_retry = IngestRetryBudget(2)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+
+    await _flush_failing(connector, "300")
+    assert not pool.written
+    await _flush_failing(connector, "300", retry=True)
+
+    assert [row[9]["event"]["external_event_id"] for row in pool.written] == [
+        "batch:300:10-10",
+        "batch:300:11-11",
+    ]
+    assert all(row[8] == "error" and row[9]["payload"]["raw"] for row in pool.written)
+    assert "300" not in connector._held_batches
+    assert connector._last_message_id == 11
+
+
+async def test_unwritable_park_keeps_the_batch_held(connector) -> None:
+    msgs = await _prime_two(connector)
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    pool.fail_writes = True
+
+    await _flush_failing(connector, "300")
+
+    assert connector._held_batches["300"][0].messages == msgs
+    assert connector._last_message_id == 5
+    pool.fail_writes = False
+    # The budget restarts after an unwritten park; spend it again, then the rows land.
+    await _flush_failing(connector, "300", retry=True)
+    assert len(pool.written) == 2
+    assert "300" not in connector._held_batches
+    assert connector._last_message_id == 11
+
+
+async def test_shutdown_flush_parks_a_failed_batch_at_once(connector) -> None:
+    await _prime_two(connector)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+
+    await _flush_failing(connector, "300", final=True)
+
+    assert len(pool.written) == 2
+    assert "300" not in connector._held_batches
+
+
+@pytest.mark.parametrize("block", ["connector", "global", "discretion"])
+async def test_a_held_batch_that_is_then_dropped_releases_the_checkpoint(connector, block) -> None:
+    await _prime_two(connector)
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    await _flush_failing(connector, "300")
+    assert connector._held_batches["300"]
+
+    # The retry ends at a drop return (policy block, global skip, discretion IGNORE).
+    await _flush_failing(connector, "300", retry=True, submit_error=None, block=block)
+
+    assert "300" not in connector._held_batches
+    assert len(connector._batch_retry) == 0
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert connector._last_message_id == 500
+
+
+async def test_releasing_one_held_batch_keeps_another_chat_batch_held(connector) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    first, second = [_held_msg(10)], [_held_msg(20)]
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    connector._fetch_conversation_history = AsyncMock(return_value=first)  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=first)  # type: ignore[method-assign]
+    connector._chat_buffers["300"] = ChatBuffer(messages=list(first))
+    await _flush_failing(connector, "300")
+    # A second hold, as when two flushes of the chat were in flight together.
+    connector._hold_batch("300", None, "batch:300:20-20", list(second), None)
+    assert [h.key for h in connector._held_batches["300"]] == ["batch:300:10-10", "batch:300:20-20"]
+
+    # The first batch succeeds on its retry; the second's hold is untouched.
+    held_first = connector._held_batches["300"][0]
+    await _flush_failing(connector, "300", only=held_first, submit_error=None)
+    assert [h.key for h in connector._held_batches["300"]] == ["batch:300:20-20"]
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert connector._last_message_id == 19
+
+
+async def test_a_held_chat_is_not_force_flushed_and_sheds_past_its_ceiling(connector) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    connector._config.buffer_max_messages = 2
+    msgs = await _prime_two(connector)
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._last_message_id = 5
+    await _flush_failing(connector, "300")
+    held_key = connector._held_batches["300"][0].key
+    connector._chat_buffers["300"] = ChatBuffer()
+    connector._flush_chat_buffer = AsyncMock()  # type: ignore[method-assign]
+
+    # New arrivals buffer as their own batch, with no cap-triggered flush while a batch is held.
+    for i in range(12, 12 + 8):
+        await connector._buffer_message(_held_msg(i))
+    connector._flush_chat_buffer.assert_not_awaited()
+    assert len(connector._chat_buffers["300"].messages) == 8
+    assert connector._held_batches["300"][0].key == held_key
+    assert connector._held_batches["300"][0].messages == msgs
+    # Past the ceiling nothing more is buffered; the dropped id holds the checkpoint instead.
+    await connector._buffer_message(_held_msg(40))
+    await connector._buffer_message(_held_msg(41))
+    assert len(connector._chat_buffers["300"].messages) == 8
+    held = connector._held_batches.pop("300")
+    with patch.object(connector, "_save_checkpoint", AsyncMock()):
+        await connector._advance_checkpoint(500)
+    assert held and connector._last_message_id == 39  # catch-up re-reads 40 and 41
+
+
+async def test_both_stores_down_holds_one_batch_per_chat_and_fetches_once_per_tick(
+    connector,
+) -> None:
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    batch = [_held_msg(10)]
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._last_message_id = 5
+    fetch = AsyncMock(return_value=batch)
+    connector._fetch_conversation_history = fetch  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=batch)  # type: ignore[method-assign]
+    connector._chat_buffers["300"] = ChatBuffer(messages=list(batch))
+    await _flush_failing(connector, "300")
+
+    ticks = 30
+    for i in range(ticks):
+        connector._chat_buffers["300"].messages.append(_held_msg(11 + i))
+        await _flush_failing(connector, "300")  # the scanner's buffer flush: waits
+        await _flush_failing(connector, "300", retry=True)  # the retry timer
+
+    assert len(connector._held_batches["300"]) == 1
+    assert fetch.await_count <= 1 + ticks
+    assert len(connector._chat_buffers["300"].messages) == ticks

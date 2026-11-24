@@ -52,7 +52,9 @@ async def repoint_facts_on_conn(
 
             if src_confidence > tgt_confidence:
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE now() END, "
+                    "supersedes_id = $1 WHERE id = $2",
                     src_fact["id"],
                     conflict["id"],
                 )
@@ -63,7 +65,9 @@ async def repoint_facts_on_conn(
                 )
             else:
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE now() END, "
+                    "supersedes_id = $1 WHERE id = $2",
                     conflict["id"],
                     src_fact["id"],
                 )
@@ -102,7 +106,9 @@ async def repoint_facts_on_conn(
 
             if src_confidence > tgt_confidence:
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE now() END, "
+                    "supersedes_id = $1 WHERE id = $2",
                     obj_fact["id"],
                     edge_conflict["id"],
                 )
@@ -113,7 +119,9 @@ async def repoint_facts_on_conn(
                 )
             else:
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded', supersedes_id = $1 WHERE id = $2",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE now() END, "
+                    "supersedes_id = $1 WHERE id = $2",
                     edge_conflict["id"],
                     obj_fact["id"],
                 )

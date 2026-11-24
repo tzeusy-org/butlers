@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Fleet-Halt Visibility
@@ -7,7 +12,17 @@ dispatches being denied fleet-wide — as a loud, explicit state on the Spend
 page, not silence. The ceiling is enforced by `check_monthly_ceiling` / the
 spawner, which writes an `outcome='quota_skip'` row to
 `public.model_dispatch_attempts` with `failure_reason` starting `Monthly spend
-ceiling reached` for every denied dispatch.
+ceiling reached` for every denied dispatch (see model-failover spec, Failover
+Attempt Provenance).
+
+In the goal runtime, the deterministic goal runner SHALL retain the existing
+ceiling decision, canonical attempt evidence and same-transaction fleet-halt
+attention producer. Switchboard alone SHALL deliver the episode as service-plane
+work. No model function, goal or ledger observer gains a second delivery path.
+All once-per-window, failure-isolation, owner-control and degraded-source
+scenarios below remain mandatory. Existing session doors describe retained
+pre-switch history; this amendment SHALL NOT invent goal/region URLs or alter
+the separately governed D19 owner-surface switch.
 
 ID: REQ-dashboard-spend-dashboard-001
 Source: dashboard-spend-dashboard Fleet-Halt Visibility; runtime-attention-outbox REQ-runtime-attention-outbox-001; design.md Decisions 3-5
@@ -17,8 +32,8 @@ Scope: v1-mandatory
 
 - **WHEN** `GET /api/dispatch/attempts?outcome=quota_skip&reason_prefix=Monthly+spend+ceiling+reached`
   (scoped to the current calendar month) returns one or more rows
-- **THEN** the Spend page renders a red state reading `Monthly ceiling reached —
-  N dispatches denied since <timestamp>`, where N is the total matching count
+- **THEN** the Spend page renders a red state reading "Monthly ceiling reached —
+  N dispatches denied since `<timestamp>`", where N is the total matching count
   for the current month and `<timestamp>` is the earliest matching row's `ts`
 - **AND** the banner additionally shows a denied-today count (rows since the
   start of the current owner-tz day)
@@ -31,9 +46,10 @@ Scope: v1-mandatory
 - **THEN** an expandable drawer lists the most recent denied attempts (butler,
   timestamp, failure reason)
 - **AND** each row whose `session_id` is non-null links to that session's
-  detail page (`/sessions/:id`)
-- **AND** rows with no `session_id` render without a session door instead of a
-  dead or broken link
+  detail page (`/sessions/:id`), mirroring the session-door pattern the Top
+  Sessions table already uses
+- **AND** rows with no `session_id` (pre-session ceiling denials) render without
+  a session door instead of a dead or broken link
 
 #### Scenario: The owner is notified exactly once per breach window
 
@@ -61,7 +77,8 @@ Scope: v1-mandatory
 
 - **WHEN** `GET /api/dispatch/attempts` fails (network error, non-2xx)
 - **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt
-  state instead of silently omitting the banner
+  state (per the fleet degraded-source convention) instead of silently omitting
+  the banner, which would read as a false "the fleet is not halted"
 
 #### Scenario: Fleet-halt attention observation requires owner control
 

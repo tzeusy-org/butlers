@@ -16,8 +16,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules._roster_home import HomeAssistantModule
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -48,24 +50,6 @@ def module_with_pool(module: HomeAssistantModule, mock_pool: MagicMock) -> HomeA
     return module
 
 
-def _make_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
-
-
 # ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
@@ -73,11 +57,11 @@ def _make_mcp() -> MagicMock:
 
 class TestMaintenanceToolRegistration:
     async def test_maintenance_tools_registered(self, module: HomeAssistantModule) -> None:
-        mcp = _make_mcp()
+        mcp = FastMCP("home-maintenance-test-tools")
         with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
             await module.register_tools(mcp, config={}, db=MagicMock(), butler_name="test-butler")
 
-        registered = set(mcp._registered_tools.keys())
+        registered = set(await snapshot_registered_tools(mcp))
         for name in [
             "ha_maintenance_create",
             "ha_maintenance_complete",

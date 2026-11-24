@@ -1,14 +1,14 @@
 ## MODIFIED Requirements
 
 ### Requirement: Fresh collected membership and one inventory
-The CI system SHALL derive both lane populations from the exact installed pytest corpus and lane marker predicates at run time. Durations, diffs, file globs and cached counts MUST NOT establish membership. Each backend lane group SHALL select its tests with pytest-split from that fresh selection and record how many tests it collected. Check-preflight SHALL make one fresh `--collect-only` count per lane, and both test budgets SHALL consume those same counts. Lane groups SHALL depend on route only, independently of static guards. Collection failures SHALL be non-passing.
+The CI system SHALL derive both lane populations from the exact installed pytest corpus and lane marker predicates at run time. Durations, diffs, file globs and cached counts MUST NOT establish membership. Each backend lane group SHALL select its tests with pytest-split from that fresh selection and record how many tests it collected. Check-preflight SHALL make one fresh `--collect-only` count per lane, and both test budgets SHALL consume those same counts. Check-preflight SHALL depend on route only and run beside the lane groups, so an over-budget or uncollectable tree fails before the suite finishes. Lane groups SHALL depend on route only, independently of static guards. Collection failures SHALL be non-passing.
 
 ID: REQ-ci-shard-assurance-001
 Source: bu-ly3lv5.6 P1-P3; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
 Scope: v1-mandatory
 
 #### Scenario: Both lane populations preserve their actual selectors
-- **WHEN** a lane group and the check-preflight count run
+- **WHEN** a lane group and the smoke job count run
 - **THEN** both use the lane's one marker expression from `scripts/ci_lanes.py`, so inherited and mixed markers select the same tests in both
 
 #### Scenario: New files are included without registration
@@ -17,14 +17,14 @@ Scope: v1-mandatory
 
 #### Scenario: Unknown collection cannot become a budget pass
 - **WHEN** the fresh collect-only run fails
-- **THEN** check-preflight refuses both the totals and the budget, and the required check fails
+- **THEN** smoke job refuses the count and the budget, check-totals cannot run, and the required check fails
 
 #### Scenario: Historical counts do not replace current population
 - **WHEN** the committed budget baseline or an old count is presented
 - **THEN** the fresh collect-only count governs the comparison and historical counts remain provenance only
 
 ### Requirement: Deterministic whole-file weighted assignment
-Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. The nightly covered groups SHALL measure every test's duration, and a `durations-refresh` job SHALL merge them, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
+Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. Every required lane group SHALL measure and publish each test's duration untraced, and a nightly `durations-refresh` job SHALL merge those of the latest successful merge-group run, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
 
 ID: REQ-ci-shard-assurance-002
 Source: bu-ly3lv5.6 P4/P12; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -52,7 +52,7 @@ Scope: v1-mandatory
 - **AND** durations never change which tests a lane selects
 
 ### Requirement: Independent complete-identity execution reconciliation
-Every required lane group SHALL record the number of tests it collected after marker deselection and group selection, as `collected=<n>` in its step summary and a `collected.json` evidence file. Check-preflight SHALL read every group's count, refuse a malformed, duplicated, missing or unexpected group, and compare each lane's sum with the fresh `--collect-only` count of the same selection. A lane whose sum differs SHALL fail check-preflight. Per-item execution receipts are no longer produced; pytest-split's deterministic selection over the one fresh collection, checked by these totals, replaces them.
+Every required lane group SHALL record the number of tests it collected after marker deselection and group selection, as `collected=<n>` in its step summary and a `collected.json` evidence file. A check-totals job SHALL run after the lane groups, read every group's count and smoke job's lane counts, refuse malformed, duplicated, missing or unexpected input, and compare each lane's sum with the fresh `--collect-only` count of the same selection. A lane whose sum differs SHALL fail check-totals, and the required check SHALL require check-totals success wherever the lane groups run. Per-item execution receipts are no longer produced; pytest-split's deterministic selection over the one fresh collection, checked by these totals, replaces them.
 
 ID: REQ-ci-shard-assurance-003
 Source: bu-ly3lv5.6 P5; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -64,38 +64,78 @@ Scope: v1-mandatory
 
 #### Scenario: Duplicate execution fails independently of assignment
 - **WHEN** a test is selected by two groups of one lane
-- **THEN** the lane sum exceeds the collect-only count and check-preflight fails
+- **THEN** the lane sum exceeds the collect-only count and check-totals fails
 
 #### Scenario: Missing and partial children cannot hide behind matrix success
 - **WHEN** a group is skipped, cancelled or emits no count
-- **THEN** all eleven expected groups are checked, the missing group is named and check-preflight cannot report success
+- **THEN** all eleven expected groups are checked, the missing group is named and check-totals cannot report success
 
 #### Scenario: Retry identity and privacy remain exact
 - **WHEN** a group uploads its count evidence
-- **THEN** the evidence carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **THEN** the count record carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **AND** the group's separate `durations.json` carries test node ids exactly as the committed `.test_durations` already publishes them, and no other payload
 
 ### Requirement: Fail-closed matrix routing and event policy
-Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Lane groups SHALL depend on route only and start independently of static guards. Static guards SHALL remain mandatory in every required final verdict. Existing required contexts SHALL survive; merge_group MUST retain all eleven backend groups, check-preflight, guards, frontend and browser evidence.
+Every supported event (pull_request, merge_group and push to main) SHALL run the same complete job set: guards, smoke, five unit and six integration groups, check-totals, both Vitest children, frontend-assurance, the browser job and go-bridge. No job SHALL be selected, omitted or skipped by changed paths, and no route, scoped or affected lane SHALL exist. The single required check SHALL be `alls-green`: it SHALL run under always(), list every workload job as a direct need, and pass only when the supplied results are exactly that set and every one reports success. A failure, cancellation, skip, missing or malformed result, or an empty needs set MUST fail it. No workload job SHALL carry continue-on-error or a job-level condition, and the verdict SHALL read prerequisite results only, with no checkout or report work. Static guards SHALL remain a direct need of the verdict even though test bodies start concurrently. The merge-queue ruleset SHALL require `alls-green` alone, and no job SHALL exist only to mirror it.
 
 ID: REQ-ci-shard-assurance-004
-Source: bu-ly3lv5.6 P6-P7; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
+Source: bu-ly3lv5.6 P6-P7; bu-29wkwj.2 and bu-29wkwj.3 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); owner bu-q1hzqn.15 = A (keep full PR runs); adopted testing-and-verification
 Scope: v1-mandatory
 
+#### Scenario: Every event requires the complete job set
+- **WHEN** a pull request, merge group or push to main executes
+- **THEN** guards, smoke, five unit and six integration groups, check-totals, both Vitest children, frontend-assurance, the browser job and go-bridge all run and must succeed for `alls-green` to pass
+
+#### Scenario: Any non-success fails the fan-in
+- **WHEN** any needed job fails, is cancelled, is skipped or reports no result
+- **THEN** `alls-green` fails, and GitHub cannot treat a skipped verdict as passing because the verdict itself runs under always()
+
+#### Scenario: Removing a job from the fan-in is caught
+- **WHEN** a change drops a workload from `alls-green`'s needs, deletes its definition or disables it with a job-level condition
+- **THEN** the required-checks contract test fails before merge
+
 #### Scenario: A full terminal tree requires eleven backend carriers
-- **WHEN** merge_group or a full backend PR executes
-- **THEN** five unit and six integration groups, guards and check-preflight must succeed; an unknown, failed or partial result fails the required verdict
+- **WHEN** merge_group or any pull request executes
+- **THEN** five unit and six integration groups, guards, smoke and check-totals must succeed; an unknown, failed or partial result fails `alls-green`
 
 #### Scenario: Scoped and docs skips remain explicitly bounded
-- **WHEN** a genuine scoped backend PR or classifier-proven docs-only PR is evaluated
-- **THEN** only the matching current skip policy is accepted and preflight never counts as a heavy child
+- **WHEN** a pull request touches only docs, specs or a narrow test scope
+- **THEN** no job skips: the complete job set runs, because the scoped and docs-only modes are retired (bu-29wkwj.3)
 
 #### Scenario: Main push retains fresh inventory without rerunning heavy lanes
 - **WHEN** push targets main after protected queue validation
-- **THEN** the lane groups and check-preflight skip explicitly, because the merge group already ran the totals and budget over the identical tree
+- **THEN** the same complete job set runs again over the landed tree, including fresh lane counts and budgets; the earlier heavy-lane skip is retired
 
 #### Scenario: Unknown inputs widen or fail
-- **WHEN** classifier/planner/inventory-change evidence is absent or an added needed job lacks skip permission
-- **THEN** selection widens to full when it can be validly executed and final malformed or unknown verdict evidence fails
+- **WHEN** a needed result is absent, malformed or not success
+- **THEN** `alls-green` fails; there is no classifier or planner whose uncertainty could widen or narrow selection
+
+### Requirement: Smoke proof preserves real execution and release provenance
+The `smoke` job SHALL run the dedicated smoke command on every event and record its release fields (exact command, commit SHA, duration, status, exit code and skipped classes) through `scripts/ci_smoke.py`, not an inline workflow heredoc. Smoke evidence MUST NOT be derived from lane-group results, MUST NOT fabricate a command or permit a missing smoke item, and MUST NOT introduce real LLM/E2E dependencies.
+
+ID: REQ-ci-shard-assurance-005
+Source: bu-ly3lv5.6 P8; bu-29wkwj.3 (no scoped mode; no Python heredocs in ci.yml); adopted testing-and-verification
+Scope: v1-mandatory
+
+#### Scenario: Smoke is independently executed on every event
+- **WHEN** any pull request, merge group or push to main runs
+- **THEN** the actual tests-only smoke command executes and retains SHA, timing, exit, outcome and skipped-class evidence
+
+#### Scenario: Smoke failures and dependencies remain bounded
+- **WHEN** a real smoke failure or E2E/LLM dependency is introduced
+- **THEN** smoke and `alls-green` are non-passing and healthy no-LLM/no-E2E companions still run
+
+#### Scenario: Scoped smoke remains independently executed
+- **WHEN** a backend pull request runs
+- **THEN** it runs the dedicated smoke command like every other event; no scoped mode remains
+
+#### Scenario: Complete full-lane smoke has truthful derived evidence
+- **WHEN** the lane groups also execute smoke-marked tests
+- **THEN** release evidence still comes only from the dedicated smoke command; nothing is derived from lane results
+
+#### Scenario: A smoke gap triggers the real command
+- **WHEN** any smoke-selected item exists
+- **THEN** the dedicated smoke command runs it on every event, so no gap between lane proof and smoke selection can arise
 
 ### Requirement: Complete eleven-input independent coverage reporting
 The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/report/badge. Full covered execution SHALL run only in the nightly workflow, on its schedule and on manual dispatch (owner decision bu-w72da2 = A). That run SHALL execute all five unit and six integration covered groups, check their collected totals against fresh collect-only counts, run the real smoke command, and upload the combined report as an artifact. The reporter SHALL bind the actual admitted workflow event, head, run, attempt, lane and group to every coverage input; a scheduled or manual run MUST NOT impersonate merge_group. Every prerequisite failure, skip, cancellation, missing input or malformed identity SHALL remain visibly non-passing before publication. Only successful scheduled/manual runs of main MAY update the badge; a manual run on another branch validates a coverage-pipeline change without updating it. Required check MUST NOT install or await reporting. Protected merge-group and ordinary PR group execution SHALL use CI_COVERAGE=0 with the same selection; the nightly coverage jobs SHALL use CI_COVERAGE=1; standalone default covered behavior and strict CI_COVERAGE 0/1 admission SHALL remain.
@@ -121,27 +161,26 @@ Scope: v1-mandatory
 - **THEN** its identity is retained as historical and no extra/missing current population is silently omitted or accepted
 
 ### Requirement: Frontend static test and browser evidence is complete
-The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verdicts. Vitest children and the browser job MAY begin directly after successful route admission. The browser (Playwright e2e) job SHALL build its own bundle from the same checkout and SHALL NOT wait for guards. It SHALL be required through the required check (owner decision bu-w72da2 = A): it SHALL run for every merge group and main push and for every pull request the route classifies as frontend (a change under frontend/, .github/workflows/, scripts/ci_ or scripts/check_ci_, or an undeterminable diff), and its failure, cancellation or unexpected skip SHALL fail that check. It SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference concurrently with its actual shard execution over the same immutable source/config/lock/runtime and separate private caches; both phases SHALL finish successfully and reconcile before admission. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. Required frontend success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
+The required verdict SHALL combine mandatory static/knip/build evidence in guards with both complete Vitest shard verdicts and their frontend-assurance reconciliation. Vitest children and the browser job SHALL begin at workflow start beside guards. The browser (Playwright e2e) job SHALL build its own bundle from the same checkout and SHALL NOT wait for guards. It SHALL run on every event and be required through `alls-green` (owner decision bu-w72da2 = A); its failure, cancellation or skip SHALL fail that check. It SHALL preserve all locked browser/OS dependency and finite installer assertions. Every Vitest child SHALL collect one fresh complete unsharded installed item reference concurrently with its actual shard execution over the same immutable source/config/lock/runtime and separate private caches; both phases SHALL finish successfully and reconcile before admission. Its pre-body-emitted declaration tree, logical-ready and terminal-result multiplicities SHALL match that independent CURRENT reference and exact installed whole-file selector, including all parameter and skip/todo distinctions. frontend-assurance success SHALL independently reconcile both complete full references and both opaque selected/start/result ledgers; file counts, cached previous populations and matrix SUCCESS alone MUST NOT authorize it. Default isolated-fork selectors/configuration SHALL remain unchanged. Full collection plus execution and own cleanup SHALL share one900s total envelope under unchanged finite job caps; the former failed180s full-prepass outcome and subphase relocation SHALL be recorded explicitly without hard-metric or prior-cap credit.
 
 ID: REQ-ci-shard-assurance-007
-Source: bu-ly3lv5.6 P10; bu-w72da2 owner decision A (2026-10-21); bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit) (browser no longer waits for guards); adopted testing-and-verification
+Source: bu-ly3lv5.6 P10; bu-w72da2 owner decision A (2026-10-21); bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit) (browser no longer waits for guards); bu-29wkwj.3 (every event, `alls-green`); adopted testing-and-verification
 Scope: v1-mandatory
 
 #### Scenario: Every frontend contributor is required
 - **WHEN** static, knip, build, Vitest1 or Vitest2 fails or is unknown
-- **THEN** frontend and the required applicable gate refuse success without Vitest hiding the earlier static failure
+- **THEN** `alls-green` refuses success without Vitest hiding the earlier static failure
 
 #### Scenario: Two Vitest shards preserve exact population
 - **WHEN** both installed shard selectors run
 - **THEN** their current collected test population is complete/disjoint and all old assertions/outcomes remain represented
 
 #### Scenario: A browser failure fails the required check
-- **WHEN** the Playwright e2e job fails, is cancelled or is skipped in a merge group, a main push or a pull request the route classifies as frontend (frontend/, workflow or CI-script changes)
-- **THEN** the required check refuses success, so the merge group cannot land
-- **AND** every other pull request requires the job's explicit skip
+- **WHEN** the Playwright e2e job fails, is cancelled or is skipped on any event
+- **THEN** `alls-green` refuses success, so the merge group cannot land
 
 #### Scenario: Browser reuses a genuine build only
-- **WHEN** route admits the browser job
+- **WHEN** the browser job starts
 - **THEN** it builds the bundle from its own checkout and runs beside guards while locked browser and OS dependencies remain verified
 
 #### Scenario: Stale or absent build is not readiness
@@ -166,7 +205,7 @@ Scope: v1-mandatory
 
 #### Scenario: Unknown child and transport evidence are non-green
 - **WHEN** a required file, collected item, receipt, final trailer, source identity or result is missing, stale, extra, malformed or failed
-- **THEN** the required frontend context fails without revealing names, parameters, raw output or exception text, and bounded cleanup releases only its own invocation resources
+- **THEN** frontend-assurance and `alls-green` fail without revealing names, parameters, raw output or exception text, and bounded cleanup releases only its own invocation resources
 
 #### Scenario: Relocated bounds retain their actual meaning
 - **WHEN** one genuine full unsharded collection and actual shard execution spend the same900s total deadline
@@ -174,11 +213,17 @@ Scope: v1-mandatory
 
 #### Scenario: Future shard-sensitive declarations refuse readiness
 - **WHEN** a newly added or changed file declares different items under the actual shard config than its fresh unsharded full reference
-- **THEN** both producer and required frontend reconciliation fail despite matching file coverage or aggregate counts, while identical complete current declarations pass
+- **THEN** both producer and frontend-assurance reconciliation fail despite matching file coverage or aggregate counts, while identical complete current declarations pass
 
 #### Scenario: Dependency prebundling preserves independent item authority
 - **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
 - **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
+
+#### Scenario: Failed execution retains informational opaque diagnostics only
+- **WHEN** an actual nonzero Vitest child leaves a fresh closed reporter file bound to its unchanged tracked source/run/attempt/shard identity and mandatory configuration predicates
+- **THEN** validated available opaque module/item observations and error/outcome counters survive cleanup while the original child exit, incomplete receipt and nonpassing wrapper verdict remain explicit
+- **AND** absent independent-reference membership and configuration-match authority remain `UNKNOWN` without discarding otherwise safe reported observations; missing, stale, malformed or mismatched evidence stays `UNKNOWN`, raw names/parameters/provider/exception/output text never escape, and diagnostics cannot authorize complete population, frontend or required-check success
+
 
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the lane target: the slowest group of each lane SHALL take 300 s or less, or the gap SHALL be reported with its measured cause. The 420 s lane p95 objective remains the tracked metric. Shard counts SHALL stay at least five unit and six integration groups and change only from measured durations. Every Python job in ci.yml SHALL set up through the one composite action. Matrix conversion and frontend expansion SHALL account for actual expanded rows and their concurrent peak. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.
@@ -194,16 +239,16 @@ Scope: v1-mandatory
 - **AND** only successful installation publishes the executable path, and subsequent frozen environment repair and validation remain mandatory
 
 #### Scenario: Concurrent capacity follows the actual DAG
-- **WHEN** guards, eleven backend groups, two Vitest children, browser and post jobs become eligible
-- **THEN** dependencies bound the peak at fifteen (guards, eleven groups, two Vitest children and browser), with nineteen full-mode expanded rows and twenty total declared rows including the mutually exclusive affected row, without changing required contexts
+- **WHEN** every job becomes eligible at workflow start
+- **THEN** dependencies bound the peak at seventeen (go-bridge, guards, smoke, eleven groups, two Vitest children and browser), with twenty expanded rows including check-totals, frontend-assurance and `alls-green`, without changing required job semantics
 
 #### Scenario: Metrics retain their full ten-run windows
 - **WHEN** fewer than five merge groups have run the lane groups, or a lane's slowest group exceeds 300 s
-- **THEN** the lane target stays UNMET with the median, p95 and cause reported, the route and guards promises stay UNMET until measured, and no gain is inferred from fewer samples
+- **THEN** the lane target stays UNMET with the median, p95 and cause reported, the guards promise stays UNMET until measured, and no gain is inferred from fewer samples
 
 #### Scenario: Every moved checker has an enforcing survivor
 - **WHEN** inventory, partition, receipt, budget, smoke or browser-build enforcement moves
-- **THEN** each has a named survivor: the check-preflight totals (drops and duplicates), the check-preflight, `make check` and pre-push budget, the check-preflight smoke command, and the guards and browser builds
+- **THEN** each has a named survivor: the check-totals totals (drops and duplicates), the smoke job, `make check` and pre-push budget, the smoke job smoke command, and the guards and browser builds
 
 #### Scenario: Parallel changes retain source ownership
 - **WHEN** the .5 setup/observer/worker cache work or other current protected/public hunks overlap

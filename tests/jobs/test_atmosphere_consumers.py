@@ -20,17 +20,16 @@ from butlers.jobs.atmosphere_consumers import (
     run_home_atmosphere_preconditioning,
     run_travel_destination_outlook,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
 _BROKER_PATH = "butlers.tools.switchboard.insight.broker.propose_insight_candidate"
 
 
-def _make_pool(*, configured: bool, reading: dict | None):
-    pool = AsyncMock()
-    config_row = {"configured": configured}
-    pool.fetchrow = AsyncMock(side_effect=[config_row, reading])
-    return pool
+def _feed_pool(*, configured: bool, reading: dict | None):
+    """The feed-status row, then the latest reading, as consecutive ``fetchrow`` results."""
+    return fake_pool(fetchrow=AsyncMock(side_effect=[{"configured": configured}, reading]))
 
 
 def _reading(**overrides):
@@ -52,19 +51,19 @@ def _reading(**overrides):
 
 
 async def test_home_preconditioning_skips_when_not_configured():
-    pool = _make_pool(configured=False, reading=None)
+    pool = _feed_pool(configured=False, reading=None)
     result = await run_home_atmosphere_preconditioning(pool)
     assert result == {"skipped": True, "reason": "not_configured"}
 
 
 async def test_home_preconditioning_skips_when_no_reading():
-    pool = _make_pool(configured=True, reading=None)
+    pool = _feed_pool(configured=True, reading=None)
     result = await run_home_atmosphere_preconditioning(pool)
     assert result == {"skipped": True, "reason": "no_reading"}
 
 
 async def test_home_preconditioning_hot_condition_proposes_precool():
-    pool = _make_pool(configured=True, reading=_reading(apparent_temperature_c=35.0))
+    pool = _feed_pool(configured=True, reading=_reading(apparent_temperature_c=35.0))
     propose_mock = AsyncMock(return_value={"status": "accepted"})
     with patch(_BROKER_PATH, propose_mock):
         result = await run_home_atmosphere_preconditioning(pool)
@@ -78,7 +77,7 @@ async def test_home_preconditioning_hot_condition_proposes_precool():
 
 
 async def test_home_preconditioning_unhealthy_aqi_proposes():
-    pool = _make_pool(configured=True, reading=_reading(aqi_us=180))
+    pool = _feed_pool(configured=True, reading=_reading(aqi_us=180))
     propose_mock = AsyncMock(return_value={"status": "accepted"})
     with patch(_BROKER_PATH, propose_mock):
         result = await run_home_atmosphere_preconditioning(pool)
@@ -89,7 +88,7 @@ async def test_home_preconditioning_unhealthy_aqi_proposes():
 
 
 async def test_home_preconditioning_comfortable_conditions_no_proposal():
-    pool = _make_pool(configured=True, reading=_reading())
+    pool = _feed_pool(configured=True, reading=_reading())
     propose_mock = AsyncMock(return_value={"status": "accepted"})
     with patch(_BROKER_PATH, propose_mock):
         result = await run_home_atmosphere_preconditioning(pool)
@@ -104,13 +103,13 @@ async def test_home_preconditioning_comfortable_conditions_no_proposal():
 
 
 async def test_health_advisory_skips_when_not_configured():
-    pool = _make_pool(configured=False, reading=None)
+    pool = _feed_pool(configured=False, reading=None)
     result = await run_health_atmosphere_advisory(pool)
     assert result == {"skipped": True, "reason": "not_configured"}
 
 
 async def test_health_advisory_unhealthy_aqi_proposes():
-    pool = _make_pool(configured=True, reading=_reading(aqi_us=120))
+    pool = _feed_pool(configured=True, reading=_reading(aqi_us=120))
     propose_mock = AsyncMock(return_value={"status": "accepted"})
     with patch(_BROKER_PATH, propose_mock):
         result = await run_health_atmosphere_advisory(pool)
@@ -122,7 +121,7 @@ async def test_health_advisory_unhealthy_aqi_proposes():
 
 
 async def test_health_advisory_elevated_pollen_proposes():
-    pool = _make_pool(
+    pool = _feed_pool(
         configured=True,
         reading=_reading(pollen_available=True, pollen_tree=60.0, pollen_grass=10.0),
     )
@@ -136,7 +135,7 @@ async def test_health_advisory_elevated_pollen_proposes():
 
 
 async def test_health_advisory_normal_conditions_no_proposal():
-    pool = _make_pool(configured=True, reading=_reading())
+    pool = _feed_pool(configured=True, reading=_reading())
     propose_mock = AsyncMock(return_value={"status": "accepted"})
     with patch(_BROKER_PATH, propose_mock):
         result = await run_health_atmosphere_advisory(pool)

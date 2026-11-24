@@ -30,6 +30,7 @@ from butlers.steam_account_registry import (
     resolve_steam_account,
     set_primary_account,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -83,34 +84,6 @@ def _make_id_row(id: uuid.UUID) -> MagicMock:
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: id if k == "id" else None)
     return row
-
-
-class _FakeTx:
-    async def __aenter__(self) -> _FakeTx:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
-class _FakeConn:
-    def __init__(self) -> None:
-        self.fetchrow = AsyncMock(return_value=None)
-        self.fetch = AsyncMock(return_value=[])
-        self.execute = AsyncMock(return_value="")
-        self._tx = _FakeTx()
-
-    def transaction(self) -> _FakeTx:
-        return self._tx
-
-
-def _make_pool(conn: _FakeConn) -> MagicMock:
-    pool = MagicMock()
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=conn)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=acquire_ctx)
-    return pool
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +164,9 @@ class TestResolveSteamAccount:
         ids=["by-steam-id", "by-uuid-str", "by-uuid-obj", "default-primary", "steam-id-precedence"],
     )
     async def test_lookup_success(self, kwargs, setup_row, check) -> None:
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=setup_row)
-        pool = _make_pool(conn)
         account = await resolve_steam_account(pool, **kwargs)
         assert check(account)
 
@@ -207,9 +180,9 @@ class TestResolveSteamAccount:
         ids=["steam-id-not-found", "invalid-uuid-str", "no-primary"],
     )
     async def test_lookup_errors(self, kwargs, exc_type, match) -> None:
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=None)
-        pool = _make_pool(conn)
         if match:
             with pytest.raises(exc_type, match=match):
                 await resolve_steam_account(pool, **kwargs)
@@ -225,8 +198,8 @@ class TestResolveSteamAccount:
 
 class TestCreateSteamAccount:
     async def test_first_account_is_primary(self) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(
             side_effect=[
                 None,
@@ -238,8 +211,8 @@ class TestCreateSteamAccount:
         assert (await create_steam_account(pool, steam_id=_STEAM_ID)).is_primary is True
 
     async def test_subsequent_account_not_primary(self) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         existing_primary = MagicMock()
         existing_primary.__getitem__ = MagicMock(return_value=True)
         conn.fetchrow = AsyncMock(
@@ -254,8 +227,8 @@ class TestCreateSteamAccount:
 
     @pytest.mark.parametrize("status", ["active", "suspended"])
     async def test_raises_on_duplicate_non_revoked_steam_id(self, status) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         existing = MagicMock()
         existing.__getitem__ = MagicMock(
             side_effect=lambda k: {"id": _ACCOUNT_ID, "entity_id": _ENTITY_ID, "status": status}[k]
@@ -267,8 +240,8 @@ class TestCreateSteamAccount:
     async def test_reactivates_revoked_account_with_and_without_api_key(self) -> None:
         """Reconnecting a revoked account reactivates; api_key updates entity_info only if given."""
         for api_key in ["NEWKEY456", None]:
-            conn = _FakeConn()
-            pool = _make_pool(conn)
+            pool = fake_pool(fetchrow=None, fetch=[], execute="")
+            conn = pool.connection
             revoked = MagicMock()
             revoked.__getitem__ = MagicMock(
                 side_effect=lambda k: {
@@ -290,8 +263,8 @@ class TestCreateSteamAccount:
                 assert not any("entity_info" in c for c in execute_calls)
 
     async def test_reactivation_clears_revoked_at(self) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         revoked = MagicMock()
         revoked.__getitem__ = MagicMock(
             side_effect=lambda key: {
@@ -320,8 +293,8 @@ class TestCreateSteamAccount:
         encoding), not a pre-serialized string.
         """
         meta = {"poll_intervals": {"recently_played": 60}}
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(
             side_effect=[
                 None,
@@ -357,8 +330,8 @@ class TestCreateSteamAccount:
 
 class TestListAndGet:
     async def test_list_empty_and_ordered(self) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
 
         # Empty
         conn.fetch = AsyncMock(return_value=[])
@@ -376,18 +349,18 @@ class TestListAndGet:
 
     async def test_get_delegates_to_resolve(self) -> None:
         """get_steam_account returns primary by default and by UUID."""
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=_make_account_row(is_primary=True))
-        pool = _make_pool(conn)
         assert (await get_steam_account(pool)).is_primary is True
 
         conn.fetchrow = AsyncMock(return_value=_make_account_row(id=_ACCOUNT_ID))
         assert (await get_steam_account(pool, str(_ACCOUNT_ID))).id == _ACCOUNT_ID
 
     async def test_get_raises_when_no_primary(self) -> None:
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=None)
-        pool = _make_pool(conn)
         with pytest.raises(MissingSteamCredentialsError):
             await get_steam_account(pool)
 
@@ -399,8 +372,8 @@ class TestListAndGet:
 
 class TestSetPrimaryAccount:
     async def test_sets_primary_atomically(self) -> None:
-        conn = _FakeConn()
-        pool = _make_pool(conn)
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(
             side_effect=[
                 _make_id_row(_ACCOUNT_ID),
@@ -412,9 +385,9 @@ class TestSetPrimaryAccount:
         assert any("is_primary = false" in c for c in execute_calls)
 
     async def test_raises_not_found(self) -> None:
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=None)
-        pool = _make_pool(conn)
         with pytest.raises(SteamAccountNotFoundError):
             await set_primary_account(pool, uuid.uuid4())
 
@@ -439,9 +412,9 @@ class TestDisconnectAccount:
     @pytest.mark.parametrize("hard_delete", [False, True], ids=["soft", "hard"])
     async def test_disconnect_modes(self, hard_delete: bool) -> None:
         """Soft marks revoked with revoked_at; hard deletes entity; neither auto-promotes."""
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=self._make_data_row())
-        pool = _make_pool(conn)
         await disconnect_account(pool, _ACCOUNT_ID, hard_delete=hard_delete)
         calls = [str(c[0][0]) for c in conn.execute.call_args_list]
         if hard_delete:
@@ -455,8 +428,8 @@ class TestDisconnectAccount:
         assert not any("is_primary = true" in c for c in calls)
 
     async def test_raises_not_found(self) -> None:
-        conn = _FakeConn()
+        pool = fake_pool(fetchrow=None, fetch=[], execute="")
+        conn = pool.connection
         conn.fetchrow = AsyncMock(return_value=None)
-        pool = _make_pool(conn)
         with pytest.raises(SteamAccountNotFoundError):
             await disconnect_account(pool, uuid.uuid4())

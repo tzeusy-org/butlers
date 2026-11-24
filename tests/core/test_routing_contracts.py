@@ -369,7 +369,6 @@ def test_notify_contracts():
 
 def test_approval_request_contract_requires_actions_and_decision_tokens():
     """approval_request carries deterministic action affordances, never a bare page."""
-    action_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     approval_request = {
         "schema_version": "notify.v1",
         "origin_butler": "relationship",
@@ -383,14 +382,15 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
             {
                 "verb": "approve",
                 "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
-                "dashboard_url": action_url,
             },
             {
                 "verb": "reject",
                 "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
-                "dashboard_url": action_url,
             },
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
     }
 
@@ -410,8 +410,11 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
     unsigned_approve = {
         **approval_request,
         "actions": [
-            {"verb": "approve", "dashboard_url": action_url},
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {"verb": "approve"},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
     }
     with pytest.raises(ValidationError, match="callback_token"):
@@ -533,7 +536,6 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
 def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only():
     subject_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     subject_key = f"approval:relationship:{subject_id}"
-    action_url = f"https://dashboard.example.test/approvals/{subject_id}"
     handoff = {
         "schema_version": "notify.v1",
         "origin_butler": "relationship",
@@ -547,14 +549,15 @@ def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only(
             {
                 "verb": "approve",
                 "callback_token": "synthetic-callback",
-                "dashboard_url": action_url,
             },
             {
                 "verb": "reject",
                 "callback_token": "synthetic-callback",
-                "dashboard_url": action_url,
             },
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
         "recovery": {
             "operation": "handoff",
@@ -689,3 +692,423 @@ def test_ingest_control_accepts_only_known_automated_kinds():
     base["control"] = {"automated_kind": "newsletter"}
     with pytest.raises(ValidationError):
         parse_ingest_envelope(base)
+
+
+_AUTOMATED_OBSERVED_AT = "2026-11-17T09:30:00+00:00"
+
+
+def _automated(
+    kind: str, evidence: dict, *, tier: str = "metadata", observed_at: str = _AUTOMATED_OBSERVED_AT
+) -> dict:
+    base = _build_valid_ingest_envelope(observed_at=observed_at)
+    if tier == "metadata":
+        base["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
+    base["control"] = {
+        "ingestion_tier": tier,
+        "automated_kind": kind,
+        "automated_evidence": evidence,
+    }
+    return base
+
+
+_BOUND = {"original_sent": True, "sender_was_recipient": True, "sender_authenticated": True}
+
+
+def test_ingest_control_carries_typed_automated_evidence():
+    """bu-s11n0s.14: bound evidence rides with its automated_kind on a metadata envelope."""
+    parsed = parse_ingest_envelope(_automated("auto_reply", _BOUND | {"away_until": "2026-11-24"}))
+    assert str(parsed.control.automated_evidence.away_until) == "2026-11-24"
+    bounce = {"original_sent": True, "sender_was_recipient": False, "sender_authenticated": False}
+    parsed = parse_ingest_envelope(
+        _automated("bounce", bounce | {"failed_recipients": ["gone@example.net"]})
+    )
+    assert parsed.control.automated_evidence.failed_recipients == ["gone@example.net"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "evidence", "tier"),
+    [
+        # Effects without binding or authentication.
+        (
+            "auto_reply",
+            {**_BOUND, "sender_authenticated": False, "away_until": "2026-11-24"},
+            "metadata",
+        ),
+        (
+            "auto_reply",
+            {**_BOUND, "sender_was_recipient": False, "away_until": "2026-11-24"},
+            "metadata",
+        ),
+        (
+            "bounce",
+            {**_BOUND, "original_sent": False, "failed_recipients": ["a@x.test"]},
+            "metadata",
+        ),
+        # Effects on the wrong kind.
+        ("auto_reply", {**_BOUND, "failed_recipients": ["a@x.test"]}, "metadata"),
+        ("bounce", {**_BOUND, "away_until": "2026-11-24"}, "metadata"),
+        # Evidence never rides a full-tier envelope, and carries no free text.
+        ("auto_reply", _BOUND, "full"),
+        ("auto_reply", {**_BOUND, "reason_text": "I am away"}, "metadata"),
+    ],
+)
+def test_ingest_control_refuses_unbound_or_misplaced_evidence(kind, evidence, tier):
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(_automated(kind, evidence, tier=tier))
+    base = _build_valid_ingest_envelope()
+    base["payload"] = {"raw": None, "normalized_text": "Subject: x"}
+    base["control"] = {"ingestion_tier": "metadata", "automated_evidence": _BOUND}
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(base)
+
+
+@pytest.mark.parametrize(
+    ("away_until", "accepted"),
+    [
+        ("2026-11-16", True),  # one day of slack for the mailbox's own day
+        ("2026-11-17", True),
+        ("2027-05-16", True),  # 180 days after observation
+        ("2027-05-17", True),  # plus one day of slack
+        ("2026-11-15", False),
+        ("2027-05-18", False),
+        ("2030-01-01", False),
+    ],
+)
+def test_ingest_control_bounds_away_until_to_180_days(away_until, accepted):
+    """Review (b) on #5896: the connector's 180-day cap holds at ingest too."""
+    envelope = _automated("auto_reply", _BOUND | {"away_until": away_until})
+    if accepted:
+        assert str(parse_ingest_envelope(envelope).control.automated_evidence.away_until) == (
+            away_until
+        )
+    else:
+        with pytest.raises(ValidationError, match="away_until"):
+            parse_ingest_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    "origin,route_key,params,expected_path",
+    [
+        (
+            "https://dashboard.example.test",
+            "approval_detail",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            "/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+        ("https://dashboard.example.test/", "approvals_queue", {}, "/approvals"),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            "/decision-sets/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+        ("https://dashboard.example.test", "decision_set", {}, None),
+        ("https://dashboard.example.test", "decision_set", {"set_id": "not-a-uuid"}, None),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "decision_set",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "version": 1},
+            None,
+        ),
+        (
+            "https://dashboard.example.test",
+            "approval_detail",
+            {"set_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
+        ("https://dashboard.example.test:443", "approvals_queue", {}, "/approvals"),
+        ("https://dashboard.example.test", "missing", {}, None),
+        ("https://dashboard.example.test", "approval_detail", {"action_id": "not-a-uuid"}, None),
+        ("https://dashboard.example.test", "approval_detail", {"action_id": 1}, None),
+        (
+            "https://dashboard.example.test",
+            "approvals_queue",
+            {"redirect": "https://attacker.example.test"},
+            None,
+        ),
+        ("", "approvals_queue", {}, None),
+        ("http://dashboard.example.test", "approvals_queue", {}, None),
+        ("https://user@dashboard.example.test", "approvals_queue", {}, None),
+        ("https://127.0.0.1", "approvals_queue", {}, None),
+        ("https://127.1", "approvals_queue", {}, None),
+        ("https://0x7f000001", "approvals_queue", {}, None),
+        ("https://[::1]", "approvals_queue", {}, None),
+        ("https://xn--bcher-kva.example", "approvals_queue", {}, None),
+        ("https://dаshboard.example.test", "approvals_queue", {}, None),
+        ("https://K.example.test", "approvals_queue", {}, None),
+        ("https://dashboard.example.test:444", "approvals_queue", {}, None),
+        (
+            "https://dashboard.example.test/butlers-dev",
+            "approvals_queue",
+            {},
+            "/butlers-dev/approvals",
+        ),
+        (
+            "https://dashboard.example.test/butlers-dev/",
+            "approvals_queue",
+            {},
+            "/butlers-dev/approvals",
+        ),
+        (
+            "https://dashboard.example.test/a/b-c_d.e",
+            "approval_detail",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            "/a/b-c_d.e/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+        ("https://dashboard.example.test//", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a//b", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/.", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a/..", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a/../b", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/%2e%2e", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a%2Fb", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a;x", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a?x=1", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/a#f", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/" + "a" * 100, "approvals_queue", {}, None),
+        ("https://dashboard.example.test?next=unsafe", "approvals_queue", {}, None),
+        ("https://dashboard.example.test#fragment", "approvals_queue", {}, None),
+        (
+            "https://" + ".".join(["a" * 61] * 4),
+            "approval_detail",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
+    ],
+)
+def test_self_reference_resolution_and_inert_fallback(
+    monkeypatch, origin, route_key, params, expected_path
+):
+    from butlers.tools.switchboard.notification.self_links import (
+        parse_delivered_notify_request,
+        resolve_self_links,
+    )
+
+    monkeypatch.setenv("DASHBOARD_URL", origin)
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Approval needed",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": route_key, "params": params},
+            }
+        ],
+    }
+    resolved = resolve_self_links(parse_notify_request(request))
+    action = resolved.actions[0]
+    if expected_path:
+        assert action.verb == "open_link"
+        assert action.url == "https://dashboard.example.test" + expected_path
+        assert action.host == "dashboard.example.test"
+        assert action.provenance == "dashboard"
+        assert action.label == "Open dashboard.example.test (dashboard)"
+        # Private output is not accepted back through the public tool contract.
+        with pytest.raises(ValidationError, match="server delivery output"):
+            parse_notify_request(resolved.model_dump(mode="json", exclude_none=True))
+    else:
+        assert action.verb == "open_dashboard"
+        assert resolved.delivery.message == "Approval needed\n[link not verified]"
+        assert "url" not in action.model_dump()
+    assert (
+        parse_delivered_notify_request(resolved.model_dump(mode="json", exclude_none=True))
+        == resolved
+    )
+    assert request["delivery"]["message"] == "Approval needed"
+
+
+def test_self_route_registry_matches_actual_phone_entry_paths():
+    import json
+    import re
+    from pathlib import Path
+
+    from butlers.tools.switchboard.notification.self_links import SELF_ROUTES
+
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "frontend/tests/e2e/phone-entry-routes.ts").read_text()
+    constants = dict(re.findall(r'const (\w+) = "([0-9a-f-]{36})";', source))
+    actual = set(re.findall(r'path: ["`]([^"`]+)["`]', source))
+    for route in SELF_ROUTES.values():
+        if "{action_id}" in route:
+            assert "APPROVAL_ID" in constants
+            uuid.UUID(constants["APPROVAL_ID"])
+            route = route.replace("{action_id}", "${APPROVAL_ID}")
+        if "{set_id}" in route:
+            assert "DECISION_SET_ID" in constants
+            uuid.UUID(constants["DECISION_SET_ID"])
+            route = route.replace("{set_id}", "${DECISION_SET_ID}")
+        if route in actual:
+            continue
+        # Not yet walked on a phone: the registry must name the bead that owes the walk.
+        entries = json.loads((root / "frontend/tests/e2e/telegram-minted-routes.json").read_text())[
+            "routes"
+        ]
+        owed = [e for e in entries if re.fullmatch(e["pattern"], route)]
+        assert owed and all(
+            e.get("phone_walk") == "pending" and e.get("phone_walk_owner") for e in owed
+        ), route
+
+
+# --- vendor-door actions (bu-jv1moa.40 PR4b-1) -----------------------------------------------
+
+_DOOR_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+_DOOR_REF = {"kind": "door", "door_id": _DOOR_ID, "version": 4, "slots": {"order": "A-1"}}
+
+
+def _door_request(intent: str = "send", **overrides):
+    delivery = {
+        "intent": intent,
+        "channel": "telegram",
+        "recipient": "12345",
+        "message": "Your plan renews soon.",
+    }
+    if intent == "reply":
+        delivery.pop("recipient")
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "finance",
+        "delivery": delivery,
+        "actions": [{"verb": "open_door", "reference": dict(_DOOR_REF)}],
+    }
+    request.update(overrides)
+    return request
+
+
+@pytest.mark.parametrize("intent", ["send", "insight"])
+def test_a_door_action_is_valid_alone_on_send_and_insight(intent):
+    request = parse_notify_request(_door_request(intent))
+    assert [a.verb for a in request.actions] == ["open_door"]
+    assert request.actions[0].reference.door_id == uuid.UUID(_DOOR_ID)
+
+
+@pytest.mark.parametrize("intent", ["reply", "react", "approval_request"])
+def test_a_door_action_is_refused_on_every_other_intent(intent):
+    payload = _door_request(intent)
+    if intent == "react":
+        payload["delivery"]["emoji"] = "x"
+        payload["request_context"] = {
+            "source_channel": "telegram",
+            "source_endpoint_identity": "e",
+            "source_sender_identity": "s",
+            "source_thread_identity": "t",
+        }
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+
+
+def test_only_one_door_action_and_nothing_beside_it():
+    two = _door_request()
+    two["actions"].append({"verb": "open_door", "reference": dict(_DOOR_REF)})
+    with pytest.raises(ValidationError, match="only action"):
+        parse_notify_request(two)
+    mixed = _door_request()
+    mixed["actions"].append(
+        {
+            "verb": "open_dashboard",
+            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+        }
+    )
+    with pytest.raises(ValidationError, match="only action"):
+        parse_notify_request(mixed)
+
+
+@pytest.mark.parametrize(
+    "extra", [{"url": "https://x.example.com"}, {"host": "x.example.com"}, {"label": "x"}]
+)
+def test_a_door_action_carries_no_url_host_or_label(extra):
+    payload = _door_request()
+    payload["actions"][0]["reference"].update(extra)
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+    payload = _door_request()
+    payload["actions"][0].update(extra)
+    with pytest.raises(ValidationError):
+        parse_notify_request(payload)
+
+
+def test_a_door_action_is_refused_under_inert_links():
+    with pytest.raises(ValidationError, match="inert links"):
+        parse_notify_request(_door_request(render_links_inert=True))
+
+
+def _resolved_door_payload():
+    payload = _door_request()
+    payload["actions"] = [
+        {
+            "verb": "open_link",
+            "reference": dict(_DOOR_REF),
+            "label": "Open example.com (vendor_door)",
+            "url": "https://shop.example.com/orders/A-1/cancel",
+            "host": "example.com",
+            "provenance": "vendor_door",
+        }
+    ]
+    return payload
+
+
+def test_a_producer_can_never_submit_a_resolved_door_link():
+    with pytest.raises(ValidationError, match="server delivery output"):
+        parse_notify_request(_resolved_door_payload())
+
+
+def test_the_synchronous_pass_never_keeps_a_door_link_and_says_so():
+    from butlers.tools.switchboard.notification.self_links import resolve_self_links
+
+    request = parse_notify_request(_door_request())
+    resolved = resolve_self_links(request)
+    assert resolved.actions is None
+    assert resolved.delivery.message == "Your plan renews soon.\n[link not verified]"
+    assert resolve_self_links(resolved) == resolved  # idempotent: the marker is not doubled
+    assert request.delivery.message == "Your plan renews soon."
+
+
+def test_a_delivered_door_link_is_re_derived_and_degrades_without_a_registry_read():
+    from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
+    delivered = parse_delivered_notify_request(_resolved_door_payload())
+    assert delivered.actions is None
+    assert delivered.delivery.message.endswith("[link not verified]")
+    assert "shop.example.com" not in delivered.model_dump_json()
+
+
+def test_approval_request_actions_are_unchanged():
+    approval = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Approval needed",
+        },
+        "actions": [
+            {"verb": "approve", "callback_token": "tok-a"},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
+        ],
+    }
+    parsed = parse_notify_request(approval)
+    assert [a.verb for a in parsed.actions] == ["approve", "open_dashboard"]
+    approval["actions"].append({"verb": "open_door", "reference": dict(_DOOR_REF)})
+    with pytest.raises(ValidationError, match="send and insight"):
+        parse_notify_request(approval)

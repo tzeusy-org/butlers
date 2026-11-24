@@ -14,9 +14,8 @@ Covers:
   ``conversation_reply`` ack with the case reference; on relay failure it
   still replies (never routes to a domain butler).
 
-Bootstrap pattern mirrors ``test_route_to_butler_accepted_status.py`` — each
-daemon test file keeps its own local copy of the ButlerDaemon bootstrap
-patches (established repo convention, no shared fixture exists for this).
+The Switchboard's real tools are registered with ``butlers.testing.tool_host`` on a
+DB-free pool (bu-rvgzmf.2): no daemon lifecycle runs and none is patched.
 """
 
 from __future__ import annotations
@@ -30,7 +29,9 @@ import pytest
 from fastmcp import Client
 from fastmcp import FastMCP as RuntimeFastMCP
 
+from butlers.core.permissions import PermissionStatus
 from butlers.daemon import ButlerDaemon
+from butlers.testing.tool_host import host_tools
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
 pytestmark = pytest.mark.unit
@@ -77,12 +78,29 @@ def _make_fetchrow_side_effect(butler_name: str = "switchboard"):
     return _fetchrow
 
 
-def _patch_infra():
+def _infra():
+    """A DB-free Switchboard pool: these tests are about the lane handlers, not SQL."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
+    mock_conn.transaction = MagicMock(return_value=transaction)
 
     # MagicMock, not AsyncMock: `.acquire` must be a plain sync call returning
     # an async-context-manager double (see TestDeadLetterDashboardUnroutable
@@ -100,49 +118,7 @@ def _patch_infra():
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])
 
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
+    return {"mock_pool": mock_pool}
 
 
 async def _start_switchboard_and_capture_tools(
@@ -150,47 +126,19 @@ async def _start_switchboard_and_capture_tools(
     patches: dict,
     mock_route: AsyncMock | None = None,
 ) -> tuple[ButlerDaemon, dict[str, Any]]:
-    """Start a switchboard ButlerDaemon and capture named MCP tool functions."""
-    captured_tools: dict[str, Any] = {}
-    mock_mcp = MagicMock()
+    """Register the Switchboard's real tools on the DB-free pool; no lifecycle runs.
 
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            resolved_name = declared_name or fn.__name__
-            captured_tools[resolved_name] = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    route_patch = (
-        patch("butlers.tools.switchboard.routing.route.route", new=mock_route)
-        if mock_route is not None
-        else patch("butlers.tools.switchboard.routing.route.route")
-    )
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        route_patch,
+    The internal route() is bound when the tools register, so it is faked only then.
+    """
+    with patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new=mock_route if mock_route is not None else MagicMock(),
     ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, captured_tools
+        host = await host_tools(butler_dir, pool=patches["mock_pool"])
+    tools = {
+        tool.name: (await host.mcp.get_tool(tool.name)).fn for tool in await host.mcp.list_tools()
+    }
+    return host.daemon, tools
 
 
 def _set_dashboard_routing_context(
@@ -255,7 +203,7 @@ def _turn_result(outcome: str):
 async def test_route_to_butler_injects_dashboard_block_deterministically(tmp_path: Path) -> None:
     """conversation_id/page_context + confirm instructions are appended to
     input.context regardless of the classification session's own `context`."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -301,7 +249,7 @@ async def test_route_to_butler_dashboard_injection_works_without_explicit_contex
     tmp_path: Path,
 ) -> None:
     """The dashboard block is still injected when the caller passed no `context` at all."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -328,7 +276,7 @@ async def test_route_to_butler_dashboard_injection_works_without_explicit_contex
 
 async def test_route_to_butler_no_injection_without_dashboard_context(tmp_path: Path) -> None:
     """Non-dashboard routing context leaves `context` untouched."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -350,7 +298,7 @@ async def test_route_to_butler_no_injection_without_dashboard_context(tmp_path: 
 
 
 async def test_route_to_butler_stamps_routed_butler_on_success(tmp_path: Path, monkeypatch) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -377,7 +325,7 @@ async def test_route_to_butler_stamping_failure_does_not_fail_the_call(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Sticky-stamp is best-effort — a DB error there must not surface as a route failure."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -404,7 +352,7 @@ async def test_route_to_butler_propagates_turn_id_and_obeys_a_prior_stop(
     tmp_path: Path,
 ) -> None:
     """The target envelope carries the immutable ID; a stopped turn never dispatches."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -438,7 +386,7 @@ async def test_route_to_butler_propagates_turn_id_and_obeys_a_prior_stop(
     assert str(envelope.source_metadata.dashboard_message_id) == message_id
 
     blocked_route = AsyncMock(return_value={"result": {"status": "accepted"}})
-    patches2 = _patch_infra()
+    patches2 = _infra()
     (tmp_path / "blocked").mkdir()
     _, blocked_tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path / "blocked"),
@@ -475,7 +423,7 @@ async def test_route_to_butler_propagates_turn_id_and_obeys_a_prior_stop(
 async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"accepted": True}})
 
@@ -516,7 +464,7 @@ async def test_file_bug_report_claims_turn_before_qa_relay_and_honors_stop(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A dashboard bug report has one durable pre-relay commit point."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"accepted": True}})
     _, tools = await _start_switchboard_and_capture_tools(
@@ -547,7 +495,7 @@ async def test_file_bug_report_claims_turn_before_qa_relay_and_honors_stop(
     assert terminal.await_args.kwargs["state"] == "completed"
 
     stopped_route = AsyncMock()
-    patches2 = _patch_infra()
+    patches2 = _infra()
     (tmp_path / "stopped").mkdir()
     _, stopped_tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path / "stopped"),
@@ -604,7 +552,7 @@ async def test_file_bug_report_coerces_clamps_and_defaults_severity(
     expected_severity: int,
 ) -> None:
     """Caller-shaped severity values reach QA as clamped integer priorities."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"accepted": True}})
 
@@ -627,7 +575,7 @@ async def test_file_bug_report_coerces_clamps_and_defaults_severity(
 
 async def test_file_bug_report_relay_failure_still_replies(tmp_path: Path, monkeypatch) -> None:
     """Even if the QA relay errors, the owner must still get an in-thread reply."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"error": "Butler 'qa' not found in registry"})
 
@@ -654,7 +602,7 @@ async def test_file_bug_report_relay_failure_still_replies(tmp_path: Path, monke
 async def test_file_bug_report_never_calls_route_to_butler_style_dispatch(tmp_path: Path) -> None:
     """Sanity check: file_bug_report's only cross-butler call targets qa/report_finding,
     proving bug reports never reach a domain butler via this path."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"accepted": True}})
 
@@ -685,7 +633,7 @@ async def test_route_to_butler_refused_after_file_bug_report_claims_lane(
     boots a full ButlerDaemon whose logging setup is orthogonal to the
     behavior under test.
     """
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -737,7 +685,7 @@ async def test_file_bug_report_after_route_to_butler_surfaces_co_occurrence(
     boots a full ButlerDaemon whose logging setup is orthogonal to the
     behavior under test.
     """
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -780,7 +728,7 @@ async def test_dashboard_lane_guard_does_not_affect_non_dashboard_sessions(
     file_bug_report and route_to_butler in the same routing context must not
     trigger the lane-exclusivity guard — non-dashboard switchboard flows are
     unaffected."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -808,7 +756,7 @@ async def test_dashboard_lane_guard_does_not_affect_non_dashboard_sessions(
 async def test_answer_question_domain_injects_answer_block_not_confirm_block(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -845,7 +793,7 @@ async def test_answer_question_domain_injects_answer_block_not_confirm_block(
 
 
 async def test_answer_question_domain_requires_target(tmp_path: Path) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -866,7 +814,7 @@ async def test_answer_question_domain_requires_target(tmp_path: Path) -> None:
 
 
 async def test_answer_question_rejects_unknown_scope(tmp_path: Path) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
     fn = tools["answer_question"]
@@ -884,7 +832,7 @@ async def test_answer_question_system_falls_back_to_cannot_answer_dead_letter(
     """bu-0ynlk.3 (Concierge) does not exist yet — scope="system" must fall
     back to the same honest-decline dead-letter path as cannot_answer, never
     fabricate a system answer or route to a domain butler."""
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock()
 
@@ -935,7 +883,7 @@ async def test_system_question_reads_registered_concierge_and_publishes_cited_an
     from butlers.modules.dashboard_read import DashboardReadModule, queries
     from butlers.modules.pipeline import _extract_cannot_answer_calls
 
-    patches = _patch_infra()
+    patches = _infra()
     concierge = RuntimeFastMCP("concierge")
     module = DashboardReadModule()
     await module.register_tools(concierge, {}, SimpleNamespace(pool=MagicMock()), "concierge")
@@ -1033,17 +981,17 @@ async def test_system_question_reads_registered_concierge_and_publishes_cited_an
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",
     ],
 )
 async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, monkeypatch, failure):
-    from types import SimpleNamespace
 
     from butlers.core_tools import _dashboard_system_answer as system
 
-    patches = _patch_infra()
+    patches = _infra()
     route = AsyncMock(return_value={"error": "unavailable"})
     if failure == "timeout":
         import asyncio
@@ -1058,7 +1006,12 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
     monkeypatch.setattr(
         system,
         "check_permission",
-        AsyncMock(return_value=SimpleNamespace(allowed=failure != "denied")),
+        AsyncMock(
+            return_value=PermissionStatus(
+                allowed=failure not in {"denied", "permission_unreadable"},
+                unavailable=failure == "permission_unreadable",
+            )
+        ),
     )
     _, tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path), patches, mock_route=route
@@ -1097,6 +1050,7 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",
@@ -1175,7 +1129,7 @@ async def test_system_answer_terminal_reply_preserves_stop_and_rolls_back_failur
 async def test_answer_question_propagates_turn_id_and_obeys_a_prior_stop(
     tmp_path: Path,
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -1203,7 +1157,7 @@ async def test_answer_question_propagates_turn_id_and_obeys_a_prior_stop(
     assert result["status"] == "accepted"
 
     blocked_route = AsyncMock(return_value={"result": {"status": "accepted"}})
-    patches2 = _patch_infra()
+    patches2 = _infra()
     (tmp_path / "blocked-answer").mkdir()
     _, blocked_tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path / "blocked-answer"),
@@ -1235,7 +1189,7 @@ async def test_answer_question_propagates_turn_id_and_obeys_a_prior_stop(
 async def test_cannot_answer_writes_one_dead_letter_and_replies_naming_scope_checked(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock()
 
@@ -1290,7 +1244,7 @@ async def test_cannot_answer_writes_one_dead_letter_and_replies_naming_scope_che
 async def test_cannot_answer_reports_partial_effect_failure_truthfully(
     tmp_path: Path, monkeypatch, failed_effect: str
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
 
@@ -1335,7 +1289,7 @@ async def test_cannot_answer_reports_partial_effect_failure_truthfully(
 async def test_cannot_answer_claims_turn_before_capture_and_honors_stop(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
     fn = tools["cannot_answer"]
@@ -1364,7 +1318,7 @@ async def test_cannot_answer_claims_turn_before_capture_and_honors_stop(
     assert terminal.await_args.kwargs["state"] == "completed"
 
     stopped_claim = AsyncMock(return_value=_turn_result("cancelled"))
-    patches2 = _patch_infra()
+    patches2 = _infra()
     (tmp_path / "stopped-cannot-answer").mkdir()
     _, stopped_tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path / "stopped-cannot-answer"), patches2
@@ -1387,7 +1341,7 @@ async def test_cannot_answer_claims_turn_before_capture_and_honors_stop(
 
 
 async def test_answer_question_refused_after_route_to_butler_claims_lane(tmp_path: Path) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -1411,7 +1365,7 @@ async def test_answer_question_refused_after_route_to_butler_claims_lane(tmp_pat
 
 
 async def test_route_to_butler_refused_after_answer_question_claims_lane(tmp_path: Path) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -1438,7 +1392,7 @@ async def test_route_to_butler_refused_after_answer_question_claims_lane(tmp_pat
 async def test_route_to_butler_refused_after_cannot_answer_claims_lane(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -1473,7 +1427,7 @@ async def test_route_to_butler_refused_after_cannot_answer_claims_lane(
 
 
 async def test_second_answer_question_call_in_same_turn_is_refused(tmp_path: Path) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -1498,7 +1452,7 @@ async def test_second_answer_question_call_in_same_turn_is_refused(tmp_path: Pat
 async def test_second_cannot_answer_call_in_same_turn_is_refused(
     tmp_path: Path, monkeypatch
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
     fn = tools["cannot_answer"]
@@ -1528,7 +1482,7 @@ async def test_second_cannot_answer_call_in_same_turn_is_refused(
 async def test_question_lane_tools_refuse_non_dashboard_sessions(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
 
@@ -1604,13 +1558,12 @@ async def test_system_answer_pending_session_defers_repeated_publication(monkeyp
 async def test_system_read_uses_daemon_plugin_validator(
     tmp_path, monkeypatch, declarations_available
 ):
-    from types import SimpleNamespace
 
     from butlers.core_tools import _dashboard_system_answer as system
     from butlers.modules.dashboard_read import tools as provider
     from butlers.tools.switchboard.dead_letter import capture
 
-    patches = _patch_infra()
+    patches = _infra()
     evidence = {
         "source": {
             "kind": "view",
@@ -1620,7 +1573,7 @@ async def test_system_read_uses_daemon_plugin_validator(
     }
     route = AsyncMock(return_value={"result": evidence})
     monkeypatch.setattr(
-        system, "check_permission", AsyncMock(return_value=SimpleNamespace(allowed=True))
+        system, "check_permission", AsyncMock(return_value=PermissionStatus(allowed=True))
     )
     daemon, tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path), patches, mock_route=route

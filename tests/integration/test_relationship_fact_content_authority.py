@@ -16,7 +16,7 @@ import inspect
 import socket
 import sys
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,6 +79,11 @@ async def _tcp(app):
     server = uvicorn.Server(
         uvicorn.Config(app, access_log=False, log_level="warning", timeout_graceful_shutdown=2)
     )
+    # These listeners are embedded in pytest, which owns process signals.
+    # SSE's thread-wide watcher otherwise binds to this disposable server and
+    # mistakes its ordinary teardown for process shutdown, draining later MCP.
+    # Keep the real SSE policy and programmatic should_exit/join cleanup intact.
+    server.capture_signals = nullcontext
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         async with asyncio.timeout(5):
@@ -136,7 +141,7 @@ async def env(postgres_container):
         parsed.username,
     )
 
-    async def pool(schema, role=None, *, database_url=url):
+    async def open_pool(schema, role=None, *, database_url=url):
         async def setup(conn):
             if role:
                 await conn.execute(f"SET ROLE {role}")
@@ -150,11 +155,11 @@ async def env(postgres_container):
             server_settings={"search_path": f"{schema},public"},
         )
 
-    admin = await pool("public")
+    admin = await open_pool("public")
     # Bootstrap already owns the disposable control login; no membership is
     # added to the normal migration login. The real service SET LOCAL ROLE
     # exercises only the existing dashboard_auth_api capability on every call.
-    auth = await pool(
+    auth = await open_pool(
         "public",
         database_url=urlparse(
             migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
@@ -162,8 +167,8 @@ async def env(postgres_container):
         ._replace(scheme="postgresql")
         .geturl(),
     )
-    rel = await pool("relationship", "butler_relationship_rw")
-    switchboard = await pool("switchboard", "butler_switchboard_rw")
+    rel = await open_pool("relationship", "butler_relationship_rw")
+    switchboard = await open_pool("switchboard", "butler_switchboard_rw")
     owner = await admin.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic owner','person',ARRAY['owner']) RETURNING id"
@@ -996,6 +1001,38 @@ async def test_family_gate_and_stored_gap_authority(env):
         conf=0.95,
     )
     assert owner_positive.fact_id and owner_positive.outcome is not AssertOutcome.pending_approval
+
+
+# REQ-endpoint-custody-holds-005: an owner reached through a held endpoint freezes a third_party
+# report, so its identity claim about someone else is a held candidate, not an owner assertion.
+async def test_held_owner_endpoint_report_cannot_confirm_an_identity_fact(env):
+    address = f"{env.owner}@example.test"
+    hold = await env.admin.fetchval(
+        "INSERT INTO public.custody_holds (owner_entity_id, target_kind, target_digest, "
+        "generation, episode_id, reason, source_command_id) VALUES ($1, 'has-email', "
+        "public.custody_target_digest('has-email', $2), 1, gen_random_uuid(), 'lost', "
+        "gen_random_uuid()) RETURNING id",
+        env.owner,
+        address,
+    )
+    try:
+        report = await _report(env, env.owner, "third_party")
+        assert report.original_entity_id == env.owner  # attribution kept
+        chloe = await _person(env, name="Synthetic Chloe")
+        claim = await _assert(env, chloe, "has-phone", "+6580001234", report, conf=0.99)
+        row = await env.admin.fetchrow(
+            "SELECT validity, verified, content_authority FROM relationship.entity_facts "
+            "WHERE id=$1",
+            claim.fact_id,
+        )
+        assert row["validity"] == "candidate" and not row["verified"]
+        assert row["content_authority"] == "third_party"
+    finally:
+        await env.admin.execute(
+            "UPDATE public.custody_holds SET released_at = now() WHERE id = $1", hold
+        )
+    # After release the same endpoint reports as the owner again.
+    assert (await _report(env, env.owner, "owner")).authority == "owner"
 
 
 # REQ-relationship-facts-002: ordinary writer versus temporal legacy-index

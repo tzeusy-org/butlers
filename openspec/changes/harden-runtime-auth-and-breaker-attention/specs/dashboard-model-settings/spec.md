@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Catalog Verify-All API
@@ -14,15 +19,30 @@ healthy keyless session authority exists. Domain checks remain mandatory after
 central authentication; auth-store reads necessary for verification are distinct
 from forbidden pre-authentication domain access.
 
+After the goal switch, the private deterministic control-plane coordinator
+SHALL execute catalog verification through the applicable runtime tuple while
+credential projection/login targets the session host through the control-plane
+service listener (RFC 0038 D3). Verification and benchmark probes SHALL remain
+D18 tool-less, single-turn fixed-prompt/structured-output measurements, not
+goals, broker clients or domain-capability calls. "Same runtime environment"
+below means applicable authority, model, adapter mapping/configuration and
+arguments, never an invocation's broker access. All owner authentication,
+signed capability/receipt, readiness, rate/deadline, history and honest degraded
+outcomes below remain; a probe cannot produce routed success or reset a breaker.
+The private probe signer is not the goal-broker signer and never reaches the
+session host. Existing Models facts persist until the separately governed D19
+switch, with no invented replacement UI route in this amendment.
+
 ID: REQ-dashboard-model-settings-003
 Source: dashboard-owner-auth successor design D1-D9; existing dashboard-model-settings behavior preserved except explicit owner-auth supersession
 Scope: v1-mandatory
 
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
-- **THEN** the system requests a signed Switchboard runtime probe for each enabled model concurrently with a bounded concurrency of 8
+- **THEN** the system issues a 1-token completion against each enabled model, requested as a signed Switchboard runtime probe, concurrently with a bounded concurrency of 8
 - **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
-- **AND** only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
+- **AND** for each model, only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
+- **AND** `last_verified_error` is set to the truncated exception text on failure (or `"verification returned an empty response"` when the probe completed with no usable output) and cleared to `NULL` on success
 - **AND** a control-plane unavailable result preserves the prior verification evidence and is reported separately from a completed failed probe
 - **AND** the response data contains exactly `accepted`, `total`, `ok`, `failed`, and `unavailable`
 - **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too Many Requests`
@@ -58,13 +78,18 @@ Scope: v1-mandatory
 
 The dashboard-api process SHALL run an hourly background sweep
 (`butlers.jobs.model_verify.run_model_verify_loop`, started from the FastAPI
-lifespan alongside the other periodic jobs). Each interval tick SHALL call the
-same verification core as the manual endpoint through the registered `scheduler`
-caller and signed Switchboard runtime-probe control client, so verification is
-attempted roughly once per interval even when no operator visits the Models tab.
-A control-plane-unavailable result preserves prior verification evidence. The
-sweep does not construct a runtime adapter or persist verification evidence
-inside the dashboard process.
+lifespan alongside the other periodic jobs) that calls the same verification core
+as the manual endpoint, so `last_verified_ok`/`last_verified_at` are never more
+than roughly one interval stale even when no operator visits the Models tab
+(while the control plane is available). Each interval tick SHALL reach that core
+through the registered `scheduler` caller and signed Switchboard runtime-probe
+control client. A control-plane-unavailable result preserves prior verification
+evidence. The sweep does not construct a runtime adapter or persist verification
+evidence inside the dashboard process.
+
+ID: REQ-dashboard-model-settings-008
+Source: dashboard-model-settings Hourly Automated Verification Sweep; harden-runtime-auth-and-breaker-attention design.md
+Scope: v1-mandatory
 
 #### Scenario: Hourly sweep runs independently of the manual rate limit
 - **WHEN** the sweep's interval (default `DEFAULT_MODEL_VERIFY_INTERVAL_S = 3600`,
@@ -101,7 +126,7 @@ The Models API's per-entry test and scheduled verification SHALL invoke a
 deterministic Switchboard-owned runtime-probe coordinator. The coordinator
 SHALL use the same runtime home, authoritative CLI-auth source, adapter
 construction, canonical model identifier, runtime-specific execution mapping,
-generated runtime configuration, and runtime arguments as a new daemon
+generated runtime configuration, and runtime arguments as a new goal
 invocation, but SHALL expose no domain MCP tools and SHALL not create routed
 dispatch provenance. It SHALL be reached only through an authenticated
 dashboard-to-Switchboard control-plane command that is not registered in the
@@ -164,7 +189,7 @@ Scope: v1-mandatory
   verification sweep runs
 - **THEN** the request is executed by the runtime-probe coordinator using the
   same shared runtime environment, canonical-to-execution mapping, generated
-  runtime configuration, and catalog arguments as new daemon work
+  runtime configuration, and catalog arguments as new goal invocation work
 - **AND** the returned evidence is labelled as a runtime probe rather than a
   routed session result
 

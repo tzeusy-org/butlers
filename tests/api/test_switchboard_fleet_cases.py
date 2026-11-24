@@ -21,6 +21,7 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.pagination import encode_cursor
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -33,15 +34,6 @@ def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
         importlib.import_module("butlers.api._roster.switchboard.router")
     return get_db
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    row.keys = lambda: data.keys()
-    row.__iter__ = lambda self: iter(data)
-    return row
 
 
 def _app_with_mock(
@@ -124,7 +116,7 @@ def _sample_link_row(**overrides):
 # Spec: REQ-fleet-case-file-007
 # Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_happy_path_maps_all_fields(app):
-    app, _ = _app_with_mock(app, fetch_rows=[_make_row(_sample_case_row())])
+    app, _ = _app_with_mock(app, fetch_rows=[Record(_sample_case_row())])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -179,7 +171,7 @@ async def test_list_cases_posture_filter_adds_condition(app):
 # Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_has_more_emits_next_cursor(app):
     rows = [
-        _make_row(_sample_case_row(id=f"11111111-1111-1111-1111-11111111111{i}")) for i in range(3)
+        Record(_sample_case_row(id=f"11111111-1111-1111-1111-11111111111{i}")) for i in range(3)
     ]
     app, _ = _app_with_mock(app, fetch_rows=rows)
     async with httpx.AsyncClient(
@@ -275,10 +267,10 @@ async def test_list_cases_graceful_degrade_when_table_missing(app):
 async def test_get_case_happy_path_includes_evidence_and_links(app):
     app, mock_pool = _app_with_mock(
         app,
-        fetchrow_result=_make_row(_sample_case_row()),
+        fetchrow_result=Record(_sample_case_row()),
         fetch_side_effect=[
-            [_make_row(_sample_evidence_row())],
-            [_make_row(_sample_link_row())],
+            [Record(_sample_evidence_row())],
+            [Record(_sample_link_row())],
         ],
     )
     async with httpx.AsyncClient(
@@ -347,7 +339,7 @@ async def test_get_case_503_when_lookup_fails(app):
 async def test_get_case_503_when_evidence_or_links_lookup_fails(app):
     _app_with_mock(
         app,
-        fetchrow_result=_make_row(_sample_case_row()),
+        fetchrow_result=Record(_sample_case_row()),
         fetch_side_effect=RuntimeError("relation does not exist"),
     )
     async with httpx.AsyncClient(

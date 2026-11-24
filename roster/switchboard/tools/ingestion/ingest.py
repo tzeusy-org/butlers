@@ -52,6 +52,7 @@ from butlers.core.account_security_events import (
     publish_security_event,
     sender_authentication_verdict,
 )
+from butlers.core.break_through import spawn_observation as spawn_break_through_observation
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -201,6 +202,54 @@ def _get_policy_telemetry() -> _IngestionPolicyTelemetry:
     if _POLICY_TELEMETRY is None:
         _POLICY_TELEMETRY = _IngestionPolicyTelemetry()
     return _POLICY_TELEMETRY
+
+
+class IngestPersistenceError(RuntimeError):
+    """The envelope was valid but a transport-class failure stopped persistence.
+
+    The submission may be retried. Distinct from the ``ValueError`` validation refusal
+    so the ``ingest`` tool can report a typed transient status instead of a string-only
+    tool error (bu-u5euwb.33).
+    """
+
+
+class IngestStoreRefusedError(RuntimeError):
+    """The store deterministically refused this envelope; resubmitting it cannot succeed.
+
+    Raised for data, integrity, and other non-transport database errors. Kept apart from
+    ``IngestPersistenceError`` because connectors hold their checkpoint on a transient
+    reply: reporting a poison envelope as transient would wedge them (bu-u5euwb.33).
+    """
+
+
+# SQLSTATE classes that describe the connection or server, not the envelope: connection
+# exception (08), transaction rollback such as serialization failure and deadlock (40),
+# insufficient resources (53), and operator intervention such as admin shutdown (57P).
+_TRANSIENT_SQLSTATE_PREFIXES = ("08", "40", "53", "57P")
+_TRANSIENT_SQLSTATES = frozenset({"57014"})  # query_canceled: statement timeout
+
+
+def _is_transient_persistence_failure(exc: BaseException) -> bool:
+    """Return True when a persistence failure may succeed on a later attempt.
+
+    Only transport-class failures qualify. Anything else, including deterministic
+    SQLSTATE 22 (data), 23 (integrity), and 42 (syntax/access) errors and errors the
+    driver did not raise, is treated as non-transient so a poison envelope is refused
+    rather than retried forever.
+    """
+    if isinstance(exc, OSError | TimeoutError | asyncpg.InterfaceError):
+        return True
+    sqlstate = getattr(exc, "sqlstate", None)
+    if not isinstance(sqlstate, str):
+        return False
+    return sqlstate.startswith(_TRANSIENT_SQLSTATE_PREFIXES) or sqlstate in _TRANSIENT_SQLSTATES
+
+
+def _persistence_failure(context: str, exc: BaseException) -> RuntimeError:
+    """Wrap a persistence failure in the error class that matches its retryability."""
+    if _is_transient_persistence_failure(exc):
+        return IngestPersistenceError(f"{context}: {exc}")
+    return IngestStoreRefusedError(f"{context}: {exc}")
 
 
 class IngestAcceptedResponse(BaseModel):
@@ -766,8 +815,11 @@ async def ingest_v1(
     ------
     ValueError
         If the payload fails `ingest.v1` validation.
-    RuntimeError
-        If database persistence fails unexpectedly.
+    IngestPersistenceError
+        If a transport-class failure stops persistence (the submission may be retried).
+    IngestStoreRefusedError
+        If the database deterministically refuses the envelope (resubmitting cannot
+        succeed).
     """
     # Best-effort source extraction for metrics before full validation
     _source_for_metrics = "unknown"
@@ -973,6 +1025,11 @@ async def ingest_v1(
                 else {}
             ),
             **(
+                {"automated_evidence": envelope.control.automated_evidence.model_dump(mode="json")}
+                if envelope.control.automated_evidence is not None
+                else {}
+            ),
+            **(
                 {"payload_type": envelope.control.payload_type}
                 if envelope.control.payload_type
                 else {}
@@ -1032,6 +1089,15 @@ async def ingest_v1(
     # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
     # representation: nothing on the routing path reads them.
     _persist_exposure_markers(envelope, raw_payload, normalized_text)
+    # 6d. Keep the connector's speech-to-text outcome (connector-base-spec) so the responding
+    # session can tell the owner a voice note was not transcribed. Metadata, never authority.
+    if envelope.payload.transcription is not None:
+        raw_payload["payload"]["transcription"] = envelope.payload.transcription.model_dump()
+    # 6e. Keep the producer's keyed transcript binding for goal admission to verify
+    # (REQ-audio-authorship-002). Retained with the accepted row so a duplicate or replay
+    # resolves to this row's decision; nothing on the routing path reads it.
+    if envelope.payload.audio_authorship is not None:
+        raw_payload["payload"]["audio_authorship"] = envelope.payload.audio_authorship.model_dump()
     raw_payload = _strip_null_bytes(raw_payload)
 
     # 7. Ensure partition exists for received_at — committed immediately,
@@ -1063,7 +1129,7 @@ async def ingest_v1(
             exc_info=True,
         )
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to ensure message_inbox partition: {exc}") from exc
+        raise _persistence_failure("Failed to ensure message_inbox partition", exc) from exc
 
     # 8. Dedup-safe insert: acquire a dedicated connection and serialise on
     # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
@@ -1224,7 +1290,7 @@ async def ingest_v1(
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc
+        raise _persistence_failure("Failed to persist ingest envelope", exc) from exc
 
     logger.info(
         "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, "
@@ -1259,6 +1325,20 @@ async def ingest_v1(
             )
     except Exception:
         logger.warning("account-security sensor failed (non-fatal)", exc_info=True)
+
+    # Break-through sensor (bu-s11n0s.8): does this message match an owner clause? Independent
+    # of the policy decision above; runs as a background task so ingest never waits for it.
+    spawn_break_through_observation(
+        pool,
+        channel=envelope.source.channel,
+        sender_identity=str(envelope.sender.identity or ""),
+        normalized_text=normalized_text,
+        raw=envelope.payload.raw,
+        source_request_id=str(request_id),
+        thread=event_conversation_identity(envelope.event.model_dump())[0],
+        received_at=received_at,
+        owner_sender_identity=envelope.sender.owner_sender_id,
+    )
 
     # Fan an "ingestion" event onto the multiplexed fleet event bus (bu-86c4c.8,
     # move 5; wired in bu-h8ioq). This is the single choke point where every

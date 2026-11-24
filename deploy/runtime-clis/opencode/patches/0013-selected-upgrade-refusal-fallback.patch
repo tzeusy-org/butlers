@@ -1,0 +1,239 @@
+--- a/packages/opencode/src/plugin/openai/ws-pool.ts
++++ b/packages/opencode/src/plugin/openai/ws-pool.ts
+@@ -5,0 +6 @@
++import { GATEWAY_MAX_RETRIES } from "@/util/gateway-retry"
+@@ -48,0 +50 @@
++    const selected = ButlersEgress.gatewayConfig() !== undefined
+@@ -118 +120 @@
+-          if (!entry.fallback) recordStreamFailure(entry)
++          if (!entry.fallback) recordStreamFailure(entry, selected)
+@@ -143 +145 @@
+-      if (!entry.fallback) return response
++      if (!entry.fallback || selected) return response
+@@ -155,0 +158,11 @@
++        // A definitive upgrade refusal can use the existing validated HTTP
++        // transport now. Retryable failures must honor the caller's delay first.
++        if (selected && error.statusCode === 426) {
++          entry.fallback = true
++          return httpFetch(input, httpInit)
++        }
++        const status = error.statusCode
++        if (selected && status !== undefined && status !== 401 && status !== 403 &&
++          !(status >= 300 && status <= 399) && (error.isRetryable || status >= 500)) {
++          recordStreamFailure(entry, selected)
++        }
+@@ -161 +174 @@
+-      recordStreamFailure(entry)
++      recordStreamFailure(entry, selected)
+@@ -163 +176 @@
+-      if (entry.fallback) return httpFetch(input, httpInit)
++      if (entry.fallback && !selected) return httpFetch(input, httpInit)
+@@ -172 +185 @@
+-  function recordStreamFailure(entry: PoolEntry) {
++  function recordStreamFailure(entry: PoolEntry, selected: boolean) {
+@@ -175 +188,5 @@
+-    if (entry.streamFailures > streamRetries) entry.fallback = true
++    // Reserve the last policy-scheduled operation for HTTP in selected mode.
++    // Off-mode retains the original threshold, including explicit retry options.
++    if (entry.streamFailures > streamRetries || (selected && entry.streamFailures >= GATEWAY_MAX_RETRIES)) {
++      entry.fallback = true
++    }
+--- a/packages/opencode/src/session/retry.ts
++++ b/packages/opencode/src/session/retry.ts
+@@ -7,0 +8,2 @@
++import { GATEWAY_MAX_RETRIES, GATEWAY_MAX_RETRY_DELAY } from "@/util/gateway-retry"
++export { GATEWAY_MAX_RETRIES, GATEWAY_MAX_RETRY_DELAY } from "@/util/gateway-retry"
+@@ -29,2 +30,0 @@
+-export const GATEWAY_MAX_RETRIES = 3
+-export const GATEWAY_MAX_RETRY_DELAY = 30_000
+--- /dev/null
++++ b/packages/opencode/src/util/gateway-retry.ts
+@@ -0,0 +1,4 @@
++// Pure shared budget: the pool reserves the final scheduled operation for HTTP.
++// No transport/session imports, timers, configuration or retry decisions live here.
++export const GATEWAY_MAX_RETRIES = 3
++export const GATEWAY_MAX_RETRY_DELAY = 30_000
+--- /dev/null
++++ b/packages/opencode/test/plugin/openai-selected-fallback.test.ts
+@@ -0,0 +1,181 @@
++import { afterEach, expect, spyOn, test } from "bun:test"
++import { APICallError } from "ai"
++import { EventEmitter } from "node:events"
++import type WebSocket from "ws"
++import { OpenAIWebSocket } from "../../src/plugin/openai/ws"
++import { createWebSocketFetch } from "../../src/plugin/openai/ws-pool"
++
++const logical = "https://api.openai.com/v1/responses"
++const originalMode = process.env.BUTLERS_EGRESS_MODE
++const originalGateway = process.env.BUTLERS_EGRESS_GATEWAY
++let restore: (() => void) | undefined
++let close: (() => void) | undefined
++
++afterEach(() => {
++  close?.()
++  restore?.()
++  close = restore = undefined
++  for (const [name, value] of [["BUTLERS_EGRESS_MODE", originalMode], ["BUTLERS_EGRESS_GATEWAY", originalGateway]]) {
++    if (value === undefined) delete process.env[name!]
++    else process.env[name!] = value
++  }
++})
++
++function selected() {
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://egress-gateway:3101"
++}
++function request() {
++  return {
++    method: "POST",
++    headers: { "content-type": "application/json", "x-session-affinity": "fallback-session" },
++    body: JSON.stringify({ stream: true, input: "owned fallback control" }),
++  }
++}
++function refusal(status: number) {
++  return new APICallError({
++    message: "Owned upgrade refusal", url: logical, requestBodyValues: undefined,
++    statusCode: status, responseBody: "bounded refusal", responseHeaders: { "retry-after": "3" },
++  })
++}
++function factory(error: Error, httpStatus = 200) {
++  // Position the production pool at its actual typed handshake boundary. The
++  // separate gateway tests own wire status/privacy; these controls own fallback.
++  const connect = spyOn(OpenAIWebSocket, "connectResponsesWebSocket").mockRejectedValue(error)
++  restore = () => connect.mockRestore()
++  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
++  const fetch = createWebSocketFetch({
++    httpFetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
++      calls.push({ input, init })
++      return new Response("owned HTTP response", { status: httpStatus, headers: { "retry-after": "7" } })
++    }, { preconnect() {} }),
++  })
++  close = () => fetch.close()
++  return { fetch, connect, calls }
++}
++
++test("selected 426 uses the supplied HTTP transport immediately and stays HTTP for that session", async () => {
++  selected()
++  const { fetch, connect, calls } = factory(refusal(426))
++  for (let attempt = 0; attempt < 3; attempt++) {
++    const response = await fetch(logical, request())
++    expect(response.status).toBe(200)
++    expect(await response.text()).toBe("owned HTTP response")
++  }
++  expect(connect).toHaveBeenCalledTimes(1)
++  expect(calls).toHaveLength(3)
++  for (const call of calls) {
++    expect(call.input).toBe(logical)
++    expect(call.init?.method).toBe("POST")
++    expect(call.init?.body).toBe(request().body)
++    expect(new Headers(call.init?.headers).get("x-session-affinity")).toBe("fallback-session")
++  }
++})
++
++for (const status of [401, 403, 302, 429]) {
++  test(`selected status ${status} retains its first typed refusals without immediate HTTP fallback`, async () => {
++    selected()
++    const { fetch, connect, calls } = factory(refusal(status))
++    for (let attempt = 0; attempt < 2; attempt++) {
++      const response = await fetch(logical, request())
++      expect(response.status).toBe(status)
++      expect(await response.text()).toBe("bounded refusal")
++      expect(response.headers.get("retry-after")).toBe("3")
++    }
++    expect(connect).toHaveBeenCalledTimes(2)
++    expect(calls).toHaveLength(0)
++  })
++}
++
++test("selected 426 preserves a failing HTTP successor response and headers", async () => {
++  selected()
++  const { fetch, calls } = factory(refusal(426), 503)
++  const response = await fetch(logical, request())
++  expect(response.status).toBe(503)
++  expect(response.headers.get("retry-after")).toBe("7")
++  expect(await response.text()).toBe("owned HTTP response")
++  expect(calls).toHaveLength(1)
++})
++
++test("426 cannot enable fallback with an invalid selected gateway", async () => {
++  selected()
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://127.0.0.1:3101"
++  const { fetch, calls } = factory(refusal(426))
++  await expect(fetch(logical, request())).rejects.toThrow("Invalid selected egress configuration")
++  expect(calls).toHaveLength(0)
++})
++
++test("off-mode keeps the default six failed socket attempts before HTTP fallback", async () => {
++  delete process.env.BUTLERS_EGRESS_MODE
++  delete process.env.BUTLERS_EGRESS_GATEWAY
++  const { fetch, connect, calls } = factory(new Error("Owned socket failure"))
++  for (let attempt = 0; attempt < 5; attempt++) {
++    const response = await fetch(logical, request())
++    await expect(response.text()).rejects.toThrow("Owned socket failure")
++  }
++  expect(calls).toHaveLength(0)
++  expect(await (await fetch(logical, request())).text()).toBe("owned HTTP response")
++  expect(await (await fetch(logical, request())).text()).toBe("owned HTTP response")
++  expect(connect).toHaveBeenCalledTimes(6)
++  expect(calls).toHaveLength(2)
++})
++
++test("selected cancellation retains AbortError and never invokes HTTP", async () => {
++  selected()
++  const { fetch, calls } = factory(new DOMException("Owned cancellation", "AbortError"))
++  await expect(fetch(logical, request())).rejects.toThrow("Owned cancellation")
++  expect(calls).toHaveLength(0)
++})
++
++for (const status of [429, 503]) {
++  test(`selected ${status} preserves each typed delay hint and reserves the fourth operation for HTTP`, async () => {
++    selected()
++    const { fetch, connect, calls } = factory(refusal(status))
++    for (let attempt = 0; attempt < 3; attempt++) {
++      const response = await fetch(logical, request())
++      expect(response.status).toBe(status)
++      expect(await response.text()).toBe("bounded refusal")
++      expect(response.headers.get("retry-after")).toBe("3")
++      expect(calls).toHaveLength(0)
++    }
++    expect(await (await fetch(logical, request())).text()).toBe("owned HTTP response")
++    expect(connect).toHaveBeenCalledTimes(3)
++    expect(calls).toHaveLength(1)
++  })
++}
++
++test("selected generic connect failures defer HTTP until the fourth operation", async () => {
++  selected()
++  const { fetch, connect, calls } = factory(new Error("Owned connection failure"))
++  for (let attempt = 0; attempt < 3; attempt++) {
++    await expect((await fetch(logical, request())).text()).rejects.toThrow("Owned connection failure")
++    expect(calls).toHaveLength(0)
++  }
++  expect(await (await fetch(logical, request())).text()).toBe("owned HTTP response")
++  expect(connect).toHaveBeenCalledTimes(3)
++  expect(calls).toHaveLength(1)
++})
++
++test("selected unfinished streams defer HTTP until the fourth operation", async () => {
++  selected()
++  const { fetch, connect, calls } = factory(new Error("unused"))
++  connect.mockImplementation(async () => {
++    const socket = new EventEmitter() as unknown as WebSocket
++    Object.assign(socket, {
++      readyState: 1,
++      send(_data: string, callback: (error?: Error) => void) {
++        callback()
++        queueMicrotask(() => socket.emit("close", 1006, Buffer.alloc(0)))
++      },
++      terminate() { Object.assign(socket, { readyState: 3 }) },
++    })
++    return socket
++  })
++  for (let attempt = 0; attempt < 3; attempt++) {
++    await expect((await fetch(logical, request())).text()).rejects.toThrow("WebSocket closed before response.completed")
++    expect(calls).toHaveLength(0)
++  }
++  expect(await (await fetch(logical, request())).text()).toBe("owned HTTP response")
++  expect(connect).toHaveBeenCalledTimes(3)
++  expect(calls).toHaveLength(1)
++})

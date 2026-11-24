@@ -24,6 +24,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
+from butlers.modules.approvals.delivery_failure import (
+    DELIVERY_REJECTED_STATUS,
+    SendFailure,
+    delivery_rejected_result,
+    failure_text,
+    is_egress_tool,
+    send_failure_code,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import (
     ApprovalExecutionContext,
@@ -31,7 +40,13 @@ from butlers.modules.approvals.execution_context import (
     reset_approval_execution_context,
     set_approval_execution_context,
 )
+from butlers.modules.approvals.goal_fence import goal_effect_refusal, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.calendar_approval import (
+    CALENDAR_APPROVAL_TOOLS,
+    retire_legacy_calendar_approval_args,
+)
+from butlers.telegram_api import terminal_telegram_metadata
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -43,6 +58,30 @@ _EXECUTION_LOCKS: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
 _EXECUTION_LOCKS_GUARD = asyncio.Lock()
 
 
+#: What an approved egress call records when its send may already have reached the recipient.
+_OUTCOME_UNKNOWN_RESULT: dict[str, Any] = {"status": "outcome_unknown", "delivery_confirmed": False}
+
+
+def send_outcome_unknown(result: Any, *, _depth: int = 0) -> bool:
+    """Whether a tool's failure result says the send may have gone out.
+
+    REQ-runtime-attention-outbox-002: only a proven not-attempted send may be replayed. A
+    ``transport.outcome == "uncertain"`` fragment (Switchboard ``deliver``), a Telegram
+    effect-uncertain or partial-delivery marker, anywhere in the result, is not retryable.
+    """
+    if _depth > 8 or not isinstance(result, dict):
+        return False
+    transport = result.get("transport")
+    if isinstance(transport, dict) and transport.get("outcome") == "uncertain":
+        return True
+    if terminal_telegram_metadata(result):
+        return True
+    return any(
+        send_outcome_unknown(result.get(key), _depth=_depth + 1)
+        for key in ("result", "data", "error", "notify_response")
+    )
+
+
 @dataclass
 class ExecutionResult:
     """Outcome of executing an approved action."""
@@ -51,6 +90,10 @@ class ExecutionResult:
     result: dict[str, Any] | None = None
     error: str | None = None
     executed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # A typed refusal that never reached the tool (e.g. a goal effect).
+    code: str | None = None
+    # Content-free code of a failed outbound send (delivery_failure.SEND_FAILURE_LABELS).
+    failure_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -62,6 +105,10 @@ class ExecutionResult:
             d["result"] = self.result
         if self.error is not None:
             d["error"] = self.error
+        if self.code is not None:
+            d["code"] = self.code
+        if self.failure_code is not None:
+            d["failure_code"] = self.failure_code
         return d
 
 
@@ -121,7 +168,9 @@ def _parse_execution_result(raw_payload: Any) -> ExecutionResult | None:
 
 
 @asynccontextmanager
-async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
+async def _approval_write_transaction(
+    pool: Any, *, audit_owned: bool = False
+) -> AsyncIterator[Any]:
     """Yield a write target with a transaction when the runtime exposes one.
 
     Modules receive either an asyncpg pool/connection or the project's
@@ -136,18 +185,24 @@ async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
         async with acquire() as connection:
             transaction = getattr(connection, "transaction", None)
             if callable(transaction):
-                async with connection.transaction():
+                scope = audit_transaction(connection) if audit_owned else connection.transaction()
+                async with scope:
                     yield connection
             else:
+                if audit_owned:
+                    raise AuditTransactionError("Audit transaction state is unavailable")
                 yield connection
         return
 
     transaction = getattr(target, "transaction", None)
     if callable(transaction):
-        async with transaction():
+        scope = audit_transaction(target) if audit_owned else transaction()
+        async with scope:
             yield target
         return
 
+    if audit_owned:
+        raise AuditTransactionError("Audit transaction state is unavailable")
     yield target
 
 
@@ -207,18 +262,25 @@ async def execute_approved_action(
         # is already allowed to perform its side effect.
         failed_execution: ExecutionResult | None = None
         execution_result: ExecutionResult | None = None
+        outcome_unknown = False
+        rejected_code: str | None = None
         action_origin: str | None = None
         now = datetime.now(UTC)
         try:
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
                     "SELECT status, execution_result, session_id, decided_by, origin, "
-                    "tool_name, tool_args "
+                    "tool_name, tool_args, goal_id "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
                 if existing_row is None:
                     return ExecutionResult(success=False, error=f"Action not found: {action_id}")
+                if is_goal_effect(existing_row):
+                    refusal = goal_effect_refusal(action_id)
+                    return ExecutionResult(
+                        success=False, error=refusal["error"], code=refusal["error_code"]
+                    )
 
                 existing_status = existing_row["status"]
                 if existing_status == ActionStatus.EXECUTED.value:
@@ -244,6 +306,7 @@ async def execute_approved_action(
                     )
 
                 dispatch_args = tool_args
+                context_args = tool_args
                 if tool_name == "relationship_assert_fact":
                     stored_args = existing_row.get("tool_args")
                     if isinstance(stored_args, str):
@@ -263,6 +326,30 @@ async def execute_approved_action(
                     dispatch_args = {
                         key: value for key, value in stored_args.items() if key != "verified"
                     }
+                elif tool_name in CALENDAR_APPROVAL_TOOLS:
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Calendar tools open their gates only for this context, so
+                    # bind it to the canonical public call derived from the
+                    # exact locked stored row (legacy markers retired there,
+                    # never forwarded). No caller-supplied value carries authority.
+                    try:
+                        dispatch_args = retire_legacy_calendar_approval_args(tool_name, stored_args)
+                    except (TypeError, ValueError) as exc:
+                        return ExecutionResult(
+                            success=False, error=f"invalid approved calendar arguments: {exc}"
+                        )
+                    context_args = dispatch_args
 
                 try:
                     authorized_task = asyncio.current_task()
@@ -273,7 +360,7 @@ async def execute_approved_action(
                         session_id=existing_row.get("session_id"),
                         actor=existing_row.get("decided_by") or "system:approval_executor",
                         tool_name=tool_name,
-                        tool_args_digest=approval_tool_args_digest(tool_args),
+                        tool_args_digest=approval_tool_args_digest(context_args),
                         authorized_task=authorized_task,
                     )
                     context_token = set_approval_execution_context(execution_context)
@@ -283,19 +370,53 @@ async def execute_approved_action(
                             raw_result = await raw_result
                     finally:
                         reset_approval_execution_context(context_token)
+                    outcome_unknown = send_outcome_unknown(raw_result)
+                    if outcome_unknown:
+                        # The send may have reached the recipient, so Retry could send it
+                        # twice, possibly to a non-owner. Record the action as executed with
+                        # an unknown outcome, never the provider's text; the owner checks the
+                        # channel and sends again deliberately.
+                        logger.warning(
+                            "Approved action %s (%s) outcome unknown after a send that may "
+                            "have gone out; recorded executed, not retryable",
+                            action_id,
+                            tool_name,
+                        )
+                        raw_result = dict(_OUTCOME_UNKNOWN_RESULT)
+                    send_rejected = (
+                        isinstance(raw_result, dict)
+                        and raw_result.get("status") == DELIVERY_REJECTED_STATUS
+                    )
+                    if send_rejected:
+                        # The provider proved it rejected the send, so nothing was delivered
+                        # and a retry would meet the same rejection. Record it executed with
+                        # a distinct, content-free outcome the owner can see.
+                        logger.warning(
+                            "Approved action %s (%s) was rejected by the provider",
+                            action_id,
+                            tool_name,
+                        )
+                        raw_result = delivery_rejected_result(raw_result.get("failure_code"))
+                        rejected_code = raw_result["failure_code"]
                     # MCP tool contracts use an error dict for an unsuccessful
                     # operation. Treat it exactly like an exception so a handler that
                     # reports its own failure cannot be recorded as `executed`.
                     if isinstance(raw_result, dict):
-                        if raw_result.get("error"):
-                            raise RuntimeError(str(raw_result["error"]))
-                        if raw_result.get("success") is False:
+                        if raw_result.get("error") or raw_result.get("success") is False:
+                            if is_egress_tool(tool_name):
+                                raise SendFailure(send_failure_code(raw_result))
+                            if raw_result.get("error"):
+                                raise RuntimeError(str(raw_result["error"]))
                             raise RuntimeError("tool reported unsuccessful execution")
                 except Exception as exc:
+                    send_code = send_failure_code(exc) if is_egress_tool(tool_name) else None
                     failed_execution = ExecutionResult(
                         success=False,
-                        error=str(exc),
+                        # An egress failure's text can carry a recipient or provider words;
+                        # only the closed code is recorded and shown.
+                        error=failure_text(send_code) if send_code else str(exc),
                         executed_at=now,
+                        failure_code=send_code,
                     )
                     logger.error(
                         "Tool execution failed for action %s (%s): %s",
@@ -345,7 +466,15 @@ async def execute_approved_action(
                         actor="system:executor",
                         action_id=action_id,
                         rule_id=approval_rule_id,
-                        metadata={"tool_name": tool_name},
+                        metadata={
+                            "tool_name": tool_name,
+                            **({"outcome": "unknown"} if outcome_unknown else {}),
+                            **(
+                                {"outcome": "rejected", "failure_code": rejected_code}
+                                if rejected_code
+                                else {}
+                            ),
+                        },
                         occurred_at=now,
                     )
         except Exception as exc:
@@ -391,7 +520,14 @@ async def execute_approved_action(
                         action_id=action_id,
                         rule_id=approval_rule_id,
                         reason=failed_execution.error,
-                        metadata={"tool_name": tool_name},
+                        metadata={
+                            "tool_name": tool_name,
+                            **(
+                                {"failure_code": failed_execution.failure_code}
+                                if failed_execution.failure_code
+                                else {}
+                            ),
+                        },
                         occurred_at=failed_execution.executed_at,
                     )
             except Exception:  # noqa: BLE001 -- failure audit cannot change queue state

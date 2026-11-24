@@ -8,11 +8,7 @@ import re
 import shutil
 import uuid
 
-import asyncpg
 import pytest
-
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -22,34 +18,13 @@ pytestmark = [
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with sessions table cleared between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE sessions CASCADE")
-    yield p
-    await p.close()
-
-
 # ---------------------------------------------------------------------------
 # session_create / sessions_get
 # ---------------------------------------------------------------------------
 
 
 @_asyncio_session
-async def test_session_create_and_get(pool):
+async def test_session_create_and_get(db_pool):
     """session_create returns UUID; fields are persisted; request_id=None raises."""
     from butlers.core.sessions import session_create, sessions_get
 
@@ -65,7 +40,7 @@ async def test_session_create_and_get(pool):
         }
     ]
     session_id = await session_create(
-        pool,
+        db_pool,
         prompt="Run daily report",
         trigger_source="tick",
         trace_id="abc-123",
@@ -77,7 +52,7 @@ async def test_session_create_and_get(pool):
     )
     assert isinstance(session_id, uuid.UUID)
 
-    session = await sessions_get(pool, session_id)
+    session = await sessions_get(db_pool, session_id)
     assert session is not None
     assert session["prompt"] == "Run daily report"
     assert session["trigger_source"] == "tick"
@@ -86,7 +61,7 @@ async def test_session_create_and_get(pool):
     assert session["success"] is None
     assert session["completed_at"] is None
     assert session["purpose_lane"] == "private_content"
-    receipt = await pool.fetchrow(
+    receipt = await db_pool.fetchrow(
         "SELECT effective_system_prompt, prompt_digest, prompt_provenance "
         "FROM sessions WHERE id = $1",
         session_id,
@@ -96,11 +71,11 @@ async def test_session_create_and_get(pool):
     assert receipt["prompt_provenance"] == provenance
 
     # Missing key returns None
-    assert await sessions_get(pool, uuid.uuid4()) is None
+    assert await sessions_get(db_pool, uuid.uuid4()) is None
 
     # request_id=None raises
     with pytest.raises((ValueError, Exception)):
-        await session_create(pool, prompt="x", trigger_source="tick", request_id=None)
+        await session_create(db_pool, prompt="x", trigger_source="tick", request_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -109,18 +84,18 @@ async def test_session_create_and_get(pool):
 
 
 @_asyncio_session
-async def test_session_complete_success_and_failure(pool):
+async def test_session_complete_success_and_failure(db_pool):
     """session_complete sets success/error/result/duration; nonexistent raises."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
     req_id = str(uuid.uuid4())
     session_id = await session_create(
-        pool, prompt="Do work", trigger_source="schedule:x", request_id=req_id
+        db_pool, prompt="Do work", trigger_source="schedule:x", request_id=req_id
     )
 
     # Complete successfully
     await session_complete(
-        pool,
+        db_pool,
         session_id,
         output="All done",
         tool_calls=[{"name": "tool1"}],
@@ -129,7 +104,7 @@ async def test_session_complete_success_and_failure(pool):
         input_tokens=100,
         output_tokens=50,
     )
-    done = await sessions_get(pool, session_id)
+    done = await sessions_get(db_pool, session_id)
     assert done["success"] is True
     assert done["result"] == "All done"
     assert done["duration_ms"] == 1234
@@ -138,10 +113,10 @@ async def test_session_complete_success_and_failure(pool):
 
     # Create and complete with failure
     s2 = await session_create(
-        pool, prompt="Will fail", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="Will fail", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         s2,
         output=None,
         tool_calls=[],
@@ -149,7 +124,7 @@ async def test_session_complete_success_and_failure(pool):
         success=False,
         error="something went wrong",
     )
-    failed = await sessions_get(pool, s2)
+    failed = await sessions_get(db_pool, s2)
     assert failed["success"] is False
     assert failed["error"] == "something went wrong"
     assert failed["result"] is None
@@ -157,23 +132,23 @@ async def test_session_complete_success_and_failure(pool):
     # Nonexistent raises
     with pytest.raises((ValueError, Exception)):
         await session_complete(
-            pool, uuid.uuid4(), output=None, tool_calls=[], duration_ms=0, success=False
+            db_pool, uuid.uuid4(), output=None, tool_calls=[], duration_ms=0, success=False
         )
 
 
 @_asyncio_session
-async def test_session_fields_sanitize_untranslatable_unicode(pool):
+async def test_session_fields_sanitize_untranslatable_unicode(db_pool):
     """Bad Unicode in TEXT/JSONB payloads should be stripped before persistence."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
     session_id = await session_create(
-        pool,
+        db_pool,
         prompt="prompt\x00with\ud83dnoise",
         trigger_source="tick",
         request_id=str(uuid.uuid4()),
     )
     await session_complete(
-        pool,
+        db_pool,
         session_id,
         output="done\x00\ud83d",
         tool_calls=[
@@ -191,7 +166,7 @@ async def test_session_fields_sanitize_untranslatable_unicode(pool):
         cost={"raw": "cost\x00\ud83d"},
     )
 
-    row = await sessions_get(pool, session_id)
+    row = await sessions_get(db_pool, session_id)
     assert row is not None
     assert row["prompt"] == "promptwithnoise"
     assert row["result"] == "done"
@@ -215,7 +190,7 @@ async def test_session_fields_sanitize_untranslatable_unicode(pool):
 
 @pytest.mark.pg_clock
 @_asyncio_session
-async def test_sessions_list_and_summary(pool):
+async def test_sessions_list_and_summary(db_pool):
     """sessions_list returns sessions in order; sessions_summary aggregates correctly."""
     from butlers.core.sessions import (
         session_complete,
@@ -226,14 +201,14 @@ async def test_sessions_list_and_summary(pool):
 
     for i in range(3):
         sid = await session_create(
-            pool,
+            db_pool,
             prompt=f"task {i}",
             trigger_source="tick",
             request_id=str(uuid.uuid4()),
             model="claude-3",
         )
         await session_complete(
-            pool,
+            db_pool,
             sid,
             output=f"result {i}",
             tool_calls=[],
@@ -243,13 +218,13 @@ async def test_sessions_list_and_summary(pool):
             output_tokens=50,
         )
 
-    listed = await sessions_list(pool)
+    listed = await sessions_list(db_pool)
     assert len(listed) >= 3
     # Pagination works
-    page1 = await sessions_list(pool, limit=2, offset=0)
+    page1 = await sessions_list(db_pool, limit=2, offset=0)
     assert len(page1) == 2
 
-    summary = await sessions_summary(pool, period="7d")
+    summary = await sessions_summary(db_pool, period="7d")
     assert summary["total_sessions"] >= 3
     assert "by_model" in summary
     # A clean run of successful sessions produces zero failures and an empty
@@ -260,24 +235,24 @@ async def test_sessions_list_and_summary(pool):
 
     # Invalid period raises
     with pytest.raises((ValueError, Exception)):
-        await sessions_summary(pool, period="invalid_period")
+        await sessions_summary(db_pool, period="invalid_period")
 
 
 @pytest.mark.pg_clock
 @_asyncio_session
-async def test_sessions_summary_error_marker_breakdown(pool):
+async def test_sessions_summary_error_marker_breakdown(db_pool):
     """A guardrail-marker failure increments failed + by_error_marker deterministically."""
     from butlers.core.sessions import session_complete, session_create, sessions_summary
 
     guardrail_sid = await session_create(
-        pool,
+        db_pool,
         prompt="task guardrail",
         trigger_source="tick",
         request_id=str(uuid.uuid4()),
         model="claude-3",
     )
     await session_complete(
-        pool,
+        db_pool,
         guardrail_sid,
         output=None,
         tool_calls=[],
@@ -287,14 +262,14 @@ async def test_sessions_summary_error_marker_breakdown(pool):
     )
 
     other_sid = await session_create(
-        pool,
+        db_pool,
         prompt="task other",
         trigger_source="tick",
         request_id=str(uuid.uuid4()),
         model="claude-3",
     )
     await session_complete(
-        pool,
+        db_pool,
         other_sid,
         output=None,
         tool_calls=[],
@@ -305,14 +280,14 @@ async def test_sessions_summary_error_marker_breakdown(pool):
 
     # Genuine switchboard classification timeout: "mini" model, <=60s bound.
     classification_sid = await session_create(
-        pool,
+        db_pool,
         prompt="classify inbound message",
         trigger_source="classification",
         request_id=str(uuid.uuid4()),
         model="claude-haiku-4-5-mini",
     )
     await session_complete(
-        pool,
+        db_pool,
         classification_sid,
         output=None,
         tool_calls=[],
@@ -327,14 +302,14 @@ async def test_sessions_summary_error_marker_breakdown(pool):
     # must NOT be misclassified as classification_timeout (bu-ixqo6 review
     # finding on PR #4004).
     route_sid = await session_create(
-        pool,
+        db_pool,
         prompt="dispatch to butler",
         trigger_source="route",
         request_id=str(uuid.uuid4()),
         model="claude-sonnet-4-6",
     )
     await session_complete(
-        pool,
+        db_pool,
         route_sid,
         output=None,
         tool_calls=[],
@@ -344,7 +319,7 @@ async def test_sessions_summary_error_marker_breakdown(pool):
         "butler=switchboard)",
     )
 
-    summary = await sessions_summary(pool, period="7d")
+    summary = await sessions_summary(db_pool, period="7d")
     assert summary["failed"] >= 4
     assert summary["by_error_marker"]["degenerate_tool_loop"] == 1
     assert summary["by_error_marker"]["classification_timeout"] == 1
@@ -359,31 +334,31 @@ async def test_sessions_summary_error_marker_breakdown(pool):
 
 
 @_asyncio_session
-async def test_friction_events_derived_at_session_close(pool):
+async def test_friction_events_derived_at_session_close(db_pool):
     """Each session_complete call derives zero or one typed friction row."""
     from butlers.core.sessions import session_complete, session_create
 
     async def _friction_kinds(session_id: uuid.UUID) -> list[str]:
-        rows = await pool.fetch(
+        rows = await db_pool.fetch(
             "SELECT kind FROM sessions_friction WHERE session_id = $1 ORDER BY kind", session_id
         )
         return [r["kind"] for r in rows]
 
     # Clean session: zero friction rows.
     clean_sid = await session_create(
-        pool, prompt="clean run", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="clean run", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool, clean_sid, output="ok", tool_calls=[], duration_ms=10, success=True
+        db_pool, clean_sid, output="ok", tool_calls=[], duration_ms=10, success=True
     )
     assert await _friction_kinds(clean_sid) == []
 
     # Guardrail-marker failure -> degenerate_tool_loop.
     loop_sid = await session_create(
-        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         loop_sid,
         output=None,
         tool_calls=[],
@@ -395,10 +370,10 @@ async def test_friction_events_derived_at_session_close(pool):
 
     # Tool-call/token budget guardrail -> guardrail_termination.
     budget_sid = await session_create(
-        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         budget_sid,
         output=None,
         tool_calls=[],
@@ -410,14 +385,14 @@ async def test_friction_events_derived_at_session_close(pool):
 
     # Switchboard classification timeout (mini model, <=60s) -> classification_timeout.
     classification_sid = await session_create(
-        pool,
+        db_pool,
         prompt="classify inbound message",
         trigger_source="classification",
         request_id=str(uuid.uuid4()),
         model="claude-haiku-4-5-mini",
     )
     await session_complete(
-        pool,
+        db_pool,
         classification_sid,
         output=None,
         tool_calls=[],
@@ -430,10 +405,10 @@ async def test_friction_events_derived_at_session_close(pool):
 
     # Success carrying a leftover error string -> recovered_error.
     recovered_sid = await session_create(
-        pool, prompt="recovered", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="recovered", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         recovered_sid,
         output="done after retry",
         tool_calls=[],
@@ -445,10 +420,10 @@ async def test_friction_events_derived_at_session_close(pool):
 
     # Unclassified failure -> dead_end.
     dead_end_sid = await session_create(
-        pool, prompt="dead end", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="dead end", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         dead_end_sid,
         output=None,
         tool_calls=[],
@@ -460,15 +435,15 @@ async def test_friction_events_derived_at_session_close(pool):
 
 
 @_asyncio_session
-async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
+async def test_friction_events_idempotent_on_session_kind_ordinal(db_pool):
     """Re-deriving friction for the same session/kind never duplicates the row."""
     from butlers.core.sessions import _record_friction_event, session_complete, session_create
 
     sid = await session_create(
-        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         sid,
         output=None,
         tool_calls=[],
@@ -479,29 +454,29 @@ async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
 
     # Simulate a redundant derivation pass for the same session/kind.
     await _record_friction_event(
-        pool,
+        db_pool,
         sid,
         success=False,
         error="RuntimeError: degenerate_tool_loop: repeat",
         model=None,
     )
 
-    rows = await pool.fetch("SELECT kind FROM sessions_friction WHERE session_id = $1", sid)
+    rows = await db_pool.fetch("SELECT kind FROM sessions_friction WHERE session_id = $1", sid)
     assert len(rows) == 1
     assert rows[0]["kind"] == "degenerate_tool_loop"
 
 
 @pytest.mark.pg_clock
 @_asyncio_session
-async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
+async def test_friction_summary_zero_fills_and_counts_by_kind(db_pool):
     """friction_summary zero-fills every kind and counts derived episodes (bu-8cdl1.9 S3)."""
     from butlers.core.sessions import friction_summary, session_complete, session_create
 
     loop_sid = await session_create(
-        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         loop_sid,
         output=None,
         tool_calls=[],
@@ -511,10 +486,10 @@ async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
     )
 
     budget_sid = await session_create(
-        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool,
+        db_pool,
         budget_sid,
         output=None,
         tool_calls=[],
@@ -523,7 +498,7 @@ async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
         error="GuardrailError: tool_call_budget_exceeded after 40 calls",
     )
 
-    summary = await friction_summary(pool, period="7d")
+    summary = await friction_summary(db_pool, period="7d")
     assert summary["period"] == "7d"
     assert summary["by_kind"]["degenerate_tool_loop"] == 1
     assert summary["by_kind"]["guardrail_termination"] == 1
@@ -535,7 +510,7 @@ async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
 
     # Invalid period raises, same contract as sessions_summary.
     with pytest.raises(ValueError):
-        await friction_summary(pool, period="invalid_period")
+        await friction_summary(db_pool, period="invalid_period")
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +520,7 @@ async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
 
 @pytest.mark.pg_clock
 @_asyncio_session
-async def test_recover_orphaned_sessions_closes_open_rows(pool):
+async def test_recover_orphaned_sessions_closes_open_rows(db_pool):
     """Open sessions are closed and marked failed; completed rows untouched."""
     from datetime import UTC, datetime, timedelta
 
@@ -558,28 +533,28 @@ async def test_recover_orphaned_sessions_closes_open_rows(pool):
 
     # Two open sessions (one back-dated to verify duration_ms is populated).
     open_recent = await session_create(
-        pool, prompt="recent open", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="recent open", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     open_old = await session_create(
-        pool, prompt="old open", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="old open", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     backdated = datetime.now(UTC) - timedelta(days=3)
-    await pool.execute("UPDATE sessions SET started_at = $2 WHERE id = $1", open_old, backdated)
+    await db_pool.execute("UPDATE sessions SET started_at = $2 WHERE id = $1", open_old, backdated)
 
     # One already-completed session — must not be touched.
     completed = await session_create(
-        pool, prompt="done", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="done", trigger_source="tick", request_id=str(uuid.uuid4())
     )
     await session_complete(
-        pool, completed, output="ok", tool_calls=[], duration_ms=42, success=True
+        db_pool, completed, output="ok", tool_calls=[], duration_ms=42, success=True
     )
 
-    n = await recover_orphaned_sessions(pool)
+    n = await recover_orphaned_sessions(db_pool)
     assert n == 2
 
-    recent_row = await sessions_get(pool, open_recent)
-    old_row = await sessions_get(pool, open_old)
-    completed_row = await sessions_get(pool, completed)
+    recent_row = await sessions_get(db_pool, open_recent)
+    old_row = await sessions_get(db_pool, open_old)
+    completed_row = await sessions_get(db_pool, completed)
 
     # Both orphans closed and marked failed.
     for row in (recent_row, old_row):
@@ -599,28 +574,28 @@ async def test_recover_orphaned_sessions_closes_open_rows(pool):
 
 @pytest.mark.pg_clock
 @_asyncio_session
-async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(pool):
+async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(db_pool):
     """30-day-old orphans must not overflow the INTEGER duration_ms column."""
     from datetime import UTC, datetime, timedelta
 
     from butlers.core.sessions import recover_orphaned_sessions, session_create, sessions_get
 
     sid = await session_create(
-        pool, prompt="ancient", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="ancient", trigger_source="tick", request_id=str(uuid.uuid4())
     )
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         sid,
         datetime.now(UTC) - timedelta(days=30),
     )
-    n = await recover_orphaned_sessions(pool)
+    n = await recover_orphaned_sessions(db_pool)
     assert n == 1
-    row = await sessions_get(pool, sid)
+    row = await sessions_get(db_pool, sid)
     assert row["duration_ms"] == 2147483647
 
 
 @_asyncio_session
-async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
+async def test_recover_orphaned_sessions_idempotent_and_no_open(db_pool):
     """Returns 0 when no open rows; second call after recovery also returns 0."""
     from butlers.core.sessions import (
         recover_orphaned_sessions,
@@ -629,33 +604,35 @@ async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
     )
 
     # Empty table → 0
-    assert await recover_orphaned_sessions(pool) == 0
+    assert await recover_orphaned_sessions(db_pool) == 0
 
     # All-completed table → 0
     sid = await session_create(
-        pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
     )
-    await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=1, success=True)
-    assert await recover_orphaned_sessions(pool) == 0
+    await session_complete(db_pool, sid, output="ok", tool_calls=[], duration_ms=1, success=True)
+    assert await recover_orphaned_sessions(db_pool) == 0
 
     # One orphan → 1, then 0 on second pass
-    await session_create(pool, prompt="orphan", trigger_source="tick", request_id=str(uuid.uuid4()))
-    assert await recover_orphaned_sessions(pool) == 1
-    assert await recover_orphaned_sessions(pool) == 0
+    await session_create(
+        db_pool, prompt="orphan", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    assert await recover_orphaned_sessions(db_pool) == 1
+    assert await recover_orphaned_sessions(db_pool) == 0
 
 
 @_asyncio_session
-async def test_recover_orphaned_sessions_preserves_existing_error(pool):
+async def test_recover_orphaned_sessions_preserves_existing_error(db_pool):
     """If error is already set (e.g. budget overrun), do not overwrite it."""
     from butlers.core.sessions import recover_orphaned_sessions, session_create, sessions_get
 
     sid = await session_create(
-        pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
     )
-    await pool.execute("UPDATE sessions SET error = 'budget overrun' WHERE id = $1", sid)
-    n = await recover_orphaned_sessions(pool)
+    await db_pool.execute("UPDATE sessions SET error = 'budget overrun' WHERE id = $1", sid)
+    n = await recover_orphaned_sessions(db_pool)
     assert n == 1
-    row = await sessions_get(pool, sid)
+    row = await sessions_get(db_pool, sid)
     assert row["error"] == "budget overrun"
     assert row["success"] is False
     assert row["completed_at"] is not None
@@ -667,26 +644,26 @@ async def test_recover_orphaned_sessions_preserves_existing_error(pool):
 
 
 @_asyncio_session
-async def test_top_sessions_date_range_filters_by_started_at(pool):
+async def test_top_sessions_date_range_filters_by_started_at(db_pool):
     """from_date/to_date scope results to sessions started within the inclusive range."""
     from datetime import UTC, datetime
 
     from butlers.core.sessions import session_complete, session_create, top_sessions
 
     in_range = await session_create(
-        pool,
+        db_pool,
         prompt="in-range",
         trigger_source="tick",
         request_id=str(uuid.uuid4()),
         purpose_lane="private_content",
     )
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         in_range,
         datetime(2026, 5, 3, tzinfo=UTC),
     )
     await session_complete(
-        pool,
+        db_pool,
         in_range,
         output="ok",
         tool_calls=[],
@@ -697,15 +674,15 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     )
 
     out_of_range = await session_create(
-        pool, prompt="out-of-range", trigger_source="tick", request_id=str(uuid.uuid4())
+        db_pool, prompt="out-of-range", trigger_source="tick", request_id=str(uuid.uuid4())
     )
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         out_of_range,
         datetime(2026, 4, 30, tzinfo=UTC),
     )
     await session_complete(
-        pool,
+        db_pool,
         out_of_range,
         output="ok",
         tool_calls=[],
@@ -715,7 +692,7 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
         output_tokens=99999,
     )
 
-    scoped = await top_sessions(pool, limit=10, from_date="2026-05-01", to_date="2026-05-07")
+    scoped = await top_sessions(db_pool, limit=10, from_date="2026-05-01", to_date="2026-05-07")
     scoped_ids = {s["session_id"] for s in scoped["sessions"]}
     assert str(in_range) in scoped_ids
     assert str(out_of_range) not in scoped_ids
@@ -727,40 +704,40 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     )
 
     # Omitting both from_date/to_date preserves all-time behavior (back-compat).
-    all_time = await top_sessions(pool, limit=10)
+    all_time = await top_sessions(db_pool, limit=10)
     all_time_ids = {s["session_id"] for s in all_time["sessions"]}
     assert str(in_range) in all_time_ids
     assert str(out_of_range) in all_time_ids
 
     # Only one of from_date/to_date raises.
     with pytest.raises(ValueError):
-        await top_sessions(pool, from_date="2026-05-01")
+        await top_sessions(db_pool, from_date="2026-05-01")
 
 
 @_asyncio_session
-async def test_schedule_costs_date_range_filters_runs(pool):
+async def test_schedule_costs_date_range_filters_runs(db_pool):
     """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
     from datetime import UTC, datetime
 
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
 
-    await schedule_create(pool, name="daily-report", cron="0 8 * * *", prompt="run report")
+    await schedule_create(db_pool, name="daily-report", cron="0 8 * * *", prompt="run report")
 
     recent = await session_create(
-        pool,
+        db_pool,
         prompt="scoped run",
         trigger_source="schedule:daily-report",
         request_id=str(uuid.uuid4()),
         model="claude-3",
     )
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         recent,
         datetime(2026, 5, 3, tzinfo=UTC),
     )
     await session_complete(
-        pool,
+        db_pool,
         recent,
         output="ok",
         tool_calls=[],
@@ -771,19 +748,19 @@ async def test_schedule_costs_date_range_filters_runs(pool):
     )
 
     old = await session_create(
-        pool,
+        db_pool,
         prompt="old run",
         trigger_source="schedule:daily-report",
         request_id=str(uuid.uuid4()),
         model="claude-3",
     )
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         old,
         datetime(2026, 4, 30, tzinfo=UTC),
     )
     await session_complete(
-        pool,
+        db_pool,
         old,
         output="ok",
         tool_calls=[],
@@ -793,44 +770,44 @@ async def test_schedule_costs_date_range_filters_runs(pool):
         output_tokens=50000,
     )
 
-    scoped = await schedule_costs(pool, from_date="2026-05-01", to_date="2026-05-07")
+    scoped = await schedule_costs(db_pool, from_date="2026-05-01", to_date="2026-05-07")
     entries = [e for e in scoped["schedules"] if e["name"] == "daily-report"]
     assert entries, "schedule must still appear even if scoped totals are zero"
     scoped_tokens = sum(e["total_input_tokens"] for e in entries)
     assert scoped_tokens == 1000
 
-    all_time = await schedule_costs(pool)
+    all_time = await schedule_costs(db_pool)
     all_time_entries = [e for e in all_time["schedules"] if e["name"] == "daily-report"]
     all_time_tokens = sum(e["total_input_tokens"] for e in all_time_entries)
     assert all_time_tokens == 51000
 
     with pytest.raises(ValueError):
-        await schedule_costs(pool, from_date="2026-05-01")
+        await schedule_costs(db_pool, from_date="2026-05-01")
 
 
 @_asyncio_session
-async def test_schedule_costs_disabled_schedule_reports_history_without_forecast(pool):
+async def test_schedule_costs_disabled_schedule_reports_history_without_forecast(db_pool):
     """A disabled (retired) schedule keeps its measured history but is never
     forecast -- scheduler.py disables a removed TOML schedule rather than
     deleting it, so its historical sessions must not silently disappear, but
     it also must never rank as if it will keep running (bu-2jtfw.4)."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
 
-    await schedule_create(pool, name="retired-report", cron="0 8 * * *", prompt="run report")
-    await pool.execute(
+    await schedule_create(db_pool, name="retired-report", cron="0 8 * * *", prompt="run report")
+    await db_pool.execute(
         "UPDATE scheduled_tasks SET enabled = false WHERE name = $1", "retired-report"
     )
 
     run = await session_create(
-        pool,
+        db_pool,
         prompt="historical run",
         trigger_source="schedule:retired-report",
         request_id=str(uuid.uuid4()),
         model="claude-3",
     )
     await session_complete(
-        pool,
+        db_pool,
         run,
         output="ok",
         tool_calls=[],
@@ -840,7 +817,7 @@ async def test_schedule_costs_disabled_schedule_reports_history_without_forecast
         output_tokens=500,
     )
 
-    result = await schedule_costs(pool)
+    result = await schedule_costs(db_pool)
     entries = [e for e in result["schedules"] if e["name"] == "retired-report"]
     assert entries, "a disabled schedule's history must still appear"
     assert entries[0]["enabled"] is False
@@ -999,7 +976,7 @@ def test_no_delete_or_truncate_in_sessions_module():
 
 
 @_asyncio_session
-async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
+async def test_spend_top_sessions_from_db_ranks_and_prices(db_pool):
     """_get_butler_top_sessions_from_db ranks by token volume and prices per model."""
     from unittest.mock import MagicMock
 
@@ -1016,10 +993,10 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
     )
 
     costly = await session_create(
-        pool, prompt="big", trigger_source="tick", request_id=str(uuid.uuid4()), model="m-costly"
+        db_pool, prompt="big", trigger_source="tick", request_id=str(uuid.uuid4()), model="m-costly"
     )
     await session_complete(
-        pool,
+        db_pool,
         costly,
         output="ok",
         tool_calls=[],
@@ -1029,10 +1006,14 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
         output_tokens=5000,
     )
     cheap = await session_create(
-        pool, prompt="small", trigger_source="tick", request_id=str(uuid.uuid4()), model="m-cheap"
+        db_pool,
+        prompt="small",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        model="m-cheap",
     )
     await session_complete(
-        pool,
+        db_pool,
         cheap,
         output="ok",
         tool_calls=[],
@@ -1043,7 +1024,7 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
     )
 
     db = MagicMock()
-    db.pool = MagicMock(return_value=pool)
+    db.pool = MagicMock(return_value=db_pool)
     result = await _get_butler_top_sessions_from_db(
         db, ButlerConnectionInfo(name="finance", port=1), pricing, limit=10
     )
@@ -1056,7 +1037,7 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
 
 
 @_asyncio_session
-async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
+async def test_spend_schedule_costs_from_db_merges_multi_model(db_pool):
     """_get_butler_schedule_costs_from_db merges a multi-model schedule into one
     priced (butler, schedule) entry (the core merge that fixes duplicate keys)."""
     from unittest.mock import MagicMock
@@ -1064,7 +1045,7 @@ async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
     from butlers.api.deps import ButlerConnectionInfo
     from butlers.api.routers.spend import _get_butler_schedule_costs_from_db
     from butlers.core.pricing import ModelPricing, PricingConfig
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import session_complete, session_create
 
     pricing = PricingConfig(
@@ -1073,17 +1054,17 @@ async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
             "m-b": ModelPricing(0.00001, 0.00002),
         }
     )
-    await schedule_create(pool, name="brief", cron="0 8 * * *", prompt="brief")
+    await schedule_create(db_pool, name="brief", cron="0 8 * * *", prompt="brief")
     for model in ("m-a", "m-b"):
         sid = await session_create(
-            pool,
+            db_pool,
             prompt="run",
             trigger_source="schedule:brief",
             request_id=str(uuid.uuid4()),
             model=model,
         )
         await session_complete(
-            pool,
+            db_pool,
             sid,
             output="ok",
             tool_calls=[],
@@ -1094,7 +1075,7 @@ async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
         )
 
     db = MagicMock()
-    db.pool = MagicMock(return_value=pool)
+    db.pool = MagicMock(return_value=db_pool)
     result = await _get_butler_schedule_costs_from_db(
         db, ButlerConnectionInfo(name="finance", port=1), pricing, None, None
     )

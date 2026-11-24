@@ -7,7 +7,7 @@ overwrite each other. This ledger records how each one is settled.
 ## Census
 
 A change intersects when its `specs/` directory has a delta for one of the 79 existing capabilities
-this change modifies or removes. On main at 2026-10-22, 51 active changes intersect.
+this change modifies or removes. On main at 2026-10-22, 52 active changes intersect.
 `define-dashboard-fast-answer-runtime` is also listed: it touches none of those capabilities, but
 it adds a model path outside goals, which owner decision `bu-u5euwb.21` = C names as the D18
 dashboard fast-answer kind. `education-mind-map-lifecycle-integrity` is listed because
@@ -42,12 +42,13 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `add-runtime-tool-surface-discovery` | core-daemon, core-modules, core-spawner, runtime-config-api | archive-first | The listing and presentation contracts survive. This change then removes the route tools and scopes search to the broker grant. | `bu-ondtw.8` |
 | `anchor-roster-schedule-times` | core-scheduler | archive-first | Schedule time zones and the quiet-window warning are deterministic scheduler behavior. | `bu-kqnum.3` |
 | `artifact-bound-filtered-event-restore-verification` | testing | archive-first | Restore-verification evidence is database proof, and goal lineage does not replace it. | `bu-u5euwb` |
-| `ask-once-knowledge-gaps` | butler-switchboard, module-memory, relationship-facts | re-scope | A declined owner goal records the gap through granted Memory capabilities, not a classifier lane. | `bu-q7vx1q.93` |
+| `ask-once-knowledge-gaps` | module-memory, relationship-facts | re-scope | A declined owner goal records the gap through granted Memory capabilities, not a classifier lane. Amended by `bu-q7vx1q.93.2`: its `butler-switchboard` answer-lane delta is withdrawn, so only module-memory and relationship-facts carry ADDED blocks, none sharing a name with this change. | `bu-q7vx1q.93` |
 | `authorize-qa-local-scheduler-policy` | staffer-qa | archive-first | QA-local scheduler reads are deterministic. QA triage becomes a staffer goal. | `bu-u5euwb` |
-| `capture-ci-shard-watchdog-diagnostics` | testing | archive-first | CI diagnostics only; no runtime overlap. | `bu-ly3lv5.10.3` |
+| `capture-ci-shard-watchdog-diagnostics` | testing | withdrawn 2026-11-02 (owner, bu-29wkwj.8) | CI diagnostics only; no runtime overlap. | `bu-ly3lv5.10.3` |
 | `chronicler-telemetry-distillation` | butler-chronicler | re-scope | Projection adapters stay deterministic. Day-close narration becomes a Chronicler obligation goal. | `bu-u5euwb` |
 | `compose-general-capture-with-private-custody` | butler-general | fold-in | The whole General Butler Tool Surface block is folded here and removed from the source delta: collection/item/calendar inventory and complete ordinary-capture/privacy/source/group scenario retained; control-plane registration supersedes runtime spawning. Capture reasoning becomes deterministic ingress-deduplicated goal admission, while the ledger, receipts, search and collections stay domain-owned. The source remains active for all six general-capture requirements; historical packet/task evidence is retained and successor implementation remains pending. No archive or runtime completion is claimed. | `bu-u5euwb.18`; outstanding delivery `bu-2jtfw.9.4.2`, `bu-2jtfw.9.4.4` |
 | `confine-qa-publication-authority` | qa-investigation-dispatch, staffer-qa | archive-first | Publication fences hold. Engineering executors stay the named D18 exception. | `bu-mc01y5` |
+| `dashboard-one-mind-goal-surface` | fleet-case-file | archive-first | Adds REQ-fleet-case-file-015, a dark, read-only contributor filter on the case list for D19 region Situations. It edits no block this change modifies, so there is no same-name block. | `bu-85bqeq` |
 | `decide-consolidation-throughput-policy` | module-memory | archive-first | Records four policy declines and no runtime change. The rebuilt consolidation block keeps them. | `bu-u5euwb` |
 | `decision-loop-one-tap-approvals` | autonomy-tracker, core-notify, module-approvals, module-telegram | re-scope | Archive first, then amend the synced specs. Approvals carry goal, invocation and exposure, and park-only effects always wait for the owner tap. | `bu-24lu6.8` |
 | `durable-dashboard-terminal-action-recovery` | butler-switchboard, staffer-qa | re-scope | Chat-classifier terminal lanes become admission and one goal. The QA report handoff becomes an authenticated service relay to the durable QA inbox. | `bu-u5euwb`; linked from `bu-ratgnb` |
@@ -60,9 +61,9 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `ingest-google-health-body-measurements` | butler-health | archive-first | Deterministic connector ingestion and an owner-dominance read rule. | `bu-u5euwb` |
 | `memory-honesty-last-mile` | module-memory | re-scope | The model consolidation spawn becomes one obligation goal per tenant, source domain and taint partition. | `bu-kqnum.14` |
 | `models-exact-path-vision-proof` | model-catalog | re-scope | Vision probes are D18 model functions. The RFC 0036 amendment makes the executor one tool-less, single-turn call. | `bu-o7lumy` (draft PR #4757) |
-| `provider-allowance-windows` | catalog-token-limits, core-scheduler, core-spawner, model-failover | re-scope | Allowance gates obligation deferral and invocation selection within a goal. Fallback follows D14. | `bu-q7vx1q.90` |
+| `provider-allowance-windows` | catalog-token-limits, core-scheduler, core-spawner, model-failover | re-scope | Allowance gates obligation deferral and invocation selection within a goal. Fallback follows D14. Amended by `bu-q7vx1q.90.2`: a deferred occurrence submits no admission and reserves no budget; inside a goal, exclusion picks the model for each invocation, the one D14 relaunch and escalation, never admitting a new goal or resetting budget. Its ADDED names share none with this change. | `bu-q7vx1q.90` |
 | `reconcile-dashboard-conversation-contracts` | ingestion-event-registry | re-scope | A dashboard message admits a goal instead of routing to a target session. Dashboard bodies belong to D19. | `bu-85bqeq` |
-| `recover-ingestion-target-deliveries` | butler-switchboard, conversation-decomposition, ingestion-event-registry, module-pipeline | re-scope | Reasoning ingress becomes one deduplicated goal admission. Legacy target receipts stay readable and drain before the switch. | `bu-mmax8j` |
+| `recover-ingestion-target-deliveries` | butler-switchboard, conversation-decomposition, ingestion-event-registry, module-pipeline | re-scope | Reasoning ingress becomes one deduplicated goal admission. Legacy target receipts stay readable and drain before the switch. Amended by `bu-mmax8j.10`: its `conversation-decomposition` and `module-pipeline` deltas are withdrawn, so only butler-switchboard and ingestion-event-registry still carry ADDED blocks, none sharing a name with this change. | `bu-mmax8j` |
 | `relationship-fact-effective-time` | butler-relationship, relationship-facts | fold-in | Its temporal fact tools join this change's Relationship tool-surface block. The bitemporal writer contract is unchanged. | `bu-u5euwb`; implementation `bu-h3b7t` |
 | `repair-condensation-request-observation` | testing | withdraw | The owner chose to retire the condensation ledger it observes (`bu-lm2b4v` = B); the change is deleted unarchived. | `bu-28av8x.2` |
 | `repair-notification-metadata-read` | core-notify | archive-first | Legacy metadata normalization and bounded repair are deterministic. | `bu-u5euwb` |
@@ -70,7 +71,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `repair-whatsapp-identity-reconciliation` | connector-base-spec, conversation-decomposition, switchboard-identity | re-scope | Speaker attribution stays. Model decomposition and fan-out become deterministic span preservation into one goal. | `bu-wda3im` |
 | `restore-butler-control-plane-liveness` | butler-base-spec, butler-switchboard, staffer-qa | re-scope | Route eligibility becomes service eligibility. Domains report no reasoning-session health, and region operator views belong to D19. | `bu-fvw4ap` |
 | `restore-drill-recovery-truthfulness` | core-notify, testing | archive-first | Restore-drill truth is database evidence that a goal receipt cannot upgrade. | `bu-viat6h` |
-| `restore-qa-remediation-loop` | qa-investigation-dispatch, staffer-qa | re-scope | QA launches, lineage and budgets become staffer goals with invocation-bound evidence. Incident admission maps onto goal admission. | `bu-6a9xxw` |
+| `restore-qa-remediation-loop` | qa-investigation-dispatch, staffer-qa | re-scope | Re-scoped by `bu-6a9xxw.8`. Investigation launches stay D18 engineering executors with QA lineage, invocation-bound evidence and the QA incident budget. Incident admission stays deterministic QA infrastructure. Only `qa_triage_v1` judgment is a staffer goal, on its own D10 budget. | `bu-6a9xxw` |
 | `scrub-before-hash-dedupe-keys` | connector-base-spec | archive-first | Ingest derives dedupe keys deterministically. | `bu-u5euwb` |
 | `specify-host-authorized-dashboard-enrollment` | butler-health | re-scope | Enrollment stays. The Health voice briefing becomes an obligation or owner goal. | `bu-7y7z2` |
 | `specify-improvement-proposal-spine` | core-skills | fold-in | The whole AGENTS.md Read/Write Access block (`REQ-core-skills-004`) is folded here and removed from the source delta. The eight-name scenario union preserves pure tooling helpers, content/workflow boundaries, the goal/sandbox ban, and direct/thin-wrapper MCP prevention. Future tracked-roster amendments remain explicit-owner-accepted proposals through `propose_amendment` and the corresponding target adapter, distinct from D2 guidance-notes `record`. The source remains active with its other 20 requirements, 41 scenarios and historical/pending tasks; no archive or runtime completion is claimed. | `bu-u5euwb.20`; outstanding proposal-spine delivery `bu-8cdl1.15` |
@@ -103,8 +104,8 @@ surviving scenarios unless this change removes the requirement.
 | `durable-dashboard-terminal-action-recovery` | staffer-qa | Pluggable Discovery Source Architecture | modifies |
 | `durable-dashboard-terminal-action-recovery` | staffer-qa | V1 Discovery Sources | modifies |
 | `memory-honesty-last-mile` | module-memory | LLM-driven memory consolidation pipeline | modifies |
-| `recover-ingestion-target-deliveries` | conversation-decomposition | Decomposition Output Storage | removes |
-| `recover-ingestion-target-deliveries` | module-pipeline | Decomposition-to-Routing Fan-Out | removes |
+| `recover-ingestion-target-deliveries` | conversation-decomposition | Decomposition Output Storage | removes; settled, source delta withdrawn (`bu-mmax8j.10`) |
+| `recover-ingestion-target-deliveries` | module-pipeline | Decomposition-to-Routing Fan-Out | removes; settled, source delta withdrawn (`bu-mmax8j.10`) |
 | `relationship-fact-effective-time` | butler-relationship | Relationship Butler Registered Tool Surface | modifies |
 | `repair-whatsapp-identity-reconciliation` | conversation-decomposition | Cherry-Picked Message Excerpts | removes |
 | `repair-whatsapp-identity-reconciliation` | conversation-decomposition | Multi-Butler Fan-Out from Single Ingestion | removes |
@@ -112,7 +113,7 @@ surviving scenarios unless this change removes the requirement.
 | `restore-butler-control-plane-liveness` | butler-base-spec | Butler as Architectural Primitive | modifies |
 | `restore-butler-control-plane-liveness` | butler-base-spec | Instance Facts Internal Interface | modifies |
 | `restore-butler-control-plane-liveness` | butler-base-spec | Staffers vs Domain Butlers | modifies |
-| `restore-qa-remediation-loop` | staffer-qa | Patrol Loop Lifecycle | modifies |
+| `restore-qa-remediation-loop` | staffer-qa | Patrol Loop Lifecycle | modifies; settled, the QA block carries this change's relay sentence, `RFC 0038 D7` source and relay scenario, so either archive order keeps them (`bu-6a9xxw.8`) |
 | `specify-roster-identity-owner-operations-overlay` | butler-base-spec | CLAUDE.md as System Prompt Entry Point | modifies |
 | `specify-roster-identity-owner-operations-overlay` | core-spawner | System Prompt Composition | modifies |
 | `specify-telegram-continuity-routed-context-contract` | butler-switchboard | Misroute Correction Re-dispatch | removes |

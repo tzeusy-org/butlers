@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -19,18 +20,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_194_calendar_force_sync_queue", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _executed_sql(function_name: str) -> str:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_194_calendar_force_sync_queue")
     op = MagicMock()
     with patch.object(module, "op", op):
         getattr(module, function_name)()
@@ -38,7 +29,7 @@ def _executed_sql(function_name: str) -> str:
 
 
 def test_revision_chain_and_calendar_schema_guard() -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_194_calendar_force_sync_queue")
 
     assert module.revision == "core_194"
     assert module.down_revision == "core_193"

@@ -2,6 +2,14 @@
 
 ### Requirement: Butler List Page
 
+This block retains the current-runtime Butler List contract until RFC 0038's actual dashboard switch. All fourteen named scenarios and the detailed sources, accessibility, loading/error, cache, policy and refresh guarantees below apply to that compatibility surface; they are not the target region experience. Under RFC 0038 D2/D17/D19, domains have no reasoning-session health, current reasoning activity comes from goal/invocation records, and service health remains infrastructure on system/settings surfaces. The separately designed and owner-signed D19 dashboard change owns region pages and operator views, their actual activity payloads and replacement of the old views. This change does not create a region layout, new endpoint or fictional data source, or remove current views before the switch.
+
+Historical per-butler session counts, session-based sort/load/stripes and cadence-derived verbs below SHALL NOT become target domain reasoning-health or capability-authorization requirements. Their current-runtime behavior remains intact until the D19 cutover replaces it with its signed goal/region contract. Missing activity, registry failure and idle/no-session domains SHALL NOT be relabeled as healthy or unhealthy target services. The retained scenario names preserve their guarantees while their target presentation is allocated to D19; this is not a waiver of error resilience, truthful unknowns, accessibility or explicit policy control.
+
+ID: REQ-dashboard-butler-management-002
+Source: RFC 0038 D19 and Before the switch / Owner surface; generalist-lead-focused-delegation/collision-dispositions.md, restore-butler-control-plane-liveness row
+Scope: v1-mandatory
+
 The `/butlers` page SHALL render as a status board: a page-level header strip
 showing fleet health at a glance, a unified 4-column grid of butler cells
 sorted by recent activity, and a footer KPI band summarising fleet state.
@@ -11,7 +19,7 @@ archetype shell owns the header strip, the cell grid slot, the footer band
 slot, and the page-level loading and error states. Pages MUST NOT reinvent
 those surfaces.
 
-Implementation source constraints:
+Current-runtime implementation source constraints (location/line references describe the inherited surface, not target region schemas):
 
 - **No new `ButlerSummary` fields.** Every cell field MUST be composed from
   existing data surfaces. `ButlerSummary` is defined in
@@ -125,7 +133,7 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 - **THEN** the activity verb (`BoardRow.activity`) and chip color
   (`BoardRow.cell_tone`) SHALL be derived SERVER-SIDE by the canonical
   `_derive_board_activity` function (`src/butlers/api/routers/butlers.py`) --
-  this endpoint is the single source of the liveness verdict for every
+  this endpoint is the single source of the current compatibility board activity verdict for every
   butler-status surface, replacing the former client-side per-cell derivation
   (bu-86c4c.17) -- using this first-match-wins priority order:
   1. `status = down` (the raw MCP probe result): verb `offline`, tone `red`

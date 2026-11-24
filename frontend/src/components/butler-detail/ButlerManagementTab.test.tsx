@@ -60,6 +60,7 @@ import {
   useKillButler,
 } from "@/hooks/use-butler-management";
 import { useResolveModel } from "@/hooks/use-model-catalog";
+import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import {
   useButlerModules,
   usePatchRuntimeConfig,
@@ -765,6 +766,37 @@ describe("Activity stripe axis semantics", () => {
       expect(axis.getByText(label)).toBeTruthy();
     }
     expect(axis.queryByText("now")).toBeNull();
+
+    // Before any data arrives every owner hour is unreported, not a zero bar
+    // (bu-s11n0s.5.1).
+    const slots = () => activitySection.querySelectorAll("[data-slot]");
+    expect([...slots()].map((slot) => slot.getAttribute("data-slot"))).toEqual(
+      Array(24).fill("unreported"),
+    );
+    cleanup();
+
+    // Buckets land on their owner-zone hour (Asia/Singapore, UTC+8); a measured
+    // zero stays a zero and an hour no bucket covers stays unreported.
+    vi.mocked(useButlerHourlyActivity).mockReturnValue({
+      data: {
+        data: {
+          buckets: [
+            { hour_start: "2026-05-11T02:00:00Z", sessions_count: 3, hour_index: 0 },
+            { hour_start: "2026-05-11T03:00:00Z", sessions_count: 0, hour_index: 9 },
+          ],
+        },
+      },
+    } as unknown as ReturnType<typeof useButlerHourlyActivity>);
+    renderTab();
+    const section = screen
+      .getByRole("heading", { name: "Activity · last 24 hours" })
+      .closest("section");
+    const cells = [...(section?.querySelectorAll("[data-slot]") ?? [])];
+    expect(cells[10].getAttribute("title")).toBe("10:00 · 3 sessions");
+    expect(cells[11].getAttribute("title")).toBe("11:00 · 0 sessions");
+    expect(cells[11].getAttribute("data-slot")).toBe("measured");
+    expect(cells[12].getAttribute("title")).toBe("12:00 · not reported");
+    expect(cells.filter((cell) => cell.getAttribute("data-slot") === "unreported")).toHaveLength(22);
   });
 });
 

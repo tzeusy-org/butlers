@@ -17,8 +17,16 @@ and connectors. `scripts/k8s/site-helm-args.sh` supplies its site-specific value
 from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
 placeholder, not a usable collector.
 
+Connector `prometheus_client` metrics are pulled, not pushed. The chart's
+`connectorMetrics` block gives each connector with a `healthPort` a
+`metrics-proxy` sidecar that republishes only `GET /metrics` on pod port
+`metrics` (9464), with `k8s.grafana.com/*` and `prometheus.io/*` scrape
+annotations and an opt-in `PodMonitor` (`connectorMetrics.podMonitor.enabled`).
+The connector-alert rules below need one of those discovery paths enabled on the
+cluster scraper; see the [chart README](../../deploy/helm/butlers/README.md).
+
 Use the site's existing Grafana endpoint and access policy. Compose's
-`--observability` and `BUTLERS_POSTURE` flags do not configure the cluster LGTM
+The Compose `--observability` flag and its local Grafana settings do not configure the cluster LGTM
 stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
 committed-image workflow and site configuration. This source description does
 not attest live collector reachability or dashboard provisioning.
@@ -75,7 +83,8 @@ OpenTelemetry Collector (port 4318)
   ├─ /v1/traces  → Grafana Tempo
   └─ /v1/metrics → Prometheus (remote_write)
 
-Connector Health Endpoints (/metrics)
+Connector Health Endpoints (/metrics, loopback-only)
+  ↓ (metrics-proxy sidecar, <connector>:9464)
   ↓ (Prometheus scrape)
 Prometheus
 
@@ -98,8 +107,21 @@ Grafana
 
 - **Prometheus** — Prometheus metrics database (port 9090)
   - Scrapes connector health endpoints (prometheus_client text format)
+    through per-connector metrics-proxy sidecars (below)
   - Receives OTLP metrics from otel-collector via remote_write
   - Stores time-series data in local volume (`prometheus_data`)
+
+- **`connector-*-metrics`** — one metrics-proxy sidecar per scraped connector
+  - Connector health servers bind `127.0.0.1` and also serve `/health` and
+    `POST /reload`, so Prometheus cannot reach them from its own container
+  - Each sidecar joins its connector's network namespace
+    (`network_mode: service:<connector>`) and republishes only `GET /metrics`
+    on port 9464; Prometheus scrapes `<connector>:9464`
+  - Same script as the chart's `connectorMetrics` sidecar
+    (`scripts/connector_metrics_proxy.py`); `connector-owntracks` needs none,
+    since its webhook server already binds `0.0.0.0`
+  - If a connector container restarts outside Compose, its target reads
+    `up == 0` until the sidecar restarts; re-run `up -d`
 
 - **Grafana** — Grafana dashboards UI (port 3000)
   - Pre-provisioned with Prometheus and Tempo datasources
@@ -229,9 +251,13 @@ above.
 
 `butlers.domain_event.delivery_failed_permanent_total` is an OTel counter for a
 newly durable `failed_permanent` domain-event delivery. It has only
-`source_butler`, `destination_butler`, and `reason` (`non_retryable` or
-`attempts_exhausted`) labels; it deliberately excludes event IDs, payloads,
-exception text, and timestamps.
+`emitter_butler`, `source_butler`, `destination_butler`, and `reason`
+(`non_retryable` or `attempts_exhausted`) labels; it deliberately excludes event
+IDs, payloads, exception text, and timestamps. `emitter_butler` names the daemon
+that recorded the transition: the publisher for a fresh fan-out, `switchboard`
+for the reconciliation sweep. Two daemons (`butlers up` and a separately deployed
+Switchboard) can record the same route, and without it their cumulative counts
+would share one series and interleave. Every value is a roster butler name.
 
 The Switchboard dashboard displays it with a reset-safe
 `increase(...)` query. The provisioned warning rule is configured to evaluate a
@@ -241,12 +267,56 @@ notification policy. While `isPaused=true`, Grafana performs no evaluation and
 creates no alert instances, so this rule cannot diagnose a missing series or
 evaluation error. Its configured `NoData` and `Error` policies take effect only
 after an owner explicitly enables evaluation.
+Each daemon creates every route series it can emit at zero on startup: a
+butler primes its own published routes, and Switchboard primes every declared
+route because its sweep re-drives all publishers. The routes come from the
+publishers' git contract declarations. `increase()` therefore has a prior
+sample and sees a route's first-ever failure. The dashboard and the rule both
+sum `emitter_butler` away with `sum by(source_butler, destination_butler, reason)`.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 
 Its JSON definition lives in `observability/grafana-alerting/`, mounted only
 at Grafana's alerting-provisioning path. It must remain outside the recursive
 dashboard source so Grafana never mistakes the alert rule for a dashboard.
+
+## Google Health Connector Alerts
+
+`observability/grafana-alerting/connector-google-health.json` provisions one
+rule group, `butlers-connector-google-health`, over the connector's own
+`prometheus_client` metrics (scraped by the `connector-google-health` job in
+`observability/prometheus/prometheus.yml` through the Compose
+`connector-google-health-metrics` sidecar, or in Kubernetes through the chart's
+`connectorMetrics` sidecar). Each rule keeps the
+`endpoint_identity` and `resource` labels, so Grafana raises one instance per
+account and resource:
+
+| Rule | Query | Fires when |
+| --- | --- | --- |
+| Resource failing persistently | `connector_google_health_resource_consecutive_failures` | streak at or above 3 (the `resource_degraded` threshold) for 1h |
+| Window page cap | `increase(connector_google_health_window_page_cap_exceeded_total[15m])` | any increase |
+| Envelope quarantined | `increase(connector_google_health_quarantined_envelopes_total[15m])` | any increase |
+
+They follow the same posture as the domain-event rule above: `isPaused=true`,
+`severity=warning`, and no contact point or notification policy. `NoData`
+resolves to OK, because a missing series means the connector is down or has not
+seen the condition; connector liveness belongs to its heartbeat. The connector
+creates the page-cap and quarantine counters at zero for every account and
+resource when it discovers the account, so `increase()` sees the first-ever
+event instead of mistaking the series' creation for its baseline. Enabling
+evaluation or routing notifications is a separate owner-approved operational
+change. A quarantined envelope is replayed from its `poison_quarantine` row in
+`connectors.filtered_events`.
+
+## Knowledge-Gap Closure Failures
+
+`butlers.memory.knowledge_gap_closure_failures_total` is an OTel counter for a
+knowledge-gap closure that failed while a fact write was committing. The fact write
+still succeeds and the gap stays open, so this counter is the operator signal that gap
+bookkeeping is broken (for example a lock or SQL error). It has a `butler` label (the
+registered butler name, or `unknown` outside a butler context) and a `stage` label
+(`closure` or `reservation`, the pair-lock step); entity, predicate and fact identifiers are deliberately excluded. No alert
+rule or dashboard panel ships with it yet; query it with `increase(...)`.
 
 ## Related Pages
 

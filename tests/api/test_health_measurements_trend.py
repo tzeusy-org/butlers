@@ -19,7 +19,6 @@ import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -27,6 +26,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -35,23 +35,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record (attribute + item access)."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_rows=None):
@@ -105,9 +88,9 @@ def _make_bucket_row(
     value_min: float = 95.0,
     value_max: float = 105.0,
     sample_count: int = 12,
-) -> _Row:
+) -> Record:
     """Build an asyncpg-like aggregation row as returned by the trend SQL."""
-    return _row(
+    return Record(
         {
             "bucket_start": bucket_start,
             "value_mean": value_mean,

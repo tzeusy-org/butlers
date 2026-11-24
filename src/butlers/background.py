@@ -23,12 +23,15 @@ import httpx
 from butlers.core.domain_event_reaction_sweep import reconcile_reaction_lifecycle
 from butlers.core.memory_hooks import bind_memory_maintenance_dispatch
 from butlers.core.model_routing import Complexity
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_codex_auth_authority,
+    reset_current_credential_store,
     reset_current_switchboard_client,
     set_current_approval_push_runtime,
     set_current_codex_auth_authority,
+    set_current_credential_store,
     set_current_switchboard_client,
 )
 from butlers.scheduled_jobs import (
@@ -83,6 +86,8 @@ async def dispatch_scheduled_task(
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
     approval_push_runtime: Any | None = None,
+    credential_store: Any | None = None,
+    chronicler_continuation: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -162,13 +167,25 @@ async def dispatch_scheduled_task(
         _codex_authority_token = set_current_codex_auth_authority(
             getattr(spawner, "codex_auth_authority", None),
         )
+        _store_token = set_current_credential_store(credential_store)
         try:
             with bind_memory_maintenance_dispatch(
                 butler_name=butler_name,
                 spawner=spawner,
             ):
-                return await handler(pool, job_args)
+                result = await handler(pool, job_args)
+                if chronicler_continuation is not None and butler_name == "chronicler":
+                    # Fixed source registry identity, not a job_args callback.
+                    original = get_deterministic_schedule_job_registry().get("chronicler", {})
+                    eligible = (
+                        resolved_job_name.startswith("chronicler_project_")
+                        or resolved_job_name == "chronicler_rollup_daily"
+                    )
+                    if eligible and original.get(resolved_job_name) is handler:
+                        chronicler_continuation.after_job(resolved_job_name, result)
+                return result
         finally:
+            reset_current_credential_store(_store_token)
             reset_current_codex_auth_authority(_codex_authority_token)
             reset_current_approval_push_runtime(_push_token)
             reset_current_switchboard_client(_client_token)
@@ -177,6 +194,8 @@ async def dispatch_scheduled_task(
         raise RuntimeError("Scheduler dispatch requires an initialized spawner")
     if prompt is None or not prompt.strip():
         raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
+    if chronicler_continuation is not None and trigger_source == "schedule:chronicler_day_close":
+        chronicler_continuation.day_close_ran = True
     return await spawner.trigger(
         prompt=prompt,
         trigger_source=trigger_source,
@@ -229,6 +248,7 @@ async def scheduler_loop(
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
+    chronicler_continuation: Any | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -237,7 +257,8 @@ async def scheduler_loop(
     due cron tasks.
 
     Exceptions from ``tick_fn()`` are logged and the loop continues — a single
-    tick failure never breaks the loop.
+    tick failure never breaks the loop. That includes a ``CancelledError`` with no
+    cancel of this loop behind it: only the loop's own cancel ends it.
 
     On cancellation (graceful shutdown):
     - If sleeping between ticks, the loop exits immediately.
@@ -257,7 +278,7 @@ async def scheduler_loop(
     butler_name:
         Butler name (used as stagger key and for logging).
     tick_fn:
-        Tick implementation (normally ``butlers.core.scheduler.tick``).
+        Tick implementation (normally ``butlers.core.scheduler.dispatch.tick``).
     get_switchboard_client:
         Zero-argument callable that returns the current switchboard MCP client
         (or ``None``).  Called lazily per deferred-notification delivery so that
@@ -278,7 +299,10 @@ async def scheduler_loop(
         (``butler_registry``) used to gate scheduled dispatch on
         ``eligibility_state``.  Called lazily per tick so the pool is read after
         startup wiring completes.  When ``None`` (or the callable returns
-        ``None``), no eligibility gating is applied and all ticks dispatch.
+        ``None``), no eligibility gating is applied and all ticks dispatch: that is
+        how a butler that cannot read the registry or its own policy opts out of
+        gating. When a pool is supplied, a lookup failure gates the tick (fails
+        closed, ERROR log, ``next_run_at`` preserved) rather than dispatching.
         QA ignores it: ``tick()`` gates QA only on its own policy projection
         read through ``pool``, which is QA's runtime-role pool.
     default_timezone:
@@ -288,7 +312,7 @@ async def scheduler_loop(
         owner's local time.  Defaults to ``"UTC"``.
     """
 
-    async def _scheduler_notify_fn(envelope: dict) -> None:
+    async def _scheduler_notify_fn(envelope: dict) -> dict | None:
         """Deliver a deferred notify.v1 envelope via the standard notify pipeline."""
         # Stored envelopes must re-read current attention state before release.
         # A failed/active read raises, so the existing flush keeps the original
@@ -308,35 +332,33 @@ async def scheduler_loop(
             raise RuntimeError(
                 "Switchboard client not connected; cannot deliver deferred notification"
             )
-        deliver_args: dict = {
-            "source_butler": butler_name,
-            "notify_request": envelope,
-        }
+        from butlers.jobs.owner_notify import deliver_notification
+        from butlers.telegram_api import terminal_telegram_metadata
+
         if _client is None and butler_name == "switchboard":
             if _db is None or _db.pool is None:
                 raise RuntimeError("Database not available for deferred notification delivery")
-            from butlers.tools.switchboard.notification.deliver import (
-                deliver as _sw_deliver,
-            )
+            from butlers.tools.switchboard.notification.deliver import deliver as _sw_deliver
 
-            result = await _sw_deliver(
-                _db.pool,
-                source_butler=butler_name,
-                notify_request=envelope,
+            result = await deliver_notification(
+                lambda: _sw_deliver(
+                    _db.pool,
+                    source_butler=butler_name,
+                    notify_request=envelope,
+                ),
+                timeout_s=None,
             )
-            if result.get("status") == "failed":
-                raise RuntimeError(f"Deferred notification delivery failed: {result.get('error')}")
         else:
-            result = await asyncio.wait_for(
-                _client.call_tool("deliver", deliver_args),
-                timeout=_DEFERRED_NOTIFY_TIMEOUT_S,
+            result = await deliver_notification(
+                lambda: _client.call_tool(
+                    "deliver",
+                    {"source_butler": butler_name, "notify_request": envelope},
+                ),
+                timeout_s=_DEFERRED_NOTIFY_TIMEOUT_S,
             )
-            if result.is_error:
-                error_text = str(result.content[0].text) if result.content else "Unknown error"
-                raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
-            if isinstance(result.data, dict) and result.data.get("status") == "failed":
-                error_text = str(result.data.get("error") or "Unknown error")
-                raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
+        if terminal_telegram_metadata(result.data):
+            return result.data
+        result.require_delivered()
 
     logger.info(
         "Scheduler loop started (tick_interval_seconds=%d) for butler %s",
@@ -344,47 +366,77 @@ async def scheduler_loop(
         butler_name,
     )
 
+    # Set when cancellation arrives mid-tick, so the tick it lets finish claims no new work.
+    stopping = asyncio.Event()
+
     try:
         while True:
             await asyncio.sleep(interval)
-            eligibility_pool = get_eligibility_pool() if get_eligibility_pool is not None else None
-            tick_task = asyncio.create_task(
-                tick_fn(
-                    pool,
-                    dispatch_fn,
-                    stagger_key=butler_name,
-                    butler_name=butler_name,
-                    notify_fn=_scheduler_notify_fn,
-                    prompt_hooks=prompt_hooks,
-                    completion_hooks=completion_hooks,
-                    eligibility_pool=eligibility_pool,
-                    default_timezone=default_timezone,
-                )
-            )
             try:
-                dispatched = await asyncio.shield(tick_task)
-                logger.debug(
-                    "Scheduler loop: tick() dispatched %d task(s) for butler %s",
-                    dispatched,
-                    butler_name,
+                eligibility_pool = (
+                    get_eligibility_pool() if get_eligibility_pool is not None else None
                 )
-            except asyncio.CancelledError:
-                # Cancellation arrived while tick() was running; let it finish.
-                logger.debug("Scheduler loop: cancelled during tick(), waiting for tick to finish")
+                if chronicler_continuation is not None:
+                    chronicler_continuation.begin_tick()
+                tick_task = asyncio.create_task(
+                    tick_fn(
+                        pool,
+                        dispatch_fn,
+                        stagger_key=butler_name,
+                        butler_name=butler_name,
+                        notify_fn=_scheduler_notify_fn,
+                        prompt_hooks=prompt_hooks,
+                        completion_hooks=completion_hooks,
+                        eligibility_pool=eligibility_pool,
+                        default_timezone=default_timezone,
+                        stopping=stopping,
+                    )
+                )
                 try:
-                    await tick_task
-                except Exception:
-                    logger.exception(
-                        "Scheduler loop: in-progress tick() raised on cancellation for butler %s",
+                    dispatched = await asyncio.shield(tick_task)
+                    logger.debug(
+                        "Scheduler loop: tick() dispatched %d task(s) for butler %s",
+                        dispatched,
                         butler_name,
                     )
-                raise
-            except Exception:
+                except asyncio.CancelledError:
+                    # Cancellation arrived while tick() was running; let it finish what it
+                    # has claimed, but claim nothing more.
+                    stopping.set()
+                    logger.debug(
+                        "Scheduler loop: cancelled during tick(), waiting for tick to finish"
+                    )
+                    try:
+                        await tick_task
+                    except Exception:
+                        logger.exception(
+                            "Scheduler loop: in-progress tick() raised on cancellation "
+                            "for butler %s",
+                            butler_name,
+                        )
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Scheduler loop: tick() raised an exception for butler %s; continuing",
+                        butler_name,
+                    )
+                if chronicler_continuation is not None:
+                    try:
+                        # Durable discovery also recovers a missed postcommit hook.
+                        await chronicler_continuation.resume_once()
+                    except Exception:
+                        logger.exception("Chronicler continuation deferred after tick")
+                await _sweep_domain_event_reactions(pool, butler_name)
+            except asyncio.CancelledError as exc:
+                raise_if_task_cancelled(exc)
+                # Nobody cancelled this loop, so ending it would stop the butler's
+                # scheduler until a restart. The tick's own work raised this, or a
+                # spawner drain cancelled the tick's task.
                 logger.exception(
-                    "Scheduler loop: tick() raised an exception for butler %s; continuing",
+                    "Scheduler loop: tick cancelled without a cancel of this loop "
+                    "for butler %s; continuing",
                     butler_name,
                 )
-            await _sweep_domain_event_reactions(pool, butler_name)
     except asyncio.CancelledError:
         logger.info("Scheduler loop cancelled for butler %s", butler_name)
 

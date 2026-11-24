@@ -23,14 +23,18 @@ make install-lint-tools   # once per worktree; CI runs it before Lint
 ```
 
 `scripts/lint_tools.py install` downloads the releases pinned in `scripts/lint-tool-versions.json`
-(gitleaks 8.30.1 and actionlint 1.7.12, for Linux and macOS on x86_64 and arm64), verifies each
-archive's SHA-256, extracts only the single top-level binary (no traversal, links or nested
+(gitleaks 8.30.1, actionlint 1.7.12 and promtool 3.5.0, the last used only by the public MCP alert-rule test and extracted from the release archive by its pinned in-archive `member` path, for Linux and macOS on x86_64 and arm64), verifies each
+archive's SHA-256, extracts only the single binary (top-level, or the pin's exact member path; no traversal, links or nested
 members), and publishes the tool directory into the ignored `.tmp/lint-tools/` cache in one rename.
-Downloads are bounded to 60 s and 64 MiB; each tool run to 300 s and 16 MiB of output.
+Downloads are bounded to 60 s and 64 MiB (a pin may raise `max_archive_bytes` and `max_binary_bytes` for its own tool: promtool's archive is about 120 MiB, so it allows 192 MiB); each tool run to 300 s and 16 MiB of output.
 
 The scan commands never download. A missing tool, a cache that does not match its pin, or a binary
 that changed after its verified install is a failure naming `make install-lint-tools`, never a skip.
 `BUTLERS_LINT_TOOLS_DIR` moves the cache (the tests use it).
+
+promtool is not part of `make lint`. `tests/scripts/test_public_mcp_alert_rules.py` uses the same
+verified install and skips without it locally; CI's guards job runs that test with
+`BUTLERS_REQUIRE_PROMTOOL=1`, so there a missing promtool fails.
 
 To change a pin, update the version, URLs and digests together from the official release
 checksums, then run `make install-lint-tools` and `make lint`.

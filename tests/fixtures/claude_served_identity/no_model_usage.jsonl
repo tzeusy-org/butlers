@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"not-a-real-model-xyz","claude_code_version":"2.1.316"}
+{"type":"result","subtype":"success","is_error":true,"num_turns":1,"total_cost_usd":0,"modelUsage":{},"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"permission_denials":[],"result":"<recorded response removed>"}

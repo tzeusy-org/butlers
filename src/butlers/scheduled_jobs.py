@@ -17,6 +17,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.telegram_api import terminal_telegram_metadata
+
 logger = logging.getLogger(__name__)
 
 # Sentinel used when a retention policy row explicitly sets max_rows = NULL
@@ -129,6 +131,48 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_security_question_cycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Present each authenticated security event's one question and record answered cases.
+
+    bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008. One bounded notify per question with a
+    dashboard link (``DASHBOARD_URL``); never re-sent once claimed. See
+    ``butlers.core.security_questions``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.security_questions import run_security_question_cycle
+    from butlers.credential_store import resolve_owner_telegram_recipient
+    from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
+
+    deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
+
+    async def _notify(message: str) -> dict[str, Any]:
+        recipient = await resolve_owner_telegram_recipient(pool)
+        if not recipient:
+            return {"status": "failed", "error_class": "recipient_unavailable"}
+        attempt = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard", recipient=recipient, message=message
+                ),
+            ),
+            timeout_s=None,
+            propagate_errors=True,
+        )
+        # Presentation owns the durable state and needs the typed refusal evidence.
+        return attempt.data
+
+    # The link comes from the one dashboard-links helper: without a configured DASHBOARD_URL
+    # there is no link the owner can open, so the question is `unavailable`, never sent.
+    return await run_security_question_cycle(pool, notify=_notify)
+
+
 async def _run_switchboard_fleet_case_lapse_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -152,23 +196,13 @@ async def _run_switchboard_fleet_case_lapse_sweep_job(
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
-    """Build the production notify_fn for the insight delivery cycle.
+    """Bind the broker's existing owner/channel policy to one shared attempt.
 
-    Returns an async callable ``notify_fn(message, metadata) -> dict`` that:
-    1. Reads ``metadata["channel"]`` to determine the delivery channel
-       (falls back to ``"telegram"`` when not set, per spec default).
-    2. Resolves the owner's recipient identifier for that channel from
-       ``public.entity_info``.
-    3. Dispatches via the Switchboard's ``deliver()`` path (direct channel
-       routing — no MCP round-trip through the Switchboard itself).
-    4. Translates ``deliver()``'s ``status="failed"`` to ``status="error"`` so
-       the broker's failure-detection check (``status == "error"``) fires
-       correctly on delivery failure.
-
-    Parameters
-    ----------
-    pool:
-        The shared asyncpg connection pool (captured in the closure).
+    Owner endpoint resolution, including the existing channel fallback, stays
+    here. The shared classifier cannot retry, record a second attention row or
+    change the broker's quiet, dedup, budget, amendment or success bookkeeping.
+    This internal callback returns a safe error classification to the broker's
+    logger; structured public deliver responses remain at the deliver boundary.
     """
 
     async def _notify_fn(message: str, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -176,54 +210,56 @@ def _build_switchboard_insight_notify_fn(
             resolve_owner_entity_info,
             resolve_owner_telegram_recipient,
         )
+        from butlers.jobs.owner_notify import deliver_notification
         from butlers.tools.switchboard.notification.deliver import deliver
 
         channel: str = metadata.get("channel") or "telegram"
-
-        if channel == "telegram":
-            # Resolve the numeric chat id (telegram_chat_id), not the @username
-            # handle; the Telegram delivery API requires a numeric identifier.
-            recipient = await resolve_owner_telegram_recipient(pool)
-            if not recipient:
-                logger.error(
-                    "insight-delivery-cycle: no telegram recipient configured for owner — "
-                    "cannot deliver insight"
-                )
-                return {"status": "error", "error": "No telegram chat ID configured for owner"}
-        elif channel == "email":
-            recipient = await resolve_owner_entity_info(pool, "email")
-            if not recipient:
-                logger.error(
-                    "insight-delivery-cycle: no email address configured for owner — "
-                    "cannot deliver insight via email"
-                )
-                return {"status": "error", "error": "No email address configured for owner"}
-        else:
+        try:
+            if channel == "telegram":
+                # Resolve the numeric endpoint first, retaining the existing
+                # credential resolver's username fallback when no id exists.
+                recipient = await resolve_owner_telegram_recipient(pool)
+                if not recipient:
+                    logger.error("insight-delivery-cycle: owner telegram recipient unavailable")
+                    return {"status": "error", "error": "No telegram chat ID configured for owner"}
+            elif channel == "email":
+                recipient = await resolve_owner_entity_info(pool, "email")
+                if not recipient:
+                    logger.error("insight-delivery-cycle: owner email recipient unavailable")
+                    return {"status": "error", "error": "No email address configured for owner"}
+            else:
+                logger.warning("insight-delivery-cycle: unsupported channel; using telegram")
+                channel = "telegram"
+                recipient = await resolve_owner_telegram_recipient(pool)
+                if not recipient:
+                    return {"status": "error", "error": "No telegram chat ID configured for owner"}
+        except Exception as exc:
             logger.warning(
-                "insight-delivery-cycle: unsupported channel %r; falling back to telegram",
-                channel,
+                "insight-delivery-cycle: recipient resolution failed: %s", type(exc).__name__
             )
-            channel = "telegram"
-            recipient = await resolve_owner_telegram_recipient(pool)
-            if not recipient:
-                return {"status": "error", "error": "No telegram chat ID configured for owner"}
+            return {"status": "error", "error": "recipient_unavailable:" + type(exc).__name__}
 
-        deliver_result = await deliver(
-            pool,
-            channel=channel,
-            message=message,
-            recipient=recipient,
-            source_butler="switchboard",
-            metadata=metadata,
+        attempt = await deliver_notification(
+            functools.partial(
+                deliver,
+                pool,
+                channel=channel,
+                message=message,
+                recipient=recipient,
+                source_butler="switchboard",
+                metadata=metadata,
+            ),
+            timeout_s=None,
         )
-        # Translate deliver()'s "failed" status to "error" so the broker's
-        # failure-detection check (notify_result.get("status") == "error") fires.
-        if isinstance(deliver_result, dict) and deliver_result.get("status") == "failed":
+        if not attempt.delivered:
+            # The broker logs this field. Never forward exception messages or
+            # arbitrary remote error text into that logging boundary.
             return {
                 "status": "error",
-                "error": deliver_result.get("error", "delivery failed"),
+                "error": attempt.exception_type or attempt.reason or "delivery_error",
+                **terminal_telegram_metadata(attempt.data),
             }
-        return deliver_result
+        return attempt.data
 
     return _notify_fn
 
@@ -272,14 +308,38 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
+
+
+async def _run_switchboard_insight_outcome_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Enroll terminal premised insights and record whether their premise resolved.
+
+    bu-s11n0s.15 S1, observe-only: writes only ``public.insight_outcomes`` and never changes
+    delivery. See ``butlers.tools.switchboard.insight.outcomes``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.finance_warning_control import lookup_owner
+
+    outcomes = importlib.import_module("butlers.tools.switchboard.insight.outcomes")
+    owner = lookup_owner(pool)
+    return await outcomes.run_insight_outcome_sweep(
+        pool, finance_warning_reader=owner.read if owner is not None else None
     )
 
 
@@ -300,14 +360,43 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.break_through import retry_unpublished
+    from butlers.core.break_through_decay import sweep as break_through_decay_sweep
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    # Announce break-through hits whose announcement lapsed (bu-s11n0s.8), so the candidate
+    # exists before this cycle selects. Bounded and never raises.
+    await retry_unpublished(pool)
+    # Decay (bu-s11n0s.8 S4): ask about / dormant stale clauses; deterministic, only narrows.
+    await break_through_decay_sweep(pool)
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         urgent_only=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
+
+
+async def _run_switchboard_insight_timed_subcycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the timed insight sub-cycle for the Switchboard butler (bu-jv1moa.8).
+
+    Sends each due ``lane='timed'`` candidate on its own through the same
+    production ``notify_fn`` as the digest. Dark: ``timed.TIMED_INSIGHTS_LIVE``
+    is off and no roster schedules this job; activation adds both.
+    """
+    del job_args
+    from butlers.roster_imports import roster_module
+
+    timed = roster_module("switchboard", "tools/insight/timed")
+    return await timed.timed_delivery_cycle(
+        pool, notify_fn=_build_switchboard_insight_notify_fn(pool)
     )
 
 
@@ -562,53 +651,85 @@ async def _run_memory_episode_cleanup_job(
     return result
 
 
+async def _read_fact_horizon(pool: asyncpg.Pool) -> int | None:
+    """The superseded-fact horizon in days, or ``None`` to keep every superseded fact.
+
+    Fails closed: an unreadable policy, a missing table, a missing ``kind='fact'`` row and
+    an explicit NULL (the owner's "keep forever") all mean ``None``. The error is read here,
+    not swallowed by ``_fetch_retention_policy``, so it is logged and never becomes a default.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT ttl_days FROM public.memory_retention_policies WHERE kind = 'fact'"
+        )
+    except Exception:
+        logger.warning(
+            "memory_purge_superseded: fact retention policy unreadable; keeping every "
+            "superseded fact",
+            exc_info=True,
+        )
+        return None
+    if row is None:
+        logger.warning(
+            "memory_purge_superseded: no kind='fact' retention policy row; keeping every "
+            "superseded fact"
+        )
+        return None
+    ttl_days = row["ttl_days"]
+    return int(ttl_days) if ttl_days is not None else None
+
+
 async def _run_memory_purge_superseded_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Purge superseded facts older than a threshold.
+    """Purge orphaned ``ha_state`` facts, and superseded facts only past an owner horizon.
 
-    Consults public.memory_retention_policies for 'fact' kind to determine
-    the ttl_days threshold.  Falls back to 7 days when the policy table is
-    not yet available.
+    Superseded facts are closed validity intervals and are kept by default. They are deleted
+    only when ``public.memory_retention_policies`` holds a finite ``kind='fact'`` ``ttl_days``
+    that was read successfully, and then only for classes the per-class policy allows (see
+    ``purge_superseded_facts``). A missing or unreadable policy keeps everything.
+    ``job_args.older_than_days`` may lengthen a finite horizon and never shortens or enables
+    one. The ``ha_state`` purge always runs.
 
     Logs the number of removed rows to public.memory_compaction_log.
     """
     from butlers.core.memory_hooks import resolve_memory_runtime_pool
-    from butlers.modules.memory.storage import purge_superseded_facts
+    from butlers.modules.memory.storage import purge_ha_state_facts, purge_superseded_facts
 
     pool = resolve_memory_runtime_pool()
 
-    policy = await _fetch_retention_policy(pool, "fact")
-    # "ttl_days" absent  → table not yet migrated → fall back to 7.
-    # "ttl_days" = None  → explicit "no TTL" in DB → skip purge (return early).
-    if "ttl_days" not in policy:
-        older_than_days: int | None = 7
-    elif policy["ttl_days"] is None:
-        older_than_days = None  # no TTL cap; skip purge below
-    else:
-        older_than_days = int(policy["ttl_days"])
-
-    if job_args is not None and "older_than_days" in job_args:
+    horizon = await _read_fact_horizon(pool)
+    if horizon is not None and job_args is not None and "older_than_days" in job_args:
         raw = job_args["older_than_days"]
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-            older_than_days = raw
-
-    if older_than_days is None:
-        # Policy explicitly says no TTL → skip fact purge.
-        # Keys match purge_superseded_facts's return contract.
-        return {"deleted": 0, "deleted_ha_state": 0, "skipped": "no_ttl_policy"}
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > horizon:
+            horizon = raw
 
     size_before = await _table_size_bytes(pool, "facts")
-    result = await purge_superseded_facts(pool, older_than_days=older_than_days)
-    # purge_superseded_facts returns {"deleted", "deleted_ha_state"}.
-    total_removed = result.get("deleted", 0) + result.get("deleted_ha_state", 0)
+    superseded = await purge_superseded_facts(pool, older_than_days=horizon)
+    ha_state = await purge_ha_state_facts(pool)
+    superseded_deleted = superseded.get("deleted", 0)
+    ha_state_deleted = ha_state.get("deleted_ha_state", 0)
+    total_removed = superseded_deleted + ha_state_deleted
     if total_removed > 0:
         size_after = await _table_size_bytes(pool, "facts")
         bytes_freed: int | None = None
         if size_before is not None and size_after is not None:
             bytes_freed = max(0, size_before - size_after)
         await _log_compaction(pool, "fact", total_removed, bytes_freed=bytes_freed)
+    result: dict[str, Any] = {
+        "deleted": superseded_deleted,
+        "deleted_ha_state": ha_state_deleted,
+        "superseded_deleted": superseded_deleted,
+    }
+    if "skipped" in superseded:
+        result["superseded_skipped"] = superseded["skipped"]
+    if "error" in superseded or "error" in ha_state:
+        result["errors"] = sorted(
+            name
+            for name, part in (("superseded", superseded), ("ha_state", ha_state))
+            if "error" in part
+        )
     return result
 
 
@@ -694,6 +815,7 @@ async def _run_memory_catalog_backfill_job(
                 "rules_backfilled": 0,
                 "facts_reconciled": 0,
                 "rules_reconciled": 0,
+                "authority_synced": 0,
                 "skipped": "source_schema_not_resolved",
             }
 
@@ -802,7 +924,7 @@ async def _discover_chronicler_projection_schemas(
             FROM information_schema.tables
             WHERE table_name = $1
               AND table_schema != ALL($2::text[])
-              AND table_schema NOT LIKE 'pg_%'
+              AND left(table_schema, 3) <> 'pg_'
             ORDER BY table_schema ASC
             """,
             table_name,
@@ -972,6 +1094,18 @@ async def _run_finance_cost_claim_reconciliation_sweep_job(
     return await mod.run_cost_claim_reconciliation_sweep(pool)
 
 
+async def _run_finance_custody_held_window_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's deterministic held-window evidence contribution (bu-s11n0s.1 S5e)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_custody_held_window_evidence(pool)
+
+
 async def _run_finance_anomaly_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1048,6 +1182,18 @@ async def _run_travel_insight_scan_job(
 
     mod = load_roster_jobs("travel")
     return await mod.run_insight_scan(pool)
+
+
+async def _run_travel_trip_lifecycle_advance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Advance travel trip status by date (planned -> active -> completed)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("travel")
+    return await mod.run_trip_lifecycle_advance(pool)
 
 
 async def _run_travel_flight_status_check_job(
@@ -1173,6 +1319,23 @@ async def _run_relationship_meeting_debrief_job(
     return await run_meeting_debrief(pool, insight_proposer=propose_insight_candidate)
 
 
+async def _run_relationship_meeting_card_push_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one timed T-20 card per meeting with other people (dark, unscheduled; bu-jv1moa.9)."""
+    from butlers.jobs.meeting_card import run_meeting_card
+    from butlers.roster_imports import roster_module
+
+    broker = roster_module("switchboard", "tools/insight/broker")
+    return await run_meeting_card(
+        pool,
+        job_args,
+        insight_proposer=broker.propose_insight_candidate,
+        insight_withdrawer=broker.withdraw_pending_candidates,
+    )
+
+
 async def _run_messenger_calendar_prep_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1227,6 +1390,40 @@ async def _run_relationship_maintenance_job(
     return await run_relationship_maintenance(pool)
 
 
+async def _run_relationship_geocode_owner_addresses_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Geocode the owner's anchor addresses for Chronicler (bu-r3fmja.3; zero LLM).
+
+    Delegates to ``run_owner_address_geocoding`` in the Relationship roster module
+    ``butlers.tools.relationship.owner_address_geocoding``, resolved at call time so
+    tests can substitute it.
+    """
+    del job_args
+    import importlib
+
+    geocoding = importlib.import_module("butlers.tools.relationship.owner_address_geocoding")
+    return await geocoding.run_owner_address_geocoding(pool)
+
+
+async def _run_relationship_public_mcp_proposal_import_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Import, validate, park and reconcile public MCP proposals (RFC 0039 D13; zero LLM).
+
+    Delegates to ``run_public_mcp_proposal_import`` in the Relationship roster module
+    ``butlers.tools.relationship.public_mcp_proposal_import``, resolved at call time so
+    tests can substitute it.
+    """
+    del job_args
+    import importlib
+
+    importer = importlib.import_module("butlers.tools.relationship.public_mcp_proposal_import")
+    return await importer.run_public_mcp_proposal_import(pool)
+
+
 async def _run_prepared_action_orphan_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1254,6 +1451,33 @@ async def _run_relationship_interaction_sync_job(
 
     mod = load_roster_jobs("relationship")
     return await mod.run_interaction_sync(pool)
+
+
+async def _run_relationship_automated_evidence_sync_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Away-until and dead-address facts from bound Gmail auto-replies and bounces (zero LLM).
+
+    bu-s11n0s.14 slice S2b.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_automated_evidence_sync(pool)
+
+
+async def _run_relationship_commitment_candidate_scan_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Owner-chat commitment candidates (bu-jv1moa.11); dark until the confirm switch."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_commitment_candidate_scan(pool)
 
 
 async def _run_relationship_loan_cost_claim_backfill_job(
@@ -1615,6 +1839,39 @@ async def _run_home_safety_sentinel_job(
     return await run_safety_sentinel(pool, job_args)
 
 
+async def _run_home_arrival_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one read-only timed arrival card per confirmed enter edge (dark, unscheduled)."""
+    from butlers.jobs import home_departure_fixes
+    from butlers.jobs.home_arrival import run_arrival_watch
+
+    # Fix lines come from the departure-fix slice; while it is dark the card has none.
+    read_fixes = home_departure_fixes.fix_lines if home_departure_fixes.DEPARTURE_FIX_LIVE else None
+    return await run_arrival_watch(pool, job_args, read_fixes=read_fixes)
+
+
+async def _run_home_departure_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue one read-only timed departure card per confirmed leave edge (dark, unscheduled)."""
+    from butlers.jobs.home_departure import run_departure_watch
+
+    return await run_departure_watch(pool, job_args)
+
+
+async def _run_home_away_safety_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Freezer, away-door and sensing-blind owner conditions without a model (dark, unscheduled)."""
+    from butlers.jobs.home_away_safety import run_away_safety
+
+    return await run_away_safety(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1624,6 +1881,9 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
     "home_safety_sentinel": _run_home_safety_sentinel_job,
+    "home_departure_watch": _run_home_departure_watch_job,
+    "home_arrival_watch": _run_home_arrival_watch_job,
+    "home_away_safety": _run_home_away_safety_job,
 }
 
 
@@ -1693,8 +1953,32 @@ async def _run_chronicler_gap_interview_job(
 ) -> dict[str, Any]:
     """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
     from butlers.chronicler.gap_interview_job import run_gap_interview_job
+    from butlers.core.tool_call_capture import get_current_credential_store
 
-    return await run_gap_interview_job(pool, job_args)
+    store = get_current_credential_store()
+    store_kwargs = {"credential_store": store} if store is not None else {}
+    return await run_gap_interview_job(pool, job_args, **store_kwargs)
+
+
+async def _run_chronicler_location_retention_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Raw location expiry, hourly; only reconciles unless the owner turned it on (bu-s11n0s.75)."""
+    from butlers.chronicler.location_retention_job import run_scheduled_location_retention
+
+    return await run_scheduled_location_retention(pool, job_args)
+
+
+async def _run_chronicler_custody_device_fix_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Contribute the owner-bound device's last-fix evidence to custody cases (bu-s11n0s.1 S5f)."""
+    del job_args
+    from butlers.chronicler.custody_device_fix import run_custody_device_fix_evidence
+
+    return await run_custody_device_fix_evidence(pool)
 
 
 async def _run_chronicler_project_sessions_job(
@@ -1757,6 +2041,16 @@ async def _run_chronicler_project_activitywatch_job(
     return await run_project_activitywatch(pool, job_args)
 
 
+async def _run_chronicler_project_calendar_revisions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's calendar plan-change (revision journal) projection job."""
+    from butlers.chronicler.jobs import run_project_calendar_revisions
+
+    return await run_project_calendar_revisions(pool, job_args)
+
+
 async def _run_chronicler_project_owner_outbound_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1775,6 +2069,16 @@ async def _run_chronicler_project_steam_job(
     from butlers.chronicler.jobs import run_project_steam
 
     return await run_project_steam(pool, job_args)
+
+
+async def _run_chronicler_project_steam_status_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's timed Steam session evidence projection."""
+    from butlers.chronicler.jobs import run_project_steam_status
+
+    return await run_project_steam_status(pool, job_args)
 
 
 async def _run_chronicler_project_meals_job(
@@ -1897,6 +2201,26 @@ async def _run_chronicler_project_occupation_inferred_job(
     return await run_project_occupation_inferred(pool, job_args)
 
 
+async def _run_chronicler_rebuild_daily_rollups_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run a bounded historical quantitative rebuild."""
+    from butlers.chronicler.jobs import run_rebuild_daily_rollups
+
+    return await run_rebuild_daily_rollups(pool, job_args)
+
+
+async def _run_chronicler_project_situation_inferred_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's situational-block projection job (bu-r3fmja)."""
+    from butlers.chronicler.jobs import run_project_situation_inferred
+
+    return await run_project_situation_inferred(pool, job_args)
+
+
 async def _run_chronicler_project_comms_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1925,6 +2249,16 @@ async def _run_chronicler_rollup_daily_job(
     from butlers.chronicler.jobs import run_rollup_daily
 
     return await run_rollup_daily(pool, job_args)
+
+
+async def _run_chronicler_public_projection_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Repair Chronicler's public projection tables (RFC 0039 D2, deterministic)."""
+    from butlers.chronicler.public_projection import sweep_public_projection
+
+    return await sweep_public_projection(pool)
 
 
 async def _run_chronicler_narrate_daily_job(
@@ -2077,6 +2411,21 @@ def _retention_pruner_job_handlers(butler_name: str) -> dict[str, _Deterministic
 # ---------------------------------------------------------------------------
 
 
+def _paperwork_deadline_notice_job(butler_name: str) -> _DeterministicScheduleJobHandler:
+    """Document-deadline owner notice, bound to the butler whose deadline fired.
+
+    Every butler gets it because ``paperwork_deadline_set`` is a core temporal tool: a
+    job-mode document deadline names this job and the deadline pass dispatches it.
+    """
+
+    async def _run(pool: asyncpg.Pool, job_args: dict[str, Any] | None) -> Any:
+        from butlers.jobs.document_deadlines import run_paperwork_deadline_notice
+
+        return await run_paperwork_deadline_notice(pool, job_args, origin_butler=butler_name)
+
+    return _run
+
+
 def _build_deterministic_schedule_job_registry() -> dict[
     str, dict[str, _DeterministicScheduleJobHandler]
 ]:
@@ -2087,7 +2436,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
     accidentally lost entries through mutation.
     """
 
-    return {
+    registry: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
@@ -2114,6 +2463,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
             "cost_claim_reconciliation_sweep": _run_finance_cost_claim_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
+            "custody_held_window_evidence": _run_finance_custody_held_window_evidence_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
             **_retention_pruner_job_handlers("finance"),
@@ -2127,7 +2477,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
             "relationship_maintenance": _run_relationship_maintenance_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
+            "meeting_card_push": _run_relationship_meeting_card_push_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
+            "automated_evidence_sync": _run_relationship_automated_evidence_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,
             "pending_actions_curation": _run_relationship_pending_actions_curation_job,
@@ -2135,6 +2487,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
+            "relationship_geocode_owner_addresses": (_run_relationship_geocode_owner_addresses_job),
+            "commitment_candidate_scan": _run_relationship_commitment_candidate_scan_job,
+            "public_mcp_proposal_import": _run_relationship_public_mcp_proposal_import_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
@@ -2145,6 +2500,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "trip_lifecycle_advance": _run_travel_trip_lifecycle_advance_job,
             "flight_status_check": _run_travel_flight_status_check_job,
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
@@ -2171,6 +2527,10 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "chronicler_gap_interview": _run_chronicler_gap_interview_job,
+            "chronicler_location_retention": _run_chronicler_location_retention_job,
+            "chronicler_custody_device_fix_evidence": (
+                _run_chronicler_custody_device_fix_evidence_job
+            ),
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
@@ -2179,8 +2539,10 @@ def _build_deterministic_schedule_job_registry() -> dict[
             ),
             "chronicler_project_owntracks_ssid": _run_chronicler_project_owntracks_ssid_job,
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
+            "chronicler_project_calendar_revisions": _run_chronicler_project_calendar_revisions_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
+            "chronicler_project_steam_status": _run_chronicler_project_steam_status_job,
             "chronicler_project_meals": _run_chronicler_project_meals_job,
             "chronicler_project_home_assistant": _run_chronicler_project_home_assistant_job,
             "chronicler_project_home_assistant_sensor_activity": (
@@ -2205,9 +2567,14 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_occupation_inferred": (
                 _run_chronicler_project_occupation_inferred_job
             ),
+            "chronicler_rebuild_daily_rollups": _run_chronicler_rebuild_daily_rollups_job,
+            "chronicler_project_situation_inferred": (
+                _run_chronicler_project_situation_inferred_job
+            ),
             "chronicler_project_comms": _run_chronicler_project_comms_job,
             "chronicler_routines_mine": _run_chronicler_routines_mine_job,
             "chronicler_rollup_daily": _run_chronicler_rollup_daily_job,
+            "chronicler_public_projection_sweep": _run_chronicler_public_projection_sweep_job,
             "chronicler_narrate_daily": _run_chronicler_narrate_daily_job,
         },
         "home": {
@@ -2226,6 +2593,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
+            "insight_timed_subcycle": _run_switchboard_insight_timed_subcycle_job,
+            "insight_outcome_sweep": _run_switchboard_insight_outcome_sweep_job,
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
@@ -2234,6 +2603,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
+            "security_question_cycle": _run_switchboard_security_question_cycle_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_retention_pruner_job_handlers("switchboard"),
         },
@@ -2244,6 +2614,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_retention_pruner_job_handlers("qa"),
         },
     }
+    for butler_name, jobs in registry.items():
+        jobs["paperwork_deadline_notify"] = _paperwork_deadline_notice_job(butler_name)
+    return registry
 
 
 def get_deterministic_schedule_job_registry() -> dict[

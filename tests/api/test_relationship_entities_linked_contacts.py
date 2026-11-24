@@ -31,6 +31,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -63,22 +64,14 @@ _MISSING_PATH = f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(data: dict) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-    row.get = MagicMock(side_effect=lambda key, default=None: data.get(key, default))
-    return row
-
-
 def _make_contact_row(
     *,
     contact_id: UUID | None = None,
     full_name: str = "Alice",
-) -> MagicMock:
+) -> Record:
     # The contacts query no longer selects preferred_channel — it now comes from
     # the entity-keyed prefers-channel fact (see _make_app fetchval sequence).
-    return _make_row(
+    return Record(
         {
             "id": contact_id or _CONTACT_ID_A,
             "full_name": full_name,
@@ -92,8 +85,8 @@ def _make_label_row(
     label_id: UUID | None = None,
     name: str = "VIP",
     color: str | None = "#ff0000",
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return Record(
         {
             "contact_id": contact_id or _CONTACT_ID_A,
             "id": label_id or _LABEL_ID,
@@ -109,8 +102,8 @@ def _make_fact_row(
     predicate: str = "has-email",
     object: str = _EMAIL,
     primary: bool | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return Record(
         {
             "id": id or _FACT_ID,
             "predicate": predicate,
@@ -131,9 +124,9 @@ def _make_entity_info_row(
     type: str = "telegram_api_key",
     is_primary: bool = False,
     secured: bool = True,
-) -> MagicMock:
+) -> Record:
     """Build a mock entity_info row (secured credential, value NOT included)."""
-    return _make_row(
+    return Record(
         {
             "id": id or _ENTITY_INFO_ID,
             "type": type,

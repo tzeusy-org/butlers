@@ -29,7 +29,9 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
+from alembic import command
 from butlers.core.tool_call_capture import (
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
@@ -39,8 +41,13 @@ from butlers.core.tool_call_capture import (
     set_current_runtime_trigger_source,
 )
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.modules.memory.catalog_recovery import RESTORE_LEGACY_RULE_CATALOG_SQL
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    create_migration_db,
+    migration_db_name,
+)
 
 # ---------------------------------------------------------------------------
 # Skip guard
@@ -1020,13 +1027,13 @@ def test_correction_driven_forget_also_marks_catalog_stale(memory_migrated_db: s
 
 
 async def _purge_ha_state_fact_and_check_catalog(db_url: str) -> dict:
-    """purge_superseded_facts' unconditional ha_state purge must mark the
+    """purge_ha_state_facts must mark the
     corresponding catalog row stale. Unlike the superseded-facts purge path,
     ha_state facts never go through supersession, so store_fact's own
     write-time cascade never touches their catalog row — this exercises
     purge's OWN disownment cascade in isolation (bu-5ud8p.3).
     """
-    from butlers.modules.memory.storage import purge_superseded_facts
+    from butlers.modules.memory.storage import purge_ha_state_facts
 
     pool = await asyncpg.create_pool(
         db_url,
@@ -1053,7 +1060,7 @@ async def _purge_ha_state_fact_and_check_catalog(db_url: str) -> dict:
             fact_id,
         )
 
-        result = await purge_superseded_facts(pool)
+        result = await purge_ha_state_facts(pool)
 
         fact_row = await pool.fetchrow("SELECT id FROM facts WHERE id = $1", fact_id)
         catalog_row = await pool.fetchrow(
@@ -1071,7 +1078,7 @@ async def _purge_ha_state_fact_and_check_catalog(db_url: str) -> dict:
 
 
 def test_purge_ha_state_facts_marks_catalog_entry_stale(memory_migrated_db: str) -> None:
-    """purge_superseded_facts leaves zero LIVE catalog rows for a purged ha_state fact.
+    """purge_ha_state_facts leaves zero LIVE catalog rows for a purged ha_state fact.
 
     The catalog row itself is retained (butler roles hold no DELETE grant on
     public.memory_catalog — see core_009) but marked stale, matching the
@@ -2465,6 +2472,107 @@ def test_rules_table_has_retired_at_column(memory_migrated_db: str) -> None:
     assert "retired_at" in cols
 
 
+def test_restore_only_mem_013_staled_active_rules_after_real_downgrade(postgres_container):
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory"],
+        schemas={"core": "general", "memory": "general"},
+        revisions={"memory": "mem_012"},
+    )
+    config = _build_alembic_config(db_url, target_schema="general")
+    engine = create_engine(db_url)
+    rows_sql = text("""
+        SELECT source_schema, summary, confidence, invalid_at, updated_at
+        FROM public.memory_catalog WHERE source_table = 'rules'
+        ORDER BY source_schema, summary
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO general.rules (content, confidence, retired_at, metadata, sensitivity)
+                VALUES ('active', .75, NULL, '{}', 'normal'),
+                       ('retired', .75, now(), '{}', 'normal'),
+                       ('forgotten', .75, NULL, '{"forgotten": true}', 'normal'),
+                       ('independently invalid', .75, NULL, '{}', 'normal'),
+                       ('source pii', .75, NULL, '{}', 'pii'),
+                       ('source confidential', .75, NULL, '{}', 'confidential'),
+                       ('catalog pii', .75, NULL, '{}', 'normal')
+            """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, tenant_id, memory_type,
+                     summary, confidence, invalid_at, updated_at, sensitivity)
+                SELECT 'general', 'rules', id, tenant_id, 'rule', content,
+                       CASE WHEN content = 'independently invalid' THEN 0 ELSE .75 END,
+                       CASE WHEN content = 'independently invalid' THEN '2000-01-01Z'::timestamptz END,
+                       '2000-01-01Z'::timestamptz,
+                       CASE WHEN content = 'catalog pii' THEN 'pii' ELSE 'normal' END
+                FROM general.rules
+            """)
+            )
+
+        command.upgrade(config, "memory@mem_013")
+        with engine.begin() as conn:
+            staled = {row.summary: row for row in conn.execute(rows_sql)}
+            assert set(staled) == {
+                "active",
+                "retired",
+                "forgotten",
+                "independently invalid",
+                "source pii",
+                "source confidential",
+                "catalog pii",
+            }
+            assert all(
+                row.confidence == 0 and row.invalid_at is not None for row in staled.values()
+            )
+            conn.execute(
+                text("""
+                INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, tenant_id, memory_type,
+                     summary, confidence, invalid_at, updated_at)
+                SELECT 'other_schema', source_table, source_id, tenant_id, memory_type,
+                       summary, confidence, invalid_at, updated_at
+                FROM public.memory_catalog WHERE source_schema = 'general' AND summary = 'active'
+            """)
+            )
+        with pytest.raises(DBAPIError, match="requires Memory at mem_012"), engine.begin() as conn:
+            conn.execute(text("SET LOCAL search_path = general"))
+            conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
+
+        command.downgrade(config, "mem_012")
+        with engine.connect() as conn:
+            before = {(row.source_schema, row.summary): row for row in conn.execute(rows_sql)}
+        stale_snapshot_engine = engine.execution_options(isolation_level="REPEATABLE READ")
+        with (
+            pytest.raises(DBAPIError, match="requires READ COMMITTED"),
+            stale_snapshot_engine.begin() as conn,
+        ):
+            conn.execute(text("SET LOCAL search_path = general"))
+            conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
+
+        def restore_and_read():
+            with engine.begin() as conn:
+                conn.execute(text("SET LOCAL search_path = general"))
+                conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
+            with engine.connect() as conn:
+                return {(row.source_schema, row.summary): row for row in conn.execute(rows_sql)}
+
+        restored = restore_and_read()
+        active_key = ("general", "active")
+        assert (restored[active_key].confidence, restored[active_key].invalid_at) == (0.75, None)
+        assert {key: row for key, row in restored.items() if key != active_key} == {
+            key: row for key, row in before.items() if key != active_key
+        }
+        assert restore_and_read() == restored
+    finally:
+        engine.dispose()
+
+
 def test_mem_013_adds_content_authority_columns(memory_migrated_db: str) -> None:
     """mem_013 stamps authorship on all three tiers and endorsement on rules."""
     for table in ("episodes", "facts", "rules"):
@@ -2646,3 +2754,166 @@ def test_retired_rule_is_excluded_from_semantic_and_keyword_search(
 
     assert result["retired_id"] not in result["keyword_ids"]
     assert result["live_id"] in result["keyword_ids"]
+
+
+# ---------------------------------------------------------------------------
+# Superseded facts are kept as closed validity intervals (bu-uhbhzq.3)
+# ---------------------------------------------------------------------------
+
+
+async def _with_pool(db_url: str, body):
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        return await body(pool)
+    finally:
+        await pool.close()
+
+
+async def _set_fact_horizon(pool, ttl_days) -> None:
+    await pool.execute(
+        "INSERT INTO public.memory_retention_policies (kind, ttl_days, updated_by)"
+        " VALUES ('fact', $1, 'test')"
+        " ON CONFLICT (kind) DO UPDATE SET ttl_days = EXCLUDED.ttl_days",
+        ttl_days,
+    )
+
+
+async def _superseded(pool, subject: str, retention_class: str, days: int = 30):
+    """An aged superseded fact A and its successor B (supersedes_id = A.id)."""
+    old = await pool.fetchval(
+        "INSERT INTO facts (subject, predicate, content, scope, tenant_id, source_butler,"
+        " retention_class, validity, created_at, invalid_at, dropped_at)"
+        " VALUES ($1, 'employer', 'old', 'global', 'shared', 'home', $2, 'superseded',"
+        " now() - make_interval(days => 2 * $3), now() - make_interval(days => $3),"
+        " now() - make_interval(days => $3)) RETURNING id",
+        subject,
+        retention_class,
+        days,
+    )
+    new = await pool.fetchval(
+        "INSERT INTO facts (subject, predicate, content, scope, tenant_id, source_butler,"
+        " retention_class, supersedes_id) VALUES ($1, 'employer', 'new', 'global', 'shared',"
+        " 'home', $2, $3) RETURNING id",
+        subject,
+        retention_class,
+        old,
+    )
+    return old, new
+
+
+def test_a_null_horizon_keeps_superseded_history_and_its_chain(memory_migrated_db: str) -> None:
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool  # noqa: F401
+    from butlers.modules.memory.storage import purge_ha_state_facts, purge_superseded_facts
+
+    async def body(pool):
+        await _set_fact_horizon(pool, None)
+        old, new = await _superseded(pool, "keep-null", "operational")
+        await pool.execute(
+            "INSERT INTO facts (subject, predicate, content, scope, tenant_id, source_butler,"
+            " retention_class) VALUES ('sensor.keep', 'ha_state', 'on', 'global', 'shared',"
+            " 'home', 'operational')"
+        )
+        first = await purge_superseded_facts(pool, older_than_days=None)
+        ha = await purge_ha_state_facts(pool)
+        again = await purge_superseded_facts(pool, older_than_days=None)
+        kept = await pool.fetchrow("SELECT validity FROM facts WHERE id = $1", old)
+        chain = await pool.fetchval("SELECT supersedes_id FROM facts WHERE id = $1", new)
+        return first, ha, again, kept, chain, old
+
+    first, ha, again, kept, chain, old = asyncio.run(_with_pool(memory_migrated_db, body))
+    assert first == again == {"deleted": 0, "skipped": "no_horizon"}
+    assert ha["deleted_ha_state"] >= 1
+    assert kept["validity"] == "superseded"
+    assert chain == old
+
+
+def test_a_finite_horizon_deletes_only_classes_the_policy_allows(memory_migrated_db: str) -> None:
+    from butlers.modules.memory.storage import purge_superseded_facts
+
+    async def body(pool):
+        await _set_fact_horizon(pool, 7)
+        ids = {}
+        for cls in ("personal_profile", "health_log", "financial_log", "operational", "mystery"):
+            ids[cls], _ = await _superseded(pool, f"floor-{cls}", cls)
+        ids["transient"], _ = await _superseded(pool, "floor-transient", "transient")
+        recent, _ = await _superseded(pool, "floor-recent", "transient", days=1)
+        result = await purge_superseded_facts(pool, older_than_days=7)
+        survivors = {
+            row["id"]
+            for row in await pool.fetch(
+                "SELECT id FROM facts WHERE id = ANY($1::uuid[])", [*ids.values(), recent]
+            )
+        }
+        await _set_fact_horizon(pool, None)
+        return result, ids, recent, survivors
+
+    result, ids, recent, survivors = asyncio.run(_with_pool(memory_migrated_db, body))
+    assert result["deleted"] >= 1
+    assert ids["transient"] not in survivors
+    assert recent in survivors
+    for cls in ("personal_profile", "health_log", "financial_log", "operational", "mystery"):
+        assert ids[cls] in survivors
+
+
+def test_an_unreadable_policy_table_deletes_no_superseded_fact(memory_migrated_db: str) -> None:
+    from butlers.scheduled_jobs import _read_fact_horizon
+
+    async def body(pool):
+        await pool.execute(
+            "ALTER TABLE public.memory_retention_policies RENAME TO memory_retention_policies_away"
+        )
+        try:
+            return await _read_fact_horizon(pool)
+        finally:
+            await pool.execute(
+                "ALTER TABLE public.memory_retention_policies_away"
+                " RENAME TO memory_retention_policies"
+            )
+
+    assert asyncio.run(_with_pool(memory_migrated_db, body)) is None
+
+
+def test_facts_as_of_returns_the_fact_true_at_that_time(memory_migrated_db: str) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.modules.memory.storage import facts_as_of
+
+    async def body(pool):
+        old, new = await _superseded(pool, "as-of-subject", "operational", days=10)
+        now = datetime.now(UTC)
+        before = await facts_as_of(
+            pool, subject="as-of-subject", predicate="employer", at=now - timedelta(days=25)
+        )
+        during = await facts_as_of(
+            pool, subject="as-of-subject", predicate="employer", at=now - timedelta(days=15)
+        )
+        after = await facts_as_of(pool, subject="as-of-subject", predicate="employer", at=now)
+        # A row closed only by dropped_at (the repoint writer) still closes.
+        dropped = await pool.fetchval(
+            "INSERT INTO facts (subject, predicate, content, scope, tenant_id, source_butler,"
+            " validity, created_at, dropped_at) VALUES ('as-of-dropped', 'employer', 'x',"
+            " 'global', 'shared', 'home', 'superseded', now() - interval '10 days',"
+            " now() - interval '5 days') RETURNING id"
+        )
+        retracted = await pool.fetchval(
+            "INSERT INTO facts (subject, predicate, content, scope, tenant_id, source_butler,"
+            " validity, created_at) VALUES ('as-of-dropped', 'employer', 'r', 'global',"
+            " 'shared', 'home', 'retracted', now() - interval '10 days') RETURNING id"
+        )
+        inside = await facts_as_of(
+            pool, subject="as-of-dropped", predicate="employer", at=now - timedelta(days=7)
+        )
+        past = await facts_as_of(
+            pool, subject="as-of-dropped", predicate="employer", at=now - timedelta(days=1)
+        )
+        return old, new, before, during, after, dropped, retracted, inside, past
+
+    old, new, before, during, after, dropped, retracted, inside, past = asyncio.run(
+        _with_pool(memory_migrated_db, body)
+    )
+    assert before == []
+    assert [row["id"] for row in during] == [old]
+    assert [row["id"] for row in after] == [new]
+    assert [row["id"] for row in inside] == [dropped]
+    assert past == []
+    assert retracted not in {row["id"] for row in inside + past}

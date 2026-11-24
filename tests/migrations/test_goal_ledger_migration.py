@@ -23,6 +23,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from scripts.ci_test_images import prepare_alias_on_hosted_runner
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     TABLES,
     admit,
@@ -259,6 +260,8 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
     before = snapshot(ledger_url)
     parsed = urlparse(ledger_url)
     password_env = {**os.environ, "PGPASSWORD_FOR_TEST": parsed.password or ""}
+    # Acquire the image outside each run's 120s timeout (cold pulls are slow).
+    prepare_alias_on_hosted_runner("postgres:17")
     base = [
         "docker",
         "run",
@@ -316,12 +319,15 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
                 f"{ROOT / 'scripts/pg_restore.sh'}:/restore.sh:ro",
                 "-v",
                 f"{files[0]}:/backup.sql.gz:ro",
+                "-v",
+                f"{tmp_path}:/capture-host",
                 "postgres:17",
                 "bash",
                 "-c",
                 'export POSTGRES_PASSWORD="$PGPASSWORD_FOR_TEST"; bash /restore.sh /backup.sql.gz '
                 f"--host host.docker.internal --port {postgres_container.get_exposed_port(5432)} "
-                f"--user {restore_identity.username} --target-db {target}",
+                f"--user {restore_identity.username} --target-db {target} "
+                f"--capture-epoch-file /capture-host/{target}.json",
             ],
             env=restore_env,
             capture_output=True,

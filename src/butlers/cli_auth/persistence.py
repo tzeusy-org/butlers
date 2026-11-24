@@ -19,9 +19,13 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.credential_store import CredentialStore
+
+if TYPE_CHECKING:
+    from butlers.session_host.codex_auth import CodexAuthTarget
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +388,7 @@ async def persist_validated_staged_device_auth_bytes(
     *,
     expected_authority_value: str | None,
     codex_authority: CredentialStore | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> bool:
     """Persist bytes already validated through the trusted sandbox root FD.
 
@@ -391,7 +396,14 @@ async def persist_validated_staged_device_auth_bytes(
     callers are routed through the sandbox.  Device-auth sandbox callers must
     use this seam: it never receives a path and therefore cannot reopen a
     canonical credential file after child containment has been verified.
+
+    ``session_host`` (dark, RFC 0038 D3, bu-kiuh8v.3) retargets the runtime
+    copy of a Codex login from this process's ``~/.codex/auth.json`` to the
+    session host's credential volume.  ``None``, the only value any live
+    caller passes, keeps today's behavior exactly.
     """
+    if session_host is not None and provider.name != "codex":
+        raise ValueError("Only Codex device auth can target the session host")
     try:
         decoded = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -402,7 +414,7 @@ async def persist_validated_staged_device_auth_bytes(
     if projected is None:
         logger.warning("CLI auth persist: refusing invalid staged device-auth document")
         return False
-    if provider.token_path is None:
+    if session_host is None and provider.token_path is None:
         # A successful authority CAS without a usable runtime projection would
         # leave the just-completed device flow unavailable until restart.
         logger.warning("CLI auth persist: provider has no canonical runtime projection path")
@@ -427,7 +439,12 @@ async def persist_validated_staged_device_auth_bytes(
         logger.warning("CLI auth persist: device-auth authority changed before commit")
         return False
 
-    if not _reconcile_device_auth_runtime_file(provider, projected):
+    if session_host is not None:
+        from butlers.session_host.codex_auth import install_login
+
+        if not await install_login(session_host, projected):
+            return False
+    elif not _reconcile_device_auth_runtime_file(provider, projected):
         return False
 
     logger.info("CLI auth persist: stored validated staged token for %s", provider.name)
@@ -531,18 +548,47 @@ async def persist_token(
     return True
 
 
+async def persist_store_only_api_key(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    api_key: str,
+) -> None:
+    """Store an API key for a provider whose credential lives only in the DB.
+
+    ``persist_token`` copies a CLI's on-disk auth file, so it cannot serve an
+    ``api_key`` provider without a ``token_path`` (e.g. Claude, whose adapter
+    loads ``cli-auth/claude`` and injects it as ``ANTHROPIC_API_KEY``).
+    """
+    if provider.auth_mode != "api_key" or provider.token_path is not None:
+        raise ValueError(f"provider {provider.name!r} is not a store-only api_key provider")
+    await _store_persisted_token(provider, store, api_key)
+
+
 async def restore_tokens(
     store: CredentialStore,
     *,
     codex_authority: CredentialStore | None = None,
+    session_host: CodexAuthTarget | None = None,
 ) -> dict[str, bool]:
     """Restore all CLI auth tokens from the DB to their filesystem paths.
 
     Called on application startup. Returns a dict of provider name → success.
+
+    ``session_host`` (dark, RFC 0038 D3, bu-kiuh8v.14) retargets Codex only: the
+    authority is pushed to the session host's credential volume and the local
+    ``auth.json`` is not written. The push fails closed, leaving the volume as it
+    was, when the authority is missing or invalid, the host is unreachable, or the
+    host holds a document no fence can judge (after a control-plane restart; a
+    dashboard login recovers it). Every live caller passes ``None``.
     """
     results: dict[str, bool] = {}
 
     for provider in PROVIDERS.values():
+        if session_host is not None and provider.name == "codex":
+            results[provider.name] = await _push_codex_to_session_host(
+                codex_authority, session_host
+            )
+            continue
         key = _db_key(provider)
         try:
             content = await load_persisted_token(
@@ -607,6 +653,20 @@ async def restore_tokens(
             results[provider.name] = False
 
     return results
+
+
+async def _push_codex_to_session_host(
+    codex_authority: CredentialStore | None, session_host: CodexAuthTarget
+) -> bool:
+    if codex_authority is None:
+        logger.warning("CLI auth restore: no Codex authority for the session host")
+        return False
+    from butlers.session_host.codex_auth import push_codex_authority
+
+    pushed = await push_codex_authority(codex_authority, session_host)
+    if pushed.known:
+        logger.info("CLI auth restore: Codex authority installed on the session host")
+    return pushed.known
 
 
 def _record_codex_baseline() -> None:

@@ -11,6 +11,9 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from butlers.core.capability_dependencies import dependency_problem
+from butlers.core.goal_labels import CATEGORIES
+
 LoadPosture = Literal["eager", "deferred"]
 
 EffectClass = Literal["read", "record", "communicate", "transact", "actuate", "administer"]
@@ -29,7 +32,17 @@ AUTHORIZATION_FIELDS = (
     "idempotency",
     "owner_authority",
     "recipient_params",
+    "alias_free_params",
+    "categories",
+    "depends_on",
+    "alias_resolvers",
 )
+
+#: The closed alias kinds a domain may resolve for the broker before owner law
+#: (``capability_broker.aliases``). A param declared with one may narrow an
+#: owner term: the broker matches on its canonical identifier and, except for
+#: ``entity``, dispatches that identifier too.
+ALIAS_KINDS = frozenset({"calendar", "entity"})
 
 
 class OwnerNotifyBranch(StrEnum):
@@ -106,9 +119,29 @@ class ToolMetadata(Protocol):
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. These can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
+    # Aliasable resource_params the domain resolves for the broker, by closed
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
+    # so these can narrow an owner term too.
+    alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 
 
 def _owner_only_tool(name: str) -> bool:
@@ -126,6 +159,24 @@ def _owner_only_tool(name: str) -> bool:
 
 class ToolCatalogError(ValueError):
     """The registered surface and its checked-in metadata disagree."""
+
+
+def declared_approval_mode(policy: Mapping[str, Any] | None) -> str:
+    """Read the explicit D4/D13 declaration without consulting gate configuration."""
+    if not isinstance(policy, Mapping):
+        raise ToolCatalogError("approval_policy requires an explicit mode")
+    mode = policy.get("mode")
+    if not isinstance(mode, str) or mode not in {"default", "always_per_event"}:
+        raise ToolCatalogError("approval_policy requires mode default or always_per_event")
+    return mode
+
+
+def _has_enabled_approval_gate(policy: Mapping[str, Any] | None) -> bool:
+    return (
+        isinstance(policy, Mapping)
+        and policy.get("enabled") is True
+        and policy.get("configured_gate") is True
+    )
 
 
 def _validate_posture(value: str) -> None:
@@ -154,9 +205,29 @@ class ToolPresentation:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. These can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
+    # Aliasable resource_params the domain resolves for the broker, by closed
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
+    # so these can narrow an owner term too.
+    alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -227,9 +298,29 @@ class ToolDescriptor:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    # RFC 0038 D19 (optional, additive): the arguments that carry the content a call delivers.
+    # With recipient_params they let an approval card rebuild the exact stored call.
+    content_params: tuple[str, ...] | None = None
+    # An optional composite scope: these two resource_params are scoped as one pair (never
+    # as a cross product of their separate sets). See ``capability_broker.pairs``.
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. These can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
+    # RFC 0038 S6 declared dependency IDs (capability_dependencies): a sorted
+    # set of providers this tool needs. Empty means none; never grants a tool.
+    depends_on: tuple[str, ...] | None = ()
+    # Aliasable resource_params the domain resolves for the broker, by closed
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
+    # so these can narrow an owner term too.
+    alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -247,6 +338,10 @@ class ToolDescriptor:
             and not _owner_only_tool(self.canonical_name)
             and self.authorization_complete
             and self.effect_class != "transact"
+            and (
+                declared_approval_mode(self.approval_policy) != "always_per_event"
+                or _has_enabled_approval_gate(self.approval_policy)
+            )
         )
 
 
@@ -385,7 +480,9 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         problems.append("idempotency")
     if not isinstance(descriptor.owner_authority, bool):
         problems.append("owner_authority")
-    if not isinstance(descriptor.approval_policy, Mapping):
+    try:
+        declared_approval_mode(descriptor.approval_policy)
+    except ToolCatalogError:
         problems.append("approval_policy")
     properties = descriptor.input_schema.get("properties", {})
     selection = descriptor.selection_bound
@@ -405,6 +502,36 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
             or len(value) != len(set(value))
         ):
             problems.append(name)
+    alias_free = descriptor.alias_free_params
+    if (
+        not isinstance(alias_free, tuple)
+        or not isinstance(resource_params, tuple)
+        or any(not isinstance(arg, str) or arg not in resource_params for arg in alias_free)
+        or len(alias_free) != len(set(alias_free))
+    ):
+        problems.append("alias_free_params")
+    categories = descriptor.categories
+    if (
+        not isinstance(categories, tuple)
+        or any(not isinstance(item, str) or item not in CATEGORIES for item in categories)
+        or list(categories) != sorted(set(categories))
+    ):
+        problems.append("categories")
+    if dependency_problem(descriptor.depends_on):
+        problems.append("depends_on")
+    resolvers = descriptor.alias_resolvers
+    if (
+        not isinstance(resolvers, Mapping)
+        or not isinstance(resource_params, tuple)
+        or any(
+            not isinstance(arg, str)
+            or arg not in resource_params
+            or (isinstance(alias_free, tuple) and arg in alias_free)
+            or kind not in ALIAS_KINDS
+            for arg, kind in resolvers.items()
+        )
+    ):
+        problems.append("alias_resolvers")
     recipients = descriptor.recipient_params
     if not isinstance(recipients, RecipientParameters):
         problems.append("recipient_params")
@@ -441,7 +568,69 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         recipients.argument_names or recipients.undeterminable or recipients.default_owner_condition
     ):
         problems.append("recipient_params")
+    content = descriptor.content_params
+    if content is not None and (
+        not isinstance(content, tuple)
+        or not content
+        or any(not isinstance(arg, str) or not arg.strip() for arg in content)
+        or len(content) != len(set(content))
+        or not isinstance(properties, Mapping)
+        or any(arg not in properties.keys() for arg in content)
+        or (
+            isinstance(recipients, RecipientParameters)
+            and set(content) & set(recipients.argument_names)
+        )
+    ):
+        problems.append("content_params")
+    pair = descriptor.resource_pair
+    if pair is not None and (
+        not isinstance(pair, tuple)
+        or len(pair) != 2
+        or pair[0] == pair[1]
+        or not isinstance(resource_params, tuple)
+        or not isinstance(selection, Mapping)
+        or any(not isinstance(arg, str) or arg not in resource_params for arg in pair)
+        or any(selection.get(arg) for arg in pair)
+    ):
+        problems.append("resource_pair")
     return problems
+
+
+_MEMORY_STORES = frozenset({"episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"})
+#: RFC 0038 D6 reads audited as stamp-complete (bu-dhloi1.33), with the stores each
+#: audit covered: every record they return reaches ``stamp_account.account_records``
+#: and nothing else reaches their output. ``tests/contracts/test_stamp_complete_tools.py``
+#: pins each one. ``relationship_lookup`` and ``note_search`` are not here: entity names come
+#: from ``public.entities``, which has no stamp, so they stay ``untrusted``.
+STAMP_COMPLETE_READS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
+    {
+        ("memory", "memory_search"): _MEMORY_STORES,
+        ("memory", "memory_recall"): _MEMORY_STORES,
+        ("memory", "memory_get"): _MEMORY_STORES,
+        ("relationship", "note_list"): frozenset({"facts"}),
+        ("core", "conversation_recall"): frozenset(
+            {"public.dashboard_conversations", "public.dashboard_messages"}
+        ),
+        ("core", "conversation_thread_read"): frozenset(
+            {"public.dashboard_conversations", "public.dashboard_messages"}
+        ),
+    }
+)
+
+
+def _validate_stamp_complete(descriptor: ToolDescriptor) -> None:
+    """A stamped read must be an audited one, over exactly the stores its audit covered."""
+    name = descriptor.canonical_name
+    audited = STAMP_COMPLETE_READS.get((descriptor.module_name, name))
+    if audited is None:
+        raise ToolCatalogError(f"stamped output has no audited stamp producer: {name}")
+    if descriptor.effect_class != "read" or descriptor.unknown_output_source:
+        raise ToolCatalogError(f"stamped output of {name} must be a read of known provenance")
+    unaudited = set(descriptor.read_stores) - audited
+    if unaudited:
+        raise ToolCatalogError(
+            f"stamped read {name} covers unaudited stores: {', '.join(sorted(unaudited))}"
+        )
 
 
 def validate_authorization_catalog(
@@ -468,6 +657,10 @@ def validate_authorization_catalog(
             raise ToolCatalogError(
                 f"invalid authorization metadata for {name}: {', '.join(problems)}"
             )
+        if declared_approval_mode(descriptor.approval_policy) == "always_per_event" and not (
+            _has_enabled_approval_gate(descriptor.approval_policy)
+        ):
+            raise ToolCatalogError(f"always_per_event tool has no enabled approvals gate: {name}")
         if descriptor.output_trust == "trusted":
             for store in descriptor.read_stores:
                 writers = store_writers.get(store)
@@ -483,7 +676,7 @@ def validate_authorization_catalog(
             if descriptor.unknown_output_source:
                 raise ToolCatalogError(f"trusted read {name} has unknown output provenance")
         if descriptor.output_trust == "stamped":
-            raise ToolCatalogError(f"stamped output has no implemented stamp producer: {name}")
+            _validate_stamp_complete(descriptor)
 
 
 async def build_tool_catalog(
@@ -533,11 +726,29 @@ async def build_tool_catalog(
                     field_name: (
                         _freeze(getattr(declared, field_name, None))
                         if field_name
-                        in {"approval_policy", "resource_params", "selection_bound", "safety_args"}
+                        in {
+                            "approval_policy",
+                            "resource_params",
+                            "selection_bound",
+                            "safety_args",
+                        }
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS
+                    if field_name
+                    not in {"alias_free_params", "categories", "depends_on", "alias_resolvers"}
                 },
+                # Undeclared means no identifier is alias-free or resolved:
+                # nothing can narrow an owner term on this tool.
+                alias_free_params=tuple(getattr(declared, "alias_free_params", None) or ()),
+                # Carried as declared: undeclared stays None, which is ungrantable.
+                categories=getattr(declared, "categories", None),
+                depends_on=tuple(getattr(declared, "depends_on", None) or ()),
+                alias_resolvers=MappingProxyType(
+                    dict(getattr(declared, "alias_resolvers", None) or {})
+                ),
+                content_params=getattr(declared, "content_params", None),
+                resource_pair=getattr(declared, "resource_pair", None),
                 read_stores=tuple(getattr(declared, "read_stores", ())),
                 write_stores=tuple(getattr(declared, "write_stores", ())),
                 unknown_output_source=getattr(declared, "unknown_output_source", True),
@@ -569,6 +780,17 @@ async def build_tool_catalog(
                 "read_stores": descriptor.read_stores,
                 "write_stores": descriptor.write_stores,
                 "unknown_output_source": descriptor.unknown_output_source,
+                # Published only when declared, so undeclared tools keep their digest.
+                **(
+                    {"content_params": descriptor.content_params}
+                    if descriptor.content_params is not None
+                    else {}
+                ),
+                **(
+                    {"resource_pair": descriptor.resource_pair}
+                    if descriptor.resource_pair is not None
+                    else {}
+                ),
             }
         )
         for descriptor in descriptors

@@ -62,7 +62,7 @@ async def _discover_session_schemas(pool: asyncpg.Pool) -> tuple[str, ...]:
         FROM information_schema.tables
         WHERE table_name = 'sessions'
           AND table_schema != ALL($1::text[])
-          AND table_schema NOT LIKE 'pg_%'
+          AND left(table_schema, 3) <> 'pg_'
         ORDER BY table_schema ASC
         """,
         list(_INTERNAL_SCHEMAS),

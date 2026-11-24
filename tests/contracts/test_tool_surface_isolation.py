@@ -96,9 +96,12 @@ class TestEphemeralMcpConfig:
         # This is derived from decorator calls in the dispatcher, rather than
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
-        assert len(inventory) == 87
-        assert sum(group is not None for group in inventory.values()) == 79
+        # +4: Switchboard's fleet-case service twins (RFC 0038 D7, bu-2c1g7v).
+        assert len(inventory) == 99
+        assert sum(group is not None for group in inventory.values()) == 89
         assert inventory["schedule_toggle"] == "scheduling"
+        assert inventory["metric_baseline_get"] == "infra"
+        assert inventory["skill_read"] == "infra"
         assert {
             "state",
             "infra",
@@ -119,6 +122,8 @@ class TestEphemeralMcpConfig:
         } == {group for group in inventory.values() if group is not None}
         assert {
             "cancel_session",
+            "report_error",
+            "get_healing_status",
             "route.execute",
             "delivery_preferences_set",
             "delivery_preferences_get",
@@ -586,4 +591,6 @@ class TestToolBudgetDiscipline:
 
         # route.execute is a direct infrastructure registration, so an empty
         # group allowlist does not suppress it.
-        assert {"route.execute", "cancel_session"} == {name for name, _ in registrations}
+        assert {"route.execute", "cancel_session", "report_error", "get_healing_status"} == {
+            name for name, _ in registrations
+        }

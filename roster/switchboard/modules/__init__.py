@@ -36,8 +36,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.core.dashboard_links import dashboard_base_url
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.credential_store import resolve_owner_telegram_recipient
-from butlers.modules.approvals.notifications import dashboard_base_url
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
 from butlers.tools.switchboard.runtime_attention.worker import (
@@ -75,6 +76,7 @@ class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
     -----------
     routing : list_butlers, route, correct_route, deliver
     lifecycle : connector_disconnect
+    identity : identity_ignore_unknown_sender (approval-gated; bu-p7glz9)
     extraction : log_extraction, extraction_log_list, extraction_log_undo
     backfill : create_backfill_job, backfill_pause, backfill_cancel,
                backfill_resume, backfill_list
@@ -101,14 +103,22 @@ class SwitchboardModule(Module):
         return SwitchboardModuleConfig
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
-        """Declare the connector identity as safety-critical for approval rules."""
+        """Declare each gated call's full resource identity safety-critical for rules."""
         return {
+            "identity_ignore_unknown_sender": ToolMeta(
+                arg_sensitivities={
+                    "entity_id": True,
+                    "channel": True,
+                    "address": True,
+                    "display_name": True,
+                }
+            ),
             "connector_disconnect": ToolMeta(
                 arg_sensitivities={
                     "connector_type": True,
                     "endpoint_identity": True,
                 }
-            )
+            ),
         }
 
     async def on_startup(
@@ -161,7 +171,8 @@ class SwitchboardModule(Module):
         while True:
             try:
                 await worker.run_once()
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.exception("Runtime-attention delivery worker pass failed")
             try:
                 await asyncio.sleep(_RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS)

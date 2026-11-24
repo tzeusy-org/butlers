@@ -71,7 +71,7 @@ async def test_refresh_tool_dispatches_exact_silent_target_and_returns_metadata_
             {"covered_at": built_at},
         ]
     )
-    outcome = DayCloseCacheWriteOutcome()
+    outcome = DayCloseCacheWriteOutcome(coverage_recorded=True)
 
     with patch(
         "butlers.core_tools._chronicler.write_day_close_cache",
@@ -171,7 +171,7 @@ async def test_refresh_tool_dispatches_after_the_tuple_rate_limit_expires() -> N
 
     with patch(
         "butlers.core_tools._chronicler.write_day_close_cache",
-        new=AsyncMock(return_value=DayCloseCacheWriteOutcome()),
+        new=AsyncMock(return_value=DayCloseCacheWriteOutcome(coverage_recorded=True)),
     ):
         response = await refresh(date_label="2026-09-03", timezone="Asia/Singapore")
 
@@ -195,7 +195,7 @@ async def test_refresh_tool_retries_a_fresh_cache_that_has_no_coverage_witness()
 
     with patch(
         "butlers.core_tools._chronicler.write_day_close_cache",
-        new=AsyncMock(return_value=DayCloseCacheWriteOutcome()),
+        new=AsyncMock(return_value=DayCloseCacheWriteOutcome(coverage_recorded=True)),
     ):
         response = await refresh(date_label="2026-09-03", timezone="Asia/Singapore")
 
@@ -231,7 +231,7 @@ async def test_refresh_tool_serializes_concurrent_calls_before_dispatch() -> Non
     daemon._dispatch_scheduled_task.side_effect = dispatch
     with patch(
         "butlers.core_tools._chronicler.write_day_close_cache",
-        new=AsyncMock(return_value=DayCloseCacheWriteOutcome()),
+        new=AsyncMock(return_value=DayCloseCacheWriteOutcome(coverage_recorded=True)),
     ):
         first = asyncio.create_task(refresh(date_label="2026-09-03", timezone="Asia/Singapore"))
         await dispatch_started.wait()
@@ -272,7 +272,7 @@ async def test_refresh_tool_deadline_includes_waiting_for_the_tuple_lock(
     daemon._dispatch_scheduled_task.side_effect = dispatch
     with patch(
         "butlers.core_tools._chronicler.write_day_close_cache",
-        new=AsyncMock(return_value=DayCloseCacheWriteOutcome()),
+        new=AsyncMock(return_value=DayCloseCacheWriteOutcome(coverage_recorded=True)),
     ):
         first = asyncio.create_task(refresh(date_label="2026-09-03", timezone="Asia/Singapore"))
         await dispatch_started.wait()
@@ -296,23 +296,29 @@ async def test_refresh_tool_deadline_includes_waiting_for_the_tuple_lock(
 @pytest.mark.parametrize(
     ("outcome", "initial_witness", "final_witness", "expected_status", "expected_code"),
     [
-        (DayCloseCacheWriteOutcome(quiet=True), False, True, "success", None),
         (
-            DayCloseCacheWriteOutcome(invalid_reason="date_mismatch"),
+            DayCloseCacheWriteOutcome(quiet=True, coverage_recorded=True),
+            False,
+            True,
+            "success",
+            None,
+        ),
+        (
+            DayCloseCacheWriteOutcome(invalid_reason="date_mismatch", coverage_recorded=True),
             True,
             True,
             "success",
             "date_mismatch",
         ),
         (
-            DayCloseCacheWriteOutcome(invalid_reason="date_mismatch"),
+            DayCloseCacheWriteOutcome(invalid_reason="date_mismatch", coverage_recorded=True),
             False,
             False,
             "error",
             "coverage_witness_write_failed",
         ),
         (
-            DayCloseCacheWriteOutcome(),
+            DayCloseCacheWriteOutcome(coverage_recorded=True),
             False,
             False,
             "error",
@@ -509,3 +515,39 @@ def test_manual_refresh_tool_policy_allows_only_the_bounded_bundle_read() -> Non
             }
     finally:
         reset_current_runtime_trigger_source(trigger_token)
+
+
+async def test_dashboard_and_private_held_caller_share_one_refresh_lock() -> None:
+    import asyncio
+
+    from butlers.chronicler.day_close_refresh import held_refresh_service
+
+    pool, daemon, refresh = _capture_tool()
+    state = {"built": None}
+    now = datetime.now(UTC)
+
+    async def read(sql, *args):
+        if "scheduled_tasks" in sql:
+            return {"prompt": "Close the day", "complexity": "workhorse"}
+        if state["built"] is None:
+            return None
+        return {"covered_at": now} if "covered_local_days" in sql else {"cache_built_at": now}
+
+    async def write(*args, **kwargs):
+        await asyncio.sleep(0)
+        state["built"] = now
+        return DayCloseCacheWriteOutcome(coverage_recorded=True)
+
+    pool.fetchrow = read
+    pool.fetchval = AsyncMock(return_value=None)
+    with patch("butlers.core_tools._chronicler.write_day_close_cache", write):
+        service = held_refresh_service(daemon, pool)
+        responses = await asyncio.gather(
+            refresh(date_label="2026-05-01", timezone="UTC"),
+            service.refresh(date(2026, 5, 1), "UTC", writer=write),
+        )
+    assert sorted(response.get("code", response["status"]) for response in responses) == [
+        "day_close_rate_limited",
+        "success",
+    ]
+    daemon._dispatch_scheduled_task.assert_awaited_once()

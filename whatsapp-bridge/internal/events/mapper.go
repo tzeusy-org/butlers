@@ -66,10 +66,28 @@ func MapMessage(evt *waEvents.Message, participantCount int) *BridgeEvent {
 		"is_from_me": info.IsFromMe,
 		"is_group":   info.IsGroup,
 		"type":       be.Type,
+		// Live delivery. The bridge's own sends never arrive here: whatsmeow
+		// skips its own device when encrypting a send (send.go,
+		// encryptMessageForDevices) and dispatches no local event for it, so a
+		// live is_from_me message was sent from another of the owner's devices.
+		"from_history": false,
 	}
 	be.Raw, _ = json.Marshal(rawSummary)
 
 	return be
+}
+
+// MarkFromHistory records that be came from a WhatsApp history sync rather
+// than live delivery. History can carry what any linked device sent, a past
+// bridge device's sends included, so consumers that need text the owner typed
+// refuse it.
+func MarkFromHistory(be *BridgeEvent) {
+	var raw map[string]any
+	if err := json.Unmarshal(be.Raw, &raw); err != nil || raw == nil {
+		raw = map[string]any{}
+	}
+	raw["from_history"] = true
+	be.Raw, _ = json.Marshal(raw)
 }
 
 // MapSessionInvalidated creates a session_invalidated BridgeEvent.
@@ -244,6 +262,10 @@ func isForwarded(msg *waE2E.Message) bool {
 		msg.GetAudioMessage().GetContextInfo(),
 		msg.GetDocumentMessage().GetContextInfo(),
 		msg.GetStickerMessage().GetContextInfo(),
+		msg.GetLocationMessage().GetContextInfo(),
+		msg.GetContactMessage().GetContextInfo(),
+		msg.GetPollCreationMessage().GetContextInfo(),
+		msg.GetGroupInviteMessage().GetContextInfo(),
 	} {
 		if ctx.GetIsForwarded() {
 			return true

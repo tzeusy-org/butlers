@@ -36,8 +36,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -51,35 +49,20 @@ SEARCH_PATH = "/api/relationship/entities/search"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + memory + relationship chains (flat public topology)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def rel_pool(db) -> asyncpg.Pool:
+    """Core + memory + relationship chains (flat public topology)."""
+    p = await db("core", "memory", "relationship")
     await p.execute("TRUNCATE TABLE relationship.entity_facts CASCADE")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 @pytest.fixture
-def search_app(pool: asyncpg.Pool) -> FastAPI:
+def search_app(rel_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose relationship router is wired to the real migrated pool."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = rel_pool
 
     application = create_app()
     for butler_name, _router_module in application.state.butler_routers:
@@ -140,17 +123,19 @@ async def _get(app: FastAPI, **params) -> httpx.Response:
 # ---------------------------------------------------------------------------
 
 
-async def test_search_returns_200_with_int_scores_against_real_backend(search_app, pool):
+async def test_search_returns_200_with_int_scores_against_real_backend(search_app, rel_pool):
     """The endpoint SQL must bind the score constants as int (not infer text).
 
     Without the ``$N::int`` casts, asyncpg raises
     ``DataError: invalid input for query argument $2: 100`` and the endpoint
     500s. With the casts, every branch returns its integer score.
     """
-    await _make_owner(pool)
-    alice = await _make_entity(pool, "Alice Example")  # prefix (100) + substring (50)
+    await _make_owner(rel_pool)
+    alice = await _make_entity(rel_pool, "Alice Example")  # prefix (100) + substring (50)
     # contact-fact (70): a has-email fact whose object contains the query.
-    await _add_contact_fact(pool, subject=alice, predicate="has-email", object_value="alice@x.io")
+    await _add_contact_fact(
+        rel_pool, subject=alice, predicate="has-email", object_value="alice@x.io"
+    )
 
     resp = await _get(search_app, q="Alice")
 
@@ -164,18 +149,18 @@ async def test_search_returns_200_with_int_scores_against_real_backend(search_ap
     assert result["match_kind"] == "prefix"
 
 
-async def test_search_contact_fact_branch_scores_int(search_app, pool):
+async def test_search_contact_fact_branch_scores_int(search_app, rel_pool):
     """Exercise the contact-fact (70) score branch — the $3 untyped param.
 
     The contact-fact branch only matches ``has-%`` predicates whose literal
     object contains the query; this asserts that branch also returns an
     integer score against the real backend (not just the $2 prefix branch).
     """
-    await _make_owner(pool)
-    bob = await _make_entity(pool, "Bob")
+    await _make_owner(rel_pool)
+    bob = await _make_entity(rel_pool, "Bob")
     # Contact-fact value match: a has-* fact whose object contains "vendor".
     await _add_contact_fact(
-        pool, subject=bob, predicate="has-handle", object_value="vendor-account-42"
+        rel_pool, subject=bob, predicate="has-handle", object_value="vendor-account-42"
     )
 
     resp = await _get(search_app, q="vendor")
@@ -189,17 +174,19 @@ async def test_search_contact_fact_branch_scores_int(search_app, pool):
     assert bob_result["match_kind"] == "contact_fact"
 
 
-async def test_search_predicate_branch_scores_int(search_app, pool):
+async def test_search_predicate_branch_scores_int(search_app, rel_pool):
     """Exercise the predicate-label (30) score branch — the $5 untyped param.
 
     Searching for a term contained in a fact's predicate label hits branch 4
     (``predicate ILIKE '%q%'``). This asserts that branch returns an integer
     score against the real backend.
     """
-    await _make_owner(pool)
-    carol = await _make_entity(pool, "Carol")
+    await _make_owner(rel_pool)
+    carol = await _make_entity(rel_pool, "Carol")
     # Predicate-label match: searching "purchased" matches "purchased-from".
-    await _add_contact_fact(pool, subject=carol, predicate="purchased-from", object_value="acme")
+    await _add_contact_fact(
+        rel_pool, subject=carol, predicate="purchased-from", object_value="acme"
+    )
 
     resp = await _get(search_app, q="purchased")
 

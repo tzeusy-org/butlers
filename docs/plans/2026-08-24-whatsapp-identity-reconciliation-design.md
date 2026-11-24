@@ -227,7 +227,11 @@ following:
 - no rejected, abandoned, or conflicting exact-pair review decision.
 
 Reference discovery must use PostgreSQL catalog metadata plus explicit checks for UUIDs stored as text
-objects. A source with any reference is skipped, not partially repaired.
+objects. A source with any reference is skipped, not partially repaired. Historical merge receipts in `public.entity_rebind_log` are
+semantic audit references, so their source/target FKs do not constitute live source ownership. They
+remain intact alongside the tombstoned source; this exception does not suppress any other catalog FK
+or explicit protected-reference check. A receipt-only merge completes normally, while a genuine
+postcondition failure after commit still reports `partial_apply`, the committed count, and exit 3.
 
 Because these sources are proven empty shells, the operation does not need to reconcile aliases,
 roles, metadata, or cross-module facts. The existing audited relationship merge transaction is

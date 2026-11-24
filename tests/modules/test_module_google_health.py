@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.modules.base import Module
@@ -32,6 +32,9 @@ from butlers.modules.google_health import (
     GoogleHealthConfig,
     GoogleHealthModule,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.mcp import registered_tools
+from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
 
@@ -62,87 +65,37 @@ def health_module() -> GoogleHealthModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-google_health-tools")
 
 
-class _FakePool:
-    """Minimal asyncpg-pool double: routes fetch/fetchrow/fetchval by canned data.
+def _empty_pool() -> FakePool:
+    """A fact store with no health facts: every read comes back empty.
 
-    ``rows_by_predicate`` maps a predicate to the list of raw row dicts
-    ``fetch``/``fetchrow`` should serve for queries mentioning that predicate
-    in their SQL text — good enough for these single-predicate-per-query tools
-    without needing a real Postgres connection (matches the mocked-pool
-    convention already used in tests/jobs/test_health_jobs.py).
+    The tools aggregate in SQL; these DB-free tests serve the already-aggregated
+    rows and pin the Python-side arithmetic and empty-result contract.
     """
-
-    def __init__(self, rows_by_predicate: dict[str, list[dict[str, Any]]] | None = None) -> None:
-        self._rows_by_predicate = rows_by_predicate or {}
-
-    def _rows_for(self, sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
-        # Predicate is either inlined literally in the SQL text (sleep, spo2,
-        # vo2_max, activity) or passed as the first bind parameter
-        # (the shared _daily_numeric_rollup helper used by hr/hrv/breathing).
-        haystack = sql if not args else f"{sql} {args[0]}"
-        for predicate, rows in self._rows_by_predicate.items():
-            if predicate in haystack:
-                return rows
-        return []
-
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        return self._rows_for(sql, args)
-
-    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        rows = self._rows_for(sql, args)
-        return rows[0] if rows else None
-
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        rows = self._rows_for(sql, args)
-        if not rows:
-            return None
-        row = rows[0]
-        return row.get("valid_at")
+    return fake_pool(fetch=[], fetchrow=None, fetchval=None)
 
 
-def _make_connected_module(pool: _FakePool | None = None) -> tuple[GoogleHealthModule, MagicMock]:
-    """Return a module with _scopes_ok=True and a fresh mock_mcp bound to *pool*."""
+def _make_connected_module(
+    pool: FakePool | None = None,
+) -> tuple[GoogleHealthModule, FastMCP, SimpleNamespace]:
+    """Return a connected module, real MCP server, and explicit pool holder."""
     module = GoogleHealthModule()
     module._scopes_ok = True
-
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    mcp._db = SimpleNamespace(pool=pool or _FakePool())
-    return module, mcp
+    mcp = FastMCP("providers8-google-health-connected-tools")
+    db = SimpleNamespace(pool=pool or _empty_pool())
+    return module, mcp, db
 
 
-async def _register(module: GoogleHealthModule, mcp: MagicMock) -> None:
-    await module.register_tools(mcp=mcp, config={}, db=mcp._db, butler_name="health")
+def _queried(mock: AsyncMock) -> list[str]:
+    """SQL text plus bind args of every awaited call, for predicate checks."""
+    return [" ".join(str(part) for part in call.args) for call in mock.await_args_list]
+
+
+async def _register(module: GoogleHealthModule, mcp: FastMCP, db: SimpleNamespace) -> None:
+    await module.register_tools(mcp=mcp, config={}, db=db, butler_name="health")
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +151,7 @@ class TestToolRegistration:
     ) -> None:
         """All eight tools are registered regardless of credentials."""
         await health_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HEALTH_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HEALTH_TOOLS
 
     async def test_registers_tools_when_not_connected(
         self, health_module: GoogleHealthModule, mock_mcp: MagicMock
@@ -206,7 +159,7 @@ class TestToolRegistration:
         """Tools are registered even when credentials are absent (degraded mode)."""
         # Module never had on_startup called — _scopes_ok is False
         await health_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        assert len(mock_mcp._registered_tools) == len(EXPECTED_HEALTH_TOOLS)
+        assert len(await registered_tools(mock_mcp)) == len(EXPECTED_HEALTH_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +288,7 @@ class TestToolsNotConnected:
         module = GoogleHealthModule()
         # _scopes_ok defaults to False
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        result = await mock_mcp._registered_tools[tool_name]()
+        result = await (await registered_tools(mock_mcp))[tool_name]()
         assert result == {"error": _NOT_CONNECTED_ERROR}
 
 
@@ -349,9 +302,9 @@ class TestToolsEmptyData:
 
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_HEALTH_TOOLS))
     async def test_every_tool_reports_found_false_on_empty_pool(self, tool_name: str) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        result = await mcp._registered_tools[tool_name]()
+        module, mcp, db = _make_connected_module(_empty_pool())
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))[tool_name]()
         assert result["found"] is False
         assert "message" in result
 
@@ -364,22 +317,20 @@ class TestToolsEmptyData:
 class TestToolComputation:
     async def test_sleep_latest_returns_computed_numbers(self) -> None:
         now = datetime.now(tz=UTC)
-        rows = {
-            "sleep_session": [
-                {
-                    "valid_at": now,
-                    "content": "Sleep: 7h 32m",
-                    "metadata": {
-                        "duration_ms": 27120000,
-                        "efficiency": 91,
-                        "stages": {"deep": 95, "light": 220, "rem": 137, "wake": 40},
-                    },
-                }
-            ]
-        }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_sleep_latest"]()
+        latest = row(
+            valid_at=now,
+            content="Sleep: 7h 32m",
+            metadata={
+                "duration_ms": 27120000,
+                "efficiency": 91,
+                "stages": {"deep": 95, "light": 220, "rem": 137, "wake": 40},
+            },
+        )
+        pool = fake_pool(fetchrow=latest)
+        module, mcp, db = _make_connected_module(pool)
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_sleep_latest"]()
+        assert "'sleep_session'" in _queried(pool.fetchrow)[0]
         assert result["found"] is True
         assert result["duration_minutes"] == 452.0
         assert result["efficiency"] == 91
@@ -387,31 +338,31 @@ class TestToolComputation:
 
     async def test_sleep_history_computes_averages_over_seeded_sessions(self) -> None:
         now = datetime.now(tz=UTC)
-        rows = {
-            "sleep_session": [
-                {
-                    "valid_at": now - timedelta(days=1),
-                    "content": "Sleep A",
-                    "metadata": {
-                        "duration_ms": 27_000_000,  # 450 min
-                        "efficiency": 90,
-                        "stages": {"deep": 90, "light": 200, "rem": 130, "wake": 30},
-                    },
+        sessions = [
+            row(
+                valid_at=now - timedelta(days=1),
+                content="Sleep A",
+                metadata={
+                    "duration_ms": 27_000_000,  # 450 min
+                    "efficiency": 90,
+                    "stages": {"deep": 90, "light": 200, "rem": 130, "wake": 30},
                 },
-                {
-                    "valid_at": now - timedelta(days=2),
-                    "content": "Sleep B",
-                    "metadata": {
-                        "duration_ms": 25_200_000,  # 420 min
-                        "efficiency": 80,
-                        "stages": {"deep": 70, "light": 200, "rem": 110, "wake": 40},
-                    },
+            ),
+            row(
+                valid_at=now - timedelta(days=2),
+                content="Sleep B",
+                metadata={
+                    "duration_ms": 25_200_000,  # 420 min
+                    "efficiency": 80,
+                    "stages": {"deep": 70, "light": 200, "rem": 110, "wake": 40},
                 },
-            ]
-        }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_sleep_history"](days=7)
+            ),
+        ]
+        pool = fake_pool(fetch=sessions)
+        module, mcp, db = _make_connected_module(pool)
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_sleep_history"](days=7)
+        assert "'sleep_session'" in _queried(pool.fetch)[0]
         assert result["found"] is True
         assert result["avg_duration_minutes"] == 435.0
         assert result["avg_efficiency"] == 85.0
@@ -421,27 +372,27 @@ class TestToolComputation:
 
     async def test_hr_history_computes_summary_and_trend(self) -> None:
         now = datetime.now(tz=UTC)
-        rows = {
-            "measurement_resting_hr": [
-                {
-                    "day": (now - timedelta(days=2)).date(),
-                    "mean_value": 60,
-                    "min_value": 60,
-                    "max_value": 60,
-                    "n": 1,
-                },
-                {
-                    "day": (now - timedelta(days=1)).date(),
-                    "mean_value": 62,
-                    "min_value": 62,
-                    "max_value": 62,
-                    "n": 1,
-                },
-            ]
-        }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_hr_history"](days=30)
+        daily = [
+            row(
+                day=(now - timedelta(days=2)).date(),
+                mean_value=60,
+                min_value=60,
+                max_value=60,
+                n=1,
+            ),
+            row(
+                day=(now - timedelta(days=1)).date(),
+                mean_value=62,
+                min_value=62,
+                max_value=62,
+                n=1,
+            ),
+        ]
+        pool = fake_pool(fetch=daily)
+        module, mcp, db = _make_connected_module(pool)
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_hr_history"](days=30)
+        assert pool.fetch.await_args.args[1] == "measurement_resting_hr"
         assert result["found"] is True
         assert result["summary"]["min"] == 60
         assert result["summary"]["max"] == 62
@@ -451,17 +402,15 @@ class TestToolComputation:
 
     async def test_vo2_max_latest_returns_computed_numbers(self) -> None:
         now = datetime.now(tz=UTC)
-        rows = {
-            "measurement_vo2_max": [
-                {
-                    "valid_at": now,
-                    "metadata": {"range_low": 44.0, "range_high": 49.0, "midpoint": 46.5},
-                }
-            ]
-        }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_vo2_max_latest"]()
+        latest = row(
+            valid_at=now,
+            metadata={"range_low": 44.0, "range_high": 49.0, "midpoint": 46.5},
+        )
+        pool = fake_pool(fetchrow=latest)
+        module, mcp, db = _make_connected_module(pool)
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_vo2_max_latest"]()
+        assert "'measurement_vo2_max'" in _queried(pool.fetchrow)[0]
         assert result["found"] is True
         assert result["value"] == 46.5
         assert result["midpoint"] == 46.5
@@ -471,23 +420,23 @@ class TestToolComputation:
     async def test_activity_summary_joins_steps_and_active_minutes_by_day(self) -> None:
         now = datetime.now(tz=UTC)
         day = (now - timedelta(days=1)).date()
-        rows = {
-            "measurement_steps": [
-                {"day": day, "steps": 12000, "distance_km": 9.0, "floors": 5},
-            ],
-            "measurement_active_minutes": [
-                {
-                    "day": day,
-                    "very_active": 20,
-                    "fairly_active": 30,
-                    "lightly_active": 90,
-                    "sedentary": 700,
-                },
-            ],
-        }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_activity_summary"](days=7)
+        steps = [row(day=day, steps=12000, distance_km=9.0, floors=5)]
+        active = [
+            row(
+                day=day,
+                very_active=20,
+                fairly_active=30,
+                lightly_active=90,
+                sedentary=700,
+            )
+        ]
+        pool = fake_pool(fetch=AsyncMock(side_effect=[steps, active]))
+        module, mcp, db = _make_connected_module(pool)
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_activity_summary"](days=7)
+        steps_sql, active_sql = _queried(pool.fetch)
+        assert "'measurement_steps'" in steps_sql
+        assert "'measurement_active_minutes'" in active_sql
         assert result["found"] is True
         assert result["avg_steps"] == 12000.0
         assert result["days_meeting_10k_steps"] == 1
@@ -508,14 +457,14 @@ class TestNoInstructionContract:
     ) -> None:
         module = GoogleHealthModule()
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        result = await mock_mcp._registered_tools[tool_name]()
+        result = await (await registered_tools(mock_mcp))[tool_name]()
         assert "instruction" not in result
 
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_HEALTH_TOOLS))
     async def test_empty_data_result_has_no_instruction_key(self, tool_name: str) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        result = await mcp._registered_tools[tool_name]()
+        module, mcp, db = _make_connected_module(_empty_pool())
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))[tool_name]()
         assert "instruction" not in result
 
 
@@ -528,9 +477,9 @@ class TestNoDirectApiCalls:
     """Verify no tool result contains health.googleapis.com."""
 
     async def test_no_tool_contains_googleapis_url(self) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        for _name, fn in mcp._registered_tools.items():
+        module, mcp, db = _make_connected_module(_empty_pool())
+        await _register(module, mcp, db)
+        for _name, fn in (await registered_tools(mcp)).items():
             result = await fn()
             result_str = str(result)
             assert "health.googleapis.com" not in result_str, (

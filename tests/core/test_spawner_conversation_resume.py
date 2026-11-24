@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import QuotaStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -563,6 +564,152 @@ class TestResumeFailureFallsBackToCold:
             ),
             "kind": "same_candidate_cold",
         }
+
+    async def test_unknown_resume_handle_retries_cold_without_breaker_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        """bu-089bjy: the CLI's "No conversation found" rejection of a resume
+        handle was default-closed, so it re-raised as ``runtime_failure`` and
+        opened the model breaker. It must take the cold-retry branch instead."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = _ResumeCapableAdapter(
+            fail_count=1,
+            error=RuntimeError(
+                "Claude CLI exited with code 1: No conversation found with session ID: "
+                "resumable-session-id"
+            ),
+            result_text="cold-succeeded",
+        )
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                side_effect=_catalog_primary_with_receipt,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.conversation_get_provider_session",
+                new_callable=AsyncMock,
+                return_value=_fresh_provider_session(),
+            ),
+            patch(
+                "butlers.core.spawner.conversation_clear_provider_session",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+            ) as mock_next,
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as mock_write,
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "route", conversation_id=_CONVERSATION_ID)
+
+        assert result.success is True
+        assert result.output == "cold-succeeded"
+        assert [c["resume_session_id"] for c in adapter.invoke_calls] == [
+            "resumable-session-id",
+            None,
+        ]
+        mock_next.assert_not_called()
+        mock_clear.assert_awaited_once_with(mock_pool, _CONVERSATION_ID, butler_name=config.name)
+        outcomes = [c.kwargs.get("outcome") for c in mock_write.call_args_list]
+        assert outcomes == ["resume_failure", "success"]
+
+    async def test_usage_limit_on_resume_exhausts_account_instead_of_retrying_cold(
+        self, tmp_path: Path
+    ) -> None:
+        """A usage limit is account-scoped, not a stale handle: the resume attempt
+        must exhaust the account and fail over, never retry the same exhausted
+        candidate cold (bu-s11n0s.36)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        adapter = _ResumeCapableAdapter(
+            fail_count=1,
+            error=RuntimeError("You've hit your usage limit"),
+            result_text="other-account",
+        )
+        reset = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.conversation_get_provider_session",
+                new_callable=AsyncMock,
+                return_value=_fresh_provider_session(),
+            ),
+            patch(
+                "butlers.core.spawner.conversation_clear_provider_session",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(
+                    eligible=True, reason="usage_limit: plan exhausted", reset_at=reset
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt",
+                new_callable=AsyncMock,
+                return_value=42,
+            ) as mock_write,
+            patch("butlers.core.spawner.mark_allowance_exhausted", new_callable=AsyncMock) as mark,
+            patch("butlers.core.spawner.clear_allowance_exhaustion", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=AsyncMock(), runtime=adapter
+            ).trigger("hello", "route", conversation_id=_CONVERSATION_ID)
+
+        assert result.success is True
+        assert [c["model"] for c in adapter.invoke_calls] == ["primary-model", "fallback-model"]
+        assert [c.kwargs["outcome"] for c in mock_write.await_args_list] == [
+            "allowance_exhausted",
+            "success",
+        ]
+        # Resume was attempted but never retried cold on the same candidate.
+        assert {c.kwargs["resume_outcome"] for c in mock_write.await_args_list} == {
+            "resume_failed_terminal"
+        }
+        mark.assert_awaited_once()
+        assert mark.await_args.args[1] == _PRIMARY_CATALOG_ID
+        assert mark.await_args.kwargs == {"reset_at": reset, "attempt_id": 42}
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path

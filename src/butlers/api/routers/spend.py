@@ -790,6 +790,161 @@ class FleetHaltAttentionObservation(BaseModel):
 _FLEET_ATTENTION_REASON_COPY = ATTENTION_REASON_COPY
 
 
+# Hard bound on the aggregated serving-evidence groups embedded in /api/spend.
+# Groups are (model_id, identity_authority, provenance) for the window, so the
+# payload grows with distinct served models, never with attempt volume.
+SERVED_EVIDENCE_GROUP_LIMIT = 50
+
+_TOKEN_BUCKETS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+# A row is "complete" when its usage is invocation-scoped and fully observed;
+# "compared" additionally needs a CLI-reported cost. Only those rows are summed,
+# so a cumulative snapshot is never charged again and a partial row never
+# becomes a zero.
+_SERVED_EVIDENCE_SQL = """
+WITH scoped AS (
+  SELECT usage.*,
+    (usage.cost_scope = 'invocation' AND usage.evidence_state = 'observed'
+     AND usage.input_tokens IS NOT NULL AND usage.output_tokens IS NOT NULL
+     AND usage.cache_read_input_tokens IS NOT NULL
+     AND usage.cache_creation_input_tokens IS NOT NULL) AS complete
+  FROM public.model_served_usage usage
+  JOIN public.model_dispatch_attempts attempt ON attempt.id = usage.attempt_id
+  WHERE usage.recorded_at >= $1::timestamptz
+    AND usage.recorded_at < $2::timestamptz
+    AND ($3::text IS NULL OR attempt.butler = $3)
+)
+SELECT model_id, identity_authority, provenance,
+  count(DISTINCT attempt_id) AS attempt_count,
+  count(*) AS execution_count,
+  count(*) FILTER (WHERE cost_scope <> 'invocation') AS cumulative_count,
+  count(*) FILTER (WHERE complete) AS complete_count,
+  count(*) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL) AS compared_count,
+  sum(input_tokens) FILTER (WHERE complete) AS input_tokens,
+  sum(output_tokens) FILTER (WHERE complete) AS output_tokens,
+  sum(cache_read_input_tokens) FILTER (WHERE complete) AS cache_read_input_tokens,
+  sum(cache_creation_input_tokens) FILTER (WHERE complete) AS cache_creation_input_tokens,
+  sum(input_tokens) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL)
+    AS compared_input_tokens,
+  sum(output_tokens) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL)
+    AS compared_output_tokens,
+  sum(cache_read_input_tokens) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL)
+    AS compared_cache_read_input_tokens,
+  sum(cache_creation_input_tokens) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL)
+    AS compared_cache_creation_input_tokens,
+  sum(reported_cost_usd) FILTER (WHERE complete AND reported_cost_usd IS NOT NULL)
+    AS reported_cost_usd,
+  count(*) OVER () AS group_count
+FROM scoped
+GROUP BY model_id, identity_authority, provenance
+ORDER BY execution_count DESC, model_id, identity_authority, provenance
+LIMIT $4
+"""
+
+
+def _bucket_sums(row, prefix: str = "") -> dict[str, int | None]:
+    return {
+        key: int(row[prefix + key]) if row[prefix + key] is not None else None
+        for key in _TOKEN_BUCKETS
+    }
+
+
+async def _served_cost_evidence(db, pricing, from_date, to_date, *, butler=None):
+    """Bounded per-model comparison evidence; never added to operational ledger totals.
+
+    Returns ``(served_breakdown, reported_cost_comparisons, source_error, truncated)``.
+    """
+    from butlers.api.models.served_identity import ServedCostComparison
+
+    try:
+        pool = db.credential_shared_pool()
+        start_at, end_at = _utc_day_bounds(from_date, to_date)
+        rows = await pool.fetch(
+            _SERVED_EVIDENCE_SQL, start_at, end_at, butler, SERVED_EVIDENCE_GROUP_LIMIT
+        )
+        comparisons = []
+        breakdown = []
+        for row in rows:
+            execution_count = int(row["execution_count"])
+            complete_count = int(row["complete_count"])
+            compared_count = int(row["compared_count"])
+            compared = _bucket_sums(row, "compared_")
+            priced = (
+                pricing.estimate_cost(
+                    row["model_id"],
+                    compared["input_tokens"] or 0,
+                    compared["output_tokens"] or 0,
+                    cached_input_tokens=compared["cache_read_input_tokens"] or 0,
+                    cache_creation_tokens=compared["cache_creation_input_tokens"] or 0,
+                )
+                if complete_count
+                else None
+            )
+            comparable = compared_count > 0 and priced is not None
+            computed = priced if comparable else None
+            reported = (
+                float(row["reported_cost_usd"]) if row["reported_cost_usd"] is not None else None
+            )
+            difference = (
+                round(reported - computed, 6)
+                if comparable and reported is not None and computed is not None
+                else None
+            )
+            fully_compared = comparable and compared_count == execution_count
+            item = ServedCostComparison(
+                model_id=row["model_id"],
+                identity_authority=row["identity_authority"],
+                provenance=row["provenance"],
+                attempt_count=int(row["attempt_count"]),
+                execution_count=execution_count,
+                compared_execution_count=compared_count if comparable else 0,
+                reported_cost_usd=reported if comparable else None,
+                computed_served_cost_usd=computed,
+                difference_usd=difference,
+                difference_ratio=difference / computed
+                if difference is not None and computed
+                else None,
+                comparison_state="comparable"
+                if comparable
+                else "unpriced"
+                if complete_count and priced is None
+                else "unknown",
+                finding="provider_vs_computed_cost" if difference else None,
+                reason=None
+                if fully_compared
+                else "cumulative_scope"
+                if int(row["cumulative_count"])
+                else "partial_coverage"
+                if complete_count < execution_count
+                else "unpriced_model"
+                if priced is None
+                else "missing_reported_cost",
+                token_buckets=compared,
+            ).model_dump()
+            comparisons.append(item)
+            breakdown.append(
+                {
+                    "model_id": row["model_id"],
+                    "identity_authority": row["identity_authority"],
+                    "provenance": row["provenance"],
+                    "attempt_count": int(row["attempt_count"]),
+                    "execution_count": execution_count,
+                    "complete_execution_count": complete_count,
+                    "token_buckets": _bucket_sums(row),
+                }
+            )
+        truncated = bool(rows) and int(rows[0]["group_count"]) > len(rows)
+        return breakdown, comparisons, False, truncated
+    except Exception:
+        logger.debug("Spend serving evidence unavailable")
+        return [], [], True, False
+
+
 @router.get(
     "/runtime-attention",
     response_model=ApiResponse[FleetHaltAttentionObservation],
@@ -897,6 +1052,12 @@ async def get_cost_summary(
     divergences, divergence_source_error = await _ledger_session_divergences(
         db, configs, range_from, range_to, rows
     )
+    (
+        served_breakdown,
+        reported_cost_comparisons,
+        served_source_error,
+        served_evidence_truncated,
+    ) = await _served_cost_evidence(db, pricing, range_from, range_to, butler=butler)
     return ApiResponse[SpendSummary](
         data=SpendSummary(
             period=period_label,
@@ -917,6 +1078,10 @@ async def get_cost_summary(
             divergences=divergences,
             divergence_source_error=divergence_source_error,
             historical_attribution_note=attribution_note,
+            served_breakdown=served_breakdown,
+            reported_cost_comparisons=reported_cost_comparisons,
+            served_source_error=served_source_error,
+            served_evidence_truncated=served_evidence_truncated,
         )
     )
 

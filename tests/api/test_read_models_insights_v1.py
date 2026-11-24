@@ -13,7 +13,7 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -24,6 +24,7 @@ from butlers.api.read_models.insights import (
     query_insight_delivery_state,
     row_to_delivery_state,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -34,13 +35,6 @@ _DELIVERED_AT = _NOW - timedelta(hours=3)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(d: dict):
-    """Wrap a dict in a MagicMock that supports subscript access."""
-    m = MagicMock()
-    m.__getitem__ = lambda self, k: d[k]
-    return m
 
 
 def _aggregate_dict(**overrides) -> dict:
@@ -93,7 +87,7 @@ def test_insight_delivery_columns_has_delivery_attempt_count_filter():
 
 
 def test_row_to_delivery_state_maps_all_fields():
-    row = _make_record(_aggregate_dict())
+    row = Record(_aggregate_dict())
     dto = row_to_delivery_state(row)
 
     assert isinstance(dto, InsightDeliveryStateRow)
@@ -104,13 +98,13 @@ def test_row_to_delivery_state_maps_all_fields():
 
 
 def test_row_to_delivery_state_none_last_delivery_at():
-    row = _make_record(_aggregate_dict(last_delivery_at=None))
+    row = Record(_aggregate_dict(last_delivery_at=None))
     dto = row_to_delivery_state(row)
     assert dto.last_delivery_at is None
 
 
 def test_row_to_delivery_state_zero_counts():
-    row = _make_record(_aggregate_dict(queued=0, delivered=0, failed=0))
+    row = Record(_aggregate_dict(queued=0, delivered=0, failed=0))
     dto = row_to_delivery_state(row)
     assert dto.queued == 0
     assert dto.delivered == 0
@@ -119,7 +113,7 @@ def test_row_to_delivery_state_zero_counts():
 
 def test_row_to_delivery_state_coerces_none_counts_to_zero():
     """None values from the aggregate (empty table) are coerced to int 0."""
-    row = _make_record(_aggregate_dict(queued=None, delivered=None, failed=None))
+    row = Record(_aggregate_dict(queued=None, delivered=None, failed=None))
     dto = row_to_delivery_state(row)
     assert dto.queued == 0
     assert dto.delivered == 0
@@ -134,7 +128,7 @@ def test_row_to_delivery_state_coerces_none_counts_to_zero():
 async def test_query_insight_delivery_state_returns_typed_dto():
     """Returns an InsightDeliveryStateRow when fetchrow succeeds."""
     mock_pool = AsyncMock()
-    row = _make_record(_aggregate_dict())
+    row = Record(_aggregate_dict())
     mock_pool.fetchrow = AsyncMock(return_value=row)
 
     result = await query_insight_delivery_state(mock_pool)
@@ -168,7 +162,7 @@ async def test_query_insight_delivery_state_propagates_exceptions():
 async def test_query_insight_delivery_state_queries_public_insight_candidates():
     """SQL must query public.insight_candidates."""
     mock_pool = AsyncMock()
-    row = _make_record(_aggregate_dict())
+    row = Record(_aggregate_dict())
     mock_pool.fetchrow = AsyncMock(return_value=row)
 
     await query_insight_delivery_state(mock_pool)
@@ -180,7 +174,7 @@ async def test_query_insight_delivery_state_queries_public_insight_candidates():
 async def test_query_insight_delivery_state_sql_uses_column_constant():
     """SQL projection uses INSIGHT_DELIVERY_COLUMNS constant (no inline duplication)."""
     mock_pool = AsyncMock()
-    row = _make_record(_aggregate_dict())
+    row = Record(_aggregate_dict())
     mock_pool.fetchrow = AsyncMock(return_value=row)
 
     await query_insight_delivery_state(mock_pool)
@@ -192,7 +186,7 @@ async def test_query_insight_delivery_state_sql_uses_column_constant():
 async def test_query_insight_delivery_state_sql_has_delivery_attempt_count_filter():
     """SQL must filter failed by delivery_attempt_count >= 3."""
     mock_pool = AsyncMock()
-    row = _make_record(_aggregate_dict())
+    row = Record(_aggregate_dict())
     mock_pool.fetchrow = AsyncMock(return_value=row)
 
     await query_insight_delivery_state(mock_pool)
@@ -204,9 +198,7 @@ async def test_query_insight_delivery_state_sql_has_delivery_attempt_count_filte
 async def test_query_insight_delivery_state_empty_table_returns_zeros():
     """When aggregate returns all-None counts (truly empty table), dto has zero counts."""
     mock_pool = AsyncMock()
-    row = _make_record(
-        _aggregate_dict(queued=None, delivered=None, failed=None, last_delivery_at=None)
-    )
+    row = Record(_aggregate_dict(queued=None, delivered=None, failed=None, last_delivery_at=None))
     mock_pool.fetchrow = AsyncMock(return_value=row)
 
     result = await query_insight_delivery_state(mock_pool)

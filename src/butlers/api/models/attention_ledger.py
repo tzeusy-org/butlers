@@ -12,7 +12,7 @@ back, so a source that was silently failing (e.g. secrets_lifecycle showing
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -93,4 +93,33 @@ class AttentionLedgerSummaryResponse(BaseModel):
     flagged_sources: list[str]
     # False when the ledger's DB pool was unreachable -- all counts above are
     # empty in that case, never a truthful "every source is healthy".
+    source_available: bool = True
+
+
+class InsightClassEfficacy(BaseModel):
+    """One class's latest observational verdict (``public.insight_class_efficacy``)."""
+
+    origin_butler: str
+    category: str
+    priority_band: str
+    bucket_date: date
+    n_treated: int
+    n_holdout: int
+    treated_resolved: int
+    holdout_resolved: int
+    treated_median_resolve_s: float | None = None
+    holdout_median_resolve_s: float | None = None
+    # effective | self_resolving | ignored | unmeasured. Natural arms, not a controlled trial.
+    verdict: str
+    evidence: dict
+    computed_at: datetime
+
+
+class InsightEfficacyResponse(BaseModel):
+    """Latest verdict per (class, priority band). Observe-only: nothing shapes delivery from it."""
+
+    data: list[InsightClassEfficacy]
+    # Always true: the arms are what the budget or the owner's context happened to hold back.
+    observational: bool = True
+    # False when the Switchboard pool was unreachable -- an empty list is then never "no verdicts".
     source_available: bool = True

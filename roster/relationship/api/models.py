@@ -1524,6 +1524,10 @@ class ActivityResponse(BaseModel):
     ``degraded`` is true when the Chronicler contribution could not be read.
     ``degraded_reason`` is a fixed content-blind discriminator, never an
     upstream exception or payload.
+
+    ``chronicler_truncated`` is true when the Chronicler read returned a full
+    500-episode page, so older episodes may be missing from ``total`` and bins.
+    It is false when Chronicler is unavailable (``degraded`` carries that).
     """
 
     items: list[ActivityEntry]
@@ -1532,6 +1536,7 @@ class ActivityResponse(BaseModel):
     offset: int
     degraded: bool = False
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
+    chronicler_truncated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1617,6 +1622,43 @@ class ActivityBinsResponse(BaseModel):
     bins: list[ActivityBin]
     degraded: bool = False
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
+    chronicler_truncated: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Entity commitments (entity-chronicles-and-commitment-doors)
+# ---------------------------------------------------------------------------
+
+
+class EntityCommitmentItem(BaseModel):
+    """One active commitment between the owner and an entity.
+
+    The deliberately minimal Meeting Prep projection: no source, condition ID,
+    episode, state, confidence, timestamps, evidence, or other metadata.
+    """
+
+    kind: Literal["promise", "waiting_for", "follow_up", "obligation", "decision"]
+    direction: Literal["owner_to_other", "other_to_owner"]
+    summary: str
+    deadline: str | None = None
+    escalation_level: Literal["L0", "L1", "L2", "L3"]
+    fingerprint: str
+
+
+class EntityCommitmentsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/commitments``.
+
+    ``degraded`` is true only when the commitment source could not be read;
+    ``degraded_reason`` is then the fixed content-blind discriminator and
+    ``items`` is empty, so a failure never reads as "no commitments".
+    """
+
+    items: list[EntityCommitmentItem]
+    total: int
+    limit: int
+    offset: int
+    degraded: bool = False
+    degraded_reason: Literal["commitment_source_unavailable"] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1848,3 +1890,76 @@ class CandidateFact(ContactFact):
 
 class CandidateFactsResponse(BaseModel):
     facts: list[CandidateFact]
+
+
+# ---------------------------------------------------------------------------
+# Care duties (bu-s11n0s.13 S1): owner-declared duties for dependents
+# ---------------------------------------------------------------------------
+
+
+class CareDuty(BaseModel):
+    """One declared care duty. The subject and carer are entities, never users."""
+
+    id: UUID
+    subject_entity_id: UUID
+    title: str
+    kind: Literal["calendar_anchored", "completion_anchored"]
+    rrule: str | None = None
+    interval_days: int | None = None
+    anchor_at: datetime
+    window_minutes: int
+    lead_time_hours: int
+    default_carrier_entity_id: UUID | None = None
+    retired_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CareDutyListResponse(BaseModel):
+    duties: list[CareDuty]
+
+
+class CreateCareDutyRequest(BaseModel):
+    """Request body for POST /care/duties."""
+
+    subject_entity_id: UUID
+    title: str = Field(min_length=1, max_length=120)
+    kind: Literal["calendar_anchored", "completion_anchored"]
+    rrule: str | None = Field(default=None, max_length=500)
+    interval_days: int | None = Field(default=None, ge=1, le=3650)
+    anchor_at: datetime
+    window_minutes: int = Field(default=0, ge=0, le=1440)
+    lead_time_hours: int = Field(default=24, ge=0, le=720)
+    default_carrier_entity_id: UUID | None = None
+
+
+class SetCareDutyCarrierRequest(BaseModel):
+    """Request body for PUT /care/duties/{id}/carrier; ``null`` clears the default carer."""
+
+    carrier_entity_id: UUID | None = None
+
+
+class AssignCareOccurrenceRequest(BaseModel):
+    """Request body for PUT /care/duties/{id}/occurrences: the owner's carer for one start."""
+
+    occurrence_start: datetime
+    carrier_entity_id: UUID
+    state: Literal["assumed", "confirmed"] = "confirmed"
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class CareOccurrence(BaseModel):
+    """A recorded occurrence. S1 lists only what the owner recorded and never infers coverage."""
+
+    id: UUID
+    duty_id: UUID
+    occurrence_start: datetime
+    carrier_entity_id: UUID | None = None
+    state: Literal["assumed", "confirmed", "at_risk", "uncovered", "done", "missed", "unknown"]
+    reason: str | None = None
+    title: str | None = None
+    subject_entity_id: UUID | None = None
+
+
+class CareOccurrenceListResponse(BaseModel):
+    occurrences: list[CareOccurrence]

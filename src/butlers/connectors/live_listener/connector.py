@@ -53,18 +53,23 @@ if TYPE_CHECKING:
     import asyncpg
 
 import uvicorn
-from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
+from fastapi import FastAPI, Response
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,
     classify_ignore_kind,
 )
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.email_spans import email_untrusted_spans
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
+from butlers.connectors.health_socket import prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
     save_voice_checkpoint,
@@ -96,8 +101,11 @@ from butlers.connectors.live_listener.vad import (
 )
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
+
+_DESCRIPTOR = connector_descriptor("live_listener")
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +131,7 @@ def wall_clock_observed_at(
 DEFAULT_HEALTH_PORT = 40091
 
 # Connector identity constants
-CONNECTOR_TYPE = "live_listener"
+CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # connector_type value for connectors.filtered_events rows. Deliberately
 # distinct from the underscore-spelled `CONNECTOR_TYPE` above (which is
@@ -131,7 +139,10 @@ CONNECTOR_TYPE = "live_listener"
 # `connectors.*` identity space as checkpoint.py / filter_gate.py, which both
 # use this hyphenated "live-listener" spelling (see
 # butlers.connectors.live_listener.envelope.endpoint_identity).
-_FILTERED_EVENTS_CONNECTOR_TYPE = "live-listener"
+_FILTERED_EVENTS_CONNECTOR_TYPE = _DESCRIPTOR.stored_event_type
+
+# How often each mic's replay requests are drained (bu-dhloi1.224).
+_REPLAY_DRAIN_INTERVAL_S = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +222,8 @@ class LiveListenerConnector:
 
         # Pipeline tasks (one per mic)
         self._pipeline_tasks: dict[str, asyncio.Task] = {}
+        # Timer that drains replay requests for every mic (started in start()).
+        self._replay_drain_task: asyncio.Task[None] | None = None
 
         # Background segment-processing tasks (fire-and-forget; held to prevent GC)
         self._background_tasks: set[asyncio.Task] = set()
@@ -317,6 +330,12 @@ class LiveListenerConnector:
             )
             self._pipeline_tasks[spec.name] = task
 
+        # Replay requests are drained on a timer, not only after an utterance.
+        if self._db_pool is not None:
+            self._replay_drain_task = asyncio.create_task(
+                self._replay_drain_loop(), name="live-listener-replay-drain"
+            )
+
         # Start heartbeat
         self._start_heartbeat()
 
@@ -337,6 +356,16 @@ class LiveListenerConnector:
             except Exception:
                 logger.exception("live-listener: error stopping pipeline for mic=%s", mic)
         self._pipeline_tasks.clear()
+
+        # A cancelled drain releases its claims (drain_replay_pending).
+        drain_task = getattr(self, "_replay_drain_task", None)
+        if drain_task is not None:
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+            self._replay_drain_task = None
 
         # Disconnect transcription clients
         for mic, client in self._transcription_clients.items():
@@ -661,16 +690,11 @@ class LiveListenerConnector:
         # --- Ingest submission ---
         submission_start = time.monotonic()
         try:
-            ingest_result = await self._mcp_client.call_tool("ingest", envelope)
+            ingest_result = await submit_ingest(self._mcp_client, envelope)
             submission_elapsed = time.monotonic() - submission_start
             ll_metrics.observe_stage_latency("submission", submission_elapsed)
 
-            # Check response
-            status = "success"
-            if isinstance(ingest_result, dict):
-                status_str = ingest_result.get("status", "")
-                if status_str == "duplicate":
-                    status = "duplicate"
+            status = "duplicate" if ingest_result.duplicate else "success"
             self._connector_metrics.record_ingest_submission(status)
             ll_metrics.inc_segments("transcribed")
 
@@ -680,6 +704,7 @@ class LiveListenerConnector:
             self._connector_metrics.record_ingest_submission("error")
             self._connector_metrics.record_error(type(exc).__name__.lower(), "ingest_submit")
             logger.warning("live-listener: ingest submission failed for mic=%s: %s", mic, exc)
+            await self._park_failed_submission(mic, envelope, exc)
             return
 
         # Persist checkpoint after successful submission (accepted or duplicate).
@@ -709,6 +734,69 @@ class LiveListenerConnector:
             len(result.text),
             e2e_elapsed,
         )
+
+    async def _park_failed_submission(
+        self, mic: str, envelope: dict[str, Any], exc: BaseException
+    ) -> None:
+        """Park a forwarded utterance whose ingest failed as a replayable error row.
+
+        Live audio is never captured again, so this row is the utterance's only
+        copy (bu-dhloi1.224). It stores the exact envelope, idempotency key
+        included, which is what the connector had already chosen to send. The
+        error detail is the exception class only: transport text can echo the
+        transcript. Without a DB pool nothing can hold it, and that is logged.
+        """
+        buffer = self._filtered_event_buffers.get(mic)
+        if buffer is None:
+            logger.error("live-listener: no buffer to park a failed utterance for mic=%s", mic)
+            return
+        try:
+            # Written at once, never left in the buffer: it is the only copy.
+            await buffer.park(
+                self._db_pool,
+                external_message_id=str(envelope["event"]["external_event_id"]),
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity="ambient",
+                subject_or_preview=None,
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+        except ParkNotDurableError:
+            logger.error(
+                "live-listener: a failed utterance for mic=%s could not be parked; it is lost",
+                mic,
+            )
+
+    async def _replay_drain_loop(self) -> None:
+        """Drain each mic's replay requests on a timer, independent of utterances.
+
+        A quiet room produces no utterances, so draining only after a delivered
+        one would leave a requested replay waiting indefinitely (bu-dhloi1.224).
+        """
+        while True:
+            await asyncio.sleep(_REPLAY_DRAIN_INTERVAL_S)
+            for mic in list(self._filtered_event_buffers):
+                await self._drain_replays(mic)
+
+    async def _drain_replays(self, mic: str) -> None:
+        """Submit up to 10 replay-requested rows for this mic (best effort)."""
+        connector_type = _FILTERED_EVENTS_CONNECTOR_TYPE
+        if self._db_pool is None or connector_type is None:
+            return
+
+        async def submit(envelope: dict[str, Any]) -> None:
+            await submit_ingest(self._mcp_client, envelope)
+
+        try:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity(mic),
+                submit_fn=submit,
+                drain_logger=logger,
+            )
+        except Exception:
+            logger.warning("live-listener: replay queue drain failed for mic=%s", mic)
 
     async def _record_discretion_ignore(
         self,
@@ -766,7 +854,7 @@ class LiveListenerConnector:
 
         buffer.record(
             external_message_id=event_id,
-            source_channel="voice",
+            source_channel=_DESCRIPTOR.channel,
             sender_identity="ambient",
             subject_or_preview=text[:200] if text else None,
             filter_reason=FilteredEventBuffer.reason_discretion_ignore(kind),
@@ -862,8 +950,8 @@ class LiveListenerConnector:
             return body
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics() -> Response:
+            return prometheus_metrics_response()
 
         from butlers.connectors.health_socket import make_health_socket
 
@@ -874,6 +962,7 @@ class LiveListenerConnector:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(config)
 

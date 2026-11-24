@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.owner import resolve_owner_entity as _resolve_owner_entity
 from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
 
@@ -186,6 +187,7 @@ async def get_preferences(
     *,
     scope: str | None = None,
     predicate_pattern: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve active user preferences for the owner entity.
 
@@ -221,6 +223,10 @@ async def get_preferences(
     if scope is not None:
         conditions.append(f"f.scope = ${len(params) + 1}")
         params.append(scope)
+
+    visibility = await local_fact_visibility_condition(pool, memory_schema=memory_schema, alias="f")
+    if visibility is not None:
+        conditions.append(visibility)
 
     where_clause = " AND ".join(conditions)
 

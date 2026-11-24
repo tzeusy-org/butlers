@@ -10,6 +10,7 @@ Each job handler:
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import re
@@ -23,11 +24,16 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 
+from butlers.core import vendor_doors
 from butlers.core.insight_premise import owner_condition_premise, probe_premise
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.credential_store import CredentialStore
+from butlers.jobs.finance_spend_baselines import (
+    refresh_category_baselines,
+    retire_spending_baseline_facts,
+)
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
@@ -37,7 +43,7 @@ from butlers.tools.finance.expected_signals import signal_source_from_metadata
 from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
-from butlers.tools.finance.reconciliation import reconcile_bills
+from butlers.tools.finance.reconciliation import canonical_payee_key, reconcile_bills
 from butlers.tools.finance.spending import spending_summary
 from butlers.tools.finance.transactions import _record_transaction
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -648,6 +654,9 @@ _INSIGHT_BUTLER = "finance"
 # of a short-but-nonzero grace rather than escalating on the very first scan.
 _OWNER_CONDITION_BILL_OVERDUE_SOURCE = "finance:bill-overdue"
 _OWNER_CONDITION_SPENDING_ANOMALY_SOURCE = "finance:spending-anomaly"
+# bu-5rjeup (REQ-owner-condition-ledger-010): third ledger source, one condition
+# per (category, period, period_start) budget window at/over its warn threshold.
+_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE = "finance:budget-threshold"
 _OWNER_CONDITION_GRACE_S = 3600.0
 
 # Spending anomaly thresholds (percentage above 3-month rolling average)
@@ -896,7 +905,52 @@ async def _reconcile_owner_conditions(
         )
 
 
-async def _register_obligations(db_pool: asyncpg.Pool) -> None:
+def _budget_threshold_observations(items: list[dict[str, Any]]) -> list[OwnerObservation]:
+    """Build the complete ``finance:budget-threshold`` observation set.
+
+    Only ``warning``/``exceeded`` items qualify, so each budget's own
+    owner-configured warn/alert thresholds (applied by ``budget_status``) stay
+    the only thresholds. Identity is the budget window; the status is evidence,
+    so warning -> exceeded within a window confirms the same episode. Text and
+    metadata carry only what the budget insight already shows the owner.
+    """
+    observations: list[OwnerObservation] = []
+    for item in items:
+        status = item["status"]
+        if status not in ("warning", "exceeded"):
+            continue
+        category = item["category"]
+        period = item["period"]
+        period_start = item["period_start"]
+        spent = Decimal(item["spent"])
+        budget_amount = Decimal(item["budget_amount"])
+        utilisation_pct = item["utilization_pct"]
+        observations.append(
+            OwnerObservation(
+                fingerprint=owner_condition_fingerprint(
+                    _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+                    1,
+                    {"category": category, "period": period, "period_start": period_start},
+                ),
+                summary=(
+                    f"Budget {status}: '{category}' is at {utilisation_pct:.0f}% of the "
+                    f"{period} budget (${spent:.2f} of ${budget_amount:.2f})"
+                ),
+                metadata={
+                    "category": category,
+                    "period": period,
+                    "period_start": period_start,
+                    "status": status,
+                    "utilisation_pct": str(utilisation_pct),
+                    "spent": str(spent),
+                    "budget": str(budget_amount),
+                },
+            )
+        )
+    return observations
+
+
+async def _register_obligations(db_pool: asyncpg.Pool, *, today: date | None = None) -> None:
     """Best-effort forward obligation ledger write (bu-8cdl1.10 slice 2).
 
     A STATE side effect alongside the insight-candidate delivery above, not
@@ -909,7 +963,7 @@ async def _register_obligations(db_pool: asyncpg.Pool) -> None:
     """
     try:
         async with _finance_scoped_connection(db_pool) as conn:
-            await register_obligations(conn)
+            await register_obligations(conn, today=today)
     except Exception:
         logger.warning("Finance insight scan: obligation ledger registration failed", exc_info=True)
 
@@ -917,6 +971,61 @@ async def _register_obligations(db_pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 # run_insight_scan
 # ---------------------------------------------------------------------------
+
+
+def _link_host(url: str | None) -> str | None:
+    """Registrable domain of a subscription's link, matching how a door's host is stored."""
+    from urllib.parse import urlsplit
+
+    from butlers.core.registrable_domain import registrable_domain as etld_plus_one
+
+    if not url:
+        return None
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+    return etld_plus_one(host) if host else None
+
+
+async def _confirmed_cancel_doors(db_pool: asyncpg.Pool) -> dict[str, list[asyncpg.Record]]:
+    """Confirmed slot-free cancel doors by registrable host; a read failure means no door.
+
+    ``public.vendor_doors_current`` carries only confirmed rows of the live owner, so a
+    proposal, revoked or rejected door never appears here. Slotted doors are excluded: a
+    reference without slots can never resolve one.
+    """
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            rows = await conn.fetch(
+                "SELECT id, version, host, template FROM public.vendor_doors_current "
+                "WHERE kind = 'cancel' AND slot_types = '{}'::jsonb ORDER BY host, id",
+                timeout=2.0,
+            )
+    except Exception:
+        logger.warning("Finance insight scan: vendor-door read failed; links stay unverified")
+        return {}
+    doors: dict[str, list[asyncpg.Record]] = {}
+    for row in rows:
+        doors.setdefault(row["host"], []).append(row)
+    return doors
+
+
+def _door_for_link(
+    doors: dict[str, list[asyncpg.Record]], url: str | None
+) -> asyncpg.Record | None:
+    """The door whose template is exactly the subscription link's, or None.
+
+    A host alone never decides: one door on a shared registrable domain (google.com) would
+    otherwise attach to an unrelated service's subscription.
+    """
+    from butlers.core.vendor_door_proposer import template_from_url
+
+    template = template_from_url(url)
+    if template is None:
+        return None
+    exact = [d for d in doors.get(_link_host(url) or "", []) if d["template"] == template]
+    return exact[0] if len(exact) == 1 else None
 
 
 async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None) -> dict[str, Any]:
@@ -941,6 +1050,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     the insight-candidate delivery above: it gives "is this still true and
     still unactioned" a durable, escalating answer on the dashboard's
     Standing Conditions panel, best-effort and non-fatal to this scan.
+    bu-5rjeup adds a third source, budget thresholds (per category, period
+    and period start; status is evidence), reconciled after the budget
+    section; a raising ``budget_status()`` skips only that section.
 
     bu-8cdl1.10 slice 2: this scan also registers/updates a forward
     obligation ledger row (``finance.obligation_ledger``) per active
@@ -998,7 +1110,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     # this STATE side effect is genuinely "alongside, not instead of"
     # candidate delivery rather than silently unreachable whenever an
     # earlier category's submission gets filtered.
-    await _register_obligations(db_pool)
+    await _register_obligations(db_pool, today=today)
 
     # ------------------------------------------------------------------
     # 1. Spending anomalies
@@ -1262,10 +1374,24 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     # budgets even though the owner can configure them. budget_status already
     # applies each budget's configured warn/alert thresholds (bu-rvz2o) and the
     # transactions.deleted_at guard, so no threshold logic is duplicated here.
-    async with _finance_scoped_connection(db_pool) as conn:
-        budget_result = await budget_status(conn, now=now)
+    #
+    # bu-5rjeup: a raising budget_status() skips this section and its ledger
+    # source only (never resolving an active condition) instead of aborting the
+    # rest of the scan. It has no degraded return shape, so any returned result,
+    # including the empty one when no budget is active, is a complete snapshot.
+    budget_items: list[dict[str, Any]] | None
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            budget_result = await budget_status(conn, now=now)
+        budget_items = list(budget_result.get("items", []))
+    except Exception:
+        logger.warning(
+            "Finance insight scan: budget_status failed; skipping budget thresholds",
+            exc_info=True,
+        )
+        budget_items = None
 
-    for item in budget_result.get("items", []):
+    for item in budget_items or []:
         status = item["status"]
         if status == "on_track":
             continue  # below warn_threshold — no candidate
@@ -1346,6 +1472,16 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             logger.info("Finance insight scan: verbosity=off early exit (budget thresholds)")
             return {**counts, "early_exit": True}
 
+    # Reconciled after the candidate loop: an early exit in sections 1-3 skips
+    # it for that run, which only delays (never falsely resolves) -- accepted
+    # latency per the add-owner-condition-producers design (D8).
+    if budget_items is not None:
+        await _reconcile_owner_conditions(
+            db_pool,
+            source=_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+            observations=_budget_threshold_observations(budget_items),
+        )
+
     # ------------------------------------------------------------------
     # 4. Subscription renewals (annual only, 14-day window)
     # ------------------------------------------------------------------
@@ -1354,18 +1490,27 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     async with db_pool.acquire() as conn:
         sub_rows = await conn.fetch(
             """
-            SELECT id, service, amount, currency, next_renewal,
+            SELECT s.id, s.service, s.amount, s.currency, s.next_renewal,
+                   s.field_claims, s.date_epoch, s.renewal_source, s.price_source,
+                   selected.warning_date,
                    status, cancellation_url, cancellation_url_source, status_source,
                    notice_period_days, cancel_by, metadata
-            FROM finance.subscriptions
+            FROM finance.subscriptions s
+            CROSS JOIN LATERAL (
+                SELECT min(day) AS warning_date FROM (
+                    SELECT s.next_renewal AS day
+                    UNION ALL
+                    SELECT (claim->>'value')::date FROM jsonb_array_elements(s.field_claims) claim
+                    WHERE claim->>'field' = 'renewal' AND claim->>'resolved' = 'false'
+                ) dates WHERE day >= $1 AND day <= $2
+            ) selected
             -- An owner-set cancelled/paused status silences the warning; one reported by
             -- an extracted write must not (bu-svqpzo.10), so it warns and asks to confirm.
             WHERE (status = 'active'
                    OR (status IN ('cancelled', 'paused') AND status_source = 'extracted'))
               AND frequency = 'yearly'
-              AND next_renewal >= $1
-              AND next_renewal <= $2
-            ORDER BY next_renewal ASC
+              AND selected.warning_date IS NOT NULL
+            ORDER BY selected.warning_date ASC
             """,
             today,
             renewal_window_end,
@@ -1393,8 +1538,14 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             exc_info=True,
         )
 
+    # bu-jv1moa.40 (dark): with the flag on, a link shows only from an owner-confirmed cancel
+    # door. Flag off, none of this runs and the column logic below is unchanged.
+    confirmed_doors = (
+        await _confirmed_cancel_doors(db_pool) if vendor_doors.VENDOR_DOORS_LIVE else {}
+    )
+
     for row in sub_rows:
-        renewal_date = row["next_renewal"]
+        renewal_date = row["warning_date"]
         days_until = (renewal_date - today).days
         sub_id = str(row["id"])
         service = row["service"]
@@ -1405,6 +1556,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         cancel_by = row["cancel_by"]
         # A door written by anything but an owner-attested session is never a live link.
         door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
+        door = None
+        if vendor_doors.VENDOR_DOORS_LIVE:
+            door = _door_for_link(confirmed_doors, cancellation_url)
+            door_verified = door is not None
         door_domain = None
         if not door_verified:
             domain = registrable_domain(cancellation_url)
@@ -1444,10 +1599,20 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             if days_until == 0
             else ("tomorrow" if days_until == 1 else f"in {days_until} days")
         )
+        from butlers.tools.finance.subscriptions import field_claims
+
+        pending = [claim for claim in field_claims(row) if not claim.get("resolved", False)]
         renewal_clause = (
             f"Annual subscription renewing {urgency_label}: {service} — "
             f"{currency} {amount:.2f} on {renewal_date.isoformat()}"
         )
+        if row["renewal_source"] != "owner" or renewal_date != row["next_renewal"] or pending:
+            renewal_clause += ". Unverified renewal report; confirm the date and price with Butlers"
+        price_claims = [claim["value"] for claim in pending if claim["field"] == "price"]
+        if price_claims:
+            renewal_clause += ". Unverified reported prices: " + "; ".join(
+                f"{pair['currency']} {pair['amount']}" for pair in price_claims
+            )
         if unknown_door:
             # bu-8cdl1.10: a missing cancellation door is exactly as unusable
             # to the owner as a missing date -- surface an explicit enrichment
@@ -1458,7 +1623,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 f"warning can reach you in time to act."
             )
         else:
-            if door_verified:
+            if door is not None:
+                # A confirmed door is opened through the typed reference in metadata, never a URL.
+                door_text = f"{defanged_domain(door['host'])} (owner-confirmed door)"
+            elif door_verified:
                 door_text = cancellation_url
             elif door_domain is None:
                 door_text = "an unrecognised link (not verified)"
@@ -1478,8 +1646,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             )
         if price_change_amount is not None:
             message += (
-                f" Price is set to {price_change_direction or 'change'} to "
-                f"{currency} {price_change_amount} at this renewal."
+                f" Unverified reported price {price_change_direction or 'change'} to "
+                f"{currency} {price_change_amount} at this renewal; confirm the complete price."
             )
         dedup_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
         expires_at = _owner_midnight(renewal_date + timedelta(days=1), zone)
@@ -1487,6 +1655,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         keep_going = await _submit(
             priority=priority,
             category="subscription-renewal",
+            premise=probe_premise(
+                "finance",
+                "subscription_warning_still_relevant",
+                {
+                    "subject": sub_id,
+                    "selected_date": renewal_date.isoformat(),
+                    "epoch": row["date_epoch"],
+                },
+            ),
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
@@ -1498,11 +1675,17 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # As with bills, preserve the source renewal date rather than
                 # treating a finance-local ID as a cross-domain entity identity.
                 "event_date": renewal_date.isoformat(),
+                "date_epoch": row["date_epoch"],
+                "unverified_claims": bool(pending),
                 # bu-8cdl1.10 slice 3: cancellation-door fields so this
                 # insight carries the door + days-remaining-to-act, not just
                 # the amount.
                 # An unverified door carries no URL, only its display domain.
-                "cancellation_url": cancellation_url if door_verified else None,
+                "cancellation_url": (
+                    cancellation_url
+                    if door_verified and not vendor_doors.VENDOR_DOORS_LIVE
+                    else None
+                ),
                 "cancellation_domain": door_domain,
                 "door_verified": door_verified,
                 "reported_status": row["status"] if row["status"] != "active" else None,
@@ -1515,6 +1698,17 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                     str(price_change_amount) if price_change_amount is not None else None
                 ),
                 "price_change_direction": price_change_direction,
+                **(
+                    {
+                        "door_reference": (
+                            {"door_id": str(door["id"]), "version": door["version"]}
+                            if door is not None
+                            else None
+                        )
+                    }
+                    if vendor_doors.VENDOR_DOORS_LIVE
+                    else {}
+                ),
             },
         )
         if not keep_going:
@@ -1591,6 +1785,165 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
 # ---------------------------------------------------------------------------
 
 
+# bu-swkpoo.6: grace before a past-due pending bill is aged out by the weekly sweep.
+_STALE_BILL_GRACE_DAYS = 7
+_STALE_PLACEHOLDER_CLOSED_REASON = "stale_zero_placeholder"
+
+
+async def _age_out_stale_bills(conn: Any, today: date) -> dict[str, int]:
+    """Close stale $0 placeholders and mark stale real bills overdue (idempotent).
+
+    Runs after ``reconcile_bills`` so a payment that settles a bill wins first.
+    ``bills.status`` has no ``closed`` value (CHECK pending|paid|overdue), so a
+    past-due ``$0`` placeholder is closed as ``paid`` with ``paid_at`` left NULL
+    and ``metadata.closed_reason`` set: nothing was owed, so nothing was paid, and
+    the NULL ``paid_at`` plus reason keeps that distinguishable from a real
+    settlement. A non-autopay, non-predicted bill with ``amount > 0`` becomes
+    ``overdue``. Autopay bills stay ``pending`` (reconciliation settles them) and
+    a ``$0`` bill is never ``overdue`` (CHECK).
+    """
+    cutoff = today - timedelta(days=_STALE_BILL_GRACE_DAYS)
+    closed = await conn.fetch(
+        """
+        UPDATE bills
+           SET status = 'paid',
+               metadata = metadata || jsonb_build_object(
+                   'closed_reason', $2::text, 'closed_on', $3::text),
+               updated_at = now()
+         WHERE status = 'pending' AND amount = 0 AND due_date < $1
+        RETURNING id
+        """,
+        cutoff,
+        _STALE_PLACEHOLDER_CLOSED_REASON,
+        today.isoformat(),
+    )
+    overdue = await conn.fetch(
+        """
+        UPDATE bills
+           SET status = 'overdue', updated_at = now()
+         WHERE status = 'pending' AND amount > 0 AND NOT autopay AND NOT predicted
+           AND due_date < $1
+        RETURNING id
+        """,
+        cutoff,
+    )
+    return {"placeholders_closed": len(closed), "marked_overdue": len(overdue)}
+
+
+_RECURRING_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+_RECURRING_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly")
+# Upper bound of one period, used to decide "same period" for the equivalent-payee guard.
+_PERIOD_SPAN_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 92, "yearly": 366}
+
+
+def _advance_due_date(base: date, anchor_day: int, frequency: str, periods: int) -> date:
+    """Return ``base`` advanced by ``periods`` of ``frequency``, clamped to month end.
+
+    ``anchor_day`` is the intended day-of-month (kept across clamped periods so a
+    31st bill returns to the 31st after a short month). Weekly ignores it.
+    """
+    if frequency == "weekly":
+        return base + timedelta(days=7 * periods)
+    months = base.year * 12 + (base.month - 1) + _RECURRING_MONTHS[frequency] * periods
+    year, month = divmod(months, 12)
+    month += 1
+    return date(year, month, min(anchor_day, calendar.monthrange(year, month)[1]))
+
+
+async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
+    """Ensure each recurring bill series has a ``pending`` bill for its next period.
+
+    bu-swkpoo.8. Runs after ``reconcile_bills`` and ``_age_out_stale_bills`` so
+    settlement and aging win first. A series is (canonical payee, currency,
+    frequency) over non-predicted weekly/monthly/quarterly/yearly bills, where the
+    canonical payee (``canonical_payee_key``, bu-swkpoo.15) folds ``payee_key``
+    variants such as a trailing domain or "cc" vs "credit card" into one payee. Only the series'
+    latest bill is a roll source, which makes the roll idempotent: the inserted
+    row becomes the latest and is not rollable until it settles or ages out.
+    A source rolls when it is ``paid`` or ``overdue``, or is an autopay bill still
+    ``pending`` past the stale grace (autopay never becomes ``overdue``). ``$0``
+    placeholders never roll. The new due date is the first period boundary on or
+    after ``today`` (an early-paid bill gets its next period; a long-stale series
+    skips to the current one instead of back-filling dead rows). ``one_time`` and
+    ``custom`` have no deterministic period and are untouched.
+    """
+    cutoff = today - timedelta(days=_STALE_BILL_GRACE_DAYS)
+    rows = await conn.fetch(
+        """
+        SELECT id, payee, payee_key, COALESCE(payee_key, payee) AS key, amount, currency, due_date,
+               frequency, status, autopay, payment_method, account_id, metadata, created_at
+          FROM bills
+         WHERE NOT predicted
+        """
+    )
+    latest: dict[tuple[str, str, str], Any] = {}
+    by_payee: dict[tuple[str, str], list[Any]] = {}
+    for row in rows:
+        ckey = canonical_payee_key(row["key"])
+        by_payee.setdefault((ckey, row["currency"]), []).append(row)
+        if row["frequency"] not in _RECURRING_FREQUENCIES:
+            continue
+        sk = (ckey, row["currency"], row["frequency"])
+        best = latest.get(sk)
+        if best is None or (row["due_date"], row["created_at"]) > (
+            best["due_date"],
+            best["created_at"],
+        ):
+            latest[sk] = row
+    sources = [
+        (sk, row)
+        for sk, row in latest.items()
+        if row["amount"] > 0
+        and (
+            row["status"] in ("paid", "overdue")
+            or (row["status"] == "pending" and row["autopay"] and row["due_date"] < cutoff)
+        )
+    ]
+    sources.sort(key=lambda item: (item[1]["due_date"], item[1]["created_at"]))
+    rolled = 0
+    for (ckey, currency, _), src in sources:
+        meta = src["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        anchor = int((meta or {}).get("recurrence_anchor_day") or src["due_date"].day)
+        periods = 1
+        due = _advance_due_date(src["due_date"], anchor, src["frequency"], periods)
+        while due < today:
+            periods += 1
+            due = _advance_due_date(src["due_date"], anchor, src["frequency"], periods)
+        # An equivalent payee already has a later bill (any frequency, any status)
+        # within one period of the target: never add a second obligation.
+        span = timedelta(days=_PERIOD_SPAN_DAYS[src["frequency"]])
+        if any(
+            other["id"] != src["id"]
+            and other["due_date"] > src["due_date"]
+            and due - span <= other["due_date"] <= due + span
+            for other in by_payee[(ckey, currency)]
+        ):
+            continue
+        await conn.execute(
+            """
+            INSERT INTO bills (payee, payee_key, amount, currency, due_date, frequency,
+                               status, payment_method, account_id, autopay, predicted, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, false, $10::jsonb)
+            """,
+            src["payee"],
+            src["payee_key"] or canonical_payee_key(src["payee"]),
+            src["amount"],
+            src["currency"],
+            due,
+            src["frequency"],
+            src["payment_method"],
+            src["account_id"],
+            src["autopay"],
+            # A dict, not json.dumps(): the pool's jsonb codec encodes it, and a
+            # pre-dumped str would be stored as a JSON string scalar.
+            {"rolled_from": str(src["id"]), "recurrence_anchor_day": anchor},
+        )
+        rolled += 1
+    return {"rolled": rolled}
+
+
 async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the weekly bill-reconciliation sweep and surface results as insights.
 
@@ -1634,6 +1987,16 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
         reconcile_result = await reconcile_bills(conn, lookback_days=90)
     auto_settled = reconcile_result.get("auto_settled", [])
     confirm_candidates = reconcile_result.get("candidates", [])
+
+    # bu-swkpoo.6: age out past-due pending bills only after reconciliation ran.
+    async with _finance_scoped_connection(db_pool) as conn:
+        aged = await _age_out_stale_bills(conn, today)
+    logger.info("Finance bill sweep aged out stale bills: %s", aged)
+
+    # bu-swkpoo.8: roll settled/passed recurring bills to their next period.
+    async with _finance_scoped_connection(db_pool) as conn:
+        rolled = await _roll_recurring_bills(conn, today)
+    logger.info("Finance bill sweep rolled recurring bills: %s", rolled)
 
     async with _finance_scoped_connection(db_pool) as conn:
         predict_result = await predict_bills(conn, days_ahead=30)
@@ -1751,6 +2114,19 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info("Running finance anomaly insight scan job")
 
     async with _finance_scoped_connection(db_pool) as conn:
+        # Producer of the week-bucket category bands the scan judges against; a rerun with
+        # unchanged inputs is a no-op. Also retires the spending_baseline facts once.
+        zone = await resolve_budget_zone(conn)
+        try:
+            await refresh_category_baselines(
+                conn,  # pyright: ignore[reportArgumentType]
+                now=datetime.now(UTC),
+                zone=zone,
+            )
+        except asyncpg.PostgresError as exc:
+            # The merchant checks do not depend on the bands, so they still run.
+            logger.warning("Finance category baselines not refreshed (%s)", type(exc).__name__)
+        await retire_spending_baseline_facts(conn)  # pyright: ignore[reportArgumentType]
         result = await anomaly_scan(conn, days_back=1, sensitivity="medium")
     status = result.get("status", "ok")
 
@@ -1783,7 +2159,11 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         priority = _ANOMALY_SEVERITY_PRIORITY.get(severity, 35)
         txn_id = anomaly.get("transaction_id")
         category = anomaly.get("category")
-        identity = txn_id or (f"category-{category}" if category else anomaly.get("type", "n-a"))
+        currency = anomaly.get("currency")
+        category_identity = (
+            f"category-{category}-{currency}" if currency else f"category-{category}"
+        )
+        identity = txn_id or (category_identity if category else anomaly.get("type", "n-a"))
         dedup_key = f"finance:anomaly:{identity}:{today.isoformat()}"
 
         merchant = anomaly.get("merchant")
@@ -1800,7 +2180,15 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=2),
             cooldown_days=1,
-            metadata={"anomaly_type": anomaly.get("type"), "severity": severity},
+            metadata={
+                "anomaly_type": anomaly.get("type"),
+                "severity": severity,
+                **(
+                    {"baseline_evidence": anomaly["baseline_evidence"]}
+                    if anomaly.get("baseline_evidence")
+                    else {}
+                ),
+            },
         )
         if status_result == "filtered":
             counts["filtered"] += 1
@@ -2084,3 +2472,164 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "Finance monthly digest complete: period=%s status=%s", period_label, result["status"]
     )
     return {"status": result["status"], "period": period_label}
+
+
+# ---------------------------------------------------------------------------
+# run_custody_held_window_evidence (bu-s11n0s.1 S5e, REQ-endpoint-custody-holds-009)
+# ---------------------------------------------------------------------------
+
+_CUSTODY_CONTRIBUTOR = "finance"
+_CUSTODY_INTERIM_KIND = "held_window"
+_CUSTODY_FINAL_KIND = "held_window_final"
+_CUSTODY_BATCH = 200
+
+# The durable record of a committed hold is the custody engine's own evidence row on the
+# episode's fleet case (core_347 writes it in the hold's transaction, with ``contributed_at``
+# the hold's commit time). This job reads those rows, so it needs no bus event, no
+# post-commit publisher that a crash could skip, and no session: a hold the engine committed
+# is visible here whichever door (dashboard, host) issued it.
+#
+# Two rows per hold, both keyed by the hold id: ``held_window`` is the open window seen while
+# the hold is still active, and ``held_window_final`` is appended once the hold is released or
+# replaced, covering exactly [held_from, resolution time]. Closed cases are included so a quick
+# hold and release still gets its final row. Ordering rotates hourly so a hold that fails for good
+# cannot starve the ones behind it under the batch cap.
+_CUSTODY_PENDING_HOLDS_SQL = """
+SELECT e.case_id::text AS case_id, e.ref AS hold_ref, e.contributed_at AS held_from,
+       e.payload->>'target_kind' AS target_kind,
+       (e.payload->>'generation')::bigint AS generation,
+       r.resolved_at AS resolved_at
+FROM public.fleet_case_evidence e
+JOIN public.fleet_cases c ON c.id = e.case_id
+CROSS JOIN LATERAL (
+    SELECT min(x.contributed_at) AS resolved_at FROM public.fleet_case_evidence x
+    WHERE x.case_id = e.case_id AND x.contributor = 'endpoint_custody'
+      AND x.kind IN ('release', 'replace')
+      AND x.ref = e.ref || ':' || (e.payload->>'generation')
+) r
+WHERE e.contributor = 'endpoint_custody' AND e.kind = 'hold'
+  AND c.correlation_key LIKE 'endpoint\\_custody:%'
+  AND NOT EXISTS (
+        SELECT 1 FROM public.fleet_case_evidence f
+        WHERE f.case_id = e.case_id AND f.contributor = 'finance' AND f.ref = e.ref
+          AND f.kind = CASE WHEN r.resolved_at IS NULL THEN 'held_window'
+                            ELSE 'held_window_final' END)
+ORDER BY md5(e.ref || $2::text)
+LIMIT $1
+"""
+
+
+async def _held_window_figures(
+    conn: Any, *, held_from: datetime, window_end: datetime
+) -> dict[str, Any]:
+    """Exact ``[held_from, window_end]`` counts and anomaly evidence; no merchant or amount."""
+    has_deleted_at = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'transactions' "
+        "AND column_name = 'deleted_at')"
+    )
+    deleted = "AND deleted_at IS NULL" if has_deleted_at else ""
+    counts = await conn.fetchrow(
+        f"""
+        SELECT count(*) AS transactions,
+               count(*) FILTER (WHERE direction = 'debit') AS debits,
+               count(*) FILTER (WHERE direction = 'credit') AS credits
+        FROM transactions
+        WHERE posted_at >= $1 AND posted_at <= $2 {deleted}
+        """,
+        held_from,
+        window_end,
+    )
+    assert counts is not None
+    first_seen = await conn.fetchval(
+        f"""
+        SELECT count(*) FROM (
+            SELECT DISTINCT w.merchant FROM transactions w
+            WHERE w.posted_at >= $1 AND w.posted_at <= $2 AND w.merchant IS NOT NULL
+              {deleted.replace("deleted_at", "w.deleted_at")}
+              AND NOT EXISTS (
+                  SELECT 1 FROM transactions p
+                  WHERE p.merchant = w.merchant AND p.posted_at < $1
+                    {deleted.replace("deleted_at", "p.deleted_at")})
+        ) merchants
+        """,
+        held_from,
+        window_end,
+    )
+    days_back = max(1, int((window_end - held_from).total_seconds() // 86400) + 1)
+    scan = await anomaly_scan(conn, days_back=days_back, sensitivity="medium", now=window_end)
+    if scan.get("status") == "insufficient_data":
+        anomalies: dict[str, Any] | str = "unknown"
+    else:
+        by_type: dict[str, int] = {}
+        for item in scan.get("anomalies", []):
+            posted = item.get("posted_at")
+            if posted is None:
+                continue
+            stamp = datetime.fromisoformat(posted) if isinstance(posted, str) else posted
+            if held_from <= stamp <= window_end:
+                by_type[str(item.get("type"))] = by_type.get(str(item.get("type")), 0) + 1
+        anomalies = {"total": sum(by_type.values()), "by_type": dict(sorted(by_type.items()))}
+    return {
+        "transactions": counts["transactions"],
+        "debits": counts["debits"],
+        "credits": counts["credits"],
+        "first_seen_merchants": first_seen,
+        "anomalies": anomalies,
+    }
+
+
+async def run_custody_held_window_evidence(
+    db_pool: asyncpg.Pool, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Contribute Finance's held-window evidence to each active custody episode's case.
+
+    Deterministic (no LLM session), on Finance's own pool. For every hold the custody engine
+    committed on an ``endpoint_custody:<episode>`` case (open or since closed) compute once the
+    exact ``[held_from, window_end]`` transaction counts, first-seen merchants and anomalies and
+    append one idempotent evidence row keyed by the hold id: ``held_window`` (window to this run's
+    ``now``) while the hold is active, and ``held_window_final`` (window to the release/replace
+    time) once it is resolved. The final row appends beside the interim one; it never rewrites it.
+    Each row names the hold's own target kind and generation, so it is attributed to the same
+    proven target and episode by construction, never to a globally open case. A replay finds the
+    row and does nothing. Insufficient baseline data reports ``anomalies: "unknown"``. No merchant
+    names or amounts are written. A failing hold is logged and skipped; the batch order rotates
+    hourly so it cannot starve later holds.
+    """
+    from butlers.core.fleet_cases import contribute_evidence
+
+    observed_at = now if now is not None else datetime.now(UTC)
+    holds = await db_pool.fetch(
+        _CUSTODY_PENDING_HOLDS_SQL, _CUSTODY_BATCH, observed_at.strftime("%Y%m%d%H")
+    )
+    result = {"holds": len(holds), "contributed": 0, "errors": 0}
+    for hold in holds:
+        window_end = min(observed_at, hold["resolved_at"] or observed_at)
+        try:
+            async with _finance_scoped_connection(db_pool) as conn:
+                figures = await _held_window_figures(
+                    conn, held_from=hold["held_from"], window_end=window_end
+                )
+            _row, created = await contribute_evidence(
+                db_pool,
+                case_id=hold["case_id"],
+                contributor=_CUSTODY_CONTRIBUTOR,
+                kind=_CUSTODY_FINAL_KIND if hold["resolved_at"] else _CUSTODY_INTERIM_KIND,
+                ref=hold["hold_ref"],
+                payload={
+                    "target_kind": hold["target_kind"],
+                    "generation": hold["generation"],
+                    "window_start": hold["held_from"].isoformat(),
+                    "window_end": window_end.isoformat(),
+                    "observed_at": observed_at.isoformat(),
+                    **figures,
+                },
+            )
+        except Exception:  # one bad hold must not abort the batch
+            logger.warning(
+                "Finance held-window evidence failed for one custody hold", exc_info=True
+            )
+            result["errors"] += 1
+            continue
+        result["contributed"] += int(created)
+    return result

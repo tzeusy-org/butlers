@@ -16,6 +16,8 @@ import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { fetchSpendForecast } from "@/lib/spend-forecast";
 import type { NavIconName } from "@/components/layout/NavIcon";
 import { PAGE_CONTEXT_REGISTRY, type ContextPolicy } from "@/lib/page-context-registry";
+import { D19_PREVIEW_ENABLED } from "@/lib/d19";
+import { getGoal, getGoals } from "@/api/goals";
 
 export type ShellDiscoverability = "global" | "contextual" | "context-only";
 export type ShellFamily =
@@ -128,7 +130,19 @@ const page = (loader: () => Promise<{ default: ComponentType }>) => loader;
 
 type ShellCapabilityInput = Omit<ShellCapability, "contextPolicy">;
 
-const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
+const _D19_SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] =
+  D19_PREVIEW_ENABLED ? [
+    { path: "/d19", label: "One assistant preview", keywords: ["goals", "regions"], family: "overview", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/OverviewPage")) },
+    { path: "/d19/goals", label: "Goals preview", keywords: ["goals"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/GoalsPage")), queryWarmup: staticWarmup("/d19/goals", ["goals", "list", {}], () => getGoals()) },
+    { path: "/d19/goals/:goalId", label: "Goal preview", keywords: ["goal"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/GoalPage")), queryWarmup: dynamic("/d19/goals/:goalId", (id) => ({ queryKey: ["goals", "detail", id], queryFn: () => getGoal(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
+    { path: "/d19/regions", label: "Regions preview", keywords: ["regions"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/RegionsPage")), queryWarmup: staticWarmup("/d19/regions", ["butlers"], () => api.getButlers()) },
+    { path: "/d19/regions/:region", label: "Region preview", keywords: ["region", "operator"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/RegionsPage").then((m) => ({ default: m.RegionPage }))) },
+    { path: "/d19/approvals", label: "Approvals preview", keywords: ["lineage"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
+    { path: "/d19/approvals/:id", label: "Approval lineage preview", keywords: ["lineage"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
+  ] : [];
+
+// These routes share the language-neutral citation manifest.
+const _PUBLIC_SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/", label: "Overview", keywords: ["home", "dashboard"], family: "overview", placement: { section: "Main", order: 0, icon: "overview", end: true }, chord: "o", discoverability: "global", loader: page(() => import("@/pages/DashboardPage.tsx")) },
   // Full-page chat posture (bu-0ynlk.11) — no sidebar placement: the docked
   // rail / floating widget is the persistent entry point, this is the
@@ -138,6 +152,12 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/qa", label: "QA", keywords: ["quality", "patrol"], family: "operations", placement: { section: "Main", order: 2, butler: "qa", badgeKey: "qa-escalations", badgeVariant: "red", icon: "qa" }, chord: "q", discoverability: "global", loader: page(() => import("@/pages/QaOverviewPage.tsx")) },
   { path: "/ingestion", label: "Ingestion", keywords: ["dispatch", "timeline", "events"], family: "ingestion", placement: { section: "Main", order: 3, icon: "ingestion" }, subnav: { order: 0, end: true, label: "Timeline" }, chord: "e", discoverability: "global", loader: page(() => import("@/pages/IngestionTimelinePage.tsx")), queryWarmup: ingestionEventWarmup },
   { path: "/approvals", label: "Approvals", keywords: ["pending", "review"], family: "operations", placement: { section: "Main", order: 4, icon: "approvals", badgeKey: "approvals-pending", badgeVariant: "amber" }, chord: "p", discoverability: "global", loader: page(() => import("@/pages/ApprovalsPage.tsx")) },
+  // Held channels, with release and replace; a failed read says unavailable, never clear.
+  { path: "/custody", label: "Endpoint holds", keywords: ["custody", "hold", "release", "lost device", "stolen"], family: "operations", placement: { section: "Main", order: 10, icon: "approvals" }, chord: "[", discoverability: "global", loader: page(() => import("@/pages/CustodyPage.tsx")) },
+  // Opened from a hold: the recovery checklist and the case evidence for one episode.
+  { path: "/custody/:episodeId", label: "Custody case", keywords: ["custody", "recovery", "checklist"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/CustodyCasePage.tsx")) },
+  // The owner finds an unanswered "was this you?" question here when its notification never arrived.
+  { path: "/security", label: "Security", keywords: ["account", "alert", "was this you", "sign-in"], family: "operations", placement: { section: "Main", order: 5, icon: "approvals" }, chord: "'", discoverability: "global", loader: page(() => import("@/pages/SecurityQuestionsPage.tsx")) },
   { path: "/memory", label: "Memory", keywords: ["facts", "episodes", "rules"], family: "memory", placement: { section: "Main", order: 6, icon: "memory" }, chord: "m", discoverability: "global", loader: page(() => import("@/pages/MemoryPage.tsx")) },
   { path: "/entities", label: "Entities", keywords: ["people", "relationships", "plex"], family: "relationship", placement: { section: "Main", order: 7, icon: "entities" }, chord: "u", discoverability: "global", loader: page(() => import("@/components/relationship/PlexPage.tsx")) },
   { path: "/secrets", label: "Secrets", keywords: ["credentials", "keys"], family: "settings", placement: { section: "Main", order: 8, icon: "secrets" }, chord: "k", discoverability: "global", loader: page(() => import("@/pages/SecretsPage.tsx")) },
@@ -164,6 +184,10 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/health/research", label: "Research", keywords: ["health", "studies"], family: "butler", placement: { section: "Dedicated Butlers", order: 15, group: "Health", butler: "health" }, chord: "5", discoverability: "global", loader: page(() => import("@/pages/ResearchPage.tsx")) },
 
   { path: "/settings/permissions", label: "Permissions", keywords: ["settings", "access"], family: "settings", placement: null, chord: "6", discoverability: "global", loader: page(() => import("@/pages/SettingsPermissionsPage.tsx")) },
+  { path: "/settings/projections", label: "Projections", keywords: ["settings", "glance", "displays", "tokens"], family: "settings", placement: null, chord: "=", discoverability: "global", loader: page(() => import("@/pages/SettingsProjectionsPage.tsx")) },
+  { path: "/settings/reach", label: "Reach", keywords: ["settings", "break through", "always reach me", "quiet hours", "senders"], family: "settings", placement: null, chord: ";", discoverability: "global", loader: page(() => import("@/pages/SettingsReachPage.tsx")) },
+  { path: "/settings/public-mcp", label: "Public MCP", keywords: ["settings", "kill switch", "disable", "mcp", "public"], family: "settings", placement: null, chord: ".", discoverability: "global", loader: page(() => import("@/pages/SettingsPublicMcpPage.tsx")) },
+  { path: "/settings/location-retention", label: "Location retention", keywords: ["settings", "location", "owntracks", "retention", "expiry", "privacy"], family: "settings", placement: null, chord: ",", discoverability: "global", loader: page(() => import("@/pages/SettingsLocationRetentionPage.tsx")) },
   { path: "/settings/models", label: "Models", keywords: ["settings", "runtime"], family: "settings", placement: null, chord: "7", discoverability: "global", loader: page(() => import("@/pages/SettingsModelsPage.tsx")) },
   { path: "/entities/index", label: "Entities Index", keywords: ["entities", "contacts", "people"], family: "relationship", placement: null, chord: "8", discoverability: "global", loader: page(() => import("@/components/relationship/EntitiesIndexPage.tsx").then(({ EntitiesIndexPage }) => ({ default: EntitiesIndexPage }))) },
   { path: "/entities/index?has=contact", label: "Contacts", keywords: ["entities", "contacts"], family: "relationship", placement: null, chord: "c", discoverability: "global", loader: page(() => import("@/components/relationship/EntitiesIndexPage.tsx").then(({ EntitiesIndexPage }) => ({ default: EntitiesIndexPage }))) },
@@ -187,13 +211,18 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/memory/facts/:factId", label: "Fact detail", keywords: ["memory", "fact"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/FactDetailPage.tsx")), queryWarmup: dynamic("/memory/facts/:factId", (id) => ({ queryKey: ["memory-fact", id], queryFn: () => api.getFact(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/memory/rules/:ruleId", label: "Rule detail", keywords: ["memory", "rule"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/RuleDetailPage.tsx")), queryWarmup: dynamic("/memory/rules/:ruleId", (id) => ({ queryKey: ["memory-rule", id], queryFn: () => api.getRule(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/memory/episodes/:episodeId", label: "Episode detail", keywords: ["memory", "episode"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/EpisodeDetailPage.tsx")), queryWarmup: dynamic("/memory/episodes/:episodeId", (id) => ({ queryKey: ["memory-episode", id], queryFn: () => api.getEpisode(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
-  { path: "/approvals/:id", label: "Approval detail", keywords: ["approval", "review"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/ApprovalsPage.tsx")), queryWarmup: dynamic("/approvals/:id", (id) => ({ queryKey: ["approvals", "detail", id], queryFn: () => api.getApprovalDetail(id), staleTime: POLL_BUS_RECONCILE_MS })) },
+  // No query warmup: this GET mints owner-delivery tokens and records a delivery (bu-dhloi1.90).
+  { path: "/approvals/:id", label: "Approval detail", keywords: ["approval", "review"], family: "detail", placement: null, dynamic: "search-backed", discoverability: "contextual", loader: page(() => import("@/pages/ApprovalsPage.tsx")) },
   // Deep-linked/cmdk-recalled conversation (bu-0ynlk.11) — id resolved
   // cross-butler via GET /api/conversations/{id}; not surfaced by its own
   // static search entry, only reached via a copy-link, cmdk recent-thread
   // command, or the /chat sidebar.
   { path: "/chat/:conversationId", label: "Conversation", keywords: ["chat", "conversation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ChatPage.tsx")), queryWarmup: dynamic("/chat/:conversationId", (id) => ({ queryKey: ["conversations", "by-id", id], queryFn: () => api.getConversationById(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
   { path: "/ingestion/connectors/:connectorType/:endpointIdentity", label: "Connector detail", keywords: ["ingestion", "connector", "provider"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ConnectorDetailPage.tsx")) },
+  // No query warmup: a card or link opens it, and it reads parked approval rows on demand.
+  { path: "/decision-sets/:setId", label: "Decision set", keywords: ["decision", "approval", "review"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/DecisionSetPage.tsx")) },
+  // Opened from the "was this you?" notification link; no warmup, it reads one question on demand.
+  { path: "/security/:eventId", label: "Security question", keywords: ["security", "account", "alert"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/SecurityQuestionPage.tsx")) },
   { path: "/qa/patrols/:patrolId", label: "QA patrol detail", keywords: ["qa", "patrol"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaPatrolDetailPage.tsx")) },
   { path: "/qa/investigations/:attemptId", label: "QA investigation detail", keywords: ["qa", "investigation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaInvestigationDetailPage.tsx")) },
 ];
@@ -201,7 +230,10 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
 /** One typed source for all shell projections. `contextPolicy` is derived
  * from `page-context-registry.ts` so the two never drift independently —
  * every entry above must have a matching registry descriptor. */
-export const SHELL_CAPABILITIES: readonly ShellCapability[] = _SHELL_CAPABILITIES_INPUT.map(
+export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
+  ..._D19_SHELL_CAPABILITIES_INPUT,
+  ..._PUBLIC_SHELL_CAPABILITIES_INPUT,
+].map(
   (capability) => ({
     ...capability,
     contextPolicy: PAGE_CONTEXT_REGISTRY[capability.path]?.policy ?? "snapshot",

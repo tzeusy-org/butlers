@@ -64,7 +64,7 @@ from butlers.core.delegation_ledger import (
     record_wake_task_conflict,
     record_wake_task_created,
 )
-from butlers.core.scheduler import schedule_create
+from butlers.core.scheduler.crud import schedule_create
 
 logger = logging.getLogger(__name__)
 

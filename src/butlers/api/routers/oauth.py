@@ -107,6 +107,7 @@ from butlers.api.models.oauth import (
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
+from butlers.connector_catalog import GOOGLE_DEFAULT_SCOPE_GROUPS, GOOGLE_SCOPE_GROUPS
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import (
@@ -120,7 +121,10 @@ from butlers.google_account_registry import (
     set_primary_account,
 )
 from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
     delete_google_credentials,
+    exchange_google_refresh,
+    exchange_google_token,
     load_app_credentials,
     store_app_credentials,
     store_google_credentials,
@@ -190,8 +194,6 @@ router = APIRouter(prefix="/api/oauth", tags=["oauth"])
 # ---------------------------------------------------------------------------
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 _DEFAULT_REDIRECT_URI = "http://localhost:41200/api/oauth/google/callback"
@@ -212,44 +214,14 @@ _DEFAULT_REDIRECT_URI = "http://localhost:41200/api/oauth/google/callback"
 # See: https://developers.google.com/health/about
 
 GOOGLE_SCOPE_SETS: dict[str, list[str]] = {
-    # Identity basics — always included implicitly so userinfo calls succeed.
-    "base": [
-        "openid",
-        "email",
-        "profile",
-    ],
-    "calendar": [
-        "https://www.googleapis.com/auth/calendar",
-    ],
-    "drive": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive",
-    ],
-    "gmail": [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.modify",
-    ],
-    "contacts": [
-        "https://www.googleapis.com/auth/contacts",
-        "https://www.googleapis.com/auth/contacts.readonly",
-        "https://www.googleapis.com/auth/contacts.other.readonly",
-        "https://www.googleapis.com/auth/directory.readonly",
-    ],
-    # RESTRICTED scopes — require Google privacy/security review for
-    # production mode. Test mode (developer-added users) does not require
-    # verification but has a 7-day refresh token expiry.
-    "health": [
-        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-    ],
+    name: list(scopes) for name, scopes in GOOGLE_SCOPE_GROUPS
 }
 
 # Default scope composition when no scope_set query param is provided.
 # Matches pre-change behaviour: gmail + calendar + contacts + drive + base.
 # Existing callers (Calendar/Drive/Gmail bring-up) get the same scope string
 # they got before the scope_set selector was introduced.
-_DEFAULT_SCOPE_SETS: tuple[str, ...] = ("base", "gmail", "calendar", "contacts", "drive")
+_DEFAULT_SCOPE_SETS: tuple[str, ...] = GOOGLE_DEFAULT_SCOPE_GROUPS
 _DEFAULT_SCOPES = " ".join(
     dict.fromkeys(
         scope for set_name in _DEFAULT_SCOPE_SETS for scope in GOOGLE_SCOPE_SETS[set_name]
@@ -2359,16 +2331,14 @@ async def _probe_google_token(
     OAuthCredentialStatus
         Derived status based on the token probe result.
     """
-    payload = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "grant_type": "refresh_token",
-    }
-
     try:
         async with httpx.AsyncClient(timeout=10.0) as http_client:
-            response = await http_client.post(GOOGLE_TOKEN_URL, data=payload)
+            response = await exchange_google_refresh(
+                http_client,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+            )
     except httpx.TransportError as exc:
         logger.warning("OAuth status probe: network error contacting Google: %s", exc)
         return OAuthCredentialStatus(
@@ -2687,7 +2657,11 @@ async def _exchange_code_for_tokens(
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(token_url, data=payload)
+            response = (
+                await exchange_google_token(client, payload)
+                if token_url == GOOGLE_TOKEN_URL
+                else await client.post(token_url, data=payload)
+            )
     except httpx.TransportError as exc:
         raise _TokenExchangeError(f"Network error during token exchange: {exc}") from exc
 

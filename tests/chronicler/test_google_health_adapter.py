@@ -30,6 +30,8 @@ from butlers.chronicler.adapters.google_health import (
     _derive_end_at,
 )
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 # ---------------------------------------------------------------------------
 # Shared test constants
@@ -54,7 +56,7 @@ _STAGES_MULTI = {
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _sleep_fact_row(
     *,
     row_id: str = "fact-uuid-001",
     idempotency_key: str = f"google_health:sleep:{_SESSION_ID}:session",
@@ -85,24 +87,6 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    """Build a MagicMock supporting dict-style access."""
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _NullCtx:
     async def __aenter__(self) -> None:
         return None
@@ -115,9 +99,9 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -127,7 +111,7 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -137,7 +121,7 @@ def _pool_table_exists_no_rows() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -147,7 +131,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -215,7 +199,7 @@ async def test_multi_stage_sleep_projects_single_sensitive_episode() -> None:
     sleep_episode covering the full session window [valid_at, end_time), carrying
     the stage breakdown, with privacy=SENSITIVE (health-data invariant) and
     minute precision."""
-    row = _make_row()
+    row = _sleep_fact_row()
     adapter = GoogleHealthSleepAdapter()
     upserted: list[Episode] = []
 
@@ -254,7 +238,7 @@ async def test_multi_stage_sleep_projects_single_sensitive_episode() -> None:
 @pytest.mark.asyncio
 async def test_same_day_repoll_produces_same_source_ref() -> None:
     """Two runs against the same fact row must produce the same source_ref."""
-    row = _make_row()
+    row = _sleep_fact_row()
     adapter = GoogleHealthSleepAdapter()
     refs: list[str] = []
 
@@ -289,7 +273,7 @@ async def test_sleep_spanning_midnight_utc() -> None:
     end = datetime(2026, 4, 25, 6, 30, 0, tzinfo=UTC)
     dur_ms = int((end - start).total_seconds() * 1000)
 
-    row = _make_row(
+    row = _sleep_fact_row(
         valid_at=start,
         metadata={
             "session_id": "midnight-session",
@@ -328,7 +312,7 @@ async def test_sleep_spanning_midnight_utc() -> None:
 @pytest.mark.asyncio
 async def test_null_valid_at_row_is_skipped() -> None:
     """A fact with null valid_at must be skipped; rows_projected must not be incremented."""
-    row = _make_row(valid_at=None)  # type: ignore[arg-type]
+    row = _sleep_fact_row(valid_at=None)  # type: ignore[arg-type]
     adapter = GoogleHealthSleepAdapter()
     upserted: list[Episode] = []
 
@@ -378,7 +362,7 @@ async def test_postgres_error_on_table_check_returns_skipped() -> None:
         side_effect=asyncpg.exceptions.UndefinedTableError('relation "health.facts" does not exist')
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = GoogleHealthSleepAdapter()
     cp = _chronicler_pool()
@@ -402,10 +386,10 @@ async def test_watermark_advances_to_latest_created_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=1)
     rows = [
-        _make_row(
+        _sleep_fact_row(
             row_id="fact-001", created_at=t1, valid_at=datetime(2026, 4, 23, 22, 0, tzinfo=UTC)
         ),
-        _make_row(
+        _sleep_fact_row(
             row_id="fact-002", created_at=t2, valid_at=datetime(2026, 4, 24, 22, 0, tzinfo=UTC)
         ),
     ]
@@ -486,7 +470,7 @@ def test_google_health_adapter_exported_from_package() -> None:
 @pytest.mark.asyncio
 async def test_workout_fact_projects_episode() -> None:
     start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id="workout-001",
         idempotency_key="google_health:workout:run-1",
         valid_at=start,
@@ -530,7 +514,7 @@ async def test_workout_fact_projects_episode() -> None:
 @pytest.mark.asyncio
 async def test_workout_fact_with_heart_rate_metadata_is_sensitive() -> None:
     start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id="workout-hr-001",
         idempotency_key="google_health:workout:run-hr-1",
         valid_at=start,
@@ -567,7 +551,7 @@ async def test_workout_fact_with_heart_rate_metadata_is_sensitive() -> None:
 
 @pytest.mark.asyncio
 async def test_steps_fact_projects_point_event() -> None:
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id="steps-001",
         idempotency_key="google_health:steps:2026-04-25",
         valid_at=datetime(2026, 4, 25, 0, 0, tzinfo=UTC),
@@ -606,7 +590,7 @@ async def test_steps_fact_projects_point_event() -> None:
 
 @pytest.mark.asyncio
 async def test_heart_rate_fact_projects_sensitive_point_event() -> None:
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id="hr-001",
         idempotency_key="google_health:resting_hr:2026-04-25",
         valid_at=datetime(2026, 4, 25, 0, 0, tzinfo=UTC),
@@ -652,7 +636,7 @@ async def test_heart_rate_fact_projects_sensitive_point_event() -> None:
 )
 async def test_workout_confidence_reflects_detection(detection: str, expected: str) -> None:
     """A device-detected workout is a weaker claim than an owner-logged one."""
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id=f"workout-{detection}",
         idempotency_key=f"google_health:owner:workout:{detection}",
         valid_at=datetime(2026, 4, 25, 8, 0, tzinfo=UTC),
@@ -713,7 +697,7 @@ async def test_workout_confidence_matches_detection_and_heart_rate(
     if detection is not None:
         metadata["detection"] = detection
     start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id=f"workout-{detection}",
         idempotency_key=f"google_health:owner:workout:{detection}",
         valid_at=start,
@@ -785,7 +769,7 @@ async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() 
         observed_at="2026-04-24T08:00:00+00:00",
     )
     raw = envelope["payload"]["raw"]
-    row = _make_row(
+    row = _sleep_fact_row(
         row_id="fact-1",
         idempotency_key=envelope["control"]["idempotency_key"],
         valid_at=datetime.fromisoformat(

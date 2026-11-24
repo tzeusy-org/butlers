@@ -28,6 +28,16 @@ The daemon follows a deterministic multi-phase startup. Each phase depends on th
 
 `butlers.lifecycle.STARTUP_PHASES` declares the execution order. Its 22 named async functions implement the 17 RFC 0001 stages, splitting phase 8 into module migrations, credential-store setup, blob storage, CLI-auth restoration, shared bootstrap and orphan recovery. Each receives the daemon and a fresh per-run `StartupState` carrying shared prerequisites such as the pool, credential store and migration inputs. Fatal exceptions stop the sequence; module phases retain their existing failure isolation.
 
+An escaping ordinary startup exception emits a best-effort `Startup phase failed` record through
+the configured structured logger before the identical exception propagates. `startup_phase` is a
+fixed declared phase label (without `_startup_`), and `error_category` is one of `timeout`,
+`connection`, `os`, `validation`, `type`, `runtime` or `unknown`. Unknown callables and custom
+exception types use `unknown`; exception text, arbitrary names and tracebacks are not included.
+Cancellation and other `BaseException` signals pass through without this record. Logging failure
+cannot replace the primary exception. Persistence still requires configured, working logging and
+storage: early configuration failures may have no file record. This diagnostic identifies a future
+failing stage; it does not establish an earlier incident's cause or prove recovery.
+
 ### Phase 1: Load and Validate Config
 
 The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
@@ -54,7 +64,7 @@ The daemon provisions and connects a `Database` unless an already-connected inst
 
 ### Phase 7: Run Core and Butler Migrations
 
-Alembic runs the core chain and, where present, the butler-specific chain. These migrations create the mandatory state, schedule, session, and process-log tables.
+Alembic runs the core chain and, where present, the butler-specific chain. These migrations create the mandatory state, schedule, session, and process-log tables. With `BUTLERS_STARTUP_MIGRATIONS=check` (set by the chart once the migrator login is split; see [Migrator Login](../data_and_storage/migrator-login.md)) the daemon does not migrate: it reads each version table and raises `MigrationsNotAtHeadError`, refusing to start, when a core or butler chain is not exactly at head; a module chain that is behind disables only that module.
 
 ### Phase 8: Prepare Module Dependencies and Bootstrap State
 
@@ -134,11 +144,11 @@ Each module has a well-defined lifecycle: `config_schema` validation, directory-
 The shutdown sequence is the inverse of startup:
 
 1. Stop the MCP server (stop accepting new connections).
-2. Stop accepting new triggers on the spawner.
-3. Drain in-flight runtime sessions within the configurable timeout (`[butler.shutdown].timeout_s`).
-4. Cancel the switchboard heartbeat task.
-5. Close the Switchboard MCP client connection.
-6. Cancel the scheduler loop (waits for any in-progress `tick()` to complete).
+2. Cancel the scheduler loop (waits for any in-progress `tick()` to complete). This precedes the spawner stop because a tick claims an occurrence, advancing `next_run_at`, before it dispatches; a spawner that refused mid-tick would lose that occurrence until the next cron. Cancelling the loop also tells that tick to claim no further rows.
+3. Stop accepting new triggers on the spawner.
+4. Drain in-flight runtime sessions within the configurable timeout (`[butler.shutdown].timeout_s`).
+5. Cancel the switchboard heartbeat task.
+6. Close the Switchboard MCP client connection.
 7. Cancel the liveness reporter loop.
 8. Shut down modules in reverse topological order via `on_shutdown()`.
 9. Close the database connection pool.
@@ -214,6 +224,11 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
   `src/butlers/cli.py::_record_deployment_boot`), never in per-butler startup. Its
   `migration_head` is one schema's snapshot, not a drift proof. `GIT_SHA` is a Docker build arg
   baked into the image.
+- After all daemon registrations, the trusted cohost launcher conditionally installs RFC 0023
+  approval recovery for active, worker-enabled sources. It stops those workers and closes
+  their authority listeners before daemon modules and pools shut down, including on cancellation.
+  Default-off and missing-peer hosts create no recovery runtime; split-process deployments
+  remain unavailable. See [approval delivery authority](../runtime/approval-delivery-authority.md).
 - Diagnose tool drift through the daemon status snapshot and the Butler Management three-way diff
   (declared, effective, registered), not the `runtime_config` row alone. Exposing a mixed group's
   reads must never activate its writes as a side effect.

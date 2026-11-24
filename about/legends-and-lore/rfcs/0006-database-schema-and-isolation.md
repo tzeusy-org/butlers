@@ -139,8 +139,11 @@ the pool, assuming the runtime role created by the `core_001_foundation` migrati
 - A butler CANNOT access another butler's schema.
 - A butler CANNOT write to `public` tables unless explicitly authorized by the write authorization
   matrix below (enforced by PostgreSQL role privileges, not just application convention).
-- If the runtime role does not exist (e.g., in a development environment without CREATEROLE), the
-  butler logs a warning and falls back to operating with the shared database user's privileges.
+- Runtime pools fail closed in every environment when the designated role is missing,
+  cannot be verified or assumed, or is unconfigured for a butler schema. No deployment
+  setting permits shared-user runtime continuation. Each acquire re-establishes the role;
+  revoked membership refuses before the connection reaches a caller. Owned partial
+  connections/pools are cleaned up, with causal errors retained and content-blind diagnostics.
 - asyncpg's built-in `RESET ALL` on connection return restores the connecting user's role for pool
   safety.
 
@@ -273,8 +276,8 @@ runs no installer, grants no privilege and trusts no writable completion marker.
 Staged and legitimately finalized states both remain supported; consumed installer
 grants are not demanded back on repeat or second-schema migrations. Protected
 point-of-use guards and managed privileged rollback constraints remain independent.
-Direct runtime development fallback does not waive online migration/startup
-admission, DND authorization or hardened role enforcement. The profile is current
+Fail-closed runtime role establishment does not waive online migration/startup
+admission or the independent DND authorization boundary. The profile is current
 catalog evidence, not script-history attestation. It does not enable the recovery
 executor or provide its secret. See the [operator procedure](../../../docs/data_and_storage/reviewed-bootstrap.md).
 

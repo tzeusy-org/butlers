@@ -14,6 +14,7 @@
  *
  * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
+ *   useDaySheet()           -- DaySheetStrip (the owner's day; unreadable/stale are explicit)
  *   useIssues({window:"all"}) -- AttentionList (client-side stale/severity ordering);
  *                              explicitly opts out of the Issues page's default
  *                              7d server-side window (bu-qvnce.13) since this
@@ -53,6 +54,7 @@ import { useSearchParams } from "react-router";
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlersBoard } from "@/hooks/use-butlers";
+import { useDaySheet } from "@/hooks/use-calendar-workspace";
 import {
   useSpendSummary,
   useTopSessions,
@@ -92,6 +94,7 @@ import {
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
 import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
+import { DaySheetStrip } from "@/components/overview/DaySheetStrip";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
 import { OperationsNowList } from "@/components/overview/OperationsNowList";
@@ -112,6 +115,9 @@ export default function DashboardPage() {
     isError: briefingError,
     refetch: refetchBriefing,
   } = useBriefing();
+
+  // The owner's day: a failed or stale read renders as such, never as a clear day.
+  const daySheet = useDaySheet();
 
   // Supporting data
   //
@@ -512,6 +518,15 @@ export default function DashboardPage() {
 
           {/* Voice elaboration paragraph */}
           <Elaboration text={elaboration} isFetching={briefingFetching} />
+
+          <Section eyebrow="Today">
+            <DaySheetStrip
+              sheet={daySheet.data?.data ?? null}
+              isLoading={daySheet.isLoading}
+              isError={daySheet.isError}
+              error={daySheet.error}
+            />
+          </Section>
 
           <Section eyebrow="Needs attention">
             <AttentionList

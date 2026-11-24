@@ -1,3 +1,4 @@
+import { CONNECTOR_RECOVERY_CAPABILITIES } from './connector-catalog.gen'
 /**
  * Tests for deriveConnectorDispatchInfo — the single source of truth for
  * connector auth/health status derivation.
@@ -451,6 +452,18 @@ describe('resolveConnectorRecovery', () => {
     expect(url.searchParams.get('scope_set')).toBe('health')
     expect(url.searchParams.get('force_consent')).toBe('true')
     expect(url.searchParams.get('connector_detail_path')).toBe('gmail/user@example.com')
+
+    // The existing consumer must follow the generated capability, rather than
+    // a second hardcoded Google Health selector. Always restore the shared data.
+    const capability = CONNECTOR_RECOVERY_CAPABILITIES.google_health
+    try {
+      Reflect.set(capability, 'healthScopeOptIn', false)
+      const changed = resolveConnectorRecovery('google_health', detailContext)
+      if (changed.kind !== 'oauth') throw new Error('expected OAuth recovery')
+      expect(new URL(changed.href, 'http://localhost').searchParams.get('scope_set')).toBeNull()
+    } finally {
+      Reflect.set(capability, 'healthScopeOptIn', true)
+    }
   })
 
   it.each(['google', 'google_calendar', 'google_drive'])(
@@ -477,15 +490,17 @@ describe('resolveConnectorRecovery', () => {
   })
 
   it('routes WhatsApp to Passport pairing instead of an OAuth endpoint', () => {
-    expect(resolveConnectorRecovery('whatsapp_user_client', detailContext)).toEqual({
+    for (const connectorType of ['whatsapp_user_client', 'whatsapp']) {
+    expect(resolveConnectorRecovery(connectorType, detailContext)).toEqual({
       kind: 'passport',
       to: '/secrets?focus=u:whatsapp',
       action: 'pair',
     })
+    }
   })
 
   it('fails closed for unsupported and unknown connector types', () => {
-    for (const connectorType of ['steam', 'unknown_provider']) {
+    for (const connectorType of ['steam', 'activitywatch', 'live_listener', 'live-listener', 'discord', 'discord_user', 'telegram', 'spotify_user_client', 'wellness', '__proto__', 'constructor', 'toString', 'unknown_provider']) {
       const recovery = resolveConnectorRecovery(connectorType, detailContext)
       expect(recovery.kind).toBe('unsupported')
       if (recovery.kind !== 'unsupported') throw new Error('expected unsupported recovery')

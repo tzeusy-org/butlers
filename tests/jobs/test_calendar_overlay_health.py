@@ -10,7 +10,8 @@ Covers the health ``calendar_overlay_contribution`` deterministic job:
 - zero LLM (handler takes only ``(pool, job_args)``; no spawner)
 
 No real database required — ``state_set`` / ``state_list`` / ``state_delete``
-are patched to capture writes/deletes, and ``pool.fetch`` is routed by SQL text.
+are patched to capture writes/deletes, and the job's two ``pool.fetch`` reads
+answer queued row sets (``tests.jobs.calendar_contribution_harness``).
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from datetime import date as date_cls
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +28,8 @@ from butlers.jobs.calendar_overlay import (
     overlay_key,
     run_health_calendar_overlay_contribution,
 )
+from butlers.testing.fake_pool import FakePool
+from tests.jobs.calendar_contribution_harness import ContributionStateStore, run_overlay_job
 
 pytestmark = pytest.mark.unit
 
@@ -39,56 +41,6 @@ _TODAY_STR = "2026-06-21"
 def _sgt_noon(d: date_cls) -> datetime:
     """A tz-aware timestamp clearly inside the SGT calendar date *d*."""
     return datetime(d.year, d.month, d.day, 12, 0, tzinfo=_SGT)
-
-
-# ---------------------------------------------------------------------------
-# Fake pool + state-store capture harness
-# ---------------------------------------------------------------------------
-
-
-class _FakePool:
-    """Routes ``pool.fetch`` to appointment/medication row lists by SQL content."""
-
-    def __init__(
-        self,
-        *,
-        appointments: list[dict[str, Any]] | None = None,
-        medications: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._appointments = appointments or []
-        self._medications = medications or []
-        self.fetch_calls: list[str] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        self.fetch_calls.append(sql)
-        if "predicate = 'appointment'" in sql:
-            return self._appointments
-        if "predicate = 'medication'" in sql:
-            return self._medications
-        raise AssertionError(f"unexpected query: {sql}")
-
-
-class _StateCapture:
-    """Captures state_set/state_list/state_delete into an in-memory dict."""
-
-    def __init__(self, seed: dict[str, Any] | None = None) -> None:
-        self.store: dict[str, Any] = dict(seed or {})
-        self.deleted: list[str] = []
-        self.set_calls: list[str] = []
-
-    async def state_set(self, pool: Any, key: str, value: Any) -> int:
-        self.store[key] = value
-        self.set_calls.append(key)
-        return 1
-
-    async def state_list(self, pool: Any, prefix: str | None = None, keys_only: bool = True):
-        if prefix is None:
-            return sorted(self.store)
-        return sorted(k for k in self.store if k.startswith(prefix))
-
-    async def state_delete(self, pool: Any, key: str) -> None:
-        self.store.pop(key, None)
-        self.deleted.append(key)
 
 
 def _appointment(
@@ -128,17 +80,14 @@ async def _run(
     appointments: list[dict[str, Any]] | None = None,
     medications: list[dict[str, Any]] | None = None,
     seed: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], _StateCapture, _FakePool]:
-    pool = _FakePool(appointments=appointments, medications=medications)
-    cap = _StateCapture(seed=seed)
-    with (
-        patch("butlers.jobs.calendar_overlay.today_sgt", return_value=_TODAY),
-        patch("butlers.jobs.calendar_overlay.state_set", new=cap.state_set),
-        patch("butlers.jobs.calendar_overlay.state_list", new=cap.state_list),
-        patch("butlers.jobs.calendar_overlay.state_delete", new=cap.state_delete),
-    ):
-        result = await run_health_calendar_overlay_contribution(pool, None)
-    return result, cap, pool
+) -> tuple[dict[str, Any], ContributionStateStore, FakePool]:
+    return await run_overlay_job(
+        run_health_calendar_overlay_contribution,
+        first=appointments,
+        second=medications,
+        seed=seed,
+        today=_TODAY,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,15 +292,9 @@ def test_handler_registered_and_callable_no_spawner():
 
 async def test_no_llm_session_spawned():
     """The job path must not construct or invoke any LLM spawner."""
-    cap = _StateCapture()
-    pool = _FakePool()
-    with (
-        patch("butlers.jobs.calendar_overlay.today_sgt", return_value=_TODAY),
-        patch("butlers.jobs.calendar_overlay.state_set", new=cap.state_set),
-        patch("butlers.jobs.calendar_overlay.state_list", new=cap.state_list),
-        patch("butlers.jobs.calendar_overlay.state_delete", new=cap.state_delete),
-    ):
-        result = await run_health_calendar_overlay_contribution(pool, None)
+    # The handler takes only (pool, job_args); the strict pool refuses any read
+    # or write beyond the two queued source fetches.
+    result, _, pool = await _run()
     assert result["butler"] == "health"
     # Only appointment + medication queries were issued — no LLM, no other fan-out.
-    assert len(pool.fetch_calls) == 2
+    assert pool.fetch.await_count == 2

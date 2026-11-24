@@ -1,0 +1,24 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000007\"",
+  "id": "synthwlmismatch0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Office",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"date": "2026-07-08"},
+  "end": {"date": "2026-07-09"},
+  "transparency": "transparent",
+  "visibility": "public",
+  "iCalUID": "synthwlmismatch0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "location": "Example HQ, Level 3",
+  "eventType": "workingLocation",
+  "workingLocationProperties": {
+    "type": "officeLocation",
+    "customLocation": {"label": "Not the named branch"}
+  }
+}

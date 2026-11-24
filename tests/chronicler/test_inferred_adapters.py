@@ -10,17 +10,7 @@ import pytest
 from butlers.chronicler.adapters.focus import FocusInferredAdapter
 from butlers.chronicler.adapters.reading import ReadingInferredAdapter, _title_matches_reading
 from butlers.chronicler.models import Episode, Precision, Privacy
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
+from butlers.testing.fake_pool import AsyncCtx
 
 
 def _row(**values: object) -> MagicMock:
@@ -30,7 +20,7 @@ def _row(**values: object) -> MagicMock:
 def _chronicler_pool() -> AsyncMock:
     conn = AsyncMock()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 

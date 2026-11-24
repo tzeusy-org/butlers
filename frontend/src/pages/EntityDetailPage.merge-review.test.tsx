@@ -93,6 +93,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityActivityBins: vi.fn(() => ({ data: { bins: [] }, isLoading: false, isError: false })),
+  useEntitySharedChronicles: vi.fn(() => ({ data: { items: [], total: 0, limit: 5, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
+  useEntityCommitments: vi.fn(() => ({ data: { items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
   useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
@@ -214,6 +216,7 @@ describe("EntityDetailPage — merge-review entry points", () => {
         { rebind_id: "rebind-1", target_schema: "relationship", references_rebound: 4, status: "active", error_class: null, completed_at: "2026-09-21T00:00:00Z" },
         { rebind_id: "rebind-1", target_schema: "finance", references_rebound: 0, status: "failed", error_class: "SerializationError", completed_at: "2026-09-21T00:00:01Z" },
         { rebind_id: "rebind-1", target_schema: "travel", references_rebound: 0, status: "pending", error_class: null, completed_at: null },
+        { rebind_id: "rebind-1", target_schema: "health", references_rebound: 0, status: "skipped_forgotten", error_class: null, completed_at: "2026-09-21T00:00:02Z" },
       ],
     });
 
@@ -221,6 +224,7 @@ describe("EntityDetailPage — merge-review entry points", () => {
     expect(cohort?.textContent).toContain("relationship4 rebound");
     expect(cohort?.textContent).toContain("financeFailed · SerializationError");
     expect(cohort?.textContent).toContain("travelNot yet reported");
+    expect(cohort?.textContent).toContain("healthForgotten, not moved");
     expect(cohort?.querySelectorAll("[data-status='pending']")).toHaveLength(1);
   });
 

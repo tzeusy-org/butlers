@@ -227,12 +227,10 @@ def test_explicit_discovery_and_router_load_failures_are_visible(monkeypatch, tm
         constructor_guard.setattr(CalendarModule, "__init__", undeclared_constructor)
         constructor_guard.setattr(ContactsModule, "__init__", undeclared_constructor)
         discovered = registry_module.default_registry()
-        assert [m.name for m in discovered.load_from_config({"self_healing": {}})] == [
-            "self_healing"
-        ]
+        assert [m.name for m in discovered.load_from_config({"pipeline": {}})] == ["pipeline"]
     assert {"metrics", "document_renderer"}.isdisjoint(discovered.available_modules)
     assert {"pipeline", "calendar"}.issubset(discovered.available_modules)
-    for retired in ("metrics", "document_renderer"):
+    for retired in ("metrics", "document_renderer", "self_healing"):
         with pytest.raises(ValueError, match="Unknown module"):
             discovered.load_from_config({retired: {}})
 

@@ -1,12 +1,35 @@
+## Goal-runtime disposition
+
+Under adopted RFC 0038 D1, D2 and D19 and the generalist change's
+collision-dispositions row, dashboard reasoning ingress SHALL admit an owner
+goal through Switchboard rather than classify a message and route it to a
+target-butler session. This amendment preserves the immutable,
+server-authenticated conversation envelope, deduplication, retry identity,
+direct-ingress provenance and connector-specific boundaries. Dashboard bodies
+belong to `dashboard-one-mind-goal-surface` under D19. No RFC decision changes.
+
+The two delta requirements distinguish the serving pre-cutover route contract
+from its goal-admission successor. Legacy source/session records remain
+readable; route dispatch is not a second post-cutover admission path. This is a
+contract amendment, not runtime implementation, activation, task completion or
+archive. The original reconciliation scope below is historical; it grants no
+extra edit or execution authority for this amendment.
+
 ## Why
 
-The dashboard conversation path is now real enough that stale planning language and
+The pre-cutover dashboard conversation path is now real enough that stale planning language and
 an incomplete canonical-source list can misdirect the next reliability work.  The
 current contract already uses `dashboard` / `internal`; RFC 0003 omits that pair,
 and the anchor/resume change still says live wiring is absent even though its task
 record says it landed.
 
 ## What Changes
+
+- Replace the future target-session routing contract with goal admission,
+  retaining authenticated immutable ingress and request-ID lineage. Legacy
+  routing-pin cases are explicitly scoped to pre-cutover behavior.
+- Preserve all task identities and checkbox states as historical evidence or
+  outstanding work; no roadmap mutation is executed here.
 
 - Amend RFC 0003's channel vocabulary, issuer wording, canonical source-pair
   list, and endpoint-identity rule to explicitly include the owner-operated
@@ -47,5 +70,6 @@ None.
 - `openspec/changes/conversation-anchor-provider-resume-ledger/`
 - `bu-27dxl.9`, after owner approval and only as a content-only edit.
 
-This is a documentation and requirements-reconciliation change.  It does not add
-a generic question lane, change routing policy, or alter runtime behavior.
+This is a documentation and requirements-reconciliation change. It adopts no
+new routing policy: goal admission is already required by RFC 0038. It does not
+add a generic question lane or alter serving runtime behavior.

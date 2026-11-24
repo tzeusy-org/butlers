@@ -46,6 +46,13 @@ Key behaviours
 - Rate-limit handling: honours ``Retry-After`` on HTTP 429; falls back to
   exponential backoff with jitter. Cursors never advance on a failed
   request.
+- Bounded holds: a failed submission holds the resource's checkpoint, but an
+  envelope the Switchboard rejects on ``_POISON_REJECTION_LIMIT`` consecutive
+  attempts is quarantined (a ``poison_quarantine`` error row with the full
+  envelope in ``connectors.filtered_events``) so the window can commit.
+  Transport failures never quarantine. Persistent failures surface on the
+  ``connector_google_health_resource_consecutive_failures`` gauge and
+  page-cap overruns on ``connector_google_health_window_page_cap_exceeded_total``.
 - Heartbeat states: ``healthy`` | ``degraded`` | ``error`` (no ``broken``
   state, per base-spec v2).
 
@@ -88,17 +95,28 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from enum import Enum
 from threading import Thread
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
+from prometheus_client import REGISTRY, Counter, Gauge
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
@@ -110,13 +128,15 @@ from butlers.connectors.google_health_client import (
     GoogleHealthTokenRevokedError,
     exponential_backoff_delay,
 )
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import IngestRejected, submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.egress.http_transport import external_async_client
 from butlers.google_account_registry import (
     GOOGLE_HEALTH_SCOPE_FAMILIES,
     GoogleAccount,
@@ -127,16 +147,17 @@ from butlers.google_account_registry import (
     list_health_scoped_accounts,
 )
 from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
     InvalidGoogleCredentialsError,
+    _mark_account_revoked,
     google_oauth_error_code,
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, CHANNEL_KIND_FEED
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
+
+_DESCRIPTOR = connector_descriptor("google_health")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -148,9 +169,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "google_health"
-_CONNECTOR_CHANNEL = "wellness"
-_CONNECTOR_PROVIDER = "google_health"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Full Google Health RESTRICTED scope URLs (per openspec spec and the OAuth
 # scope-set registry in src/butlers/api/routers/oauth.py). These are the URLs
@@ -166,7 +185,7 @@ GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
     }
 )
 
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 _TOKEN_REFRESH_BUFFER_S = 60  # refresh access token 60s before expiry
 
 # Default per-resource polling cadences (seconds).
@@ -197,6 +216,36 @@ _DEFAULT_MAX_INFLIGHT = 8
 # blips should not trip it, but a resource that never recovers must not stay
 # silently masked by sibling resources' successful polls.
 _RESOURCE_DEGRADED_FAILURE_THRESHOLD = 3
+
+# Upper bound on ``nextPageToken`` continuations followed for one paged poll window.
+# Exceeding it leaves the window incomplete: the poll fails and keeps its checkpoint.
+_MAX_WINDOW_PAGES = 50
+
+# GET bundle categories whose ``:reconcile`` window may span several provider pages.
+# Session bundles request 25 points per page, so a backfill window can overflow one page.
+_PAGED_CATEGORIES = frozenset({"sleep", "workout", "measurement"})
+
+
+# Consecutive ingest *rejections* of one envelope before it is quarantined. A rejection is a
+# reply from the Switchboard refusing the envelope, so it recurs on every re-poll; without a
+# bound one poison sample would hold its resource's checkpoint forever. Transport failures
+# never count: an unreachable Switchboard must hold the checkpoint, not drop samples.
+_POISON_REJECTION_LIMIT = 5
+
+
+class GoogleHealthPollIncompleteError(GoogleHealthError):
+    """A poll could not consume its whole window; its checkpoint must not advance."""
+
+
+class SubmissionOutcome(Enum):
+    """How one envelope submission ended; truthy only when the envelope is handled."""
+
+    HANDLED = "handled"  # accepted, queued, duplicate, or a recorded policy drop
+    REJECTED = "rejected"  # the Switchboard replied and refused the envelope
+    FAILED = "failed"  # transport failure: the Switchboard gave no verdict
+
+    def __bool__(self) -> bool:
+        return self is SubmissionOutcome.HANDLED
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +303,28 @@ google_health_rate_limit_events_total = _metric(
     Counter,
     "connector_google_health_rate_limit_events_total",
     "Total HTTP 429 responses observed per resource",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_resource_consecutive_failures = _metric(
+    Gauge,
+    "connector_google_health_resource_consecutive_failures",
+    "Consecutive failed polls of one resource; alert when it stays at or above "
+    "the resource_degraded threshold",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_window_page_cap_exceeded_total = _metric(
+    Counter,
+    "connector_google_health_window_page_cap_exceeded_total",
+    "Poll windows abandoned because they needed more provider pages than the cap",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_quarantined_envelopes_total = _metric(
+    Counter,
+    "connector_google_health_quarantined_envelopes_total",
+    "Envelopes quarantined after repeated ingest rejections",
     labelnames=["endpoint_identity", "resource"],
 )
 
@@ -401,11 +472,11 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
         normalized_summary="Workout: {activity_type} ({duration_label})",
     ),
     # Body measurements: one reading per sample (``category="measurement"``), keyed on
-    # the sample's physical time.  Plain ``dataPoints`` list endpoints: ``:reconcile`` is
-    # unconfirmed for these types (bu-q7vx1q.35).
+    # the sample's physical time.  ``:reconcile`` under Reconciled Stream Consumption; every
+    # ``nextPageToken`` page is consumed before the window counts as complete (bu-u5euwb.10).
     ResourceBundle(
         resource="weight",
-        endpoint_path="/users/me/dataTypes/weight/dataPoints",
+        endpoint_path="/users/me/dataTypes/weight/dataPoints:reconcile",
         data_type="weight",
         filter_field="weight.sample_time.physical_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
@@ -415,7 +486,7 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="body_fat",
-        endpoint_path="/users/me/dataTypes/body-fat/dataPoints",
+        endpoint_path="/users/me/dataTypes/body-fat/dataPoints:reconcile",
         data_type="body-fat",
         filter_field="body_fat.sample_time.physical_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
@@ -436,8 +507,8 @@ class GoogleHealthConnectorConfig:
     """Configuration for the Google Health connector runtime."""
 
     switchboard_mcp_url: str
-    channel: str = _CONNECTOR_CHANNEL
-    provider: str = _CONNECTOR_PROVIDER
+    channel: str = _DESCRIPTOR.channel
+    provider: str = _DESCRIPTOR.provider
 
     backfill_days: int = _DEFAULT_BACKFILL_DAYS
     scope_recheck_s: int = _DEFAULT_SCOPE_RECHECK_S
@@ -570,8 +641,8 @@ def build_sleep_session_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -617,8 +688,8 @@ def build_workout_session_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -671,8 +742,8 @@ def build_daily_summary_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -719,6 +790,10 @@ class ResourceState:
     last_error: str | None = None
     last_error_at: datetime | None = None
     consecutive_failures: int = 0
+    # Consecutive ingest rejections of the envelope keyed ``rejected_key`` (in memory only:
+    # a restart grants a poison envelope at most one more ``_POISON_REJECTION_LIMIT`` run).
+    rejected_key: str | None = None
+    rejected_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +849,10 @@ class OwnerContext:
     auth_error: bool = False
     auth_error_message: str | None = None
     auth_error_at: datetime | None = None  # when the error was last set, for observability
+
+    if TYPE_CHECKING:
+        _google_token_cache: GoogleTokenCache | None = None
+        _revoked_refresh_token: str | None = None
 
     @classmethod
     def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
@@ -898,7 +977,7 @@ class GoogleHealthConnector:
         """Full startup sequence followed by the main poll loop."""
         logger.info("GoogleHealthConnector starting")
 
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = external_async_client(timeout=30.0)
         self._running = True
 
         try:
@@ -1092,6 +1171,20 @@ class GoogleHealthConnector:
         for existing in health_accounts:
             if existing.id in cur_ids:
                 self._accounts[existing.id].refresh_from(existing)
+
+        # Alert rules read these counters through increase(), which needs a prior
+        # sample; a child created lazily by its first inc() would hide the
+        # first-ever event. Prime every current identity (an email change
+        # re-keys it) at zero; labels() is idempotent.
+        for ctx in self._accounts.values():
+            for bundle in RESOURCE_BUNDLES:
+                for counter in (
+                    google_health_window_page_cap_exceeded_total,
+                    google_health_quarantined_envelopes_total,
+                ):
+                    counter.labels(
+                        endpoint_identity=ctx.endpoint_identity, resource=bundle.resource
+                    )
 
         # ----------------------------------------------------------------
         # Update legacy single-account fields + scope/account missing flags.
@@ -1427,7 +1520,9 @@ class GoogleHealthConnector:
         self._client_secret = creds.client_secret
         return True
 
-    async def _mint_access_token(self, account_uuid: uuid.UUID) -> str:
+    async def _mint_access_token(
+        self, account_uuid: uuid.UUID, *, force_refresh: bool = False
+    ) -> str:
         """Mint a fresh access token for the given account.
 
         Per design.md ADR-4: uses ``_resolve_entity_refresh_token`` to fetch
@@ -1467,71 +1562,51 @@ class GoogleHealthConnector:
             )
 
         assert self._http_client is not None
+        cache = getattr(ctx, "_google_token_cache", None)
+        if cache is None:
+            cache = ctx._google_token_cache = GoogleTokenCache(
+                ctx, "cached_access_token", "token_expires_at", account=str(account_uuid)
+            )
+
+        async def credential_is_current() -> bool:
+            shared_pool = self._shared_pool
+            return (
+                self._accounts.get(account_uuid) is ctx
+                and shared_pool is not None
+                and await _resolve_entity_refresh_token(shared_pool, ctx.entity_id) == refresh_token
+            )
+
+        assert self._client_id is not None and self._client_secret is not None
         try:
-            resp = await self._http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    # Down-scope the access token to health scopes only. The
-                    # per-account refresh token is scope-widened (Gmail, Drive,
-                    # Calendar, Contacts, …), but the Google Health API rejects
-                    # any token carrying non-health scopes with
-                    # 403 DISALLOWED_OAUTH_SCOPES. Requesting a subset here mints
-                    # a health-only access token the API accepts.
-                    "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPES)),
-                },
+            return await cache.get_token(
+                self._http_client,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                refresh_token=refresh_token,
+                scopes=frozenset(GOOGLE_HEALTH_SCOPES),
+                credential_is_current=credential_is_current,
                 timeout=15,
+                force_refresh=force_refresh,
             )
-        except httpx.TransportError as exc:
-            raise GoogleHealthError(f"Token refresh transport error: {exc}") from exc
-
-        if resp.status_code != 200:
-            body = resp.text[:200]
-            # The shared helper reads only the token endpoint's exact top-level
-            # OAuth code. Nested data-API prose mentioning ``invalid_grant`` is
-            # not evidence that this account's refresh grant was revoked.
-            oauth_error = google_oauth_error_code(resp)
-            if oauth_error == "invalid_grant":
-                raise GoogleHealthTokenRevokedError(
-                    f"Google refresh token revoked/expired for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
-            if oauth_error == "unauthorized_client":
-                raise GoogleHealthOAuthCredentialError(
-                    f"Google OAuth client unauthorized for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
+        except httpx.HTTPStatusError as exc:
+            code = google_oauth_error_code(exc.response)
+            if code == "invalid_grant":
+                ctx._revoked_refresh_token = refresh_token
+                raise GoogleHealthTokenRevokedError("Google refresh grant revoked") from exc
+            if code == "unauthorized_client":
+                raise GoogleHealthOAuthCredentialError("Google OAuth client unauthorized") from exc
             raise GoogleHealthCredentialError(
-                f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
-            )
-
-        # Validate the whole payload before touching the account context, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+                f"Google token refresh failed: HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.TransportError as exc:
+            raise GoogleHealthError("Token refresh transport error") from exc
+        except ValueError as exc:
             raise GoogleHealthCredentialError(
                 f"Google token refresh returned an invalid token payload for {ctx.email}"
             ) from exc
 
-        ctx.cached_access_token = token.access_token
-        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
-        return token.access_token
-
     async def _get_access_token(self, account_uuid: uuid.UUID) -> str:
-        """Return a usable access token for the given account, refreshing if near expiry."""
-        ctx = self._accounts.get(account_uuid)
-        if ctx is not None:
-            now = datetime.now(UTC)
-            if (
-                ctx.cached_access_token
-                and ctx.token_expires_at
-                and now < ctx.token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
-            ):
-                return ctx.cached_access_token
+        """Resolve the actual account credential and reuse its scoped cache."""
         return await self._mint_access_token(account_uuid)
 
     async def _mark_account_revoked(self, account_uuid: uuid.UUID) -> None:
@@ -1544,15 +1619,13 @@ class GoogleHealthConnector:
         if self._shared_pool is None:
             return
         try:
-            async with self._shared_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE public.google_accounts
-                    SET status = 'revoked'
-                    WHERE id = $1
-                    """,
-                    account_uuid,
-                )
+            ctx = self._accounts.get(account_uuid)
+            grant = getattr(ctx, "_revoked_refresh_token", None)
+            if grant is None:
+                return
+            await _mark_account_revoked(
+                self._shared_pool, account_id=account_uuid, expected_refresh_token=grant
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "GoogleHealthConnector: failed to mark account %s revoked (non-fatal): %s",
@@ -1765,9 +1838,7 @@ class GoogleHealthConnector:
                     else:
                         self._last_source_api_ok = False
                         self._source_api_error_message = "source_api_unreachable"
-                        state.consecutive_failures += 1
-                        state.last_error = str(exc)
-                        state.last_error_at = datetime.now(UTC)
+                        self._record_resource_failure(ctx, state, exc)
                     if token_revoked:
                         await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.
@@ -1798,7 +1869,7 @@ class GoogleHealthConnector:
                     state.next_poll_monotonic = time.monotonic() + delay
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
-                except GoogleHealthForbiddenError as exc:
+                except GoogleHealthForbiddenError:
                     # 403 is an access/authorisation problem (OAuth test-mode,
                     # restricted-scope allowlist, or API not enabled) — NOT a
                     # transient or credential failure.  Mark the source API as
@@ -1808,10 +1879,9 @@ class GoogleHealthConnector:
                     self._source_api_error_message = "api_forbidden"
                     logger.warning(
                         "GoogleHealthConnector: 403 Forbidden account=%s resource=%s "
-                        "(OAuth test-mode / scope allowlist / API access) — %s",
+                        "(OAuth test-mode / scope allowlist / API access)",
                         ctx.email,
                         state.bundle.resource,
-                        exc,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1832,14 +1902,18 @@ class GoogleHealthConnector:
                     continue
                 except GoogleHealthSourcePreconditionError as exc:
                     self._last_source_api_ok = False
-                    self._source_api_error_message = exc.reason.lower()
+                    reason = (
+                        "account_not_linked"
+                        if exc.reason.lower() == "account_not_linked"
+                        else "failed_precondition"
+                    )
+                    self._source_api_error_message = reason
                     logger.warning(
                         "GoogleHealthConnector: source precondition failed "
-                        "account=%s resource=%s reason=%s redirect_uri=%s",
+                        "account=%s resource=%s reason=%s",
                         ctx.email,
                         state.bundle.resource,
-                        exc.reason,
-                        exc.redirect_uri,
+                        reason,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1866,16 +1940,14 @@ class GoogleHealthConnector:
                     # True below, so record the failure on the resource
                     # itself too — otherwise a persistently-erroring resource
                     # (e.g. a malformed dailyRollUp body) reads as healthy.
-                    state.consecutive_failures += 1
-                    state.last_error = str(exc)
-                    state.last_error_at = datetime.now(UTC)
+                    self._record_resource_failure(ctx, state, exc)
                     logger.warning(
                         "GoogleHealthConnector: poll error account=%s resource=%s "
                         "(non-fatal, consecutive_failures=%d): %s",
                         ctx.email,
                         state.bundle.resource,
                         state.consecutive_failures,
-                        exc,
+                        state.last_error,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1893,6 +1965,10 @@ class GoogleHealthConnector:
                     state.consecutive_failures = 0
                     state.last_error = None
                     state.last_error_at = None
+                    google_health_resource_consecutive_failures.labels(
+                        endpoint_identity=ctx.endpoint_identity,
+                        resource=state.bundle.resource,
+                    ).set(0)
                     interval = self._config.poll_intervals.get(
                         state.bundle.resource, state.bundle.default_interval_s
                     )
@@ -1917,6 +1993,24 @@ class GoogleHealthConnector:
                 break
             except TimeoutError:
                 pass
+
+    @staticmethod
+    def _record_resource_failure(
+        ctx: OwnerContext, state: ResourceState, exc: BaseException
+    ) -> None:
+        """Extend this resource's failure streak and publish it as an alertable gauge."""
+        state.consecutive_failures += 1
+        if isinstance(exc, httpx.HTTPStatusError):
+            state.last_error = f"HTTP {exc.response.status_code}"
+        elif isinstance(exc, GoogleHealthPollIncompleteError):
+            state.last_error = "poll_incomplete"
+        else:
+            state.last_error = "source_api_unreachable"
+        state.last_error_at = datetime.now(UTC)
+        google_health_resource_consecutive_failures.labels(
+            endpoint_identity=ctx.endpoint_identity,
+            resource=state.bundle.resource,
+        ).set(state.consecutive_failures)
 
     def _shortest_interval(self) -> float:
         """Return the shortest cadence across all resources (seconds)."""
@@ -1960,9 +2054,11 @@ class GoogleHealthConnector:
                 ]
         else:
             params = self._build_params(bundle, state, since, until)
-            data = await client.get_json(bundle.endpoint_path, params=params)
             records = [
-                _normalize_google_health_record(bundle, record) for record in _extract_records(data)
+                _normalize_google_health_record(bundle, record)
+                for record in await self._get_window_records(
+                    client, bundle, params, endpoint_identity=endpoint_identity
+                )
             ]
 
         # Observe rate-limit headers per (account, resource) for metrics visibility.
@@ -1981,6 +2077,7 @@ class GoogleHealthConnector:
         observed_at = now.isoformat()
         emitted = 0
         latest_cursor = state.last_cursor
+        submission_failed = False
 
         for record in records:
             record_id = _record_identity(bundle, record)
@@ -2019,14 +2116,31 @@ class GoogleHealthConnector:
                     normalized_summary_template=bundle.normalized_summary,
                     observed_at=observed_at,
                 )
-            await self._submit_envelope(envelope, resource=bundle.resource)
-            emitted += 1
+            outcome = await self._submit_envelope(envelope, resource=bundle.resource)
+            if outcome:
+                if state.rejected_key == record_id:
+                    state.rejected_key, state.rejected_count = None, 0
+                emitted += 1
+            elif outcome is SubmissionOutcome.REJECTED and await self._quarantine_if_poison(
+                state, record_id, envelope, endpoint_identity=endpoint_identity
+            ):
+                pass  # receipted; consumed so the rest of the window can commit
+            else:
+                submission_failed = True
+                break
             latest_cursor = record_id
 
         google_health_envelopes_total.labels(
             endpoint_identity=endpoint_identity,
             resource=bundle.resource,
         ).inc(emitted)
+
+        if submission_failed:
+            # Accepted samples replay under their unchanged keys on the next poll; the
+            # checkpoint, poll time and backfill flag stay at their last committed values.
+            raise GoogleHealthPollIncompleteError(
+                f"{bundle.resource}: an ingest submission failed; checkpoint not advanced"
+            )
 
         if latest_cursor and latest_cursor != state.last_cursor:
             await self._save_cursor(account_uuid, state, latest_cursor)
@@ -2041,6 +2155,105 @@ class GoogleHealthConnector:
         ).inc()
         self._last_source_api_ok = True
         self._source_api_error_message = None
+
+    async def _quarantine_if_poison(
+        self,
+        state: ResourceState,
+        record_id: str,
+        envelope: dict[str, Any],
+        *,
+        endpoint_identity: str,
+    ) -> bool:
+        """Count one ingest rejection of ``record_id``; quarantine it once the limit is hit.
+
+        Returns ``True`` when the envelope is quarantined: an ``error`` row with reason
+        ``poison_quarantine`` and the full envelope lands in ``connectors.filtered_events`` (the
+        receipt an operator replays from), and the caller treats the sample as consumed.
+        The receipt is the only copy once the sample is consumed, so it is committed first
+        (bu-dhloi1.274); if it cannot be written the sample is not consumed and the poll
+        stays incomplete.
+        """
+        if state.rejected_key == record_id:
+            state.rejected_count += 1
+        else:
+            state.rejected_key, state.rejected_count = record_id, 1
+        attempts = state.rejected_count
+        if attempts < _POISON_REJECTION_LIMIT:
+            return False
+        state.rejected_key, state.rejected_count = None, 0
+        event = envelope.get("event", {})
+        external_event_id = event.get("external_event_id", "")
+        logger.error(
+            "GoogleHealthConnector: quarantined %s after %d consecutive ingest rejections",
+            external_event_id,
+            attempts,
+        )
+        google_health_quarantined_envelopes_total.labels(
+            endpoint_identity=endpoint_identity, resource=state.bundle.resource
+        ).inc()
+        if self._filtered_event_buffer is not None:
+            try:
+                await self._filtered_event_buffer.park(
+                    self._shared_pool,
+                    external_message_id=external_event_id,
+                    source_channel=envelope.get("source", {}).get("channel", ""),
+                    sender_identity=envelope.get("sender", {}).get("identity", ""),
+                    subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
+                    filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
+                    full_payload=envelope,
+                    error_detail=f"ingest rejected {attempts} consecutive attempts",
+                )
+            except ParkNotDurableError:
+                logger.error(
+                    "GoogleHealthConnector: %s rejected %d times but its quarantine receipt "
+                    "could not be written; holding the checkpoint",
+                    external_event_id,
+                    attempts,
+                )
+                # The next rejection reaches the limit again and retries the receipt.
+                state.rejected_key, state.rejected_count = record_id, attempts - 1
+                return False
+        return True
+
+    async def _get_window_records(
+        self,
+        client: GoogleHealthClient,
+        bundle: ResourceBundle,
+        params: dict[str, Any],
+        *,
+        endpoint_identity: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch a GET resource's records for one poll window.
+
+        Session and measurement bundles follow ``nextPageToken`` (sent back as
+        ``pageToken`` with the same filter) until the window is exhausted; a window that
+        needs more than ``_MAX_WINDOW_PAGES`` pages raises instead of counting as consumed, and
+        counts the overrun so an always-oversized window alerts instead of failing silently.
+        """
+        data = await client.get_json(bundle.endpoint_path, params=params)
+        records = _extract_records(data)
+        if bundle.category not in _PAGED_CATEGORIES:
+            return records
+        pages = 1
+        while isinstance(data, dict) and (token := data.get("nextPageToken")):
+            if pages >= _MAX_WINDOW_PAGES:
+                google_health_window_page_cap_exceeded_total.labels(
+                    endpoint_identity=endpoint_identity, resource=bundle.resource
+                ).inc()
+                logger.error(
+                    "GoogleHealthConnector: %s window exceeds %d pages; checkpoint held",
+                    bundle.resource,
+                    _MAX_WINDOW_PAGES,
+                )
+                raise GoogleHealthPollIncompleteError(
+                    f"{bundle.resource}: window exceeds {_MAX_WINDOW_PAGES} pages"
+                )
+            data = await client.get_json(
+                bundle.endpoint_path, params={**params, "pageToken": token}
+            )
+            records.extend(_extract_records(data))
+            pages += 1
+        return records
 
     def _compute_window(self, state: ResourceState) -> tuple[datetime, datetime]:
         """Compute [since, until] for the next poll.
@@ -2124,11 +2337,19 @@ class GoogleHealthConnector:
     # Submission
     # ------------------------------------------------------------------
 
-    async def _submit_envelope(self, envelope: dict[str, Any], *, resource: str) -> None:
+    async def _submit_envelope(
+        self, envelope: dict[str, Any], *, resource: str
+    ) -> SubmissionOutcome:
         """Evaluate filter gate and submit to Switchboard.
 
         Filtered events land in :class:`FilteredEventBuffer` (status=filtered).
         Submission errors land in the same buffer (status=error).
+
+        Returns ``HANDLED`` for an accepted, queued or duplicate envelope or a recorded policy
+        drop. An ingest reply with an error status (the Switchboard's envelope-validation
+        refusal) is ``REJECTED``; any exception, including an MCP tool error, is ``FAILED``
+        because it may be transient. Neither counts the sample as consumed; only rejections can
+        quarantine it.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2178,46 +2399,65 @@ class GoogleHealthConnector:
                                 policy_tier=control.get("policy_tier", "default"),
                             ),
                         )
-                    return
+                    return SubmissionOutcome.HANDLED
             except Exception as exc:  # noqa: BLE001
                 logger.debug("GoogleHealthConnector: policy evaluation error (fail-open): %s", exc)
 
+        def record_error(detail: str) -> None:
+            if self._filtered_event_buffer is not None:
+                self._filtered_event_buffer.record(
+                    external_message_id=event.get("external_event_id", ""),
+                    source_channel=source.get("channel", ""),
+                    sender_identity=sender.get("identity", ""),
+                    subject_or_preview=payload.get("normalized_text", "")[:100],
+                    filter_reason=FilteredEventBuffer.reason_submission_error(),
+                    full_payload=envelope,
+                    status="error",
+                    error_detail=detail,
+                )
+
         async with self._semaphore:
             start_t = time.perf_counter()
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A failed
+            # write is a FAILED outcome (not consumed, nothing submitted) and copies the sample
+            # nowhere: no error-buffer row, because the cursor holds and the sample is re-read.
+            # A failed submit keeps the journal row and parks below.
             try:
-                result = await self._mcp_client.call_tool("ingest", envelope)
+                await commit_envelope(self._shared_pool, envelope)
+            except EvidenceNotCommitted as exc:
+                self._metrics.record_error("evidence_error", "journal")
+                logger.error(
+                    "GoogleHealthConnector: evidence not committed; holding the sample "
+                    "(failure_class=%s)",
+                    exc.reason,
+                )
+                return SubmissionOutcome.FAILED
+            try:
+                result = await submit_ingest(self._mcp_client, envelope)
                 latency = time.perf_counter() - start_t
-                status = "success"
-                if isinstance(result, dict):
-                    resp_status = result.get("status", "")
-                    if resp_status == "duplicate":
-                        status = "duplicate"
-                    elif resp_status not in ("accepted", "queued", "duplicate"):
-                        logger.warning(
-                            "GoogleHealthConnector: unexpected ingest response: %s", result
-                        )
+                status = "duplicate" if result.duplicate else "success"
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_source_api_ok = True
+                return SubmissionOutcome.HANDLED
             except Exception as exc:  # noqa: BLE001
                 latency = time.perf_counter() - start_t
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
-                if self._filtered_event_buffer is not None:
-                    self._filtered_event_buffer.record(
-                        external_message_id=event.get("external_event_id", ""),
-                        source_channel=source.get("channel", ""),
-                        sender_identity=sender.get("identity", ""),
-                        subject_or_preview=payload.get("normalized_text", "")[:100],
-                        filter_reason=FilteredEventBuffer.reason_submission_error(),
-                        full_payload=envelope,
-                        status="error",
-                        error_detail=str(exc),
-                    )
+                record_error(str(exc))
+                # Only a deterministic Switchboard refusal can count toward quarantine.
+                if isinstance(exc, IngestRejected) and exc.is_refusal:
+                    return SubmissionOutcome.REJECTED
+                return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard — bypasses filter gate (replay path)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        """Replay path (no filter gate): confirm the journal row exists, write nothing, send.
+
+        A parked sample was journaled before its submit. A legacy row or a preview with no
+        original idempotency key has no such row and is refused (bu-uhbhzq.4).
+        """
+        await require_committed(self._shared_pool, envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     async def _flush_filtered_events(self) -> None:
         if self._shared_pool is None or self._filtered_event_buffer is None:
@@ -2367,8 +2607,8 @@ class GoogleHealthConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         port = self._config.health_port
         try:
@@ -2380,7 +2620,12 @@ class GoogleHealthConnector:
             return
 
         uvicorn_config = uvicorn.Config(
-            app=app, host="127.0.0.1", port=port, log_level="warning", access_log=False
+            app=app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            access_log=False,
+            log_config=None,
         )
         server = uvicorn.Server(uvicorn_config)
         self._health_server = server

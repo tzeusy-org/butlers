@@ -67,7 +67,9 @@ import asyncpg
 import httpx
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.job_health import record_tick
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +237,7 @@ async def run_external_deadman_check(
     try:
         async with asyncio.timeout(timeout_s):
             async with pool.acquire(timeout=_DB_TIMEOUT_S) as connection:
-                async with connection.transaction():
+                async with audit_transaction(connection):
                     if not await connection.fetchval(
                         "SELECT pg_try_advisory_xact_lock($1::bigint)", _TICK_LOCK
                     ):
@@ -323,6 +325,7 @@ async def run_external_deadman_loop(
         try:
             pool = db.pool("switchboard")
         except KeyError:
+            await record_tick(failed=True)
             logger.warning("external deadman: switchboard pool unavailable, skipping tick")
             continue
         try:
@@ -333,8 +336,10 @@ async def run_external_deadman_loop(
             summary = await run_external_deadman_check(
                 pool, url, expected_names=tuple(db.configured_butler_names), tick_id=tick_id
             )
+            await record_tick(failed=not summary.get("success", False))
             logger.info("external_deadman_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.warning("external_deadman_check: tick failed")

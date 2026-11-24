@@ -19,57 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  route:
-    timeout-minutes: 2
-    # Stdlib-only routing cannot establish testcase membership. Uncertainty widens.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      backend: ${{ steps.classify.outputs.backend }}
-      frontend: ${{ steps.classify.outputs.frontend }}
-      mode: ${{ steps.classify.outputs.mode }}
-      test_paths: ${{ steps.classify.outputs.test_paths }}
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Filter changed paths
-        id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
-        with:
-          list-files: json
-          filters: |
-            docs:
-              - 'about/**'
-              - 'openspec/**'
-              - 'docs/**'
-              - '*.md'
-              - '.beads/**'
-              - 'LICENSE'
-            all:
-              - '**'
-
-      - name: Classify and conservatively plan with stdlib only
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          ALL_FILES: ${{ steps.filter.outputs.all_files }}
-          DOCS_FILES: ${{ steps.filter.outputs.docs_files }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 scripts/ci_route.py
-
   go-bridge:
     # New lane: source-derived bound, not measured healthy/p95 calibration.
     timeout-minutes: 15
     runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.backend == 'true'
     permissions:
       contents: read
     defaults:
@@ -91,6 +44,8 @@ jobs:
           cache-dependency-path: whatsapp-bridge/go.sum
       - name: Test the Go bridge
         run: timeout --signal=TERM --kill-after=30s 10m go test -mod=readonly -count=1 -timeout=5m ./...
+      - name: Test the offline Go artifact contract
+        run: go test -count=1 ../scripts/runtime_clis/go_artifacts.go ../scripts/runtime_clis/go_artifacts_test.go
       - name: Verify Go lockfiles are unchanged
         run: git diff --exit-code -- go.mod go.sum
 
@@ -98,18 +53,15 @@ jobs:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; preflight owns the lane totals, test budget and smoke.
+    # their exact scopes; smoke owns the lane counts and smoke
+    # tests, and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
     # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
     # guard never hides the findings of the others; the last step fails the job
-    # if any guard step failed. Runs on every event. The active
-    # `main-merge-queue` ruleset requires `guards` alongside `check` and
-    # `frontend` on the exact `merge_group` tree; unlike path-filtered
-    # `frontend`, this job never skips.
+    # if any guard step failed. Runs on every event; `alls-green` requires it.
     runs-on: ubuntu-latest
-    needs: [route]
     permissions:
       contents: read
       pull-requests: read
@@ -144,6 +96,9 @@ jobs:
 
       - name: Install lint tools
         run: make install-lint-tools
+
+      - name: Prepare trusted Pyright source
+        run: make prepare-typecheck
 
       - name: Lint
         id: lint
@@ -234,21 +189,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-em-dashes.py
 
-      # Spec-overwrite guard (bu-s9uv3): `openspec archive` writes the WHOLE
-      # requirement block from a change into openspec/specs/, so an unarchived
-      # `## MODIFIED Requirements` block authored against an older ancestor
-      # silently deletes whatever the baseline gained in between. OpenSpec 1.9.0
-      # guards only scenario NAMES, so a block that keeps every name and rewrites
-      # the bodies validates clean and still destroys baseline content -- which has
-      # happened three times on the same axis. This compares bodies. A digest-keyed
-      # ratchet (scripts/spec-overwrite-baseline.json) freezes today's debt and
-      # re-fires as soon as an archive moves a requirement under an unarchived
-      # block.
-      - name: Check unarchived MODIFIED spec blocks against the live baseline
-        id: spec_overwrites
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_spec_overwrites.py
-
       # bu-xjs98p.1: new and edited requirements in active changes carry identity. Every
       # ADDED/MODIFIED block needs ID, Source and Scope lines unless it is frozen in the
       # content-addressed baseline (scripts/requirement-trace-baseline.json); editing a frozen
@@ -268,88 +208,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: make check-openspec-strict
 
-      # Archived-requirements guard (bu-966by): the other side of the ledger from
-      # the spec-overwrite guard. Archiving a change is supposed to write its
-      # requirements into openspec/specs/, and 488 of them across 44 changes never
-      # got there while every check stayed green -- `openspec validate` reads delta
-      # syntax, `openspec archive` reports what it wrote and not what it skipped,
-      # and check_spec_overwrites.py never looks at the baseline side at all. This
-      # asserts each archived `## ADDED` requirement exists in the baseline by name
-      # and each `## MODIFIED` block's content reached it, failing per requirement
-      # so a half-applied archive cannot look green. A digest-keyed ratchet
-      # (scripts/archived-requirements-baseline.json) freezes today's debt for
-      # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose,
-      # and a `## REMOVED` block excuses an absence only once its own change
-      # has archived, so a pending proposal cannot mute a gap off-ratchet.
-      - name: Check archived change requirements reached the baseline
-        id: archived_requirements
+      # Qualified test citations resolve to canonical contracts first, then complete retained
+      # ADDED/MODIFIED requirements. Archive history and prose mentions are not definitions.
+      - name: Check test requirement citations
+        id: requirement_citations
         if: ${{ !cancelled() }}
-        run: python3 scripts/check_archived_requirements_landed.py
+        run: uv run --no-sync pytest tests/contracts/test_requirement_citations.py -q --tb=short -n 0
 
       # Owner-email guard: the repo stays user-agnostic, so no tracked file may
       # carry the owner's personal addresses (matched by local-part hash).
       - name: Check no owner email addresses are tracked
         if: ${{ !cancelled() }}
         run: python3 scripts/check_owner_emails.py
-
-      # Countable-tasks guard (bu-h7igs): `openspec archive`'s incomplete-task
-      # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
-      # sections with per-task acceptance bullets -- richer than most checkbox files
-      # here, not lazier -- matches zero of them, so archive reports
-      # `Task status: No tasks`, cannot be incomplete, and archives unprompted. The
-      # defect is not the missing warning but that the gate's silence is
-      # indistinguishable from its pass: "archived with no task warning" reads as
-      # evidence the tasks were done. This fails on any unarchived change the gate
-      # cannot see, so the difference is restored before the change reaches archive.
-      - name: Check every change's tasks.md is countable by the archive gate
-        id: countable_tasks
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_countable_tasks.py
-
-      # Cited-requirements guard (bu-lpwjc): the third side of the ledger. The
-      # two guards above read the spec tree against itself and have never opened a
-      # test file, so nothing ever checked that a REQ id cited by a test docstring
-      # resolves to a definition at all. Measured at introduction: 39 distinct ids
-      # are cited, 30 resolve only to a change that has not archived yet, and
-      # REQ-cli-runtime-auth-003 resolves nowhere -- there is no cli-runtime-auth
-      # capability in the repo. openspec/specs/ and unarchived changes are the two
-      # definition sources; openspec/changes/archive/** deliberately is NOT one,
-      # because an archived change has already had its chance to write the
-      # requirement into the baseline. Counting it would make this blind to
-      # exactly the case it exists for (`openspec archive --skip-specs` moves the
-      # delta and writes no baseline) and would hide a half-applied archive, since
-      # the ids that landed and the ids that did not would read the same.
-      # Pending-only citations pass but are printed with the change they lean on:
-      # that is the state that rots. A ratchet
-      # (scripts/cited-requirements-baseline.json) freezes today's one dangling
-      # citation per (test file, id); there is no re-freeze flag on purpose.
-      - name: Check REQ ids cited by tests resolve to a definition
-        id: cited_requirements
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_cited_requirements_resolve.py
-
-      # Frontend-copy-inventory guard (bu-erfdj): frontend/COPY_INVENTORY.md
-      # is generated by scripts/extract-frontend-copy.py, is committed so copy changes
-      # surface in review, and tells readers not to edit it by hand -- but nothing ever
-      # regenerated it, so it drifted silently while presenting itself as authoritative.
-      # Committing the inventory only pays off if it is guaranteed current, so this
-      # regenerates it from the checked-out frontend sources and fails on any diff.
-      # The generator parses .tsx files directly (no node_modules, no npm install) and
-      # its output is a pure function of those files with no timestamp or other
-      # nondeterministic field, so this gate cannot flap.
-      - name: Regenerate the frontend copy inventory
-        id: frontend_copy_regenerate
-        if: ${{ !cancelled() }}
-        run: python3 scripts/extract-frontend-copy.py
-
-      - name: Check the committed inventory matches the regenerated one
-        id: frontend_copy
-        if: ${{ !cancelled() }}
-        run: |
-          if ! git diff --exit-code -- frontend/COPY_INVENTORY.md; then
-            echo "::error file=frontend/COPY_INVENTORY.md::Frontend copy inventory is stale. Regenerate it with 'python3 scripts/extract-frontend-copy.py' and commit the result."
-            exit 1
-          fi
 
       # Duplicate-name guard (bu-ayrbg): two branches each added a
       # module-level `_fenced_code_blocks` to one test file with incompatible
@@ -368,8 +238,8 @@ jobs:
       # CI never builds the union of open PRs.
       #
       # This asserts each module-level name is bound once per file, independent of
-      # use. It scans the lint gate's own scope (src/, tests/, roster/,
-      # conftest.py) and fails if it finds zero Python files, so it cannot go
+      # use. It scans the four lint roots (src/, tests/, roster/, scripts/)
+      # plus root conftest.py and fails if it finds zero Python files, so it cannot go
       # quiet the way the shadowed guard did. Ratchet:
       # scripts/duplicate-toplevel-names-baseline.json, shipped empty, with no
       # re-freeze flag on purpose.
@@ -377,6 +247,27 @@ jobs:
         id: duplicate_names
         if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
+
+      # Reviewed source classification, not a runtime policy conversion certificate.
+      - name: Check reviewed host-policy selector inventory
+        id: host_policy_selectors
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_host_policy_selectors.py
+
+      # Source accounting only; neither route admission nor network conformance.
+      - name: Check egress profile source coverage
+        id: egress_profile_coverage
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_egress_profile_coverage.py
+
+      # The public MCP alert rules (RFC 0039 D16) run through the pinned promtool installed by
+      # "Install lint tools". Elsewhere the test skips without promtool; here a missing tool fails.
+      - name: Test the public MCP alert rules with promtool
+        id: promtool_alert_rules
+        if: ${{ !cancelled() }}
+        env:
+          BUTLERS_REQUIRE_PROMTOOL: "1"
+        run: uv run --no-sync pytest tests/scripts/test_public_mcp_alert_rules.py -q --tb=short -n 0
 
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
@@ -389,15 +280,13 @@ jobs:
             sql_safety=${{ steps.sql_safety.outcome }}
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
-            spec_overwrites=${{ steps.spec_overwrites.outcome }}
             requirement_trace=${{ steps.requirement_trace.outcome }}
             openspec_strict=${{ steps.openspec_strict.outcome }}
-            archived_requirements=${{ steps.archived_requirements.outcome }}
-            countable_tasks=${{ steps.countable_tasks.outcome }}
-            cited_requirements=${{ steps.cited_requirements.outcome }}
-            frontend_copy_regenerate=${{ steps.frontend_copy_regenerate.outcome }}
-            frontend_copy=${{ steps.frontend_copy.outcome }}
+            requirement_citations=${{ steps.requirement_citations.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
+            host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
+            egress_profile_coverage=${{ steps.egress_profile_coverage.outcome }}
+            promtool_alert_rules=${{ steps.promtool_alert_rules.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do
@@ -419,60 +308,42 @@ jobs:
           exit "$failed"
 
       - name: Set up Node 24
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24.22.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
-
       - name: Install dependencies
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm ci
 
-
       - name: Lint
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint
 
-
       - name: Em-dash copy gate (bu-370uj)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:emdash
 
-
       - name: Query-result coercion gate (bu-ep4ks.5)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:query-coercion
 
-
       - name: Import graph (knip)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run knip
 
-
       - name: Build
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run build
 
-
-
-
-  check-preflight:
+  smoke:
     timeout-minutes: 27
     runs-on: ubuntu-latest
-    needs: [route, guards, check-unit, check-integration]
-    # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: always() && needs.guards.result == 'success' && (needs.route.outputs.mode == 'full' || needs.route.outputs.mode == 'scoped')
+    # Starts beside the lane groups: nothing here needs a test result, so an
+    # over-budget tree fails within minutes instead of after the whole suite.
+    # check-totals compares the groups with these counts later.
 
     steps:
       - uses: actions/checkout@v6
@@ -480,82 +351,25 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
-      - name: Download every lane group's evidence
-        if: needs.route.outputs.mode == 'full'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ci-*-test-evidence
-          path: ${{ runner.temp }}/ci-test-receipts
+      - name: Count each lane
+        # One fresh --collect-only count per lane of the same selection the groups
+        # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
+        run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
 
-      - name: Check the lane groups add up and stay within the test budget
-        # No group may drop or duplicate a test: each lane's group counts must sum
-        # to one fresh --collect-only count of the same selection (bu-29wkwj.2).
-        if: needs.route.outputs.mode == 'full'
-        run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
+      - name: Upload the lane counts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts/lane-counts.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
 
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
         env:
-          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          mkdir -p "$SMOKE_EVIDENCE_DIR"
-          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
-
-          START_TS=$(date +%s)
-          set +e
-          $SMOKE_CMD --junit-xml="$SMOKE_EVIDENCE_DIR/raw-junit.xml" 2>&1 | tee "$SMOKE_EVIDENCE_DIR/smoke.log"
-          SMOKE_EXIT=${PIPESTATUS[0]}
-          set -e
-          END_TS=$(date +%s)
-          DURATION_S=$((END_TS - START_TS))
-          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
-
-          # Write release-evidence JSON and emit a clearly-formatted log line.
-          SMOKE_EXIT_VAL=$SMOKE_EXIT \
-          SMOKE_SHA="${{ github.sha }}" \
-          SMOKE_DURATION=$DURATION_S \
-          SMOKE_STATUS=$STATUS \
-          SMOKE_CMD_VAL="$SMOKE_CMD" \
-          SMOKE_EVIDENCE_DIR="$SMOKE_EVIDENCE_DIR" \
-          python3 << 'PYEOF'
-          import json, os, sys, xml.etree.ElementTree as ET
-
-          sha = os.environ["SMOKE_SHA"]
-          duration_s = int(os.environ["SMOKE_DURATION"])
-          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
-          status = os.environ["SMOKE_STATUS"]
-          cmd = os.environ["SMOKE_CMD_VAL"]
-          evidence_dir = os.environ["SMOKE_EVIDENCE_DIR"]
-
-          try:
-              root = ET.parse(os.path.join(evidence_dir, "raw-junit.xml")).getroot()
-              skipped_classes = sorted({
-                  tc.get("classname") or tc.get("name", "unknown")
-                  for tc in root.findall(".//testcase")
-                  if tc.find("skipped") is not None
-              })
-          except (ET.ParseError, OSError) as exc:
-              print(exc, file=sys.stderr)
-              skipped_classes = ["unavailable"]
-
-          evidence = {
-              "cmd": cmd,
-              "sha": sha,
-              "duration_s": duration_s,
-              "status": status,
-              "exit_code": exit_code,
-              "skipped_classes": skipped_classes,
-          }
-          with open(os.path.join(evidence_dir, "release-evidence.json"), "w") as f:
-              json.dump(evidence, f, indent=2)
-
-          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
-          print()
-          print(json.dumps(evidence, indent=2))
-          PYEOF
-
-          exit "$SMOKE_EXIT"
+        run: python3 scripts/ci_smoke.py --output "${RUNNER_TEMP}/ci-artifacts/smoke"
 
       - name: Prepare smoke test duration evidence
         if: ${{ always() && steps.smoke.outcome != 'skipped' }}
@@ -588,19 +402,46 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  check-totals:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    needs: [smoke, check-unit, check-integration]
+    # No group may drop or duplicate a test: each lane's group counts must sum
+    # to smoke's fresh --collect-only count. Standard library only, so it needs
+    # no Python environment setup.
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+
+      - name: Download the lane counts
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts
+
+      - name: Download every lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-receipts
+
+      - name: Check the lane groups add up
+        run: python3 scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts" --expected "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
+
   check-unit:
     timeout-minutes: 28
-    runs-on: ubuntu-latest
-    needs: [route]
+    runs-on: ubuntu-24.04
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4, 5]
-    if: needs.route.outputs.mode == 'full'
 
     env:
       CI_COVERAGE: '0'
+      BUTLERS_REQUIRE_SESSION_HOST_NATIVE: '1'
 
     steps:
       - uses: actions/checkout@v6
@@ -608,10 +449,25 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
+      - name: Install session-host native proof prerequisites
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends bubblewrap build-essential openssl
+          /usr/bin/bwrap --version
+          cc --version | head -n 1
+          openssl version
+
+      - name: Prove scoped session-host user namespaces
+        run: uv run --no-sync python scripts/session_host_ci.py prepare
+
       - name: Unit tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}
         run: uv run python scripts/ci_lanes.py run --lane unit --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}"
+
+      - name: Remove scoped session-host user namespace profile
+        if: always()
+        run: uv run --no-sync python scripts/session_host_ci.py cleanup
 
       - name: Prepare unit group ${{ matrix.group }} duration evidence
         if: always()
@@ -631,6 +487,8 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/hang-evidence/
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
@@ -639,16 +497,16 @@ jobs:
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
-    needs: [route]
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4, 5, 6]
-    if: needs.route.outputs.mode == 'full'
 
     env:
       CI_COVERAGE: '0'
+      BUTLERS_TEST_STORAGE_EVIDENCE: ${{ matrix.group == 6 && '1' || '0' }}
+      BUTLERS_STORAGE_GROUP: ${{ matrix.group }}
 
     steps:
       - uses: actions/checkout@v6
@@ -657,10 +515,14 @@ jobs:
         uses: ./.github/actions/ci-python-environment
 
       - name: Free disk space before testcontainers
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
         # Runner disk capacity varies. Preserve the cleanup that eliminated
         # no-space/asyncpg failures on small runners, but do not spend minutes
         # deleting 20+ GiB of tools when the runner already has a safe floor.
         run: |
+          mkdir -p "${TEST_EVIDENCE_DIR}" || echo "storage evidence UNKNOWN evidence_directory_startup"
+          uv run --no-sync python -B -m butlers.testing.storage before_cleanup || echo "storage evidence UNKNOWN before_cleanup_startup"
           echo "Disk usage before cleanup:"
           df -h /
           MIN_FREE_GB=30
@@ -687,12 +549,19 @@ jobs:
           fi
           echo "Disk usage after cleanup decision:"
           df -h /
+          uv run --no-sync python -B -m butlers.testing.storage after_cleanup || echo "storage evidence UNKNOWN after_cleanup_startup"
 
       - name: Integration tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/ci_lanes.py run --lane integration --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}"
+
+      - name: Summarize bounded integration storage metadata
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
+        if: always() && matrix.group == 6
+        run: uv run --no-sync python -B -m butlers.testing.storage inventory || echo "storage evidence UNKNOWN inventory_startup"
 
       - name: Prepare integration group ${{ matrix.group }} duration evidence
         if: always()
@@ -712,191 +581,16 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/hang-evidence/
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/storage-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
-
-  check-affected:
-    timeout-minutes: 82
-    outputs:
-      verified: ${{ steps.selected-execution.outputs.verified }}
-    # Affected-test lane (bu-v28ho): the route job's evidence when it
-    # selected a scoped plan. Runs the planner-selected test paths directly
-    # instead of the full eleven-child matrix. The merge queue still exercises
-    # every shard before main; owned daily/manual coverage assurance separately
-    # instruments the same complete populations.
-    runs-on: ubuntu-latest
-    needs: [route]
-    # Explicit route admission bounds the scoped lane; the required final
-    # verdict still refuses a failed classifier or static guard.
-    if: always() && needs.route.result == 'success' && github.event_name == 'pull_request' && needs.route.outputs.mode == 'scoped'
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up the CI Python environment
-        uses: ./.github/actions/ci-python-environment
-
-      - name: Affected tests (scoped plan)
-        id: selected-execution
-        env:
-          TEST_PATHS_JSON: ${{ needs.route.outputs.test_paths }}
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
-          # Keep the same real integration/testcontainers runner and defaults.
-          TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          uv run --no-sync python scripts/ci_affected.py --output "$TEST_EVIDENCE_DIR"
-
-      - name: Prepare affected-test duration evidence
-        if: always()
-        run: |
-          python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/affected/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/affected/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/affected/top-durations.txt" \
-            --limit 25
-
-      - name: Upload affected-test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-affected-test-evidence
-          path: |
-            ${{ runner.temp }}/ci-artifacts/affected/junit.xml
-            ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
-            ${{ runner.temp }}/ci-artifacts/affected/condensation-refusal-*.json
-          retention-days: 14
-          if-no-files-found: error
-          overwrite: true
-
-  check:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected, frontend-e2e, go-bridge]
-    if: always()
-    steps:
-      - name: Fail closed from prerequisite verdicts only
-        id: gate
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import PurePosixPath
-          def admitted_paths(paths: object) -> bool:
-              """Checkout-free selected-file admission, mirrored by the required verdict."""
-              return (
-                  isinstance(paths, list)
-                  and bool(paths)
-                  and all(isinstance(path, str) for path in paths)
-                  and len(paths) == len(set(paths))
-                  and all(
-                      PurePosixPath(path).as_posix() == path
-                      and not any(part in {".", ".."} for part in path.split("/"))
-                      and "\\" not in path
-                      and "::" not in path
-                      and path.endswith(".py")
-                      and path.startswith(("tests/", "roster/"))
-                      and not path.startswith("tests/e2e/")
-                      and not any(ord(character) < 32 for character in path)
-                      for path in paths
-                  )
-              )
-
-          def verdict(*, needs: dict, event: str, ref: str) -> bool:
-              """Only verdicts; unknown jobs/skips/results and malformed outputs fail closed."""
-              expected = {
-                  "route",
-                  "guards",
-                  "check-preflight",
-                  "check-unit",
-                  "check-integration",
-                  "check-affected",
-                  "frontend-e2e",
-                  "go-bridge",
-              }
-              if not isinstance(needs, dict) or not expected <= needs.keys():
-                  return False
-              if any(
-                  not isinstance(value, dict)
-                  or value.get("result") not in {"success", "skipped"}
-                  or not isinstance(value.get("outputs"), dict)
-                  or any(not isinstance(item, str) for item in value["outputs"].values())
-                  for value in needs.values()
-              ):
-                  return False
-              if needs["route"]["result"] != "success" or needs["guards"]["result"] != "success":
-                  return False
-              outputs = needs["route"]["outputs"]
-              if outputs.get("backend") not in {"true", "false"} or outputs.get("frontend") not in {
-                  "true",
-                  "false",
-              }:
-                  return False
-              mode = outputs.get("mode")
-              if event == "merge_group":
-                  if mode != "full" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "push" and ref == "refs/heads/main":
-                  if mode != "push" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "pull_request":
-                  if mode not in {"docs", "scoped", "full"} or (mode == "docs") != (
-                      outputs["backend"] == "false"
-                  ):
-                      return False
-              else:
-                  return False
-              try:
-                  paths = json.loads(outputs["test_paths"])
-              except (KeyError, ValueError):
-                  return False
-              if not isinstance(paths, list) or any(
-                  not isinstance(path, str)
-                  or not path.startswith(("tests/", "roster/"))
-                  or any(part in {".", ".."} for part in path.split("/"))
-                  or any(ord(character) < 32 for character in path)
-                  for path in paths
-              ):
-                  return False
-              if bool(paths) != (mode == "scoped"):
-                  return False
-              if mode == "scoped" and (
-                  not admitted_paths(paths)
-                  or needs["check-affected"]["outputs"].get("verified") != "true"
-              ):
-                  return False
-              results = {
-                  "route": "success",
-                  "guards": "success",
-                  "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
-                  "check-affected": "success" if mode == "scoped" else "skipped",
-                  "check-unit": "success" if mode == "full" else "skipped",
-                  "check-integration": "success" if mode == "full" else "skipped",
-                  # Playwright e2e is required wherever it runs: every merge group
-                  # and main push, and pull requests the route marks as frontend changes.
-                  "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
-                  "go-bridge": "success" if outputs["backend"] == "true" else "skipped",
-              }
-              return all(job["result"] == results.get(name, "success") for name, job in needs.items())
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          passed = verdict(needs=needs, event=os.environ['EVENT_NAME'], ref=os.environ['REF'])
-          if passed:
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-                  stream.write(f"shards_ran={str(needs['route']['outputs']['mode'] == 'full').lower()}\n")
-          raise SystemExit(0 if passed else 1)
-          PY
 
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -922,58 +616,36 @@ jobs:
           retention-days: 14
           overwrite: true
 
-  frontend:
+  frontend-assurance:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards, frontend-vitest]
-    if: always()
+    needs: [frontend-vitest]
+    # Both Vitest children must together run the complete fresh item population.
     steps:
-      - name: Required frontend verdict
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          valid = set(needs) == {'route', 'guards', 'frontend-vitest'}
-          valid = valid and all(isinstance(v, dict) and v.get('result') in {'success', 'skipped'} for v in needs.values())
-          valid = valid and needs['route']['result'] == needs['guards']['result'] == 'success'
-          applicable = needs.get('route', {}).get('outputs', {}).get('frontend')
-          valid = valid and applicable in {'true', 'false'}
-          valid = valid and needs['frontend-vitest']['result'] == ('success' if applicable == 'true' else 'skipped')
-          raise SystemExit(0 if valid else 1)
-          PY
       - uses: actions/checkout@v6
-        if: needs.route.outputs.frontend == 'true'
       - name: Download actual Vitest child one
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-1
           path: ${{ runner.temp }}/vitest-1
       - name: Download actual Vitest child two
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-2
           path: ${{ runner.temp }}/vitest-2
       - name: Independently reconcile both current Vitest populations
-        if: needs.route.outputs.frontend == 'true'
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
     # Provisional: ceil((2*228s before envelope + 720s installer reserve)/60).
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    # bu-kiuh8v.31: ubuntu-latest is moving to ubuntu-26.04, where the pinned Playwright refuses
+    # to install chromium ("does not support chromium on ubuntu26.04-x64", job 132392602789).
+    # Stay on 24.04 until a Playwright release supports 26.04.
+    runs-on: ubuntu-24.04
     # Builds its own bundle so the browser lane starts beside guards instead
-    # of waiting for it (bu-29wkwj.2).
-    needs: [route]
-    # Required through the `check` verdict (owner decision bu-w72da2 = A):
-    # merge_group and push:main always run it; pull_request runs it only when the
-    # route classifies the PR as frontend: frontend/, .github/workflows/, scripts/ci_
-    # or scripts/check_ci_ changed, or the diff is undeterminable (fail-closed, see
-    # `route`). Every other PR requires the explicit skip.
-    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
+    # of waiting for it (bu-29wkwj.2). Required through `alls-green` on every
+    # event (owner decision bu-w72da2 = A).
 
     defaults:
       run:
@@ -1006,8 +678,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
-
       - name: Install Playwright browsers
+        # Emergency guard outside the native 720s budget and its cleanup/diagnostics.
+        timeout-minutes: 13
         run: npm run test:e2e:install
 
       - name: Build
@@ -1023,3 +696,31 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  alls-green:
+    # The one required check (bu-29wkwj.3). Every workload is a direct need and
+    # must report success: a failure, cancellation or skip anywhere fails it.
+    # `always()` keeps this job from being skipped itself, which GitHub would
+    # treat as passing.
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs:
+      - go-bridge
+      - guards
+      - smoke
+      - check-totals
+      - check-unit
+      - check-integration
+      - frontend-vitest
+      - frontend-assurance
+      - frontend-e2e
+    if: always()
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EXPECTED_JOBS: "9"
+        run: |
+          printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          printf '%s' "$NEEDS_JSON" | jq -e --argjson n "$EXPECTED_JOBS" \
+            'type == "object" and length == $n and all(.[]; .result == "success")' > /dev/null

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -19,19 +20,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_214_collapse_dashboard_conversation_ghosts", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     sqls: list[str] = []
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_214_collapse_dashboard_conversation_ghosts")
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = sqls.append
     with patch.object(migration, "op", mocked_op):
@@ -41,48 +32,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def ghost_collapse_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                message_count INTEGER NOT NULL DEFAULT 0,
-                routed_butler TEXT,
-                source_channel TEXT NOT NULL DEFAULT 'dashboard',
-                source_thread_identity TEXT,
-                provider_session_id TEXT,
-                provider_runtime_type TEXT,
-                provider_session_updated_at TIMESTAMPTZ
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-                    ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                session_id UUID,
-                model_name TEXT,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                duration_ms INTEGER,
-                tool_calls JSONB,
-                error TEXT,
-                request_id UUID
-            )
-            """
-        )
-        yield pool
+async def ghost_collapse_pool(db):
+    """core_214's predecessor: the real dashboard conversation tables."""
+    return await db("core", revisions={"core": "core_213"})
 
 
 async def _insert_conversation(

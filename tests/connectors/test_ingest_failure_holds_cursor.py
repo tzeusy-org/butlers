@@ -1,0 +1,896 @@
+"""A failed ingest never moves a connector past the item (bu-dhloi1.149, slice 1).
+
+For Gmail backfill, Google Calendar sync, ActivityWatch live and the Telegram
+user client: a failed ingest keeps the cursor, window or checkpoint before the
+item, so the next cycle reads it again. Each item gets a bounded number of
+attempts (``IngestRetryBudget``). When they are spent, the item is parked as a
+replayable ``filtered_events`` error row carrying the exact envelope it tried,
+idempotency key included, and only then does the connector move on.
+
+Gmail live polling holds the whole history batch on request or delivery failure;
+accepted siblings replay with unchanged idempotency keys. Deliberate deleted or
+malformed message outcomes keep their existing skip/error handling.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
+
+# row tuple layout: see FilteredEventBuffer.record
+_ID, _STATUS, _REASON, _PAYLOAD = 3, 8, 7, 9
+
+
+# ── The budget and the stored payload ─────────────────────────────────────
+
+
+def test_the_budget_parks_on_the_last_attempt_and_forgets_it() -> None:
+    budget = IngestRetryBudget(3)
+    assert [budget.failed("a"), budget.failed("a")] == [False, False]
+    assert budget.attempts("a") == 2
+    assert budget.failed("a") is True
+    assert budget.attempts("a") == 0 and len(budget) == 0
+    budget.failed("b")
+    budget.succeeded("b")
+    assert len(budget) == 0
+    with pytest.raises(ValueError):
+        IngestRetryBudget(0)
+
+
+def test_full_payload_keeps_the_idempotency_key_for_replay() -> None:
+    stored = FilteredEventBuffer.full_payload(
+        channel="email",
+        provider="gmail",
+        endpoint_identity="gmail:user:a@example.test",
+        external_event_id="m1",
+        external_thread_id=None,
+        observed_at="2026-01-01T00:00:00+00:00",
+        sender_identity="a@example.test",
+        raw={},
+        idempotency_key="gmail:m1",
+    )
+    assert stored["control"]["idempotency_key"] == "gmail:m1"
+
+
+def test_a_stored_envelope_is_the_submission_minus_its_schema_version() -> None:
+    envelope = {
+        "schema_version": "ingest.v1",
+        "source": {"channel": "email"},
+        "control": {"idempotency_key": "k", "policy_tier": "default"},
+    }
+    stored = FilteredEventBuffer.stored_envelope(envelope)
+    assert stored == {"source": {"channel": "email"}, "control": envelope["control"]}
+    assert "schema_version" in envelope  # the caller's envelope is untouched
+
+
+# ── Gmail backfill ──────────────────────────────────────────────────────────
+
+
+def _gmail_runtime(submit: AsyncMock) -> Any:
+    from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
+
+    config = GmailConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        connector_provider="gmail",
+        connector_channel="email",
+        connector_endpoint_identity="gmail:user:test@example.com",
+        connector_max_inflight=4,
+        gmail_client_id="test-client-id",
+        gmail_client_secret="test-client-secret",
+        gmail_refresh_token="test-refresh-token",
+        gmail_watch_renew_interval_s=3600,
+        gmail_poll_interval_s=5,
+    )
+    runtime = GmailConnectorRuntime(config, cursor_pool=MagicMock())
+    runtime._fetch_message = AsyncMock(side_effect=lambda mid: {"id": mid})  # type: ignore[method-assign]
+    runtime._build_ingestion_envelope = MagicMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(known_contact=None)
+    )
+    runtime._known_contact_signal = MagicMock(return_value=None)  # type: ignore[method-assign]
+    runtime._get_from_header = MagicMock(return_value="a@example.test")  # type: ignore[method-assign]
+    runtime._ingestion_policy = MagicMock()
+    runtime._ingestion_policy.evaluate = MagicMock(return_value=SimpleNamespace(allowed=True))
+    runtime._global_ingestion_policy = MagicMock()
+    runtime._global_ingestion_policy.evaluate = MagicMock(
+        return_value=SimpleNamespace(action="pass_through")
+    )
+    runtime._apply_global_action_tier = MagicMock(side_effect=lambda p, _g: p)  # type: ignore[method-assign]
+
+    async def build(message_data: dict, **_kw: Any) -> dict:
+        mid = message_data["id"]
+        return {
+            "schema_version": "ingest.v1",
+            "source": {"channel": "email", "provider": "gmail"},
+            "event": {"external_event_id": mid},
+            "sender": {"identity": "a@example.test"},
+            "payload": {"raw": {"id": mid}, "normalized_text": f"text {mid}"},
+            "control": {"idempotency_key": f"gmail:{mid}"},
+        }
+
+    runtime._build_ingest_envelope = AsyncMock(side_effect=build)  # type: ignore[method-assign]
+    runtime._submit_to_ingest_api = submit  # type: ignore[method-assign]
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
+    return runtime
+
+
+def _reports(runtime: Any) -> list[dict]:
+    return [args for name, args in (c.args for c in runtime._mcp_client.call_tool.await_args_list)]
+
+
+@pytest.fixture
+def evaluated():
+    with patch(
+        "butlers.connectors.gmail.evaluate_message_policy",
+        return_value=SimpleNamespace(should_ingest=True, filter_reason=None),
+    ):
+        yield
+
+
+def _job(cursor: dict | None = None) -> Any:
+    from butlers.connectors.gmail import BackfillJob
+
+    return BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31", cursor=cursor)
+
+
+def _gmail_live_runtime(submit: AsyncMock) -> Any:
+    from butlers.connectors.gmail import GmailCursor
+
+    runtime = _gmail_runtime(submit)
+    runtime._db_pool = FilteredEventsPool()
+    runtime._refresh_policy_tier_assigner = AsyncMock()
+    runtime._load_cursor = AsyncMock(
+        return_value=GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
+    )
+    runtime._fetch_history_changes = AsyncMock(
+        return_value=[
+            {"id": "101", "messagesAdded": [{"message": {"id": mid}} for mid in ("m1", "m2")]}
+        ]
+    )
+    runtime._save_cursor = AsyncMock()
+    runtime._flush_and_drain = AsyncMock()
+    return runtime
+
+
+async def _gmail_poll_once(runtime: Any) -> list[int]:
+    delays = []
+
+    async def stop_after_poll(delay: int) -> None:
+        delays.append(delay)
+        runtime._running = False
+
+    runtime._running = True
+    with (
+        patch("butlers.connectors.gmail.asyncio.sleep", side_effect=stop_after_poll),
+        patch(
+            "butlers.connectors.gmail.evaluate_message_policy",
+            return_value=SimpleNamespace(
+                should_ingest=True, filter_reason=None, ingestion_tier=1, policy_tier="default"
+            ),
+        ),
+    ):
+        await runtime._run_polling_ingestion_loop()
+    return delays
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure"),
+    [
+        pytest.param("fetch", 503, id="fetch-http-503"),
+        pytest.param("fetch", 401, id="fetch-http-401"),
+        pytest.param("fetch", httpx.ReadTimeout, id="fetch-read-timeout"),
+        pytest.param("submit", ConnectionError, id="submit-connection-error"),
+        pytest.param("submit", TimeoutError, id="submit-timeout"),
+        pytest.param("submit", httpx.ReadTimeout, id="submit-read-timeout"),
+        pytest.param("submit", 503, id="submit-http-503"),
+    ],
+)
+async def test_gmail_live_poll_holds_cursor_until_failed_message_is_accepted(
+    stage: str, failure: int | type[Exception]
+) -> None:
+    request = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1")
+    error = (
+        httpx.HTTPStatusError(
+            "source unavailable", request=request, response=httpx.Response(failure, request=request)
+        )
+        if isinstance(failure, int)
+        else failure("delivery unavailable")
+    )
+    effects: set[str] = set()
+    receipts: list[tuple[str, bool]] = []
+    fail_once = True
+
+    def maybe_fail(mid: str, at: str) -> None:
+        nonlocal fail_once
+        if mid == "m1" and stage == at and fail_once:
+            fail_once = False
+            raise error
+
+    async def fetch(mid: str) -> dict:
+        maybe_fail(mid, "fetch")
+        return {"id": mid}
+
+    async def submit(envelope: dict) -> None:
+        mid = envelope["event"]["external_event_id"]
+        key = envelope["control"]["idempotency_key"]
+        receipts.append((key, key in effects))
+        effects.add(key)
+        # Delivery can fail after acceptance; retry must use the same key.
+        maybe_fail(mid, "submit")
+
+    runtime = _gmail_live_runtime(AsyncMock(side_effect=submit))
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+
+    delays = await _gmail_poll_once(runtime)
+    runtime._save_cursor.assert_not_awaited()
+    assert delays == [10, 5]
+    assert runtime._load_cursor.return_value.history_id == "100"
+    assert "gmail:m2" in effects  # gather settles the healthy sibling before raising
+    assert len(runtime._filtered_event_buffer) == 0
+
+    assert await _gmail_poll_once(runtime) == [5]
+    assert runtime._save_cursor.await_count == 1
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    assert runtime._fetch_history_changes.await_args_list[0].args == ("100",)
+    assert runtime._fetch_history_changes.await_args_list[1].args == ("100",)
+    assert effects == {"gmail:m1", "gmail:m2"}
+    assert ("gmail:m2", True) in receipts
+    assert ("gmail:m1", stage == "submit") in receipts
+    assert len(runtime._filtered_event_buffer) == 0
+
+
+@pytest.mark.parametrize("outcome", ["deleted", "malformed"])
+async def test_gmail_live_permanent_message_outcome_allows_checkpoint(outcome: str) -> None:
+    request = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1")
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m1":
+            if outcome == "deleted":
+                raise httpx.HTTPStatusError(
+                    "deleted", request=request, response=httpx.Response(404, request=request)
+                )
+            raise ValueError("malformed message")
+        return {"id": mid}
+
+    submit = AsyncMock()
+    runtime = _gmail_live_runtime(submit)
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+
+    assert await _gmail_poll_once(runtime) == [5]
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    assert [call.args[0]["event"]["external_event_id"] for call in submit.await_args_list] == ["m2"]
+    assert len(runtime._db_pool.written) == (1 if outcome == "malformed" else 0)
+
+
+async def test_gmail_backfill_holds_its_page_on_a_failed_ingest(evaluated) -> None:
+    failures = {"m2": 1}
+
+    async def submit(envelope: dict) -> None:
+        mid = envelope["event"]["external_event_id"]
+        if failures.get(mid, 0) > 0:
+            failures[mid] -= 1
+            raise RuntimeError("switchboard down")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+        return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], "p2")
+    )
+
+    await runtime._execute_backfill_job(_job())
+
+    # Stopped at m2: m3 untried, the job not completed, the cursor still on page 1.
+    submitted = [
+        c.args[0]["event"]["external_event_id"]
+        for c in runtime._submit_to_ingest_api.await_args_list
+    ]
+    assert submitted == ["m1", "m2"]
+    reports = _reports(runtime)
+    assert all(r.get("status") != "completed" for r in reports)
+    assert reports[-1]["cursor"] == {"page_token": ""}
+    assert reports[-1]["rows_skipped"] == 0
+    assert len(runtime._filtered_event_buffer) == 0
+
+    # The next poll resumes the same page; m2 goes through this time.
+    runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)]
+    )
+    await runtime._execute_backfill_job(_job(reports[-1]["cursor"]))
+    assert _reports(runtime)[-1]["status"] == "completed"
+    assert runtime._backfill_ingest_retry.attempts("m2") == 0
+
+
+async def test_gmail_backfill_parks_an_item_whose_retries_are_spent(evaluated) -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "m2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    for _ in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
+        )
+        await runtime._execute_backfill_job(_job())
+
+    assert _reports(runtime)[-1]["status"] == "completed"
+    assert len(runtime._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS], row[_REASON]) == ("m2", "error", "submission_error")
+    assert row[_PAYLOAD]["control"]["idempotency_key"] == "gmail:m2"
+    assert row[_PAYLOAD]["payload"]["normalized_text"] == "text m2"
+
+
+async def test_gmail_backfill_never_parks_or_skips_a_message_without_its_journal_row(
+    evaluated,
+) -> None:
+    """Evidence before acknowledgement: a failed journal write holds the cursor, however often."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "m2":
+            raise EvidenceNotCommitted("insert_failed")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()  # a working park store
+    for _ in range(runtime._backfill_ingest_retry.max_attempts + 2):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], "p2")
+        )
+        await runtime._execute_backfill_job(_job())
+
+    assert pool.written == []  # nothing parked
+    assert len(runtime._filtered_event_buffer) == 0
+    reports = _reports(runtime)
+    assert all(r.get("status") != "completed" for r in reports)
+    assert reports[-1]["cursor"] == {"page_token": ""}  # the cursor never moved past the page
+    assert all(r["rows_skipped"] == 0 for r in reports)
+    assert runtime._backfill_ingest_retry.attempts("m2") == 0  # the retry budget is not spent
+
+
+async def test_gmail_fetch_failure_parks_a_visible_row_that_replay_refuses(evaluated) -> None:
+    """A message that never fetched has nothing real to replay (bu-dhloi1.149)."""
+    from butlers.connectors.filtered_event_buffer import drain_replay_pending
+
+    runtime = _gmail_runtime(AsyncMock())
+    runtime._db_pool = pool = FilteredEventsPool()
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m2":
+            raise RuntimeError("gmail 503")
+        return {"id": mid}
+
+    runtime._fetch_message = AsyncMock(side_effect=fetch)  # type: ignore[method-assign]
+    page = [{"id": "m1", "threadId": "t1"}, {"id": "m2", "threadId": "t2"}]
+    for attempt in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=(page, None)
+        )
+        await runtime._execute_backfill_job(_job())
+        if attempt < runtime._backfill_ingest_retry.max_attempts - 1:
+            # Still holding: not completed, nothing parked.
+            assert _reports(runtime)[-1].get("status") != "completed"
+            assert len(runtime._filtered_event_buffer) == 0
+
+    assert _reports(runtime)[-1]["status"] == "completed"
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("m2", "error")
+    assert row[10] == "gmail 503"  # error_detail keeps the last error
+    stored = row[_PAYLOAD]
+    assert stored["event"]["external_event_id"] == "m2"
+    assert stored["event"]["external_thread_id"] == "t2"
+    assert "normalized_text" not in stored["payload"]
+    assert stored["replay_unavailable"]
+
+    # Replay refuses it with a reason instead of submitting a hollow event.
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {"id": 7, "received_at": row[0], "external_message_id": "m2", "full_payload": stored}
+        ]
+    )
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = ctx
+    submit = AsyncMock()
+    await drain_replay_pending(pool, "gmail", "gmail:user:test@example.com", submit)
+    submit.assert_not_awaited()
+    status, detail = conn.execute.await_args.args[1:3]
+    assert status == "replay_failed"
+    assert detail.startswith("not replayable:")
+
+
+# ── Google Calendar sync ──────────────────────────────────────────────────
+
+
+def _calendar_runtime(submit: AsyncMock) -> Any:
+    from butlers.connectors.google_calendar import CalendarAccountConfig, CalendarConnectorRuntime
+
+    runtime = CalendarConnectorRuntime(
+        CalendarAccountConfig(
+            email="test@example.com",
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+            switchboard_mcp_url="http://localhost:41100/sse",
+            poll_interval_s=60,
+            starting_soon_lead_minutes=15,
+            starting_soon_window_hours=2,
+        )
+    )
+    runtime._running = True
+    runtime._sync_token = "tok-1"
+    runtime._ingestion_policy = MagicMock()
+    runtime._ingestion_policy.evaluate = MagicMock(return_value=None)
+    runtime._global_ingestion_policy = MagicMock()
+    runtime._global_ingestion_policy.evaluate = MagicMock(return_value=None)
+    runtime._submit_to_ingest_api = submit  # type: ignore[method-assign]
+    # The revision journal has its own tests; these cases are about the ingest failure.
+    runtime._journal_events = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runtime._save_sync_token = AsyncMock()  # type: ignore[method-assign]
+    runtime._flush_filtered_events = AsyncMock()  # type: ignore[method-assign]
+    runtime._check_starting_soon = AsyncMock()  # type: ignore[method-assign]
+    return runtime
+
+
+def _calendar_event(event_id: str) -> dict[str, Any]:
+    return {
+        "id": event_id,
+        "status": "confirmed",
+        "summary": f"Meeting {event_id}",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "org@example.com"},
+    }
+
+
+async def test_calendar_keeps_its_sync_token_on_a_failed_ingest() -> None:
+    failures = {"e2": 1}
+
+    async def submit(envelope: dict) -> None:
+        eid = envelope["event"]["external_event_id"]
+        if failures.get(eid, 0) > 0:
+            failures[eid] -= 1
+            raise RuntimeError("switchboard down")
+
+    runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    events = [_calendar_event("e1"), _calendar_event("e2"), _calendar_event("e3")]
+    runtime._incremental_sync = AsyncMock(return_value=(events, "tok-2"))  # type: ignore[method-assign]
+
+    await runtime._run_one_poll_cycle()
+    assert runtime._sync_token == "tok-1"
+    runtime._save_sync_token.assert_not_awaited()
+    assert len(runtime._filtered_event_buffer) == 0
+    submitted = [
+        c.args[0]["event"]["external_event_id"]
+        for c in runtime._submit_to_ingest_api.await_args_list
+    ]
+    assert submitted == ["e1", "e2"]  # stopped at the failed event
+
+    await runtime._run_one_poll_cycle()
+    assert runtime._sync_token == "tok-2"
+    runtime._save_sync_token.assert_awaited_once_with("tok-2")
+
+
+async def test_calendar_parks_an_event_whose_retries_are_spent() -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "e2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    events = [_calendar_event("e1"), _calendar_event("e2"), _calendar_event("e3")]
+    runtime._incremental_sync = AsyncMock(return_value=(events, "tok-2"))  # type: ignore[method-assign]
+
+    for _ in range(runtime._ingest_retry.max_attempts):
+        await runtime._run_one_poll_cycle()
+
+    assert runtime._sync_token == "tok-2"
+    assert len(runtime._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("e2", "error")
+    key = row[_PAYLOAD]["control"]["idempotency_key"]
+    assert key == "gcal:google_calendar:user:test@example.com:e2:2026-01-02T00:00:00Z"
+    assert row[_PAYLOAD]["payload"]["raw"]["id"] == "e2"
+
+
+async def test_calendar_full_sync_keeps_the_old_token_on_a_failed_ingest() -> None:
+    async def submit(envelope: dict) -> None:
+        raise RuntimeError("switchboard down")
+
+    runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    runtime._gcal_api_get = AsyncMock(  # type: ignore[method-assign]
+        return_value={"items": [_calendar_event("e1")], "nextSyncToken": "tok-full"}
+    )
+    await runtime._perform_full_sync(ingest_events=True)
+    assert runtime._sync_token == "tok-1"
+    runtime._save_sync_token.assert_not_awaited()
+
+
+# ── ActivityWatch live ──────────────────────────────────────────────────────
+
+_AW_TS = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+_AW_BUCKET = "aw-watcher-window_desktop"
+
+
+def _aw_connector(call_tool: AsyncMock) -> Any:
+    from butlers.connectors.activitywatch import (
+        ActivityWatchConnector,
+        ActivityWatchConnectorConfig,
+    )
+
+    connector = ActivityWatchConnector(
+        ActivityWatchConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse", machine_id="desktop"
+        )
+    )
+    connector._http_client = MagicMock()
+    connector._last_checkpoint_ts = _AW_TS - timedelta(minutes=1)
+    connector._mcp_client.call_tool = call_tool  # type: ignore[method-assign]
+    connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
+    return connector
+
+
+def _aw_events() -> list[dict[str, Any]]:
+    return [
+        {
+            "timestamp": (_AW_TS + timedelta(minutes=i)).isoformat(),
+            "duration": 120,
+            "data": {"app": "Code", "title": f"window {i}"},
+        }
+        for i in range(3)
+    ]
+
+
+async def _aw_cycle(connector: Any) -> None:
+    with (
+        patch(
+            "butlers.connectors.activitywatch.fetch_buckets",
+            new=AsyncMock(return_value={_AW_BUCKET: {"type": "currentwindow"}}),
+        ),
+        patch(
+            "butlers.connectors.activitywatch.fetch_events",
+            new=AsyncMock(return_value=_aw_events()),
+        ),
+    ):
+        await connector._execute_poll_cycle()
+
+
+def _aw_submitted_ts(call_tool: AsyncMock) -> list[str]:
+    return [c.args[1]["event"]["external_event_id"] for c in call_tool.await_args_list]
+
+
+@pytest.mark.parametrize("reply_status", [None, "error"])
+async def test_activitywatch_checkpoint_stays_before_a_failed_event(reply_status) -> None:
+    failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
+    failures = {failing: 1}
+
+    async def call_tool(_name: str, envelope: dict) -> dict:
+        eid = envelope["event"]["external_event_id"]
+        if failures.get(eid, 0) > 0:
+            failures[eid] -= 1
+            if reply_status:
+                return {"status": reply_status, "retryable": False}
+            raise RuntimeError("switchboard down")
+        return {"status": "accepted"}
+
+    tool = AsyncMock(side_effect=call_tool)
+    connector = _aw_connector(tool)
+    await _aw_cycle(connector)
+
+    # Checkpoint moved to the first event only, never past the failed second one.
+    connector._save_checkpoint.assert_awaited_once_with(_AW_TS)
+    assert len(_aw_submitted_ts(tool)) == 2
+    assert len(connector._filtered_event_buffer) == 0
+
+    connector._last_checkpoint_ts = _AW_TS
+    await _aw_cycle(connector)
+    connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
+
+
+async def test_activitywatch_holds_at_a_timestamp_shared_with_an_ingested_event() -> None:
+    """A failed event sharing its timestamp with an ingested one holds at that timestamp."""
+    events = [
+        {"timestamp": _AW_TS.isoformat(), "duration": 120, "data": {"app": "Code", "title": t}}
+        for t in ("first", "second")
+    ] + [
+        {
+            "timestamp": (_AW_TS + timedelta(minutes=1)).isoformat(),
+            "duration": 120,
+            "data": {"app": "Code", "title": "later"},
+        }
+    ]
+    tool = AsyncMock(side_effect=[{"status": "accepted"}, RuntimeError("switchboard down")])
+    connector = _aw_connector(tool)
+    with (
+        patch(
+            "butlers.connectors.activitywatch.fetch_buckets",
+            new=AsyncMock(return_value={_AW_BUCKET: {"type": "currentwindow"}}),
+        ),
+        patch("butlers.connectors.activitywatch.fetch_events", new=AsyncMock(return_value=events)),
+    ):
+        await connector._execute_poll_cycle()
+
+    # The checkpoint stays at the shared timestamp, where the next cycle's
+    # ``start`` fetch begins, and never reaches the later event.
+    connector._save_checkpoint.assert_awaited_once_with(_AW_TS)
+    assert tool.await_count == 2
+    assert len(connector._filtered_event_buffer) == 0
+
+
+async def test_activitywatch_parks_an_event_whose_retries_are_spent() -> None:
+    failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
+
+    async def call_tool(_name: str, envelope: dict) -> dict:
+        if envelope["event"]["external_event_id"] == failing:
+            raise RuntimeError("switchboard down")
+        return {"status": "accepted"}
+
+    connector = _aw_connector(AsyncMock(side_effect=call_tool))
+    connector._db_pool = pool = FilteredEventsPool()
+    for _ in range(connector._ingest_retry.max_attempts):
+        await _aw_cycle(connector)
+
+    connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
+    assert len(connector._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == (failing, "error")
+    key = row[_PAYLOAD]["control"]["idempotency_key"]
+    assert (
+        key == f"activitywatch:desktop:{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
+    )
+
+
+async def test_gmail_live_poll_holds_cursor_when_the_error_row_is_not_written() -> None:
+    """A swallowed per-message failure is parked first; unwritten, the cursor stays (.274)."""
+
+    async def fetch(mid: str) -> dict:
+        if mid == "m1":
+            raise ValueError("malformed message")
+        return {"id": mid}
+
+    runtime = _gmail_live_runtime(AsyncMock())
+    runtime._fetch_message = AsyncMock(side_effect=fetch)
+    runtime._db_pool.fail_writes = True
+
+    await _gmail_poll_once(runtime)
+    runtime._save_cursor.assert_not_awaited()
+    assert runtime._db_pool.written == []
+
+    runtime._db_pool.fail_writes = False
+    await _gmail_poll_once(runtime)
+    assert runtime._save_cursor.await_args.args[0].history_id == "101"
+    (row,) = runtime._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("m1", "error")
+
+
+# ── A park that cannot be written holds the source (bu-dhloi1.250) ─────────
+
+
+async def test_gmail_backfill_holds_its_page_when_the_park_is_not_written(evaluated) -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "m2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    for _ in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
+        )
+        await runtime._execute_backfill_job(_job())
+
+    # Attempts are spent but the only copy was not written: the page is held.
+    assert _reports(runtime)[-1].get("status") != "completed"
+    assert pool.written == []
+
+    # The budget starts over after the unwritten park: the next attempts are spent anew.
+    pool.fail_writes = False
+    for _ in range(runtime._backfill_ingest_retry.max_attempts):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], None)
+        )
+        await runtime._execute_backfill_job(_job(_reports(runtime)[-1]["cursor"]))
+    assert _reports(runtime)[-1]["status"] == "completed"
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("m2", "error")
+
+
+async def test_calendar_keeps_its_sync_token_when_the_park_is_not_written() -> None:
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "e2":
+            raise RuntimeError("switchboard down")
+
+    runtime = _calendar_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    events = [_calendar_event("e1"), _calendar_event("e2"), _calendar_event("e3")]
+    runtime._incremental_sync = AsyncMock(return_value=(events, "tok-2"))  # type: ignore[method-assign]
+
+    for _ in range(runtime._ingest_retry.max_attempts):
+        await runtime._run_one_poll_cycle()
+
+    assert runtime._sync_token == "tok-1"
+    runtime._save_sync_token.assert_not_awaited()
+    assert pool.written == []
+
+    pool.fail_writes = False
+    for _ in range(runtime._ingest_retry.max_attempts):
+        await runtime._run_one_poll_cycle()
+    assert runtime._sync_token == "tok-2"
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == ("e2", "error")
+
+
+async def test_activitywatch_holds_its_checkpoint_when_the_park_is_not_written() -> None:
+    failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
+
+    async def call_tool(_name: str, envelope: dict) -> dict:
+        if envelope["event"]["external_event_id"] == failing:
+            raise RuntimeError("switchboard down")
+        return {"status": "accepted"}
+
+    connector = _aw_connector(AsyncMock(side_effect=call_tool))
+    connector._db_pool = pool = FilteredEventsPool()
+    pool.fail_writes = True
+    for _ in range(connector._ingest_retry.max_attempts):
+        await _aw_cycle(connector)
+
+    # Never past the unparked event: the checkpoint stays at the event before it.
+    assert connector._save_checkpoint.await_args.args[0] == _AW_TS
+    assert pool.written == []
+
+    pool.fail_writes = False
+    for _ in range(connector._ingest_retry.max_attempts):
+        await _aw_cycle(connector)
+    connector._save_checkpoint.assert_awaited_with(_AW_TS + timedelta(minutes=2))
+    (row,) = pool.written
+    assert (row[_ID], row[_STATUS]) == (failing, "error")
+
+
+# ── Telegram user client ──────────────────────────────────────────────────
+
+
+def _telegram_connector() -> Any:
+    from butlers.connectors.telegram_user_client import (
+        TelegramUserClientConnector,
+        TelegramUserClientConnectorConfig,
+    )
+
+    connector = TelegramUserClientConnector(
+        TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            provider="telegram",
+            channel="telegram_user_client",
+            endpoint_identity="telegram_user_client:telegram:user123",
+        ),
+        cursor_pool=MagicMock(),
+    )
+    allow = SimpleNamespace(allowed=True, action="pass_through", reason="", matched_rule_type=None)
+    connector._ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=allow)  # type: ignore[method-assign]
+    connector._discretion_dispatcher = None
+    connector._db_pool = FilteredEventsPool()  # a park is committed to it
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
+    return connector
+
+
+def _telegram_message(msg_id: int, chat_id: int = 100) -> MagicMock:
+    msg = MagicMock()
+    msg.id = msg_id
+    msg.chat_id = chat_id
+    msg.sender_id = 999
+    msg.message = f"hello {msg_id}"
+    msg.media = None
+    msg.reply_to = None
+    msg.to_dict = lambda: {"id": msg_id, "message": f"hello {msg_id}"}
+    return msg
+
+
+async def test_telegram_user_holds_its_checkpoint_and_retries_a_failed_message() -> None:
+    connector = _telegram_connector()
+    failures = {"5": 1}
+
+    async def submit(envelope: dict) -> None:
+        eid = envelope["event"]["external_event_id"]
+        if failures.get(eid, 0) > 0:
+            failures[eid] -= 1
+            raise RuntimeError("switchboard down")
+
+    connector._submit_to_ingest = AsyncMock(side_effect=submit)  # type: ignore[method-assign]
+    await connector._process_message(_telegram_message(4))
+    await connector._process_message(_telegram_message(5))
+    await connector._process_message(_telegram_message(6))
+
+    # 6 went through, but the checkpoint stays below the pending 5.
+    assert connector._last_message_id == 4
+    assert set(connector._retry_pending) == {"100:5"}
+    assert len(connector._filtered_event_buffer) == 0
+
+    await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 6
+
+
+async def test_telegram_user_parks_a_message_whose_retries_are_spent() -> None:
+    connector = _telegram_connector()
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "5":
+            raise RuntimeError("switchboard down")
+
+    connector._submit_to_ingest = AsyncMock(side_effect=submit)  # type: ignore[method-assign]
+    await connector._process_message(_telegram_message(5))
+    for _ in range(connector._ingest_retry.max_attempts - 1):
+        await connector._retry_pending_messages()
+
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 5  # parked, so no longer holding the checkpoint
+    assert len(connector._filtered_event_buffer) == 0  # written at once, not buffered
+    (row,) = connector._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("5", "error")
+    assert row[_PAYLOAD]["control"]["idempotency_key"] == "tg:100:5"
+    assert row[_PAYLOAD]["payload"]["raw"] == {"id": 5, "message": "hello 5"}
+
+
+async def test_telegram_user_holds_its_checkpoint_when_the_park_is_not_written() -> None:
+    connector = _telegram_connector()
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "5":
+            raise RuntimeError("switchboard down")
+
+    connector._submit_to_ingest = AsyncMock(side_effect=submit)  # type: ignore[method-assign]
+    connector._db_pool.fail_writes = True
+    await connector._process_message(_telegram_message(4))
+    await connector._process_message(_telegram_message(5))
+    for _ in range(connector._ingest_retry.max_attempts - 1):
+        await connector._retry_pending_messages()
+
+    # Attempts spent but the only copy was not written: still pending, checkpoint below it.
+    assert set(connector._retry_pending) == {"100:5"}
+    assert connector._last_message_id == 4
+    assert connector._db_pool.written == []
+
+    connector._db_pool.fail_writes = False
+    for _ in range(connector._ingest_retry.max_attempts):
+        await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 5
+    (row,) = connector._db_pool.written
+    assert (row[_ID], row[_STATUS]) == ("5", "error")
+
+
+async def test_telegram_user_never_parks_a_message_without_its_journal_row() -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = _telegram_connector()  # a working park store
+    connector._submit_to_ingest = AsyncMock(side_effect=EvidenceNotCommitted("insert_failed"))  # type: ignore[method-assign]
+    await connector._process_message(_telegram_message(4))
+    for _ in range(connector._ingest_retry.max_attempts + 2):
+        await connector._retry_pending_messages()
+
+    assert connector._db_pool.written == []  # never parked
+    assert set(connector._retry_pending) == {"100:4"}  # still waiting
+    assert connector._last_message_id is None  # the checkpoint never moved
+    assert connector._ingest_retry.attempts("100:4") == 0  # the budget is not spent
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 4

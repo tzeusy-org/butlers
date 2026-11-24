@@ -32,6 +32,7 @@ from butlers.connectors.owntracks import (
     build_waypoints_envelope,
     persist_location_point,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 _ENDPOINT = "owntracks:device:phone1"
 _OBSERVED = "2026-03-26T10:00:00+00:00"
@@ -71,23 +72,12 @@ class _PurgeConnection:
         return outcome
 
 
-class _PurgeAcquire:
-    def __init__(self, connection: _PurgeConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _PurgeConnection:
-        return self._connection
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
 class _PurgePool:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self._connection = _PurgeConnection(outcomes)
 
-    def acquire(self) -> _PurgeAcquire:
-        return _PurgeAcquire(self._connection)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self._connection)
 
 
 class _ChangingFailureStreakRetention(OwnTracksRetention):
@@ -357,23 +347,40 @@ async def test_persist_location_point_withholds_code_in_free_text_only() -> None
     }
 
 
-async def test_persist_location_point_skips_write_when_detector_fails(caplog) -> None:
+async def test_persist_location_point_raises_when_detector_fails(caplog) -> None:
+    """A scrub failure is not a duplicate: nothing is written and the caller must not acknowledge."""
     from unittest.mock import patch
+
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     pool = AsyncMock()
     with patch("butlers.ingestion_bearer_scrub.scrub_json", side_effect=RuntimeError("482913")):
-        inserted = await persist_location_point(
-            pool,
-            endpoint_identity=_ENDPOINT,
-            tst=_LOCATION_PAYLOAD["tst"],
-            lat=_LOCATION_PAYLOAD["lat"],
-            lon=_LOCATION_PAYLOAD["lon"],
-            accuracy=_LOCATION_PAYLOAD["acc"],
-            trigger="p",
-            raw_payload={**_LOCATION_PAYLOAD, "desc": "code is 482913"},
-        )
+        with pytest.raises(EvidenceNotCommitted) as raised:
+            await persist_location_point(
+                pool,
+                endpoint_identity=_ENDPOINT,
+                tst=_LOCATION_PAYLOAD["tst"],
+                lat=_LOCATION_PAYLOAD["lat"],
+                lon=_LOCATION_PAYLOAD["lon"],
+                accuracy=_LOCATION_PAYLOAD["acc"],
+                trigger="p",
+                raw_payload={**_LOCATION_PAYLOAD, "desc": "code is 482913"},
+            )
 
-    assert inserted is False
+    assert raised.value.reason == "scrub_failed"
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
     pool.fetchval.assert_not_awaited()
     assert "bearer scrub failed" in caplog.text
-    assert "482913" not in caplog.text
+    assert "482913" not in caplog.text + str(raised.value)
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import owntracks as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = module.OwnTracksConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("owntracks", "owntracks")
+    assert config.health_port == 40123

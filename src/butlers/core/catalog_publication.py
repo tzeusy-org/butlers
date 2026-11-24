@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from butlers.core.goal_admission import EvidenceRefused
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.tool_catalog import (
     AUTHORIZATION_FIELDS,
     RecipientParameters,
@@ -26,6 +27,9 @@ from butlers.core.tool_catalog import (
     validate_authorization_catalog,
 )
 from butlers.core.tool_presentation_inventory import STORE_WRITERS
+
+#: Published only when declared, so undeclared tools keep their digest.
+OPTIONAL_FIELDS = frozenset({"content_params", "resource_pair"})
 
 LEASE_SECONDS = 90
 RENEW_SECONDS = 30
@@ -76,7 +80,12 @@ def publication(catalog: ToolCatalog, domain: str) -> dict:
     except ValueError:
         raise EvidenceRefused("catalog_unavailable") from None
     items = [
-        {field.name: plain(getattr(item, field.name)) for field in fields(ToolDescriptor)}
+        {
+            field.name: plain(getattr(item, field.name))
+            for field in fields(ToolDescriptor)
+            # Published only when declared, so undeclared tools keep their digest.
+            if field.name not in OPTIONAL_FIELDS or getattr(item, field.name) is not None
+        }
         for item in sorted(catalog.descriptors, key=lambda item: item.canonical_name)
     ]
     if any(item["llm_presentable"] and item["owner_domain"] != domain for item in items):
@@ -104,9 +113,9 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
         ):
             raise ValueError
         decoded = []
-        expected = {field.name for field in fields(ToolDescriptor)}
+        expected = {field.name for field in fields(ToolDescriptor)} - OPTIONAL_FIELDS
         for item in value["descriptors"]:
-            if type(item) is not dict or set(item) != expected:
+            if type(item) is not dict or not expected <= set(item) <= expected | OPTIONAL_FIELDS:
                 raise ValueError
             if (
                 type(item["description"]) is not str
@@ -118,12 +127,28 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
             ):
                 raise ValueError
             kwargs = dict(item)
-            for key in ("resource_params", "safety_args", "read_stores", "write_stores"):
-                if kwargs[key] is not None:
+            for key in (
+                "content_params",
+                "resource_pair",
+                "resource_params",
+                "safety_args",
+                "read_stores",
+                "write_stores",
+                "alias_free_params",
+                "categories",
+                "depends_on",
+            ):
+                if kwargs.get(key) is not None:
                     if type(kwargs[key]) is not list:
                         raise ValueError
                     kwargs[key] = tuple(kwargs[key])
-            for key in ("input_schema", "approval_policy", "arg_sensitivities", "selection_bound"):
+            for key in (
+                "input_schema",
+                "approval_policy",
+                "arg_sensitivities",
+                "selection_bound",
+                "alias_resolvers",
+            ):
                 kwargs[key] = _freeze(kwargs[key])
             if kwargs["recipient_params"] is not None:
                 recipient = dict(kwargs["recipient_params"])
@@ -141,7 +166,14 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
 def authorization_digest(catalog: ToolCatalog) -> str:
     return digest(
         [
-            {key: plain(getattr(item, key)) for key in AUTHORIZATION_FIELDS}
+            {
+                **{key: plain(getattr(item, key)) for key in AUTHORIZATION_FIELDS},
+                **{
+                    name: plain(getattr(item, name))
+                    for name in OPTIONAL_FIELDS
+                    if getattr(item, name) is not None
+                },
+            }
             for item in catalog.descriptors
         ]
     )
@@ -319,9 +351,10 @@ async def start_catalog_publication(daemon, pool) -> None:
                 if daemon.tool_catalog.generation_digest != owner.generation_digest:
                     raise EvidenceRefused("catalog_unavailable")
                 await owner.renew()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            # A stray cancel from a renewal is a failed renewal, so it must not leave this
+            # looking healthy. Only a cancel of this task is shutdown.
+            raise_if_task_cancelled(exc)
             # The failed renewal never extends freshness. If retirement is
             # unavailable too, the finite server-clock lease still expires.
             daemon._catalog_publication_failed = True

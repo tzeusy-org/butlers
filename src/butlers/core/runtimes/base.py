@@ -10,9 +10,10 @@ from __future__ import annotations
 import abc
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, Protocol
 
 # Default runtime adapter type used to seed every Spawner's adapter pool.
 # There is no roster-level or per-butler differentiation: every live butler
@@ -21,6 +22,58 @@ from typing import Any, ClassVar
 DEFAULT_RUNTIME_TYPE = "codex"
 
 logger = logging.getLogger(__name__)
+
+
+class JobLaunchRefused(RuntimeError):
+    """A per-attempt Job launch was refused before any effect (bu-ejow5p.11).
+
+    ``category`` is a closed, non-sensitive token (``runtime_unsupported``,
+    ``model_route_unavailable``, ``api_unreachable``, ``forbidden``, ``invalid``,
+    ``conflict``, ``quota_exceeded``); it is what the dispatcher records as
+    ``launch_refused:<category>``. The message never carries prompt or cluster detail.
+    """
+
+    def __init__(self, category: str, message: str | None = None) -> None:
+        super().__init__(message or f"launch_refused:{category}")
+        self.category = category
+
+
+@dataclass(frozen=True)
+class JobOutcome:
+    """The terminal state of one Job attempt, read only after its pod is terminal."""
+
+    state: Literal["succeeded", "failed", "deadline_exceeded"]
+    exit_code: int | None
+    reason: str | None = None
+    #: False when the pod could not be shown terminal: the exchange must not be read.
+    pod_terminal: bool = True
+
+
+class JobRunner(Protocol):
+    """Runs one rendered Job manifest to a terminal pod and reports how it ended."""
+
+    async def run(self, manifest: dict[str, Any], *, timeout_s: float) -> JobOutcome: ...
+
+
+@dataclass(frozen=True)
+class QaJobLaunch:
+    """Everything a runtime adapter needs to run one QA attempt in an isolated Job.
+
+    The adapter composes only the container command; the pod shape is fixed by
+    ``build_manifest`` (the investigator template), so an adapter cannot widen it.
+    ``staging_dir`` is the daemon-side path of this attempt's exchange directory: inputs
+    are staged there and outputs read back from it, so no prompt text enters the manifest.
+    ``workspace_mount`` is where the pod sees that same directory.
+    """
+
+    attempt_id: str
+    staging_dir: Path
+    workspace_mount: str
+    workspace_uid: int
+    deadline_s: int
+    runner: JobRunner
+    build_manifest: Callable[[Sequence[str]], dict[str, Any]]
+    model_proxy_url: str | None
 
 
 class RuntimeAdapter(abc.ABC):
@@ -131,6 +184,23 @@ class RuntimeAdapter(abc.ABC):
         """
         ...
 
+    async def invoke_in_job(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict[str, Any],
+        launch: QaJobLaunch,
+        model: str | None = None,
+        runtime_args: list[str] | None = None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Run this runtime inside a per-attempt Job instead of a daemon subprocess.
+
+        Only adapters that opt in implement it; every other adapter refuses before any
+        effect, so a QA attempt on an unsupported runtime never reaches the cluster or
+        falls back to running inside the daemon.
+        """
+        raise JobLaunchRefused("runtime_unsupported")
+
     @abc.abstractmethod
     def build_config_file(
         self,
@@ -197,6 +267,11 @@ class RuntimeAdapter(abc.ABC):
           is a best-effort signal from the adapter's parser; the spawner should
           combine it with daemon-side tool-call capture for the authoritative
           side-effect gate. Set on all failure paths (non-zero exit, timeout).
+        - ``terminal_error_text`` (str): The provider's structured terminal
+          error (Claude failed result envelope ``result``, Codex ``turn.failed``
+          message, Gemini failed ``result`` ``error.message``, OpenCode ``error``
+          event payload), never tool output. With ``stderr`` it is the only text
+          usage-limit detection trusts on suppressed failures.
 
         Codex-specific:
         - ``retry_attempted`` (bool): Whether adapter-internal retries were made.

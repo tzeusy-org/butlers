@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
@@ -20,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
@@ -29,6 +29,8 @@ from butlers.api.deps import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.goal_lineage import taint_insert
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -50,6 +52,10 @@ _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 # Load local models module
 _models_module = roster_module("relationship", "api/models", api_source=__file__)
+care_duties = roster_module("relationship", "tools/care_duties")
+# Bound at import: tests shift the module-level ``datetime`` name, and FastAPI evaluates the
+# string annotations against module globals, so a route must not annotate with it directly.
+_CareDatetime = datetime
 
 Group = _models_module.Group
 GroupListResponse = _models_module.GroupListResponse
@@ -121,6 +127,8 @@ ActivityResponse = _models_module.ActivityResponse
 EntityFactEntry = _models_module.EntityFactEntry
 ActivityBin = _models_module.ActivityBin
 ActivityBinsResponse = _models_module.ActivityBinsResponse
+EntityCommitmentItem = _models_module.EntityCommitmentItem
+EntityCommitmentsResponse = _models_module.EntityCommitmentsResponse
 ViewMarkResponse = _models_module.ViewMarkResponse
 DeltaFactEntry = _models_module.DeltaFactEntry
 DeltaFactsResponse = _models_module.DeltaFactsResponse
@@ -140,6 +148,13 @@ RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
 GroupLabelsResponse = _models_module.GroupLabelsResponse
 GroupMember = _models_module.GroupMember
 GroupMembersResponse = _models_module.GroupMembersResponse
+CareDuty = _models_module.CareDuty
+CareDutyListResponse = _models_module.CareDutyListResponse
+CreateCareDutyRequest = _models_module.CreateCareDutyRequest
+SetCareDutyCarrierRequest = _models_module.SetCareDutyCarrierRequest
+AssignCareOccurrenceRequest = _models_module.AssignCareOccurrenceRequest
+CareOccurrence = _models_module.CareOccurrence
+CareOccurrenceListResponse = _models_module.CareOccurrenceListResponse
 
 logger = logging.getLogger(__name__)
 
@@ -196,32 +211,6 @@ def _group_select_fragments(group_columns: set[str]) -> tuple[str, str]:
         "g.updated_at" if "updated_at" in group_columns else "g.created_at AS updated_at"
     )
     return description_sql, updated_at_sql
-
-
-def _extract_mcp_result_text(result: object) -> str | None:
-    """Extract text content from an MCP tool result."""
-    content = getattr(result, "content", None)
-    if not isinstance(content, list):
-        return None
-
-    parts: list[str] = []
-    for block in content:
-        text = getattr(block, "text", None)
-        if isinstance(text, str) and text:
-            parts.append(text)
-    if not parts:
-        return None
-    return "\n".join(parts)
-
-
-def _parse_mcp_result_payload(raw_text: str | None) -> object:
-    """Parse MCP text payload as JSON when possible, else return raw text."""
-    if raw_text is None:
-        return None
-    try:
-        return json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return raw_text
 
 
 def _extract_sync_summary(payload: object) -> dict[str, Any]:
@@ -1549,6 +1538,7 @@ async def promote_entity(
     """
     from butlers.tools.relationship.relationship_assert_fact import (
         _lock_fact_entities_batch,
+        _lock_fact_slots_batch,
         relationship_assert_fact,
         validate_fact_fields_or_raise,
     )
@@ -1617,23 +1607,19 @@ async def promote_entity(
                 if row is None:
                     raise HTTPException(status_code=404, detail="Entity not found")
 
-                # Merge metadata: remove the 'unidentified' key and 'duplicate_candidate' key.
-                existing_meta: dict = dict(row["metadata"]) if row["metadata"] else {}
-                existing_meta.pop("unidentified", None)
-                existing_meta.pop("duplicate_candidate", None)
-
-                if body.roles is not None:
-                    new_roles = body.roles
-                else:
-                    new_roles = list(row["roles"]) if row["roles"] else []
-
                 updated = await conn.fetchrow(
                     """
                     UPDATE public.entities
                     SET canonical_name = $2,
                         entity_type    = $3,
-                        roles          = $4,
-                        metadata       = $5,
+                        -- No roles in the request leaves them as the row holds them at the
+                        -- UPDATE: the batch lock is FOR KEY SHARE, so a roles UPDATE can
+                        -- commit between the read above and this write.
+                        roles          = COALESCE($4::text[], roles),
+                        -- Removed in place: the batch lock above is FOR KEY SHARE, so a
+                        -- plain metadata UPDATE can commit after the read.
+                        metadata       = COALESCE(metadata, '{}'::jsonb)
+                                         - ARRAY['unidentified', 'duplicate_candidate'],
                         updated_at     = now()
                     WHERE id = $1
                     RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
@@ -1642,8 +1628,7 @@ async def promote_entity(
                     body.entity_id,
                     body.canonical_name,
                     body.entity_type,
-                    new_roles,
-                    existing_meta,
+                    body.roles,
                 )
                 entity_id = updated["id"]
                 result_row = updated
@@ -1665,6 +1650,13 @@ async def promote_entity(
                     {},
                 )
                 entity_id = result_row["id"]
+
+            # Each writer call below takes only its own slot, so take the whole request's
+            # slots once, or a merge or another promote sharing two of them could cross
+            # this body's order.
+            await _lock_fact_slots_batch(
+                conn, entity_id, ((fact.predicate, fact.object) for fact in body.initial_facts)
+            )
 
             # Assert any initial_facts via the central writer (inside the same transaction).
             for fact in body.initial_facts:
@@ -4079,6 +4071,12 @@ async def patch_entity_dunbar_tier(
     entity_id_str = str(entity_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if body.tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Retract any existing active override for this entity.
             await conn.execute(
                 """
@@ -4092,8 +4090,9 @@ async def patch_entity_dunbar_tier(
                 entity_id_str,
             )
             if body.tier is not None:
+                taint = taint_insert(4)  # empty: a dashboard write is never exposed
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO facts (
                         subject,
                         predicate,
@@ -4101,15 +4100,16 @@ async def patch_entity_dunbar_tier(
                         scope,
                         entity_id,
                         validity,
-                        permanence
+                        permanence{taint.columns}
                     ) VALUES (
                         $1, 'dunbar_tier_override', $2, 'relationship',
-                        $3::uuid, 'active', 'permanent'
+                        $3::uuid, 'active', 'permanent'{taint.placeholders}
                     )
                     """,
                     f"entity:{entity_id_str}",
                     str(body.tier),
                     entity_id_str,
+                    *taint.values,
                 )
 
     if body.tier is None:
@@ -5671,10 +5671,14 @@ async def forget_entity(
        so no CRM lookup can reach the tombstoned entity (bu-j820n.2).
     4. Tombstones the ``public.entities`` row by setting
        ``metadata->>'tombstone' = 'true'``.
+    5. Retracts the entity's memory facts in every other butler schema, after the
+       tombstone commits (bu-y66o00.16).
 
-    All steps execute inside a single database transaction so the operation is
-    atomic: either every reference is retracted/cleared and the entity is
-    tombstoned, or nothing changes.
+    Every retraction also deletes the retracted fact's ``public.entity_graph_edges``
+    row. Steps 1-4 execute inside a single database transaction: either every
+    reference is retracted/cleared and the entity is tombstoned, or nothing changes.
+    Step 5 cannot join it, since each butler's facts sit behind its own pool. If a
+    pool fails, the route returns 503 and a retry completes the forget.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
@@ -5687,17 +5691,18 @@ async def forget_entity(
     if (err := await _assert_owner_role(pool)) is not None:
         return err
 
-    row = await pool.fetchrow(
-        """
-        SELECT id FROM public.entities WHERE id = $1
-        """,
-        entity_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. A merge or rebind in flight
+            # finishes first, so what it moved is retracted below; a later one waits
+            # for the tombstone and refuses it.
+            row = await conn.fetchrow(
+                "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE",
+                entity_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+
             # Retract every active occurrence where this entity is subject or
             # object -- deliberately all of them, each keeping its effective
             # packet -- and drop their graph projections in the same transaction.
@@ -5728,23 +5733,16 @@ async def forget_entity(
             # orphaned on the tombstoned entity (bu-j820n.2). Delegate to the
             # canonical memory helper so the retraction semantics match the rest of
             # the memory module while running inside THIS transaction.
-            from butlers.modules.memory.tools.entities import _retract_facts_on_conn
+            from butlers.modules.memory.tools.entities import (
+                _retract_facts_on_conn,
+                _unlink_contacts_on_conn,
+            )
 
             await _retract_facts_on_conn(conn, entity_id)
 
-            # Remove contact_entity_map rows for any contact linked to this
-            # entity. A contact is bound to exactly one entity; on forget the link
-            # must be severed or CRM contact lookups will return stale rows for the
-            # tombstoned entity. contact_entity_map lives in the ``relationship``
-            # schema — unqualified for search_path resolution, consistent with
-            # _entity_resolve.py.
-            await conn.execute(
-                """
-                DELETE FROM contact_entity_map
-                WHERE entity_id = $1
-                """,
-                entity_id,
-            )
+            # Sever the contact link so no CRM lookup reaches the tombstoned
+            # entity. The memory entity delete uses this same helper.
+            await _unlink_contacts_on_conn(conn, entity_id)
             # Tombstone the entity row.
             await conn.execute(
                 """
@@ -5755,6 +5753,12 @@ async def forget_entity(
                 """,
                 entity_id,
             )
+    # Every other butler's memory facts sit behind its own pool and role, so they cannot
+    # share that transaction. They follow the tombstone: a merge or rebind already refuses
+    # the entity, and a retry repeats every step, so a partial run is completed, not lost.
+    from butlers.api.routers.memory import retract_entity_facts_everywhere
+
+    await retract_entity_facts_everywhere(db, entity_id, operation="Entity forget")
     return Response(status_code=204)
 
 
@@ -5778,7 +5782,7 @@ async def get_overdue_contacts(
     from butlers.tools.relationship.stay_in_touch import contacts_overdue_with_availability
 
     try:
-        result = await contacts_overdue_with_availability(_pool(db))
+        result = await contacts_overdue_with_availability(_pool(db), persist=False)
     except Exception:  # noqa: BLE001 -- unavailable evaluation is not an empty all-clear
         logger.warning("Relationship overdue cadence evaluation unavailable", exc_info=True)
         return OverdueContactsResponse(
@@ -5960,6 +5964,7 @@ async def get_dunbar_ranking(
                     entity_id=r["entity_id"],
                     expected_cadence=timedelta(days=effective_cadence),
                     last_observed_at=r.get("last_interaction_at"),
+                    persist=False,  # dashboard role cannot write expected_signals (RLS)
                 )
                 stale_contact_state = signal.evaluation.state.value
             except Exception:  # noqa: BLE001 -- API must expose incomplete availability
@@ -6033,17 +6038,17 @@ async def merge_entities(
     Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
     partial merge can never leave rows stranded on the tombstoned source.
 
-    **Conflict handling:** rewiring a subject row may collide with an existing active triple
-    at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
-    Such conflicting source rows are retracted (``validity='superseded'``) instead of
-    being moved, to preserve the target's existing fact.
+    **Conflict handling:** rewiring a row may collide with an existing active triple at
+    (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index. The
+    source row survives only if it alone is verified; otherwise the target row does. The
+    other row is superseded and its evidence is carried to the survivor.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
 
     **Error codes:**
     - ``403`` — owner entity not registered (Amendment 12a).
-    - ``404`` — either entity does not exist or is already tombstoned.
+    - ``404`` — either entity does not exist, is already tombstoned, or was forgotten or deleted.
     - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
     """
     from butlers.tools.relationship.entity_merge import (
@@ -6526,6 +6531,9 @@ async def dismiss_pair(
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
 
+#: Episodes requested from Chronicler per entity; a full page means the read was capped.
+_CHRONICLER_ACTIVITY_CAP = 500
+
 # Content-blind API discriminator. Never expose the upstream exception or MCP
 # payload through the entity activity response.
 _CHRONICLER_ACTIVITY_UNAVAILABLE: Literal["chronicler_activity_unavailable"] = (
@@ -6652,7 +6660,7 @@ async def _fetch_identity_activity(
 async def _fetch_chronicler_activity(
     mcp_manager: MCPClientManager | None,
     entity_id: UUID,
-) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None]:
+) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None, bool]:
     """Fetch episodes from the chronicler butler via MCP.
 
     Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
@@ -6664,15 +6672,19 @@ async def _fetch_chronicler_activity(
     where the requested entity is an organizer or attendee — but not the calendar
     owner — surface in the entity's activity feed.
 
-    Returns ``(entries, None)`` on a successful read. When Chronicler is
+    Returns ``(entries, None, truncated)`` on a successful read, where ``truncated`` is
+    true when the page hit the episode cap. When Chronicler is
     unreachable, the MCP call fails, or the response envelope is unreadable,
     returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
-    missing source evidence with genuine zero activity.
+    missing source evidence with genuine zero activity. A non-object row, a
+    missing or invalid episode UUID, or a missing or unparseable selected
+    timestamp is malformed: it is excluded, every readable row is kept, and the
+    contribution is reported as degraded.
 
     INVARIANT: No direct SQL on chronicler.* tables.
     """
     if mcp_manager is None:
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -6681,7 +6693,7 @@ async def _fetch_chronicler_activity(
         result = await asyncio.wait_for(
             client.call_tool(
                 "chronicler_list_episodes",
-                {"participant_entity_id": str(entity_id), "limit": 500},
+                {"participant_entity_id": str(entity_id), "limit": _CHRONICLER_ACTIVITY_CAP},
             ),
             timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
         )
@@ -6691,10 +6703,10 @@ async def _fetch_chronicler_activity(
             entity_id,
             exc,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
-    raw_text = _extract_mcp_result_text(result)
-    payload = _parse_mcp_result_payload(raw_text)
+    raw_text = tool_result_text(result)
+    payload = parse_tool_text(raw_text)
 
     is_error = bool(getattr(result, "is_error", False))
     if is_error or not isinstance(payload, dict):
@@ -6702,7 +6714,7 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes_raw = payload.get("data")
     if not isinstance(episodes_raw, list):
@@ -6710,9 +6722,11 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: missing episode list for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes: list[Any] = episodes_raw
+    # A full page means older episodes may exist; Chronicler has no cursor here.
+    truncated = len(episodes) >= _CHRONICLER_ACTIVITY_CAP
     entries: list[ActivityEntry] = []
     malformed_count = 0
     for ep in episodes:
@@ -6729,14 +6743,17 @@ async def _fetch_chronicler_activity(
             malformed_count += 1
             continue
 
-        # Use canonical_start_at as the primary timestamp; fall back to start_at.
+        # The selected timestamp is a nonempty canonical_start_at, else start_at.
+        # A row without a parseable selected timestamp is malformed, not undated.
         ts_raw = ep.get("canonical_start_at") or ep.get("start_at")
-        ts: datetime | None = None
-        if ts_raw:
-            try:
-                ts = datetime.fromisoformat(str(ts_raw))
-            except (ValueError, TypeError):
-                pass
+        if not ts_raw:
+            malformed_count += 1
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_raw))
+        except (ValueError, TypeError):
+            malformed_count += 1
+            continue
 
         summary = ep.get("canonical_title") or ep.get("title")
 
@@ -6751,14 +6768,16 @@ async def _fetch_chronicler_activity(
                 summary=str(summary) if summary is not None else None,
             )
         )
-    if malformed_count > 0 and len(entries) == 0:
+    if malformed_count > 0:
+        # Partial failure: keep every readable row, but never claim completeness.
         logger.info(
-            "Chronicler activity: all %d episode rows were malformed for entity %s; degrading",
+            "Chronicler activity: %d of %d episode rows were malformed for entity %s; degrading",
             malformed_count,
+            len(episodes),
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
-    return entries, None
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, False
+    return entries, None, truncated
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
@@ -6832,6 +6851,12 @@ async def get_entity_activity(
         description="When true (and bins=daily), return only {bins:[...]} and omit "
         "the merged stream.",
     ),
+    source: Literal["all", "relationship", "chronicler"] = Query(
+        "all",
+        description="Which contributions to execute: 'all' (default), 'relationship' "
+        "(both local stores, no Chronicler call) or 'chronicler' (episodes only, no "
+        "Relationship fact query). Applied before totals, bins, ordering and pagination.",
+    ),
     *,
     db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
@@ -6861,6 +6886,13 @@ async def get_entity_activity(
     sourced via the same ``chronicler_list_episodes`` MCP path before binning —
     the binning step never crosses the chronicler boundary.
 
+    **Source selection**: ``source`` is an execution boundary, not a response
+    filter. ``relationship`` never acquires a Chronicler client, so it cannot
+    inherit Chronicler degradation; ``chronicler`` never runs a Relationship
+    fact query. Totals, bins, ordering and pagination all use only the selected
+    contributions. An invalid value fails query validation (422) before either
+    fetch.
+
     **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
     with ``{"code": "owner_required"}`` when no owner entity is registered.
 
@@ -6886,13 +6918,22 @@ async def get_entity_activity(
     # Entity existence gate.
     await _assert_entity_exists(pool, entity_id)
 
-    # Fetch each local store independently; never join or deduplicate them.
+    # Only selected contributions execute. Each local store is read
+    # independently; nothing is joined or deduplicated across stores.
+    async def _no_entries() -> list[ActivityEntry]:
+        return []
+
+    async def _no_chronicler() -> tuple[list[ActivityEntry], None, bool]:
+        return [], None, False
+
+    with_relationship = source in ("all", "relationship")
+    with_chronicler = source in ("all", "chronicler")
     narrative_entries, identity_entries, chronicler_result = await asyncio.gather(
-        _fetch_narrative_activity(pool, entity_id),
-        _fetch_identity_activity(pool, entity_id),
-        _fetch_chronicler_activity(mcp_manager, entity_id),
+        _fetch_narrative_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_identity_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_chronicler_activity(mcp_manager, entity_id) if with_chronicler else _no_chronicler(),
     )
-    chr_entries, degraded_reason = chronicler_result
+    chr_entries, degraded_reason, chronicler_truncated = chronicler_result
     degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
@@ -6908,6 +6949,7 @@ async def get_entity_activity(
                 bins=daily,
                 degraded=degraded,
                 degraded_reason=degraded_reason,
+                chronicler_truncated=chronicler_truncated,
             )
         total = len(all_entries)
         page = all_entries[offset : offset + limit]
@@ -6921,6 +6963,7 @@ async def get_entity_activity(
             offset=offset,
             degraded=degraded,
             degraded_reason=degraded_reason,
+            chronicler_truncated=chronicler_truncated,
         )
         return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
 
@@ -6934,7 +6977,73 @@ async def get_entity_activity(
         offset=offset,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        chronicler_truncated=chronicler_truncated,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/commitments — read-only entity commitment view
+# ---------------------------------------------------------------------------
+
+# Content-blind discriminator for any commitment-source failure. Never expose
+# the upstream exception or row content through this response.
+_COMMITMENT_SOURCE_UNAVAILABLE: Literal["commitment_source_unavailable"] = (
+    "commitment_source_unavailable"
+)
+
+
+@router.get("/entities/{entity_id}/commitments", response_model=EntityCommitmentsResponse)
+async def get_entity_commitments(
+    entity_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum commitments per page."),
+    offset: int = Query(0, ge=0, description="Pagination offset."),
+    *,
+    db: Db,
+) -> EntityCommitmentsResponse | JSONResponse:
+    """Return the owner's active commitments with one entity, in both directions.
+
+    Reads ``public.owner_conditions`` through the core commitment seam
+    (:func:`butlers.core.commitments.list_entity_commitment_page`): open or
+    aging commitment-class rows whose counterparty is this entity and whose
+    direction is ``owner_to_other`` or ``other_to_owner``, across every
+    originating source, ordered ``first_detected_at DESC, fingerprint ASC``.
+
+    Items carry only ``kind``, ``direction``, ``summary``, ``deadline``,
+    ``escalation_level`` and ``fingerprint``. The read has no side effects.
+
+    Owner-only (403 ``owner_required``); 404 for an unknown entity. A known
+    entity with no matches is an honest empty 200. Any commitment-source
+    failure returns 200 with ``items=[]``, ``total=0``, ``degraded=true`` and
+    the fixed ``commitment_source_unavailable`` reason, so a failure never
+    reads as "no commitments".
+    """
+    from butlers.core.commitments import list_entity_commitment_page
+
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        rows, total = await list_entity_commitment_page(
+            pool, entity_id=str(entity_id), limit=limit, offset=offset
+        )
+        items = [EntityCommitmentItem.model_validate(row) for row in rows]
+    except Exception as exc:  # noqa: BLE001 — any source failure degrades honestly
+        logger.warning(
+            "Entity commitments read failed for entity %s (degraded): %s",
+            entity_id,
+            type(exc).__name__,
+        )
+        return EntityCommitmentsResponse(
+            items=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            degraded=True,
+            degraded_reason=_COMMITMENT_SOURCE_UNAVAILABLE,
+        )
+    return EntityCommitmentsResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 # ---------------------------------------------------------------------------
@@ -7328,7 +7437,7 @@ async def owner_identity_fact_decision(
     )
 
     pool = _pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         try:
             result = await decide_identity_fact(
                 conn, entity_id=entity_id, fact_id=fact_id, decision=decision
@@ -7378,3 +7487,114 @@ async def read_identity_fact_decision(
     if row is None:
         raise HTTPException(404, detail={"code": "decision_unknown"})
     return {**dict(row), "replayed": True}
+
+
+# ---------------------------------------------------------------------------
+# Care duties (bu-s11n0s.13 S1): owner-declared, owner-private, never contacts anyone
+# ---------------------------------------------------------------------------
+
+
+def _care_error(exc: Exception) -> HTTPException:
+    """Map a ``CareDutyError`` to 404 (unknown id) or 422 with a stable code."""
+    code = getattr(exc, "code", "invalid")
+    status = 404 if code == "not_found" else 422
+    return HTTPException(status_code=status, detail={"code": code, "message": str(exc)})
+
+
+@router.get("/care/duties", response_model=CareDutyListResponse)
+async def list_care_duties(
+    *,
+    db: Db,
+    include_retired: bool = Query(False),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """List declared care duties. Owner-only: a duty names people who never consented."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    rows = await care_duties.list_duties(pool, include_retired=include_retired, limit=limit)
+    return CareDutyListResponse(duties=[CareDuty(**row) for row in rows])
+
+
+@router.get("/care/occurrences", response_model=CareOccurrenceListResponse)
+async def list_care_occurrences(
+    *,
+    db: Db,
+    start: _CareDatetime | None = Query(None),
+    end: _CareDatetime | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """List occurrences the owner recorded in ``[start, end)`` (default: the next 14 days).
+
+    This never expands a rule and never reports coverage; the coverage job is deferred.
+    """
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    window_start = start or _CareDatetime.now(UTC)
+    window_end = end or window_start + timedelta(days=14)
+    if window_end <= window_start:
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_window", "message": "end must follow start"}
+        )
+    rows = await care_duties.list_occurrences(pool, start=window_start, end=window_end, limit=limit)
+    return CareOccurrenceListResponse(occurrences=[CareOccurrence(**row) for row in rows])
+
+
+@router.post("/care/duties", response_model=CareDuty, status_code=201)
+async def create_care_duty(body: CreateCareDutyRequest, *, db: Db):
+    """Declare a care duty for a dependent entity."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.create_duty(pool, **body.model_dump())
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)
+
+
+@router.put("/care/duties/{duty_id}/carrier", response_model=CareDuty)
+async def set_care_duty_carrier(duty_id: UUID, body: SetCareDutyCarrierRequest, *, db: Db):
+    """Name (or clear) who is assumed to carry a duty by default."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.set_default_carrier(pool, duty_id, body.carrier_entity_id)
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)
+
+
+@router.put("/care/duties/{duty_id}/occurrences", response_model=CareOccurrence)
+async def assign_care_occurrence(duty_id: UUID, body: AssignCareOccurrenceRequest, *, db: Db):
+    """Record the owner's carer for one occurrence; idempotent per (duty, start)."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.assign_occurrence(
+            pool,
+            duty_id,
+            body.occurrence_start,
+            carrier_entity_id=body.carrier_entity_id,
+            state=body.state,
+            reason=body.reason,
+        )
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareOccurrence(**row)
+
+
+@router.post("/care/duties/{duty_id}/retire", response_model=CareDuty)
+async def retire_care_duty(duty_id: UUID, *, db: Db):
+    """Retire a duty without deleting its history."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.retire_duty(pool, duty_id)
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)

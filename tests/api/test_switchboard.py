@@ -19,6 +19,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -36,15 +37,6 @@ def _get_db_dep():
 def _get_router_module():
     _get_db_dep()
     return sys.modules[_MODULE_NAME]
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    row.keys = lambda: data.keys()
-    row.__iter__ = lambda self: iter(data)
-    return row
 
 
 def _app_with_mock(
@@ -135,7 +127,7 @@ async def test_registry_list_marks_stale_butler_despite_frozen_active_label(app)
     and read 'stale' here even though the stored column still says 'active'.
     """
     long_silent = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
-    row = _make_row(
+    row = Record(
         _registry_row(name="silent-butler", last_seen_at=long_silent, eligibility_state="active")
     )
     _app_with_mock(app, fetch_rows=[row])
@@ -153,7 +145,7 @@ async def test_registry_list_marks_stale_butler_despite_frozen_active_label(app)
 
 async def test_registry_list_reports_active_for_recently_seen_butler(app):
     just_now = datetime.datetime.now(datetime.UTC)
-    row = _make_row(
+    row = Record(
         _registry_row(name="live-butler", last_seen_at=just_now, eligibility_state="active")
     )
     _app_with_mock(app, fetch_rows=[row])
@@ -172,7 +164,7 @@ async def test_registry_list_reports_active_for_recently_seen_butler(app):
 async def test_registry_list_derives_quarantined_regardless_of_stored_state(app):
     """An explicit quarantine (quarantined_at set) must derive as quarantined
     even if the stored eligibility_state column has not caught up."""
-    row = _make_row(
+    row = Record(
         _registry_row(
             name="quarantined-butler",
             last_seen_at=datetime.datetime.now(datetime.UTC),
@@ -568,9 +560,7 @@ async def test_ingestion_rules_list_archived_returns_soft_deleted(app):
 
 async def test_ingestion_rules_create_global_201(app):
     app, mock_pool = _app_with_mock(app)
-    mock_pool.fetchrow = AsyncMock(
-        side_effect=[_make_row({"name": "finance"}), _make_row(_GLOBAL_RULE)]
-    )
+    mock_pool.fetchrow = AsyncMock(side_effect=[Record({"name": "finance"}), Record(_GLOBAL_RULE)])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -621,7 +611,7 @@ async def test_ingestion_rules_create_accepts_canonical_action_201(app):
     """
     skip_rule = dict(_GLOBAL_RULE)
     skip_rule["action"] = "skip"
-    _app, _mock_pool = _app_with_mock(app, fetchrow_result=_make_row(skip_rule))
+    _app, _mock_pool = _app_with_mock(app, fetchrow_result=Record(skip_rule))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -651,7 +641,7 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
     )
     app, mock_pool = _app_with_mock(app)
     mock_pool.fetchrow = AsyncMock(
-        side_effect=[_make_row({"name": "lifestyle"}), _make_row(endpoint_rule)]
+        side_effect=[Record({"name": "lifestyle"}), Record(endpoint_rule)]
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -753,9 +743,9 @@ async def test_ingestion_rules_restore_archived_clears_deleted_at(app):
     _app, _mock_pool = _app_with_mock(
         app,
         fetchrow_side_effects=[
-            _make_row(archived_existing),  # SELECT existing (no deleted filter)
-            _make_row({"name": "finance"}),  # _assert_route_to_eligible lookup
-            _make_row(restored_row),  # UPDATE ... RETURNING
+            Record(archived_existing),  # SELECT existing (no deleted filter)
+            Record({"name": "finance"}),  # _assert_route_to_eligible lookup
+            Record(restored_row),  # UPDATE ... RETURNING
         ],
     )
     async with httpx.AsyncClient(
@@ -781,8 +771,8 @@ async def test_ingestion_rules_patch_archived_without_restore_409(app):
     _app, _mock_pool = _app_with_mock(
         app,
         fetchrow_side_effects=[
-            _make_row(archived_existing),  # SELECT existing
-            _make_row({"name": "finance"}),  # eligibility lookup (if reached)
+            Record(archived_existing),  # SELECT existing
+            Record({"name": "finance"}),  # eligibility lookup (if reached)
         ],
     )
     async with httpx.AsyncClient(
@@ -835,7 +825,7 @@ _SAMPLE_JOB = {
 
 async def test_backfill_create_201(app):
     app, mock_pool = _app_with_mock(app)
-    mock_pool.fetchrow = AsyncMock(return_value=_make_row(_SAMPLE_JOB))
+    mock_pool.fetchrow = AsyncMock(return_value=Record(_SAMPLE_JOB))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -863,7 +853,7 @@ async def test_backfill_get_nonexistent_404(app):
 
 async def test_backfill_pause_completed_409(app):
     completed_job = {**_SAMPLE_JOB, "status": "completed"}
-    _app_with_mock(app, fetchrow_result=_make_row(completed_job))
+    _app_with_mock(app, fetchrow_result=Record(completed_job))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -900,7 +890,7 @@ async def test_backfill_pause_completed_409(app):
 async def test_backfill_lifecycle_controls(app, operation, status, expected):
     row = {**_SAMPLE_JOB, "status": status}
     app, pool = _app_with_mock(app)
-    pool.fetchrow = AsyncMock(side_effect=[_make_row(row), {"status": expected}])
+    pool.fetchrow = AsyncMock(side_effect=[Record(row), {"status": expected}])
     with patch("switchboard_api_router.emit_dashboard_audit", new_callable=AsyncMock) as audit:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

@@ -13,12 +13,19 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 
 import type { CalendarPrepAttendee, CalendarPrepCommitment } from "@/api/types.ts";
 
 import { MeetingPrepRail } from "./MeetingPrepRail.tsx";
 
 afterEach(cleanup);
+
+/** The attendee door reads the current location, so the rail renders in a router. */
+function renderRail(ui: ReactElement, path = "/calendar") {
+  return render(<MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>);
+}
 
 function attendee(overrides: Partial<CalendarPrepAttendee> = {}): CalendarPrepAttendee {
   return {
@@ -57,7 +64,7 @@ function commitment(overrides: Partial<CalendarPrepCommitment> = {}): CalendarPr
 
 describe("MeetingPrepRail", () => {
   it("renders attendees with tier mark, notes, last-met, and message context", () => {
-    render(<MeetingPrepRail heading="Quarterly sync" hasPrepContext attendees={[attendee()]} sourceButlers={["relationship"]} />);
+    renderRail(<MeetingPrepRail heading="Quarterly sync" hasPrepContext attendees={[attendee()]} sourceButlers={["relationship"]} />);
 
     const rail = screen.getByTestId("meeting-prep-rail");
     expect(within(rail).getByText("Quarterly sync")).toBeTruthy();
@@ -82,7 +89,7 @@ describe("MeetingPrepRail", () => {
   });
 
   it("renders an honest empty-state when no specialist contributed", () => {
-    render(<MeetingPrepRail heading="1:1" hasPrepContext={false} attendees={[]} />);
+    renderRail(<MeetingPrepRail heading="1:1" hasPrepContext={false} attendees={[]} />);
 
     const empty = screen.getByTestId("meeting-prep-empty");
     expect(empty.textContent).toMatch(/no prep context yet/i);
@@ -90,20 +97,20 @@ describe("MeetingPrepRail", () => {
   });
 
   it("renders the empty-state when context exists but resolved no attendees", () => {
-    render(<MeetingPrepRail hasPrepContext attendees={[]} sourceButlers={["relationship"]} />);
+    renderRail(<MeetingPrepRail hasPrepContext attendees={[]} sourceButlers={["relationship"]} />);
 
     expect(screen.getByTestId("meeting-prep-empty").textContent).toMatch(/no prep context yet/i);
   });
 
   it("renders a loading state", () => {
-    render(<MeetingPrepRail isLoading hasPrepContext={false} attendees={[]} />);
+    renderRail(<MeetingPrepRail isLoading hasPrepContext={false} attendees={[]} />);
 
     expect(screen.getByText("Loading…")).toBeTruthy();
     expect(screen.queryByTestId("meeting-prep-empty")).toBeNull();
   });
 
   it("keeps prior prep context visible but dimmed while another event fetches", () => {
-    render(
+    renderRail(
       <MeetingPrepRail
         heading="Quarterly sync"
         isFetching
@@ -120,7 +127,7 @@ describe("MeetingPrepRail", () => {
   });
 
   it("shows a transport error instead of retained prep context", () => {
-    render(
+    renderRail(
       <MeetingPrepRail
         heading="Quarterly sync"
         isError
@@ -136,7 +143,7 @@ describe("MeetingPrepRail", () => {
   });
 
   it("omits the message-context panel and last-met when absent (graceful empty)", () => {
-    render(
+    renderRail(
       <MeetingPrepRail
         hasPrepContext
         attendees={[
@@ -156,7 +163,7 @@ describe("MeetingPrepRail", () => {
 
   // REQ-dashboard-api-054: render every commitment field from the cached API payload.
   it("renders commitment rows with kind, direction, summary, deadline, and escalation", () => {
-    render(
+    renderRail(
       <MeetingPrepRail
         hasPrepContext
         attendees={[
@@ -228,14 +235,52 @@ describe("MeetingPrepRail", () => {
   });
 
   it("does not render a commitment section for attendees without commitments", () => {
-    render(<MeetingPrepRail hasPrepContext attendees={[attendee()]} />);
+    renderRail(<MeetingPrepRail hasPrepContext attendees={[attendee()]} />);
 
     expect(screen.queryByTestId("prep-commitments")).toBeNull();
     expect(screen.queryByTestId("prep-commitment")).toBeNull();
   });
 
+  it("links a resolved attendee to the encoded entity page with the full Calendar query", () => {
+    const calendarPath =
+      "/calendar?view=user&range=week&anchor=2026-09-06&source=a&source=b&future_key=x%20y&overlays=1";
+    renderRail(
+      <MeetingPrepRail hasPrepContext attendees={[attendee({ entity_id: "ent/7 a" })]} />,
+      calendarPath,
+    );
+
+    const link = screen.getByRole("link", { name: "Ada Lovelace" });
+    expect(link.getAttribute("href")).toBe(
+      "/entities/ent%2F7%20a?view=user&range=week&anchor=2026-09-06&source=a&source=b&future_key=x%20y&overlays=1",
+    );
+  });
+
+  it("links without a trailing ? when the Calendar query is empty", () => {
+    renderRail(<MeetingPrepRail hasPrepContext attendees={[attendee()]} />, "/calendar");
+
+    expect(screen.getByRole("link", { name: "Ada Lovelace" }).getAttribute("href")).toBe(
+      "/entities/11111111-1111-1111-1111-111111111111",
+    );
+  });
+
+  it.each(["", "   ", undefined])(
+    "keeps an attendee with entity id %j as plain text",
+    (entityId) => {
+      renderRail(
+        <MeetingPrepRail
+          hasPrepContext
+          attendees={[attendee({ entity_id: entityId as unknown as string })]}
+        />,
+        "/calendar?view=user",
+      );
+
+      expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+      expect(screen.queryByRole("link")).toBeNull();
+    },
+  );
+
   it("falls back to an em-dash tier mark when the attendee has no tier", () => {
-    render(<MeetingPrepRail hasPrepContext attendees={[attendee({ dunbar_tier: null })]} />);
+    renderRail(<MeetingPrepRail hasPrepContext attendees={[attendee({ dunbar_tier: null })]} />);
 
     expect(screen.getByTestId("prep-tier-mark").textContent).toContain("—");
   });

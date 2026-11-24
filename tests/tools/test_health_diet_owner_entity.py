@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.tools.health.diet import _get_owner_entity_id, meal_log
 
 _EATEN_AT = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
@@ -23,43 +24,18 @@ _OWNER_ID = uuid.UUID("aaaabbbb-cccc-dddd-eeee-000000000001")
 pytestmark = pytest.mark.unit
 
 
-def _make_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
-    pool = MagicMock()
-    if fetchrow_side_effect is not None:
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    else:
-        pool.fetchrow = AsyncMock(return_value=fetchrow_result)
-    return pool
-
-
-class _AsyncCM:
-    def __init__(self, value):
-        self._value = value
-
-    async def __aenter__(self):
-        return self._value
-
-    async def __aexit__(self, *args):
-        return False
-
-
-def _make_full_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
-    pool = _make_pool(fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect)
+def _make_full_pool(fetchrow_result=None, fetchrow_side_effect=None) -> FakePool:
     # pool.execute is called directly by _write_to_health_meals (dual-write to health.meals)
-    pool.execute = AsyncMock(return_value=None)
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)
-    conn.fetchrow = AsyncMock(return_value=None)
-    conn.execute = AsyncMock()
-    conn.transaction = MagicMock(return_value=_AsyncCM(None))
-    pool.acquire = MagicMock(return_value=_AsyncCM(conn))
-    return pool
+    return fake_pool(
+        fetchrow=AsyncMock(return_value=fetchrow_result, side_effect=fetchrow_side_effect),
+        execute=None,
+    )
 
 
 async def test_get_owner_entity_id_queries_public_entities_and_fallbacks():
     """Must query public.entities with roles; returns None for missing entity or DB errors."""
     owner_id = uuid.uuid4()
-    pool = _make_pool(fetchrow_result={"id": owner_id})
+    pool = fake_pool(fetchrow={"id": owner_id})
     result = await _get_owner_entity_id(pool)
     assert result == owner_id
     sql: str = pool.fetchrow.call_args.args[0]
@@ -73,7 +49,7 @@ async def test_get_owner_entity_id_queries_public_entities_and_fallbacks():
         asyncpg.exceptions.UndefinedTableError("no table"),
         asyncpg.exceptions.PostgresConnectionError("refused"),
     ):
-        p = _make_pool(fetchrow_result=None, fetchrow_side_effect=side_effect)
+        p = fake_pool(fetchrow=AsyncMock(return_value=None, side_effect=side_effect))
         assert await _get_owner_entity_id(p) is None
 
 

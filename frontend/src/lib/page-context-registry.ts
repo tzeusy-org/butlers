@@ -26,6 +26,8 @@
  * hoc judgment) is the single place that decision is made.
  */
 
+import { D19_PREVIEW_ENABLED } from "./d19";
+
 export type ContextPolicy = "snapshot" | "ref-only" | "none";
 
 export interface PageContextDescriptor {
@@ -38,6 +40,10 @@ const SNAPSHOT = (summary: string): PageContextDescriptor => ({ policy: "snapsho
 
 /** One descriptor per `SHELL_CAPABILITIES` path (see shell-capability.ts). */
 export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
+  ...(D19_PREVIEW_ENABLED ? Object.fromEntries([
+    "/d19", "/d19/goals", "/d19/goals/:goalId", "/d19/regions", "/d19/regions/:region",
+    "/d19/approvals", "/d19/approvals/:id",
+  ].map((path) => [path, { policy: "none" as const, summary: "D19 preview" }])) : {}),
   "/": SNAPSHOT("Overview"),
   // Chat surfaces attach only the route, never conversation content itself
   // (bu-0ynlk.11) — the ContextChip must not recursively snapshot the very
@@ -76,6 +82,10 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   // Grants/permissions and model-routing config are sensitive-adjacent: the
   // route alone is useful grounding, but query params/resource detail are not.
   "/settings/permissions": { policy: "none", summary: "Permissions" },
+  "/settings/projections": { policy: "none", summary: "Projections" },
+  "/settings/reach": { policy: "none", summary: "Reach" },
+  "/settings/public-mcp": { policy: "none", summary: "Public MCP" },
+  "/settings/location-retention": { policy: "none", summary: "Location retention" },
   "/settings/models": { policy: "ref-only", summary: "Models" },
 
   "/entities/index": SNAPSHOT("Entities index"),
@@ -96,6 +106,11 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/memory/rules/:ruleId": SNAPSHOT("Rule detail"),
   "/memory/episodes/:episodeId": SNAPSHOT("Episode detail"),
   "/approvals/:id": SNAPSHOT("Approval detail"),
+  "/decision-sets/:setId": SNAPSHOT("Decision set"),
+  "/custody": SNAPSHOT("Endpoint holds"),
+  "/custody/:episodeId": SNAPSHOT("Custody case"),
+  "/security": SNAPSHOT("Security questions"),
+  "/security/:eventId": SNAPSHOT("Security question"),
   "/ingestion/connectors/:connectorType/:endpointIdentity": SNAPSHOT("Connector detail"),
   "/qa/patrols/:patrolId": SNAPSHOT("QA patrol detail"),
   "/qa/investigations/:attemptId": SNAPSHOT("QA investigation detail"),

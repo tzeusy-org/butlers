@@ -20,9 +20,11 @@ permanently pinned; the signal simply expires.
 Producers and their sources
 ---------------------------
 - **calendar → meeting / focused** (writer ``general``): the currently-active
-  event in the general butler's ``calendar_events`` table. A focus-block title
-  maps to ``focused``; everything else maps to ``meeting``. Expiry is the
-  event's own end time.
+  event in the general butler's ``calendar_events`` table that the owner will
+  attend as busy time. An event the owner declined or marked free
+  (``transparency: transparent``) cannot assert context; an attended opaque
+  event overlapping it still wins. A focus-block title maps to ``focused``;
+  everything else maps to ``meeting``. Expiry is the event's own end time.
 - **home → at_home / in_space** (writer ``home``): fresh presence rows in
   ``ha_entity_snapshot`` belonging to the *owner* (per the
   ``home:presence:owner_entities`` state-store mapping) — a housemate's or
@@ -90,7 +92,15 @@ from butlers.core.approvals_policy import (
     policy_quiet_hours_deliver_at,
 )
 from butlers.core.state import state_get
-from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
+from butlers.core.temporal.calendar_provenance import (
+    FOCUS_TIME,
+    OUT_OF_OFFICE,
+    is_calendar_analysis_candidate,
+    is_explicit_butler_generated,
+    is_status_event,
+)
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time, counts_as_owner_time
+from butlers.core.temporal.household_context import HOUSEHOLD_LIVE_SQL, events_from_overlap_rows
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -135,43 +145,83 @@ async def run_calendar_context_producer(
     ``calendar_events`` (resolved via the general schema search_path) and sets
     the matching signal with the event's end time as expiry. Explicitly
     butler-generated and legacy all-day-shaped rows remain projected but cannot
-    assert context. When no eligible event is active, both ``meeting`` and
+    assert context, and neither can an event the owner declined or marked free
+    (the same attendance rule the conflict radar and day load apply). When no
+    eligible event is active, both ``meeting`` and
     ``focused`` are cleared. Idempotent: safe to run on any cadence.
+
+    The provider's event type (core_341) refines this. A typed ``focusTime`` event is
+    ``focused`` whatever its title. A ``workingLocation`` event is a status, never a meeting.
+    An active ``outOfOffice`` event (timed or all-day, not butler-generated) suppresses
+    ``focused`` and asserts nothing itself; an attended meeting overlapping it still holds
+    ``meeting``.
     """
     del job_args
     rows = await pool.fetch(
         """
-        SELECT title, starts_at, ends_at, timezone, all_day, metadata
-        FROM calendar_events
-        WHERE status = 'confirmed'
-          AND all_day = false
-          AND starts_at <= now()
-          AND ends_at > now()
-        ORDER BY starts_at DESC
+        -- quarantine-exempt: filtered in Python by asserts_owner_time and counts_as_owner_time
+        SELECT ce.title, ce.starts_at, ce.ends_at, ce.timezone, ce.all_day, ce.metadata,
+               ce.event_type, cs.time_role, ce.status
+        FROM calendar_events ce
+        JOIN calendar_sources cs ON cs.id = ce.source_id
+        WHERE ce.status <> 'cancelled'
+          AND (ce.all_day = false OR ce.event_type = 'outOfOffice')
+          AND ce.starts_at <= now()
+          AND ce.ends_at > now()
+        ORDER BY ce.starts_at DESC
         """
     )
-    row = next(
-        (
-            candidate
-            for candidate in rows
-            if is_calendar_analysis_candidate(
-                metadata=candidate["metadata"],
-                all_day=candidate["all_day"],
-                starts_at=candidate["starts_at"],
-                ends_at=candidate["ends_at"],
-                timezone=candidate["timezone"],
-            )
-        ),
-        None,
+    # Tentative events are still occupied time for household context, but the owner's own
+    # signals keep to confirmed events as before.
+    owner_rows = [r for r in rows if r.get("status", "confirmed") == "confirmed"]
+    # Only an event on a source whose role asserts the owner's time counts (REQ-context-bus-018):
+    # another person's meeting or out of office is not the owner's state.
+    out_of_office = any(
+        candidate.get("event_type") == OUT_OF_OFFICE
+        and not is_explicit_butler_generated(candidate["metadata"])
+        and asserts_owner_time(candidate.get("time_role"), candidate["metadata"])
+        for candidate in owner_rows
     )
+    # (row, signal) for every attended meeting/focus candidate, latest start first.
+    candidates = [
+        (candidate, _calendar_candidate_signal(candidate))
+        for candidate in owner_rows
+        if not is_status_event(candidate.get("event_type"))
+        and is_calendar_analysis_candidate(
+            metadata=candidate["metadata"],
+            all_day=candidate["all_day"],
+            starts_at=candidate["starts_at"],
+            ends_at=candidate["ends_at"],
+            timezone=candidate["timezone"],
+        )
+        and counts_as_owner_time(candidate.get("time_role"), candidate["metadata"])
+    ]
+    if out_of_office:
+        # Out of office suppresses focus, but an attended meeting is the owner's own,
+        # stronger signal (people take calls while away), so it keeps `meeting`.
+        candidates = [pair for pair in candidates if pair[1] is ContextSignal.meeting]
+    chosen = candidates[0] if candidates else None
+    marker: dict[str, Any] = {"out_of_office": True} if out_of_office else {}
+    # Other people's live events are context for the owner's surfaces and assert nothing here
+    # (REQ-context-bus-019): they are reported, never a signal.
+    # Counted from the shared household overlap read at the database clock (all-day and
+    # materialized recurring occurrences included), apart from the owner-signal selection above.
+    # Fail open: the count is a nicety, and a failed read must not stop the owner signals.
+    try:
+        live_household = len(events_from_overlap_rows(await pool.fetch(HOUSEHOLD_LIVE_SQL)))
+    except Exception:
+        logger.warning("calendar producer: household count read failed", exc_info=True)
+        live_household = 0
+    if live_household:
+        marker["household_events"] = live_household
 
-    if row is None:
+    if chosen is None:
         # No live event — retract any stale meeting/focused assertion.
         await clear_context(pool, "general", ContextSignal.meeting.value)
         await clear_context(pool, "general", ContextSignal.focused.value)
-        return {"signal": None, "cleared": ["meeting", "focused"]}
+        return {"signal": None, "cleared": ["meeting", "focused"], **marker}
 
-    signal = classify_calendar_signal(row["title"])
+    row, signal = chosen
     other = ContextSignal.focused if signal is ContextSignal.meeting else ContextSignal.meeting
 
     await set_calendar_context(pool, signal.value, expires_at=row["ends_at"])
@@ -181,7 +231,14 @@ async def run_calendar_context_producer(
         "signal": signal.value,
         "value": "focused" if signal is ContextSignal.focused else "busy",
         "cleared": [other.value],
+        **marker,
     }
+
+
+def _calendar_candidate_signal(row: Any) -> ContextSignal:
+    if row.get("event_type") == FOCUS_TIME:
+        return ContextSignal.focused
+    return classify_calendar_signal(row["title"])
 
 
 # ---------------------------------------------------------------------------

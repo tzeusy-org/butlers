@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -21,32 +22,26 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_091", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.fixture
-async def qa_investigation_events_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE public.healing_attempts (
-                id UUID PRIMARY KEY
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE public.qa_findings (
-                id UUID PRIMARY KEY
-            )
-        """)
-        yield pool
+async def qa_investigation_events_pool(db):
+    """Core at core_091's predecessor: real healing_attempts and qa_findings."""
+    return await db("core", revisions={"core": "core_090"})
+
+
+async def _insert_attempt(pool: asyncpg.Pool, attempt_id: uuid.UUID) -> None:
+    await pool.execute(
+        """
+        INSERT INTO public.healing_attempts
+            (id, fingerprint, butler_name, severity, exception_type, call_site)
+        VALUES ($1, $2, 'general', 2, 'ValueError', 'qa:test')
+        """,
+        attempt_id,
+        uuid.uuid4().hex,
+    )
 
 
 async def _run_upgrade(pool: asyncpg.Pool) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_091")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -64,10 +59,7 @@ async def test_qa_investigation_events_rejects_unknown_step(
     await _run_upgrade(pool)
 
     attempt_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO public.healing_attempts (id) VALUES ($1)",
-        attempt_id,
-    )
+    await _insert_attempt(pool, attempt_id)
 
     with pytest.raises(asyncpg.CheckViolationError):
         await pool.execute(
@@ -90,10 +82,7 @@ async def test_deleting_healing_attempt_cascades_investigation_events(
     await _run_upgrade(pool)
 
     attempt_id = uuid.uuid4()
-    await pool.execute(
-        "INSERT INTO public.healing_attempts (id) VALUES ($1)",
-        attempt_id,
-    )
+    await _insert_attempt(pool, attempt_id)
     await pool.execute(
         """
         INSERT INTO public.qa_investigation_events (id, attempt_id, step, text)

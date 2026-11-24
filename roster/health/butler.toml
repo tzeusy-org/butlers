@@ -111,6 +111,8 @@ read_only = true
 
 # Home Assistant requires approval machinery, including in read-only mode.
 [modules.approvals]
+enabled = false
+domain_producers = ["calendar", "google_drive"]
 
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
@@ -123,5 +125,4 @@ groups = ["core", "entity", "preferences"]
 
 [modules.google_health]
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

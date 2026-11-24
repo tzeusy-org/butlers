@@ -68,7 +68,9 @@ _DECLARED_BY_KEY = f"""
 """
 
 
-async def _declaration(conn: asyncpg.Connection, collection_id: uuid.UUID) -> dict[str, Any]:
+async def _declaration(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, collection_id: uuid.UUID
+) -> dict[str, Any]:
     rows = await conn.fetch(
         """
         SELECT key_row.spelling, key_row.kind, vocabulary.shape_description
@@ -89,7 +91,9 @@ async def _declaration(conn: asyncpg.Connection, collection_id: uuid.UUID) -> di
 
 
 async def _add_aliases(
-    conn: asyncpg.Connection, collection_id: uuid.UUID, aliases: list[str]
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    collection_id: uuid.UUID,
+    aliases: list[str],
 ) -> None:
     for alias in aliases:
         inserted = await conn.fetchval(

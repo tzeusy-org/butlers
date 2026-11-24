@@ -277,8 +277,12 @@ def test_production_roster_execution_has_one_owner(tmp_path):
         # Alembic revisions are not importable roster runtime modules.
         "src/butlers/bootstrap_prerequisite.py": 1,
         "src/butlers/migration_preflight.py": 1,
-        # Hyphenated script, not roster code.
-        "scripts/frontend_guards.py": 1,
+        # Dedicated private migration copies for tests, not roster runtime execution.
+        "src/butlers/testing/migration.py": 1,
+        # Fixed image-owned validator sibling under a private name, never a roster loader.
+        "scripts/runtime_clis/python_entrypoint.py": 1,
+        # Declared closed-snapshot validator siblings under private producer names.
+        "scripts/runtime_clis/produce_python_artifacts.py": 1,
     }
     planted = tmp_path / "src" / "escape.py"
     planted.parent.mkdir()
@@ -365,7 +369,10 @@ def _dotted_roster_test_imports(paths):
 
     found = []
     for path in paths:
-        tree = ast.parse(path.read_text())
+        source = path.read_text()
+        if "roster" not in source:
+            continue
+        tree = ast.parse(source)
         lookup_names = {name: name for name in ("__import__", "import_module", "patch")}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -435,7 +442,7 @@ def test_tests_do_not_import_dotted_roster_names(tmp_path):
         "import importlib\nimportlib.import_module('.modules', package='roster.education')\n",
     ):
         planted.write_text(source)
-        assert len(_dotted_roster_test_imports([planted])) == 1
+        assert len(_dotted_roster_test_imports([planted])) == 1, source
     planted.write_text(
         "from butlers.jobs._roster.finance_jobs import run_simplefin_sync\n"
         "from .evidence_schema import apply_evidence_schema\n"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,20 +26,15 @@ from butlers.core.route_inbox import (
     route_inbox_scan_unprocessed,
     route_inbox_wait_while_claimed,
 )
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
 
-def _make_pool() -> Any:
-    pool = AsyncMock()
-    conn = AsyncMock()
-    pool.acquire = MagicMock(
-        return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=conn),
-            __aexit__=AsyncMock(return_value=False),
-        )
-    )
-    return pool, conn
+def _pool_and_conn() -> tuple[FakePool, FakeConnection]:
+    """Tests configure the methods they expect on the acquired connection."""
+    pool = fake_pool()
+    return pool, pool.connection
 
 
 def _sample_envelope() -> dict:
@@ -61,7 +55,7 @@ async def test_insert_and_lifecycle_mutations() -> None:
     """insert returns UUID; INSERT with accepted state; mark_processing/processed/errored
     each correct."""
     # Insert: returns a UUID and inserts in the accepted state
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     conn.execute = AsyncMock()
     result = await route_inbox_insert(pool, route_envelope=_sample_envelope())
     assert isinstance(result, uuid.UUID)
@@ -82,7 +76,7 @@ async def test_insert_and_lifecycle_mutations() -> None:
     session_id = uuid.uuid4()
 
     # mark_processing: transitions accepted -> processing for the row
-    pool2, conn2 = _make_pool()
+    pool2, conn2 = _pool_and_conn()
     processing_claim_id = uuid.uuid4()
     conn2.fetchval = AsyncMock(return_value=processing_claim_id)
     assert await route_inbox_mark_processing(pool2, row_id) is True
@@ -90,7 +84,7 @@ async def test_insert_and_lifecycle_mutations() -> None:
     assert STATE_PROCESSING in args and row_id in args and STATE_ACCEPTED in args
 
     # mark_processed (with and without session_id)
-    pool3, conn3 = _make_pool()
+    pool3, conn3 = _pool_and_conn()
     conn3.fetchval = AsyncMock(return_value=row_id)
     assert await route_inbox_mark_processed(pool3, row_id, session_id) is True
     assert (
@@ -102,7 +96,7 @@ async def test_insert_and_lifecycle_mutations() -> None:
     conn3.fetchval.assert_awaited_once()
 
     # mark_errored: records the errored state and the error text
-    pool4, conn4 = _make_pool()
+    pool4, conn4 = _pool_and_conn()
     conn4.fetchval = AsyncMock(return_value=row_id)
     error = "TimeoutError: spawner timed out"
     assert await route_inbox_mark_errored(pool4, row_id, error) is True
@@ -155,7 +149,7 @@ async def test_terminal_writes_are_monotonic_after_the_first_processing_settleme
 async def test_lease_loss_cancels_a_live_invocation_before_recovery_can_replay() -> None:
     """A local worker must not keep invoking after it loses its route lease."""
 
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     row_id = uuid.uuid4()
     claim_id = uuid.uuid4()
     conn.fetchval = AsyncMock(return_value=row_id)
@@ -185,7 +179,7 @@ async def test_lease_loss_cancels_a_live_invocation_before_recovery_can_replay()
 async def test_lease_loss_before_start_does_not_construct_an_invocation() -> None:
     """A known-lost claim must not create work that cannot be safely owned."""
 
-    pool, _ = _make_pool()
+    pool, _ = _pool_and_conn()
     row_id = uuid.uuid4()
     claim_id = uuid.uuid4()
     lease_lost = asyncio.Event()
@@ -207,7 +201,7 @@ async def test_processing_lease_heartbeat_refuses_lost_claim_before_body(
 ) -> None:
     """A displaced claim cannot enter protected pre-spawn work."""
 
-    pool, _ = _make_pool()
+    pool, _ = _pool_and_conn()
     row_id = uuid.uuid4()
     claim_id = uuid.uuid4()
     monkeypatch.setattr(
@@ -229,7 +223,7 @@ async def test_wait_while_claimed_fences_database_ownership_before_invocation(
 ) -> None:
     """A stale in-memory event cannot bypass the authoritative claim fence."""
 
-    pool, _ = _make_pool()
+    pool, _ = _pool_and_conn()
     row_id = uuid.uuid4()
     claim_id = uuid.uuid4()
     monkeypatch.setattr(
@@ -259,7 +253,7 @@ async def test_wait_while_claimed_fences_database_ownership_before_invocation(
 async def test_lease_loss_dominates_runtime_cleanup_failure() -> None:
     """Cancellation cleanup cannot fall through to a generic queue settlement."""
 
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     row_id = uuid.uuid4()
     claim_id = uuid.uuid4()
     conn.fetchval = AsyncMock(return_value=row_id)
@@ -288,7 +282,7 @@ async def test_scan_and_recovery_sweep() -> None:
     """scan: empty/with rows/grace_s+batch_size params/states filter; recovery:
     count/dispatch/continue on failure."""
     # Empty scan
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     conn.fetch = AsyncMock(return_value=[])
     assert await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50) == []
 
@@ -318,7 +312,7 @@ async def test_scan_and_recovery_sweep() -> None:
     assert conn.fetch.call_args.args[2] == STATE_PROCESSING
 
     # Recovery: zero when no rows
-    pool2, conn2 = _make_pool()
+    pool2, conn2 = _pool_and_conn()
     conn2.fetch = AsyncMock(return_value=[])
     dispatch = AsyncMock()
     assert await route_inbox_recovery_sweep(pool2, dispatch_fn=dispatch) == 0

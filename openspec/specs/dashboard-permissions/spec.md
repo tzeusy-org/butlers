@@ -89,7 +89,7 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **THEN** the resulting row in `public.permissions` is explicit (not inherited) and the matrix re-fetch shows the cell as foreground.
 
 ### Requirement: Runtime Permission Enforcement
-An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`.
+An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`. A readable store with no row for the pair SHALL allow (the owner expressed no revocation). A store that cannot be read (no pool, a failed read, or a malformed row) SHALL refuse for every caller with the reason `permission store unavailable`, log at ERROR without row contents or raw exception text, and make `require_permission` raise `PermissionUnavailable`.
 
 ID: REQ-dashboard-permissions-002
 Source: bu-30sah4 effect permission availability; bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D7, D10
@@ -104,9 +104,18 @@ Scope: v1-mandatory
 - **THEN** `check_permission` returns `allowed=False`, `explicit=True` and the row's reason
 - **AND** `require_permission` raises `PermissionDenied`
 
+#### Scenario: Missing row defaults to allow
+- **WHEN** the store is readable and holds no row for the butler and permission
+- **THEN** `check_permission` returns `allowed=True` and `explicit=False`
+
 #### Scenario: Effect paths refuse an unreadable store
 - **WHEN** an email, calendar or Telegram effect path checks its permission and the pool is missing, the read raises, or the row is malformed
 - **THEN** `require_permission` raises `PermissionUnavailable` before the external effect
+
+#### Scenario: Spawn, routing and notify refuse an unreadable store
+- **WHEN** the spawn gate, `route_to_butler`, `answer_question`, the dashboard system answer or `notify()` checks its permission and the pool is missing, the read raises, or the row is malformed
+- **THEN** the call is refused with a message that says the permission state is unavailable, distinct from an explicit denial
+- **AND** the spawn gate writes its `quota_skip` provenance row and no runtime is invoked
 
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from datetime import date as date_type
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastmcp.exceptions import ToolError
 
+from butlers.api.butler_tool_calls import tool_result_payload
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
@@ -38,14 +41,19 @@ from butlers.api.models.calendar_workspace import (
     CalendarInvitationEntry,
     CalendarInvitationsResponse,
     CalendarLinkedPerson,
+    CalendarOrganizerDecisionRequest,
+    CalendarOrganizerDecisionResponse,
     CalendarPrepAttendee,
     CalendarPrepCommitment,
     CalendarPrepNote,
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
+    CalendarQuarantinedInvitation,
     CalendarRespondRequest,
     CalendarRespondResponse,
+    CalendarSourceRoleRequest,
+    CalendarSourceRoleResponse,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
@@ -65,6 +73,13 @@ from butlers.api.models.calendar_workspace import (
     ConflictScanWindow,
     DayBriefingButlerGroup,
     DayBriefingKindGroup,
+    DaySheetFreshness,
+    DaySheetGap,
+    DaySheetItem,
+    DaySheetResponse,
+    HouseholdEventRef,
+    HouseholdSubjectGroup,
+    HouseholdTimeResponse,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -72,7 +87,9 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
+from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from butlers.api.read_models.calendar_day_sheet import query_calendar_day_sheet
 from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
@@ -92,12 +109,15 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
+    query_household_time,
     shallow_asdict,
     update_calendar_proposal_status,
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
 from butlers.core.liveness import derive_liveness
+from butlers.core.temporal.day_sheet import render_day_sheet_text
+from butlers.core.temporal.household_context import SUBJECT_ROLES, HouseholdEvent
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
@@ -363,6 +383,9 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         staleness_ms=staleness_ms,
         error_kind=classify_sync_error_kind(row.get("last_error")),
         sync_enabled=sync_enabled,
+        sync_applicable=row["source_kind"] == "provider_event",
+        time_role=row.get("time_role") or "unclassified",
+        role_basis=row.get("role_basis") or "provider_inferred",
     )
 
 
@@ -429,34 +452,6 @@ def _select_canonical_source_rows(
         )
         for source_key in sorted(grouped)
     ]
-
-
-def _extract_mcp_result_text(result: object) -> str | None:
-    content = getattr(result, "content", None)
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for block in content:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text:
-                text_parts.append(text)
-        return "\n".join(text_parts) if text_parts else None
-    if isinstance(result, list):
-        text_parts = []
-        for block in result:
-            text = getattr(block, "text", None)
-            if isinstance(text, str) and text:
-                text_parts.append(text)
-        return "\n".join(text_parts) if text_parts else None
-    return None
-
-
-def _parse_mcp_payload(raw_text: str | None) -> object:
-    if raw_text is None:
-        return None
-    try:
-        return json.loads(raw_text)
-    except (TypeError, json.JSONDecodeError):
-        return raw_text
 
 
 def _sync_detail(parsed: object) -> str | None:
@@ -1568,6 +1563,28 @@ async def get_workspace_invitations(
                 response_configured=owner in response_owners and row.get("writable") is True,
             )
         )
+    quarantined = []
+    for row in invitation_read.quarantined:
+        metadata = _normalize_json_object(row.get("event_metadata"))
+        verdict = metadata.get("organizer_verdict")
+        if verdict not in ("first_contact", "blocked"):
+            # An unreadable or missing verdict quarantines as ``unknown`` and degrades the
+            # envelope: the system cannot say the organizer is trustworthy or not.
+            verdict = "unknown"
+            degraded.add("calendar organizer verdict")
+        badges = metadata.get("lure_badges")
+        quarantined.append(
+            CalendarQuarantinedInvitation(
+                entry_id=row["instance_id"],
+                start_at=row["instance_starts_at"],
+                end_at=row["instance_ends_at"],
+                timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+                verdict=verdict,
+                lure_badges=[b for b in badges if isinstance(b, str)]
+                if isinstance(badges, list)
+                else [],
+            )
+        )
     has_more = len(invitation_read.rows) > limit
     next_cursor = None
     if has_more:
@@ -1578,6 +1595,7 @@ async def get_workspace_invitations(
     return ApiResponse(
         data=CalendarInvitationsResponse(
             entries=entries,
+            quarantined=quarantined,
             issues_available=not degraded,
             conflicts_available=conflicts_available,
             sources_degraded=sorted(degraded),
@@ -1668,7 +1686,139 @@ async def get_workspace_conflicts(
     ]
     return ApiResponse[ConflictScanResponse](
         data=ConflictScanResponse(
-            issues=issues, scan_window=window, issues_available=scan.available
+            issues=issues,
+            scan_window=window,
+            issues_available=scan.available,
+            unclassified_sources=scan.unclassified_sources,
+            unclassified_events=scan.unclassified_events,
+            household_context=[_household_ref(event) for event in scan.household_context],
+        )
+    )
+
+
+def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
+    return HouseholdEventRef(
+        role=event.role,  # type: ignore[arg-type]
+        subject_entity_id=UUID(event.subject_entity_id) if event.subject_entity_id else None,
+        subject_label=event.subject_label,
+        start_at=event.starts_at,
+        end_at=event.ends_at,
+        all_day=event.all_day,
+    )
+
+
+@router.get("/household-time", response_model=ApiResponse[HouseholdTimeResponse])
+async def get_household_time(
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    butler_name: str | None = Query(None, description="Optional single butler-schema filter"),
+    *,
+    db: Db,
+) -> ApiResponse[HouseholdTimeResponse]:
+    """Other people's events in the window, grouped by whose calendar, for context only.
+
+    Opaque by construction: time window, role and subject, with no title, location or
+    attendee. Nothing here counts toward owner load, and an unclassified source contributes
+    nothing. Fails open: a failed read returns ``available=false``, never HTTP 500. The window
+    must satisfy ``end > start`` and ``end - start <= 90 days`` (HTTP 400 otherwise).
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+    window = ConflictScanWindow(start=start, end=end)
+    read = await query_household_time(
+        db, start=start, end=end, butlers=[butler_name] if butler_name else None
+    )
+    groups: dict[str | None, HouseholdSubjectGroup] = {}
+    for event in read.events:
+        group = groups.setdefault(
+            event.subject_entity_id,
+            HouseholdSubjectGroup(
+                subject_entity_id=UUID(event.subject_entity_id)
+                if event.subject_entity_id
+                else None,
+                subject_label=event.subject_label,
+            ),
+        )
+        group.events.append(_household_ref(event))
+    return ApiResponse[HouseholdTimeResponse](
+        data=HouseholdTimeResponse(
+            window=window, subjects=list(groups.values()), available=read.available
+        )
+    )
+
+
+_DAY_SHEET_MIN_YEAR = 1900
+_DAY_SHEET_MAX_YEAR = 2200
+
+
+@router.get("/day-sheet", response_model=ApiResponse[DaySheetResponse])
+async def get_day_sheet(
+    date: date_type | None = Query(
+        None, description="Owner-local calendar day (YYYY-MM-DD); defaults to today"
+    ),
+    timezone: str | None = Query(
+        None, description="IANA zone to read the day in; defaults to the owner's zone"
+    ),
+    *,
+    db: Db,
+) -> ApiResponse[DaySheetResponse]:
+    """One deterministic projection of an owner-local day (REQ-module-calendar-036).
+
+    Never says a day is clear when it cannot know: an unreadable calendar schema or a stale sync
+    is reported in ``freshness`` (and in ``text``) instead of an empty list. Read-only, no model.
+    """
+    if timezone is not None:
+        try:
+            zone = ZoneInfo(timezone.strip())
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+    else:
+        zone = await owner_zoneinfo(_calendar_accounts_shared_pool(db))
+    local_date = date or datetime.now(zone).date()
+    if not _DAY_SHEET_MIN_YEAR <= local_date.year <= _DAY_SHEET_MAX_YEAR:
+        raise HTTPException(
+            status_code=400,
+            detail=f"date must be within {_DAY_SHEET_MIN_YEAR}-{_DAY_SHEET_MAX_YEAR}",
+        )
+
+    sheet = await query_calendar_day_sheet(db, local_date=local_date, zone=zone)
+    return ApiResponse[DaySheetResponse](
+        data=DaySheetResponse(
+            date=sheet.date,
+            zone=sheet.zone,
+            freshness=DaySheetFreshness(
+                state=sheet.freshness.state,
+                as_of=sheet.freshness.as_of,
+                sources_unreadable=sheet.freshness.sources_unreadable,
+                sources_total=sheet.freshness.sources_total,
+            ),
+            items=[
+                DaySheetItem(
+                    ref=i.ref,
+                    start=i.start,
+                    end=i.end,
+                    all_day=i.all_day,
+                    kind=i.kind,
+                    title=i.title,
+                    label_class=i.label_class,
+                    people_count=i.people_count,
+                    conflict_ref=i.conflict_ref,
+                    door=i.door,
+                )
+                for i in sheet.items
+            ],
+            gaps=[DaySheetGap(start=g.start, end=g.end) for g in sheet.gaps],
+            attended_minutes=sheet.load.attended_minutes,
+            attended_count=sheet.load.count,
+            longest_gap=(
+                DaySheetGap(start=sheet.longest_gap.start, end=sheet.longest_gap.end)
+                if sheet.longest_gap
+                else None
+            ),
+            digest=sheet.digest,
+            text=render_day_sheet_text(sheet),
         )
     )
 
@@ -1964,7 +2114,7 @@ async def sync_workspace(
         try:
             client = await mcp_manager.get_client(butler_name)
             result = await client.call_tool("calendar_force_sync", forwarded_args)
-            parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
+            parsed = tool_result_payload(result)
             raw_status = parsed.get("status", "queued") if isinstance(parsed, dict) else "queued"
             status = "failed" if raw_status in {"error", "failed"} else str(raw_status)
             recovery = bool(parsed.get("recovery")) if isinstance(parsed, dict) else False
@@ -2094,7 +2244,7 @@ async def _call_mcp_tool(
             detail=f"MCP call to '{butler_name}' failed: {exc}",
         ) from exc
 
-    parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
+    parsed = tool_result_payload(result)
     if isinstance(parsed, dict):
         return parsed
     return {"result": parsed if parsed is not None else str(result)}
@@ -2495,6 +2645,100 @@ async def _respond_through_approval(
     )
 
 
+@router.post("/organizer-decision", response_model=ApiResponse[CalendarOrganizerDecisionResponse])
+async def decide_organizer(
+    body: CalendarOrganizerDecisionRequest,
+    http_request: Request,
+    *,
+    db: Db,
+) -> ApiResponse[CalendarOrganizerDecisionResponse]:
+    """Owner-only Vouch or Block of a stored invitation's organizer (REQ-module-calendar-042).
+
+    The organizer address comes from the stored event. The verb writes calendar-scoped ingestion
+    rules (never a global one), then re-stamps that organizer's stored events at once.
+    """
+    from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
+    from butlers.modules.calendar.organizer_decisions import (
+        NoCalendarEndpoint,
+        apply_decision,
+        normalize_address,
+        restamp_organizer,
+    )
+
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="owner_principal_required") from exc
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="organizer_decision_census_unavailable")
+    found, failed = await db.fan_out_with_status(
+        "SELECT lower(btrim(COALESCE(e.metadata ->> 'organizer', ''))) AS organizer,"
+        " lower(btrim(COALESCE(own.email, ''))) AS own_email"
+        " FROM calendar_event_instances i JOIN calendar_events e ON e.id = i.event_id"
+        " LEFT JOIN LATERAL ("
+        "   SELECT att ->> 'email' AS email"
+        "   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.metadata -> 'attendees') = 'array'"
+        "        THEN e.metadata -> 'attendees' ELSE '[]'::jsonb END) AS att"
+        "   WHERE att ->> 'self' = 'true' LIMIT 1) AS own ON TRUE"
+        " WHERE i.id = $1",
+        (body.entry_id,),
+        butler_names=targets,
+    )
+    rows = [row for result in found.values() for row in result]
+    if failed:
+        raise HTTPException(status_code=503, detail="organizer_decision_lookup_degraded")
+    if len(rows) != 1:
+        raise HTTPException(status_code=404 if not rows else 409, detail="entry_not_found")
+    organizer = normalize_address(rows[0]["organizer"])
+    if not organizer or "@" not in organizer:
+        raise HTTPException(status_code=409, detail="entry_has_no_organizer")
+    if organizer == normalize_address(rows[0]["own_email"]):
+        raise HTTPException(status_code=409, detail="organizer_is_the_owner")
+
+    try:
+        switchboard = db.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail="switchboard_unavailable") from exc
+    try:
+        decision = await apply_decision(switchboard, organizer, body.verb)
+    except NoCalendarEndpoint as exc:
+        raise HTTPException(status_code=409, detail="no_calendar_endpoint") from exc
+
+    restamped = 0
+    degraded = False
+    for name in targets:
+        try:
+            restamped += await restamp_organizer(db.pool(name), organizer)
+        except Exception:
+            logger.warning("organizer decision: re-stamp failed for %s", name, exc_info=True)
+            degraded = True  # the sweep restamps these rows on its next pass
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="calendar_organizer_decision",
+        method="POST",
+        path="/api/calendar/workspace/organizer-decision",
+        body={
+            "verb": body.verb,
+            "rules_written": decision.rules_written,
+            "rules_removed": decision.rules_removed,
+        },
+        response_status=200,
+        request=http_request,
+    )
+    return ApiResponse(
+        data=CalendarOrganizerDecisionResponse(
+            verb=decision.verb,
+            endpoints=decision.endpoints,
+            rules_written=decision.rules_written,
+            rules_removed=decision.rules_removed,
+            events_restamped=restamped,
+            restamp_degraded=degraded,
+        )
+    )
+
+
 @router.post("/respond", response_model=ApiResponse[CalendarRespondResponse])
 async def respond_to_invitation(
     body: CalendarRespondRequest,
@@ -2531,6 +2775,7 @@ async def respond_to_invitation(
 @router.post("/user-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_user_event(
     body: CalendarWorkspaceUserMutationRequest,
+    http_request: Request,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     *,
     db: Db,
@@ -2543,6 +2788,9 @@ async def mutate_user_event(
     validation rejects any action other than ``create`` with HTTP 422; MCP
     failures retain the existing HTTP error behavior.
     """
+    # Owner decision bu-kf3n4i=A / PR4901 retired dashboard update/delete/undo;
+    # this composes approval only for the surviving create surface. MCP
+    # update/delete and instance handlers retain their own party gates.
     tool_name = "calendar_create_event"
 
     arguments = dict(body.payload)
@@ -2556,6 +2804,52 @@ async def mutate_user_event(
     }
     try:
         mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        if mutation_result.get("status") == "request_changed":
+            raise HTTPException(status_code=409, detail="Queued calendar request changed")
+        if mutation_result.get("status") == "approval_required" and isinstance(
+            mutation_result.get("args_digest"), str
+        ):
+            from butlers.api.audit_emit import authenticated_principal
+            from butlers.api.routers.approvals import _decision_actor_id, approve_owning_action
+            from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+            # Keep the same provider/account owner. This exact owner submission
+            # supplies a decision, never delegated-success promotion evidence.
+            authenticated_principal()
+            try:
+                action_id = UUID(mutation_result["action_id"])
+            except (KeyError, ValueError, TypeError):
+                raise HTTPException(503, "create_approval_unavailable") from None
+            pool = db.pool(body.butler_name)
+            pending = await pool.fetchrow(
+                "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", action_id
+            )
+            parked = _normalize_json_object(pending["tool_args"]) if pending else {}
+            if (
+                pending is None
+                or pending["tool_name"] != tool_name
+                or approval_tool_args_digest(parked) != mutation_result.get("args_digest")
+            ):
+                raise HTTPException(409, "create_approval_binding_changed")
+            if pending["status"] == "pending":
+                decision = await approve_owning_action(
+                    parsed_id=action_id,
+                    actor_id=_decision_actor_id(None, callback_authenticated=False),
+                    edits=None,
+                    action_butler=body.butler_name,
+                    target_pool=pool,
+                    db_mgr=db,
+                    mcp_mgr=mgr,
+                    expected_tool_args=parked,
+                    expected_tool_name=tool_name,
+                    promotion_eligible=False,
+                )
+                mutation_result = {
+                    **mutation_result,
+                    "status": "executed" if decision.data.dispatched else "approved",
+                }
+            else:
+                mutation_result = {**mutation_result, "status": pending["status"]}
         freshness = await _projection_freshness_after_mutation(
             mgr=mgr,
             butler_name=body.butler_name,
@@ -3507,5 +3801,137 @@ async def toggle_calendar_source(
             source_id=row["id"],
             calendar_id=row["calendar_id"],
             enabled=request.enabled,
+        )
+    )
+
+
+class _SourceRoleLockError(Exception):
+    """The per-source advisory lock could not be taken."""
+
+
+@contextlib.asynccontextmanager
+async def _source_role_lock(pool: Any, source_key: str):
+    """Hold ``pg_advisory_lock`` for one source's role write; yields the holding connection.
+
+    The caller must run that pool's own write on the yielded connection: asking the same pool
+    for a second connection while holding one deadlocks a small pool under concurrent requests.
+    """
+    key = f"calendar_source_role:{source_key}"
+    try:
+        context = pool.acquire()
+        conn = await context.__aenter__()
+    except Exception as exc:
+        raise _SourceRoleLockError from exc
+    try:
+        try:
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", key)
+        except Exception as exc:
+            raise _SourceRoleLockError from exc
+        try:
+            yield conn
+        finally:
+            try:
+                await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key)
+            except Exception:
+                # A session lock must never go back into the pool held: drop the connection.
+                logger.warning("calendar source role unlock failed; dropping the connection")
+                conn.terminate()
+    finally:
+        await context.__aexit__(None, None, None)
+
+
+@accounts_router.post("/sources/role", response_model=ApiResponse[CalendarSourceRoleResponse])
+async def set_calendar_source_role(
+    request: CalendarSourceRoleRequest,
+    *,
+    db: Db,
+) -> ApiResponse[CalendarSourceRoleResponse]:
+    """Set whose time a calendar source's events are (REQ-module-calendar-037).
+
+    The same provider calendar is a source in every calendar butler schema, and every reader joins
+    its own schema's row, so the role is written to all of them. A role is the owner's word
+    (``owner_confirmed``) and discovery never overwrites it; ``role: null`` clears it back to
+    ``unclassified`` for the next discovery to infer. A schema whose write failed is reported.
+    """
+    names = db.butlers_with_module("calendar")
+    targets = sorted(names if isinstance(names, list) else db.butler_names)
+    role = request.role or "unclassified"
+    basis = "owner_confirmed" if request.role is not None else "provider_inferred"
+    subject = request.subject_entity_id
+    if subject is not None and role not in SUBJECT_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail="A subject only accompanies the household_member, other_person or team role.",
+        )
+    if subject is not None and targets:
+        known = await db.pool(targets[0]).fetchval(
+            "SELECT 1 FROM public.entities WHERE id = $1", subject
+        )
+        if not known:
+            raise HTTPException(status_code=404, detail="Requested subject entity was not found")
+
+    updated: list[str] = []
+    failed: list[str] = []
+    # One owner decision must land in every schema or in none of the interleavings: hold a
+    # cluster-wide advisory lock for this source across the whole fan-out, so two concurrent
+    # requests (even on different API replicas) cannot leave schemas on different roles.
+    update_sql = f"""
+        UPDATE calendar_sources
+        SET time_role = $1, role_basis = '{basis}', role_subject_entity_id = $3,
+            updated_at = now()
+        WHERE source_key = $2
+        RETURNING id
+        """
+    try:
+        if targets:
+            async with _source_role_lock(db.pool(targets[0]), request.source_key) as lock_conn:
+                for butler in targets:
+                    try:
+                        # The lock-holding connection serves its own schema's write.
+                        runner = lock_conn if butler == targets[0] else db.pool(butler)
+                        rows = await runner.fetch(update_sql, role, request.source_key, subject)
+                    except Exception:
+                        logger.warning(
+                            "set_calendar_source_role failed in %s", butler, exc_info=True
+                        )
+                        failed.append(butler)
+                        continue
+                    if rows:
+                        updated.append(butler)
+    except _SourceRoleLockError as exc:
+        raise HTTPException(
+            status_code=503, detail="Could not lock the calendar source. Try again."
+        ) from exc
+    if not updated:
+        if failed:
+            # Nothing was written and some schemas could not be asked: that is an outage, not
+            # an unknown source, so the owner is told to retry rather than that it does not exist.
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not write the role in: {', '.join(failed)}. Try again.",
+            )
+        raise HTTPException(status_code=404, detail="Requested calendar source was not found")
+
+    await log_audit_entry(
+        db,
+        updated[0],
+        "calendar.workspace.source_role",
+        {
+            "source_key": request.source_key,
+            "role": role,
+            "basis": basis,
+            "subject_entity_id": str(subject) if subject else None,
+            "updated": updated,
+            "failed": failed,
+        },
+    )
+    return ApiResponse[CalendarSourceRoleResponse](
+        data=CalendarSourceRoleResponse(
+            source_key=request.source_key,
+            role=role,  # type: ignore[arg-type]
+            role_basis=basis,  # type: ignore[arg-type]
+            subject_entity_id=subject,
+            updated_butlers=updated,
+            failed_butlers=failed,
         )
     )

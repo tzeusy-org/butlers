@@ -15,12 +15,13 @@ roster/chronicler/tests/test_storage_integration.py.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.chronicler.models import Episode, PointEvent
 from butlers.chronicler.storage import upsert_episode, upsert_point_event
+from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +40,7 @@ _NOW = datetime(2026, 4, 30, 0, 0, 0, tzinfo=UTC)
 @pytest.mark.asyncio
 async def test_upsert_episode_sql_includes_tombstone_reason_column() -> None:
     """INSERT column list for episodes must include tombstone_reason."""
-    row = _make_record(
+    returned = row(
         id=None,
         source_name="s",
         source_ref="r",
@@ -57,7 +58,7 @@ async def test_upsert_episode_sql_includes_tombstone_reason_column() -> None:
         updated_at=_NOW,
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
+    pool.fetchrow = AsyncMock(return_value=returned)
 
     episode = Episode(
         source_name="s",
@@ -88,7 +89,7 @@ async def test_upsert_episode_sql_includes_tombstone_reason_column() -> None:
 @pytest.mark.asyncio
 async def test_upsert_episode_tombstone_reason_round_trips_via_returned_row() -> None:
     """Return value from upsert_episode carries tombstone_reason from the DB row."""
-    row = _make_record(
+    returned = row(
         id=None,
         source_name="s",
         source_ref="r",
@@ -106,7 +107,7 @@ async def test_upsert_episode_tombstone_reason_round_trips_via_returned_row() ->
         updated_at=_NOW,
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
+    pool.fetchrow = AsyncMock(return_value=returned)
 
     episode = Episode(
         source_name="s",
@@ -130,7 +131,7 @@ async def test_upsert_episode_tombstone_reason_round_trips_via_returned_row() ->
 @pytest.mark.asyncio
 async def test_upsert_point_event_sql_includes_tombstone_reason_column() -> None:
     """INSERT column list for point_events must include tombstone_reason."""
-    row = _make_record(
+    returned = row(
         id=None,
         source_name="s",
         source_ref="r",
@@ -147,7 +148,7 @@ async def test_upsert_point_event_sql_includes_tombstone_reason_column() -> None
         updated_at=_NOW,
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
+    pool.fetchrow = AsyncMock(return_value=returned)
 
     event = PointEvent(
         source_name="s",
@@ -176,7 +177,7 @@ async def test_upsert_point_event_sql_includes_tombstone_reason_column() -> None
 @pytest.mark.asyncio
 async def test_upsert_point_event_tombstone_reason_round_trips_via_returned_row() -> None:
     """Return value from upsert_point_event carries tombstone_reason from the DB row."""
-    row = _make_record(
+    returned = row(
         id=None,
         source_name="s",
         source_ref="r",
@@ -193,7 +194,7 @@ async def test_upsert_point_event_tombstone_reason_round_trips_via_returned_row(
         updated_at=_NOW,
     )
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
+    pool.fetchrow = AsyncMock(return_value=returned)
 
     event = PointEvent(
         source_name="s",
@@ -207,15 +208,3 @@ async def test_upsert_point_event_tombstone_reason_round_trips_via_returned_row(
     assert result.tombstone_reason == "stale_ping", (
         "upsert_point_event must hydrate tombstone_reason from the RETURNING row"
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_record(**kwargs: object) -> MagicMock:
-    """Return a MagicMock that acts like an asyncpg.Record for the given key/value pairs."""
-    record = MagicMock()
-    record.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return record

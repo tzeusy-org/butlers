@@ -28,12 +28,23 @@ from butlers.modules.approvals.autonomy_tracker import (
     compute_fingerprint as _compute_fingerprint,
 )
 from butlers.modules.approvals.autonomy_tracker import (
+    counts_toward_promotion as _counts_toward_promotion,
+)
+from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    ExternalReviewBinding,
+    external_approval_refusal,
+    is_external_proposal_action,
+    is_external_proposal_key,
+)
+from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
@@ -86,6 +97,9 @@ async def create_rule_from_action(
     decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Create from the locked current action with one consumed confirmation."""
+    refusal = await _external_rule_refusal(pool, action_id)
+    if refusal is not None:
+        return refusal
     parameters = dict(action_id=action_id, constraint_overrides=constraint_overrides)
     result = await run_rule_write(
         pool,
@@ -103,18 +117,52 @@ async def approve_action(
     actor_id: str = "dashboard:rest-api",
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    *,
+    promotion_eligible: bool = True,
+    external_review: ExternalReviewBinding | None = None,
 ) -> dict[str, Any]:
-    """Ordinary approvals stay one-tap; combined authority changes commit once."""
+    """Ordinary approvals stay one-tap; combined authority changes commit once.
+
+    An external MCP proposal approves only with *external_review*, which the passkey
+    dashboard route alone supplies after its displayed-call check.
+    """
+    if create_rule:
+        # Refused before any step-up is consumed or status changes: an outside
+        # proposal never becomes a standing rule (REQ-module-approvals-010).
+        refusal = await _external_rule_refusal(pool, action_id)
+        if refusal is not None:
+            return refusal
     if not create_rule:
-        return await _approve_action_write(pool, action_id, actor_id, False, decision_memory_writer)
+        return await _approve_action_write(
+            pool,
+            action_id,
+            actor_id,
+            False,
+            decision_memory_writer,
+            promotion_eligible=promotion_eligible,
+            external_review=external_review,
+        )
     result = await run_rule_write(
         pool,
         "approve_with_rule",
         dict(action_id=action_id),
-        lambda conn: _approve_action_write(conn, action_id, actor_id, True, None),
+        lambda conn: _approve_action_write(
+            conn, action_id, actor_id, True, None, promotion_eligible=promotion_eligible
+        ),
     )
     await remember_rule(decision_memory_writer, result)
     return result
+
+
+async def _external_rule_refusal(pool: Any, action_id: str) -> dict[str, Any] | None:
+    """Refuse rule creation from an external MCP proposal; None for other actions."""
+    try:
+        parsed_id = uuid.UUID(action_id)
+    except ValueError:
+        return None  # the owning write reports the malformed id
+    if await is_external_proposal_action(pool, parsed_id):
+        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +269,9 @@ async def _approve_action_write(
     actor_id: str = "dashboard:rest-api",
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    *,
+    promotion_eligible: bool = True,
+    external_review: ExternalReviewBinding | None = None,
 ) -> dict[str, Any]:
     """Approve a pending action without performing its side effect.
 
@@ -260,6 +311,14 @@ async def _approve_action_write(
     # Validate transition: only pending → approved is valid
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
+    if is_external_proposal_key(action.deduplication_key):
+        # Before any status change: an outside proposal never becomes a rule, and
+        # approves only as the dashboard review displayed it (REQ-dashboard-approvals-904).
+        if create_rule:
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        refusal = external_approval_refusal(parsed_id, action.tool_args, external_review)
+        if refusal is not None:
+            return {"error": refusal}
 
     decided_by = f"human:{actor_id}"
     transition = await transition_pending_action(
@@ -282,33 +341,37 @@ async def _approve_action_write(
     action = transition.action
     assert action is not None
 
-    # Post-approval autonomy tracker hook (task 7.1)
-    # Wrap in try/except so tracker failure doesn't block approval
-    try:
-        async with descriptive_savepoint(pool) as tracker_connection:
-            # Re-read to get decided_at
-            updated_row = await tracker_connection.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if updated_row is not None:
-                updated_action = PendingAction.from_row(updated_row)
-                await _record_approval(tracker_connection, updated_action)
-                # Use a minimal config namespace with defaults (no module import needed)
-                _default_config = type(
-                    "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
-                )()
-                await _check_promotion_threshold(
-                    pool=tracker_connection,
-                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
-                    tool_name=action.tool_name,
-                    tool_args=action.tool_args,
-                    config=_default_config,
-                    action_id=updated_action.id,
+    # A dashboard owner deciding their own submitted command is not delegated success.
+    if promotion_eligible:
+        # Post-approval autonomy tracker hook (task 7.1)
+        # Wrap in try/except so tracker failure doesn't block approval
+        try:
+            async with descriptive_savepoint(pool) as tracker_connection:
+                # Re-read to get decided_at
+                updated_row = await tracker_connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-    except Exception:
-        logger.exception(
-            "Autonomy tracker hook failed for action %s — approval not blocked", action_id
-        )
+                updated_action = PendingAction.from_row(updated_row) if updated_row else None
+                if updated_action is not None and _counts_toward_promotion(updated_action):
+                    await _record_approval(tracker_connection, updated_action)
+                    # Use a minimal config namespace with defaults (no module import needed)
+                    _default_config = type(
+                        "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+                    )()
+                    await _check_promotion_threshold(
+                        pool=tracker_connection,
+                        pattern_fingerprint=_compute_fingerprint(
+                            action.tool_name, action.tool_args
+                        ),
+                        tool_name=action.tool_name,
+                        tool_args=action.tool_args,
+                        config=_default_config,
+                        action_id=updated_action.id,
+                    )
+        except Exception:
+            logger.exception(
+                "Autonomy tracker hook failed for action %s — approval not blocked", action_id
+            )
 
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None
@@ -331,6 +394,9 @@ async def _approve_action_write(
     result = PendingAction.from_row(final_row).to_dict()
     if rule_dict is not None:
         result["created_rule"] = rule_dict
+    if is_goal_effect(row):
+        # The owner's decision stands; only the capability broker runs it.
+        result["execution_code"] = GOAL_EFFECT_REQUIRES_BROKER
 
     return result
 
@@ -744,6 +810,8 @@ async def _create_rule_from_action_write(
         return {"error": f"Action not found: {action_id}"}
 
     action = PendingAction.from_row(row)
+    if is_external_proposal_key(action.deduplication_key):
+        return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
     # Generate suggested constraints via sensitivity analysis
     suggested = suggest_constraints(action.tool_name, action.tool_args)

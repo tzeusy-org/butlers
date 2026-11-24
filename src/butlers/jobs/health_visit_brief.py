@@ -29,14 +29,13 @@ and is retried on the next run while the appointment is still inside the lead wi
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import statistics
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
 
 import asyncpg
@@ -47,6 +46,7 @@ from butlers.core.state import decode_jsonb
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import resolve_owner_telegram_recipient
 from butlers.jobs.briefing import owner_briefing_zone
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,6 @@ DEFAULT_LOOKBACK_DAYS = 90
 _RUN_LOCK_KEY = 7_411_550_015
 
 _ORIGIN = "health"
-_NOTIFY_TIMEOUT_S = 30
 _MAX_TITLE_CHARS = 80
 
 DISCLAIMER = (
@@ -71,6 +70,9 @@ DISCLAIMER = (
 DELIVERED = "delivered"
 SUPPRESSED = "suppressed"
 FAILED = "failed"
+PARTIAL = "partial_delivery"
+UNCERTAIN = "delivery_uncertain"
+_PARTIAL_BRIEFS = PartialDeliveryLatch()
 
 NotifyFn = Callable[[str], Awaitable[str]]
 
@@ -332,7 +334,8 @@ async def _adherence_lines(
           AND d.valid_at >= $1 AND d.valid_at <= $2
           AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
         """,
-        start,
+        # The first window day owes a full day of doses, so count the whole day.
+        datetime.combine(_day(start, zone), time.min, tzinfo=zone),
         end,
     )
     taken: dict[tuple[str, date], list[str]] = defaultdict(list)
@@ -567,58 +570,24 @@ async def send_owner_brief(pool: asyncpg.Pool, message: str) -> str:
     ``notify.v1`` send to that one recipient: there is no communicate effect.
     """
 
-    async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
-        await record_attention_event(
-            pool,
-            origin_butler=_ORIGIN,
-            source="notify",
-            outcome=outcome,
-            channel="telegram",
-            intent="send",
-            priority="medium",
-            reason=reason,
-            notification_ref=ref,
-        )
+    from butlers.jobs.owner_notify import OwnerNotifyBoundary, send_owner_telegram_checked
 
-    reason = await check_owner_notify_suppression(pool, log_context="health_visit_brief")
-    if reason is not None:
-        await _record("suppressed", reason)
-        return SUPPRESSED
-    recipient = await resolve_owner_telegram_recipient(pool)
-    if not recipient:
-        await _record("failed", "no_recipient_configured")
-        return FAILED
-    client = get_current_switchboard_client()
-    if client is None:
-        await _record("failed", "switchboard_client_unavailable")
-        return FAILED
-    notify_request = {
-        "schema_version": "notify.v1",
-        "origin_butler": _ORIGIN,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool(
-                "deliver", {"source_butler": _ORIGIN, "notify_request": notify_request}
-            ),
-            timeout=_NOTIFY_TIMEOUT_S,
-        )
-    except Exception as exc:
-        logger.warning("health_visit_brief: deliver() call failed: %s", type(exc).__name__)
-        await _record("failed", f"delivery_error:{type(exc).__name__}")
-        return FAILED
-    data = result.data
-    if result.is_error or (isinstance(data, dict) and data.get("status") == "failed"):
-        await _record("failed", "delivery_error")
-        return FAILED
-    await _record("delivered", ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return DELIVERED
+    result = await send_owner_telegram_checked(
+        pool,
+        origin_butler=_ORIGIN,
+        message=message,
+        log_context="health_visit_brief",
+        boundary=OwnerNotifyBoundary(
+            check_owner_notify_suppression,
+            resolve_owner_telegram_recipient,
+            get_current_switchboard_client,
+            record_attention_event,
+        ),
+    )
+
+    if result.delivery_outcome in (PARTIAL, UNCERTAIN):
+        return result.delivery_outcome
+    return result.outcome
 
 
 # ---------------------------------------------------------------------------
@@ -664,12 +633,45 @@ async def _run_locked(
     zone = await owner_briefing_zone(pool)
     result: dict[str, Any] = {"considered": 0, "sent": 0, "skipped": 0, "retry": 0}
 
+    # Finish existing terminal writes even after the appointment leaves the
+    # upcoming window. Keep the same row/digest, never synthesize delivery credit.
+    for event_id in _PARTIAL_BRIEFS.keys(pool):
+        await pool.execute(
+            "UPDATE visit_briefs SET digest = digest || $2::jsonb, "
+            "updated_at = now() WHERE event_id = $1",
+            event_id,
+            _PARTIAL_BRIEFS.metadata(pool, event_id),
+        )
+        _PARTIAL_BRIEFS.clear(pool, event_id)
+
     for appt in await pool.fetch(_UPCOMING_SQL, now, now + LEAD):
         result["considered"] += 1
         event_id: str = appt["event_id"]
         existing = await pool.fetchrow(
-            "SELECT delivered_at FROM visit_briefs WHERE event_id = $1", event_id
+            "SELECT delivered_at, digest FROM visit_briefs WHERE event_id = $1", event_id
         )
+        prior_digest = decode_jsonb(existing["digest"]) if existing is not None else {}
+        if _PARTIAL_BRIEFS.contains(pool, event_id) or (
+            isinstance(prior_digest, dict)
+            and (
+                prior_digest.get("partial_delivery") is True
+                or prior_digest.get("telegram_effect_uncertain") is True
+            )
+        ):
+            await pool.execute(
+                "UPDATE visit_briefs SET digest = digest || $2::jsonb, "
+                "updated_at = now() WHERE event_id = $1",
+                event_id,
+                _PARTIAL_BRIEFS.metadata(pool, event_id)
+                or {
+                    key: prior_digest[key]
+                    for key in ("partial_delivery", "telegram_effect_uncertain", "retryable")
+                    if key in prior_digest
+                },
+            )
+            _PARTIAL_BRIEFS.clear(pool, event_id)
+            result["skipped"] += 1
+            continue
         if existing is not None and existing["delivered_at"] is not None:
             # Already briefed; a reschedule only re-anchors the record.
             await pool.execute(
@@ -706,7 +708,21 @@ async def _run_locked(
             digest,
         )
         outcome = await send(message)
-        if outcome == DELIVERED:
+        if outcome in {PARTIAL, UNCERTAIN}:
+            terminal = {
+                "partial_delivery" if outcome == PARTIAL else "telegram_effect_uncertain": True,
+                "retryable": False,
+            }
+            _PARTIAL_BRIEFS.mark(pool, event_id, terminal)
+            await pool.execute(
+                "UPDATE visit_briefs SET digest = digest || "
+                "$2::jsonb, updated_at = now() WHERE event_id = $1",
+                event_id,
+                terminal,
+            )
+            _PARTIAL_BRIEFS.clear(pool, event_id)
+            result[outcome] = result.get(outcome, 0) + 1
+        elif outcome == DELIVERED:
             await pool.execute(
                 "UPDATE visit_briefs SET delivered_at = now(), updated_at = now() "
                 "WHERE event_id = $1",

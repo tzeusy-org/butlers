@@ -194,6 +194,16 @@ const SOURCE_CATEGORY_MAP: Record<string, Category> = {
   "chronicler.occupation_inferred|occupation_block": "work",
   "activitywatch.window|screen_episode": "work",
   "home_assistant.sensor_activity|room_activity_episode": "rest",
+  // Situational blocks and gap-interview answers (bu-r3fmja).
+  "chronicler.situation_inferred|work_presence_block": "work",
+  "chronicler.situation_inferred|outing_block": "social",
+  "chronicler.situation_inferred|airport_block": "travel",
+  "chronicler.situation_inferred|home_block": "rest",
+  "chronicler.owner_answer|owner_work_block": "work",
+  "chronicler.owner_answer|owner_social_block": "social",
+  "chronicler.owner_answer|owner_play_block": "play",
+  "chronicler.owner_answer|owner_eat_block": "eat",
+  "chronicler.owner_answer|owner_rest_block": "rest",
 }
 
 /**

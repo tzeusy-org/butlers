@@ -1,0 +1,182 @@
+{{- if .Values.monitoring.rules.enabled }}
+{{- /*
+Alert rules and the two flag recording rules of the public MCP surface (RFC 0039 D16,
+REQ-public-mcp-authorization-014). Alerts never go through Butlers: Prometheus evaluates them and
+the owner's Uptime Kuma polls the flags. Series sources:
+  server      butlers_public_mcp_* from this chart's pod (job = the release name, PodMonitor)
+  postgres    cnpg_pg_replication_slots_* from CNPG's default exporter queries on postgres-<env>
+  importer    butlers_public_mcp_proposal_import_* from the OTel meter in the butlers daemons
+Not covered, for lack of a metric source: replication lag (as_of age), a non-pgoutput plugin on an
+otherwise allowed slot, and one (sub, cid) reading over 25 % of a domain's rows in a day. See the
+chart README, "Alerts and flags".
+Event rules ("any ...") read a counter through `increase() > 0` OR a series that did not exist a
+window ago, because a counter's first increment has no earlier sample for increase() to measure.
+*/ -}}
+{{- $t := .Values.monitoring.rules.thresholds }}
+{{- $ns := include "pub.namespace" . }}
+{{- $srv := printf `job="%s", namespace="%s"` .Release.Name $ns }}
+{{- $pg := printf `namespace="%s"` (include "pub.pgNamespace" .) }}
+{{- $win := $t.eventWindow }}
+{{- $allowedSlots := "butlers_public_sub|pg_[0-9]+_sync_[0-9]+_[0-9]+" }}
+{{- $blocked := printf "butlers_public_mcp_dlp_blocked_total{%s}" $srv }}
+{{- $hits := printf "butlers_public_mcp_canary_hits_total{%s}" $srv }}
+{{- $failed := `butlers_public_mcp_proposal_import_outcomes_total{state="apply_failed"}` }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "pub.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.rules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: butlers-public-mcp
+      interval: {{ .Values.monitoring.rules.interval }}
+      rules:
+        # ---- critical -------------------------------------------------------------------
+        # Source health. A rule over a series nobody scrapes never fires, so a missing source
+        # must lower a flag itself. The server's own metrics are critical: the canary, latch and
+        # owner-step alerts are blind without them, and the server is this chart's own scrape, so a
+        # gap is never an unfinished homelab act. 5m rides out a Recreate rollout.
+        - alert: PublicMcpServerMetricsMissing
+          expr: absent(up{ {{- $srv -}} } == 1)
+          for: 5m
+          labels: {severity: critical, surface: butlers-public-mcp}
+          annotations:
+            summary: Prometheus has no healthy scrape of the public MCP server.
+            description: The canary, latch, owner-step, DLP, bearer and row alerts cannot fire. Check the PodMonitor labels against the Prometheus podMonitorSelector and that the pod is running.
+        - alert: PublicMcpCanaryHit
+          expr: |
+            sum(increase({{ $hits }}[{{ $win }}])) > 0
+            or
+            sum({{ $hits }} unless {{ $hits }} offset {{ $win }}) > 0
+          labels: {severity: critical, surface: butlers-public-mcp}
+          annotations:
+            summary: A canary string reached the public MCP output filter.
+            description: The server latched and refuses every tool until restarted. Follow the leak runbook (docs/operations/public-mcp-read-surface.md, section 6).
+        - alert: PublicMcpCanaryLatched
+          expr: max(butlers_public_mcp_canary_latched{ {{- $srv -}} }) == 1
+          labels: {severity: critical, surface: butlers-public-mcp}
+          annotations:
+            summary: The public MCP canary latch holds.
+            description: Every tool refuses with `blocked` until the pod restarts. Follow the leak runbook (docs/operations/public-mcp-read-surface.md, section 6).
+        - alert: PublicMcpSlotRetainedWal
+          expr: |
+            max by (slot_name, slot_type, database) (cnpg_pg_replication_slots_pg_wal_lsn_diff{ {{- $pg -}} })
+              > {{ $t.slotRetainedWalBytes | int64 }}
+          labels: {severity: critical, surface: butlers-public-mcp}
+          annotations:
+            summary: A replication slot retains more WAL than half of max_slot_wal_keep_size.
+            description: The threshold is monitoring.rules.thresholds.slotRetainedWalBytes, set to 50 % of max_slot_wal_keep_size. Past the cap the slot is invalidated and the owner step must rebuild it.
+        - alert: PublicMcpForeignLogicalSlot
+          expr: |
+            max by (slot_name, database) (
+              cnpg_pg_replication_slots_active{ {{- $pg -}}, slot_type="logical", slot_name!~"{{ $allowedSlots }}"}
+            ) >= 0
+          labels: {severity: critical, surface: butlers-public-mcp}
+          annotations:
+            summary: A logical replication slot other than the public subscription's exists on the primary.
+            description: Only butlers_public_sub and its pg_<oid>_sync_* table-sync slots are allowed (REQ-database-security-016). Physical slots never trigger this.
+        - alert: PublicMcpNarrowingOwnerStepPending
+          expr: max(butlers_public_mcp_owner_step_pending{ {{- $srv -}}, change="narrowing"}) == 1
+          for: {{ $t.narrowingPendingFor }}
+          labels: {severity: critical, surface: butlers-public-mcp, change: narrowing}
+          annotations:
+            summary: A narrowing owner step has been pending too long.
+            description: Rows the manifest no longer allows may still sit in butlers_public. On dev this means the automatic owner step is failing; read the deploy's `public-mcp owner step FAILED` output.
+
+        # ---- warning --------------------------------------------------------------------
+        # Source health for series this chart does not scrape. Warning, not critical: a missing
+        # exporter or OTLP path is an unfinished homelab or owner act, not a leak signal, and the
+        # warning flag is what makes it visible. Both depend on acts outside this repository
+        # (README, "Sources outside the chart"), so until they are done these fire by design.
+        - alert: PublicMcpSlotMetricsMissing
+          expr: absent(cnpg_pg_replication_slots_active{ {{- $pg -}} })
+          for: 10m
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: Prometheus has no replication-slot series for postgres-{{ .Values.env }}.
+            description: The slot alerts (retained WAL, foreign logical slot, inactive slot) cannot fire. The CNPG exporter on the instance pods is not scraped into this Prometheus.
+        # The importer emits switch_enabled on every pass (every 5 minutes, even with intake
+        # skipped), unlike inbox_depth. 30m allows several passes and the OTLP export interval.
+        - alert: PublicMcpImporterMetricsMissing
+          expr: absent(butlers_public_mcp_proposal_import_switch_enabled)
+          for: 30m
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: Prometheus has no proposal importer series.
+            description: The inbox-depth and apply_failed alerts cannot fire. The importer's OTLP metrics do not reach this Prometheus, or the job is not running.
+        - alert: PublicMcpOwnerStepPending
+          expr: max by (change) (butlers_public_mcp_owner_step_pending{ {{- $srv -}}, change=~"narrowing|widening"}) == 1
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: The applied projection differs from the manifest the public MCP server ships.
+            description: A manifest change awaits the owner step (section 3c), or the public chart lags the deployed tag, in which case the server refuses with projection_version_mismatch and the change label is inverted (docs/operations/public-mcp-read-surface.md, section 5).
+        - alert: PublicMcpDlpDrop
+          expr: |
+            sum by (tool) (increase({{ $blocked }}[{{ $win }}])) > 0
+            or
+            sum by (tool) ({{ $blocked }} unless {{ $blocked }} offset {{ $win }}) > 0
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: The DLP filter dropped a page instead of redacting it.
+        - alert: PublicMcpRedactionsHigh
+          expr: sum(increase(butlers_public_mcp_redactions_total{ {{- $srv -}} }[1h])) > {{ $t.redactionsPerHour | int64 }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: More redactions than the hourly threshold.
+        - alert: PublicMcpAssertionFailures
+          expr: sum(increase(butlers_public_mcp_auth_failures_total{ {{- $srv -}} }[5m])) > {{ $t.assertionFailuresPer5m | int64 }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: More assertion failures than the 5-minute threshold.
+        - alert: PublicMcpBearerRefusals
+          expr: sum(increase(butlers_public_mcp_bearer_refusals_total{ {{- $srv -}} }[5m])) > {{ $t.bearerRefusalsPer5m | int64 }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: More bearer refusals than the 5-minute threshold.
+        - alert: PublicMcpBulkRead
+          expr: |
+            sum by (domain, client) (
+              increase(butlers_public_mcp_rows_served_total{ {{- $srv -}}, domain=~"finance|health"}[1h])
+            ) > {{ $t.rowsServedPerHour | int64 }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: One client was served more finance or health rows in an hour than the threshold.
+            description: The alert carries the domain and the client label only, never row content.
+        - alert: PublicMcpSlotInactive
+          expr: |
+            max by (slot_name, database) (
+              cnpg_pg_replication_slots_active{ {{- $pg -}}, slot_type="logical"}
+            ) == 0
+          for: {{ $t.slotInactiveFor }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: A logical replication slot has been inactive too long.
+            description: The projection is not receiving changes; expect projection_stale refusals.
+        - alert: PublicMcpInboxUndrained
+          expr: max(butlers_public_mcp_proposal_import_inbox_depth) > {{ $t.inboxUndrained | int64 }}
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: Undrained proposal inbox rows exceed the threshold.
+        - alert: PublicMcpProposalApplyFailed
+          expr: |
+            sum(increase({{ $failed }}[{{ $win }}])) > 0
+            or
+            sum({{ $failed }} unless {{ $failed }} offset {{ $win }}) > 0
+          labels: {severity: warning, surface: butlers-public-mcp}
+          annotations:
+            summary: A proposal reached apply_failed.
+
+        # ---- flags (one series each, always present) --------------------------------------
+        # 1 when no alert of that severity fires, 0 when any does. max() of nothing is empty,
+        # so `or vector(0)` keeps the flag present while healthy. The `surface` matcher keeps
+        # unrelated cluster alerts out. Uptime Kuma polls `<flag> == bool 1`.
+        - record: butlers_public_mcp:critical_ok
+          expr: 1 - (max(ALERTS{alertstate="firing", severity="critical", surface="butlers-public-mcp"}) or vector(0))
+        - record: butlers_public_mcp:warning_ok
+          expr: 1 - (max(ALERTS{alertstate="firing", severity="warning", surface="butlers-public-mcp"}) or vector(0))
+{{- end }}

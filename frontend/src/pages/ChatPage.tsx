@@ -54,6 +54,7 @@ import {
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
+import { freshestConversation } from "@/hooks/use-conversation-metadata.ts";
 
 export default function ChatPage() {
   const { conversationId: routeConversationId } = useParams<{
@@ -168,9 +169,12 @@ export default function ChatPage() {
   });
 
   // A brand-new conversation (bare /chat) gets its id from the first send;
-  // reflect it in the URL so a refresh or copy-link keeps working.
+  // reflect it in the URL so a refresh or copy-link keeps working. Only bare
+  // /chat may push the URL: on /chat/:id the route is the source of truth, and
+  // a route change (A -> B) must flow route -> state, never back, or the two
+  // effects ping-pong (bu-p5umi2.6).
   useEffect(() => {
-    if (activeConversationId && activeConversationId !== routeId) {
+    if (routeId == null && activeConversationId) {
       navigate(`/chat/${activeConversationId}`, { replace: true });
     }
   }, [activeConversationId, routeId, navigate]);
@@ -223,10 +227,12 @@ export default function ChatPage() {
     if (activeConversationId) void refetchMessages();
   }
 
-  const activeConversation =
-    conversationDetail ??
-    recentConversations.find((c) => c.id === activeConversationId) ??
-    null;
+  // The fresher copy wins: a send reactivates an archived conversation, and
+  // the refreshed recent list reflects that before the identity lookup does.
+  const activeConversation = freshestConversation(
+    conversationDetail,
+    recentConversations.find((c) => c.id === activeConversationId),
+  );
 
   const visibleDispatchReceipt =
     streaming &&

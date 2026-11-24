@@ -40,6 +40,13 @@ async def record_owner_ingress_engagement(
         if sender_value and source:
             resolved_sender = await resolve_contact_by_channel(pool, source, sender_value)
             is_owner_ingress = resolved_sender is not None and "owner" in resolved_sender.roles
+            if is_owner_ingress:
+                # A held or unreadable owner endpoint is not owner attention
+                # (REQ-endpoint-custody-holds-005); a lost device must not feed engagement.
+                from butlers.core.custody_ingress import owner_source_custody_reason
+
+                held = await owner_source_custody_reason(pool, source, sender_value)
+                is_owner_ingress = held is None
 
         if is_owner_ingress:
             await check_and_update_engagement(pool)

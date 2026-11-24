@@ -59,8 +59,13 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return await contacts_overdue_with_tiers(pool)
 
 
-async def contacts_overdue_with_availability(pool: asyncpg.Pool) -> dict[str, Any]:
-    """Return measurable overdue contacts with honest aggregate availability."""
+async def contacts_overdue_with_availability(
+    pool: asyncpg.Pool, *, persist: bool = True
+) -> dict[str, Any]:
+    """Return measurable overdue contacts with honest aggregate availability.
+
+    ``persist=False`` skips the ``expected_signals`` write (read-only API callers).
+    """
     from butlers.tools.relationship.dunbar import contacts_overdue_evaluation
 
-    return await contacts_overdue_evaluation(pool)
+    return await contacts_overdue_evaluation(pool, persist=persist)

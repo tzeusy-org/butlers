@@ -17,11 +17,12 @@ Dependency: chronicler_007 (bu-6t63s) adds tombstone_reason column.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -36,15 +37,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "008_tombstone_memory_calendar_episodes.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("chronicler_008", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -72,32 +64,32 @@ class TestKnownTitleConstants:
 
     def test_memory_consolidation_in_titles(self) -> None:
         """memory_consolidation is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_consolidation" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_memory_episode_cleanup_in_titles(self) -> None:
         """memory_episode_cleanup is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_episode_cleanup" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_memory_purge_superseded_in_titles(self) -> None:
         """memory_purge_superseded is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_purge_superseded" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_source_name_is_google_calendar_completed(self) -> None:
         """_SOURCE_NAME must equal 'google_calendar.completed'."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert mod._SOURCE_NAME == "google_calendar.completed"
 
     def test_tombstone_reason_references_bu_daaff(self) -> None:
         """_TOMBSTONE_REASON must reference bu-daaff (the prevention-track PR)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "bu-daaff" in mod._TOMBSTONE_REASON
 
     def test_tombstone_reason_references_bu_aqqx0(self) -> None:
         """_TOMBSTONE_REASON must reference bu-aqqx0 (this issue)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "bu-aqqx0" in mod._TOMBSTONE_REASON
 
 
@@ -113,7 +105,7 @@ class TestDowngradeSQLShape:
 
     def test_downgrade_is_noop(self) -> None:
         """downgrade() must emit no SQL statements (tombstones are permanent)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -131,7 +123,7 @@ class TestDowngradeSQLShape:
         legitimate-row titles like 'Team retrospective' don't match LIKE
         'memory_%'. This pins the exact-IN-list safety boundary at the SQL level.
         """
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -169,60 +161,25 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
     """
 
     @pytest.fixture
-    async def episodes_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with the chronicler episodes schema."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS source_adapter_state (
-                    source_name TEXT PRIMARY KEY,
-                    chronicler_compatibility TEXT NOT NULL DEFAULT 'supported',
-                    read_surface TEXT,
-                    boundary_semantics TEXT,
-                    optional_schema BOOLEAN NOT NULL DEFAULT false,
-                    active BOOLEAN NOT NULL DEFAULT false,
-                    inactive_reason TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
-                    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name),
-                    source_ref TEXT NOT NULL,
-                    episode_type TEXT NOT NULL,
-                    start_at TIMESTAMPTZ NOT NULL,
-                    end_at TIMESTAMPTZ,
-                    precision TEXT NOT NULL DEFAULT 'exact',
-                    title TEXT,
-                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    privacy TEXT NOT NULL DEFAULT 'normal',
-                    retention_days INTEGER,
-                    tombstone_at TIMESTAMPTZ,
-                    tombstone_reason TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    UNIQUE (source_name, source_ref)
-                )
-            """)
-            # Register the two source adapters needed for the tests.
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name)
-                VALUES ('google_calendar.completed')
-                ON CONFLICT DO NOTHING
-            """)
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name)
-                VALUES ('core.sessions')
-                ON CONFLICT DO NOTHING
-            """)
-            yield pool
+    async def episodes_pool(self, db):
+        """The real chronicler schema as chronicler_008's predecessor left it."""
+        pool = await db("chronicler", revisions={"chronicler": "chronicler_007"})
+        # Register the two source adapters needed for the tests.
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('google_calendar.completed', 'supported')
+            ON CONFLICT DO NOTHING
+        """)
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('core.sessions', 'supported')
+            ON CONFLICT DO NOTHING
+        """)
+        return pool
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

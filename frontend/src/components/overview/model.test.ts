@@ -42,7 +42,7 @@ function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
-    hourly_stripe: [],
+    hourly_buckets: [],
     hourly_total: 0,
     cadence_seconds: null,
     cadence_label: null,
@@ -1566,6 +1566,23 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
     // from the same summarizeQaState.
     const nowQaRow = model.nowRows.find((row) => row.kind === "qa");
     expect(nowQaRow).toMatchObject({ label: "QA circuit breaker tripped" });
+  });
+
+  it("names the open breaker's cause in the QA attention row title", () => {
+    const model = deriveOverviewTriageModel({
+      qaSummary: qaSummary({
+        circuit_breaker: {
+          tripped: true,
+          consecutive_failures: 5,
+          dominant_cause: "publisher_unconfigured",
+        },
+      }),
+    });
+    const qaRow = model.attentionRows.find((row) => row.kind === "qa");
+    expect(qaRow).toMatchObject({
+      severity: "critical",
+      title: "QA circuit breaker open: no publisher configured",
+    });
   });
 
   it("does not surface a QA breaker row when the breaker is not tripped", () => {

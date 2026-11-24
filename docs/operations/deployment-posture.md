@@ -1,6 +1,6 @@
-# Compose Deployment Posture
+# Runtime Isolation and Infrastructure Configuration
 
-> **Purpose:** Document the dev vs hardened deployment posture, what each gates, and how to opt in.
+> **Purpose:** Document unconditional runtime role enforcement and independent infrastructure diagnostics.
 > **Audience:** Operators running Butlers in local or private-network deployments.
 > **Prerequisites:** [Docker Deployment](docker-deployment.md), [Grafana Monitoring](grafana-monitoring.md).
 
@@ -8,8 +8,8 @@
 
 The live dev fleet runs on Kubernetes in `butlers-dev` and uses the cluster's
 existing LGTM stack. The Butlers chart does not deploy Grafana or consume
-`BUTLERS_POSTURE`; Compose's `--observability`/`--hardened` flags do not change
-cluster Grafana access. Follow the site's LGTM access policy and
+the retained Compose observability configuration; Compose's `--observability`
+flag does not change cluster Grafana access. Follow the site's LGTM access policy and
 [Kubernetes Deployment](kubernetes-deployment.md) for the live dev workflow.
 
 This page describes retained production/local Compose deployments. Use the
@@ -17,114 +17,16 @@ recipes below only against a database not served by a running Kubernetes fleet;
 the Compose launcher refuses a competing fleet. Direct Compose is not a way to
 bypass that ownership guard.
 
-## Overview
+## Independent configuration and runtime isolation
 
-The Compose launcher supports two deployment postures: **dev** and **hardened**. Posture
-controls security-sensitive toggles that need to be convenient for local
-iteration but tightened for non-dev deployments.
+Butler runtime pools always establish the configured runtime role before serving queries. A missing, unconfigured, unreadable or unassumable role refuses startup or acquisition, including in development. Each acquire re-establishes the role. There is no deployment-profile opt-out, and this does not provision roles or change dashboard DatabaseManager authority. Use the reviewed bootstrap procedure for role/login/grant prerequisites; do not grant privileges or run an installer as an availability fallback.
 
-| Posture | Default? | Who it is for |
-|---------|----------|---------------|
-| `dev` | Yes (when unset) | Local development; single-developer machines |
-| `hardened` | Explicit opt-in | Private-network or shared deployments where anon access is undesirable |
+Memory side pools retain the already established primary Database owner role. Only that owner's domain and the existing Chronicler `chronicler_mem` private search path are supported; a private schema never selects another runtime role. The private connection checks schema USAGE under the owner role before publication and on every acquire; table privileges remain PostgreSQL-enforced. Missing private-schema access refuses rather than using the connecting login. Current managed bootstrap/memory migration sources do not establish the Chronicler private grants, so working private-memory access remains a managed-topology prerequisite, not a claim supplied by this runtime change.
 
-**Default-when-unset is `dev`.** The running stack is never broken by a
-posture change unless you explicitly request `hardened`.
+The retained Compose launcher defaults `GF_AUTH_ANONYMOUS_ENABLED` to `false`. An operator can explicitly set it to `true` for local viewing; the process configuration diagnostic reports enabled anonymous access without an exemption. This does not configure Kubernetes Grafana or authorize a deployment.
 
-## What Posture Gates
+Known-default MinIO/Grafana credentials retain loud service/key-name warnings without exposing values. Absence follows the retained Compose default configuration for this diagnostic; it is not proof of the remote service's credential state. The health endpoint separately reports the actual API DatabaseManager role state, conservatively disabled when unavailable. None of these booleans attests that the whole fleet is secure.
 
-### Grafana Anonymous Viewer
+## Runtime-probe control remains independent
 
-| Posture | `GF_AUTH_ANONYMOUS_ENABLED` | Effect |
-|---------|-----------------------------|--------|
-| `dev` | `true` | http://localhost:3000 opens without login |
-| `hardened` | `false` | Login required (username: `admin`, password: from `GF_SECURITY_ADMIN_PASSWORD`) |
-
-Additional toggles may be added here as the hardening cycle progresses. Each
-new toggle will follow the same pattern: safe-in-dev default, explicit
-opt-in for hardened.
-
-### What Posture Does Not Gate: Runtime-Probe Control
-
-The runtime-probe control keys are **not** posture-gated, and deliberately so. Both postures mount
-the same documents the same way — the signing key into Dashboard as a secret, the verifier keyring
-into Dashboard and all-butlers as a config — and both fail closed when those documents are absent
-or unprovisioned. There is no dev-convenience fallback that lets an unsigned or shared-bearer probe
-through, because the convenient version of that path is the one the requirement exists to remove.
-
-For Compose, the dev-versus-production difference is which host files you point at
-(`RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE`, `RUNTIME_PROBE_CONTROL_VERIFIERS_FILE`);
-a machine that points at neither runs with the plane closed and model
-verification reporting entries as *unavailable*. Kubernetes uses separately
-projected Secret files instead, with dev Secret ownership in BWS; changing these
-host file variables does not change the live k3s release. See
-[Runtime-Probe Control Keys](runtime-probe-control-keys.md).
-
-## Opting Into Dev Posture
-
-Dev posture is the default. No action required. When running the observability
-stack:
-
-```bash
-./scripts/compose.sh --observability
-# Grafana at http://localhost:3000 (anonymous viewer enabled)
-```
-
-To make the posture explicit:
-
-```bash
-BUTLERS_POSTURE=dev ./scripts/compose.sh --observability
-```
-
-## Opting Into Hardened Posture
-
-Pass `--hardened` to `compose.sh`, or set `BUTLERS_POSTURE=hardened` in the
-environment before invoking it:
-
-```bash
-# Via flag:
-./scripts/compose.sh --observability --hardened
-
-# Via environment variable:
-BUTLERS_POSTURE=hardened ./scripts/compose.sh --observability
-```
-
-Both forms export `GF_AUTH_ANONYMOUS_ENABLED=false` into the compose
-environment, which the Grafana service picks up at startup.
-
-### Changing Grafana Admin Password in Hardened Mode
-
-In hardened posture the anonymous viewer is disabled, so operators must log
-in. The default credentials remain `admin` / `admin`. To change the password:
-
-```bash
-GF_SECURITY_ADMIN_PASSWORD=<your-password> \
-  BUTLERS_POSTURE=hardened \
-  ./scripts/compose.sh --observability
-```
-
-Or set `GF_SECURITY_ADMIN_PASSWORD` in your `.env.dev` / `.env.prod` file.
-
-## Invoking docker compose Directly
-
-When bypassing `compose.sh` and invoking `docker compose` directly, set
-`GF_AUTH_ANONYMOUS_ENABLED` explicitly in the environment — the compose file
-defaults to `false` (safe) if the variable is unset:
-
-```bash
-# Dev (anon viewer on):
-GF_AUTH_ANONYMOUS_ENABLED=true \
-  docker compose -f docker-compose.yml -f docker-compose.observability.yml \
-  --profile observability up -d
-
-# Hardened (login required):
-docker compose -f docker-compose.yml -f docker-compose.observability.yml \
-  --profile observability up -d
-# (GF_AUTH_ANONYMOUS_ENABLED unset → defaults to false)
-```
-
-## Related Pages
-
-- [Grafana Monitoring](grafana-monitoring.md) — Observability stack setup and signal flow
-- [Docker Deployment](docker-deployment.md) — Full service configuration reference
-- [Environment Config](environment-config.md) — `.env.dev` / `.env.prod` reference
+The signed runtime-probe control path retains its fail-closed key and verifier requirements. Missing documents never authorize an unsigned or shared-bearer probe. Configuration and provisioning remain governed by [Runtime-Probe Control Keys](runtime-probe-control-keys.md); this runtime-role change neither provisions a key nor changes the probe authority.

@@ -26,6 +26,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -35,19 +36,12 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    return row
-
-
 def _connector_registry_row(
     *,
     connector_type: str = "gmail",
     endpoint_identity: str = "user@example.com",
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -63,10 +57,10 @@ def _event_row(
     source_sender_identity: str | None = "sender@example.com",
     filter_reason: str | None = None,
     error_detail: str | None = None,
-) -> MagicMock:
+) -> Record:
     if received_at is None:
         received_at = datetime(2025, 1, 15, 10, 0, 0, tzinfo=UTC)
-    return _make_row(
+    return Record(
         {
             "id": str(uuid4()),
             "received_at": received_at,
@@ -86,10 +80,10 @@ def _incident_row(
     source_channel: str = "gmail",
     error_detail: str | None = "Connection timeout",
     filter_reason: str | None = None,
-) -> MagicMock:
+) -> Record:
     if received_at is None:
         received_at = datetime(2025, 1, 15, 10, 0, 0, tzinfo=UTC)
-    return _make_row(
+    return Record(
         {
             "id": str(uuid4()),
             "received_at": received_at,
@@ -114,14 +108,14 @@ def _rule_row(
     created_by: str = "dashboard",
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
-) -> MagicMock:
+) -> Record:
     if condition is None:
         condition = {"domain": "spam.example.com"}
     if created_at is None:
         created_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
     if updated_at is None:
         updated_at = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
-    return _make_row(
+    return Record(
         {
             "id": str(uuid4()),
             "scope": scope,

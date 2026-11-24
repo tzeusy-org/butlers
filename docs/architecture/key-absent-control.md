@@ -80,7 +80,12 @@ requires independent dev verification.
 
 Production Compose omits the overlay and production Helm leaves
 butlersControl.enabled=false: every daemon remains in the original process at
-five. Activation must first stop the old unsplit process before starting either staged
+five. Dev Helm also temporarily selects `false` by owner decision 2026-11-04 to
+support RFC 0023's accepted same-PID approval authority; explicit `true` keeps
+this split stage available. This source choice changes no live topology or
+approval flags. Follow the [data-preserving exclusive rollout](../operations/approval-delivery-dev-rollout.md)
+for actual cutover, separately gated activation and retained-data rollback.
+Activation must first stop the old unsplit process before starting either staged
 reservation: Recreate is per Deployment and cannot enforce ordering across two
 Deployments. Rollback of dev must likewise be an exclusive replacement: stop the staged control
 and domain pair before starting the unsplit release at five, restore the

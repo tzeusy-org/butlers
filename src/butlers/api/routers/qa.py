@@ -47,13 +47,15 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import Path as PathParam
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -71,16 +73,41 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
-from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import (
+    CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
+    QA_BREAKER_WHERE_SQL,
+)
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.logging import redact_text
 from butlers.core.model_routing import get_breaker_states
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
+from butlers.core.qa.known_issue_links import (
+    DEFAULT_LINK_TTL,
+    MAX_LINK_TTL,
+    TRACKER_KINDS,
+    close_link,
+    get_gating_link,
+    is_valid_tracker_ref,
+    upsert_link,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import DiffLine, InvestigationNotes
 from butlers.core.qa.patrol_status import (
     VALID_PATROL_STATUSES,
     is_valid_patrol_status,
     require_patrol_status,
+)
+from butlers.core.qa.remediation_liveness import (
+    STREAK_SQL as _LOOP_STREAK_SQL,
+)
+from butlers.core.qa.remediation_liveness import (
+    active_loop_conditions,
+    classify_cause,
+    evaluate_reset,
+    record_reset_refusal,
 )
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
@@ -135,7 +162,7 @@ _QA_CASE_STATE_SQL: dict[str, str] = {
     # 'timeout'/'anonymization_failed' never carry a human-action marker check
     # (failed_with_human_action() only ever escalates 'unfixable'/'failed'), so
     # they always land here alongside marker-less 'failed' rows. Mirrors
-    # ``butlers.core.healing.dispatch.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
+    # ``butlers.core.healing.constants.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
     # precedence baked into ``butlers.core.qa.severity.state_of_case`` (bu-hmdqz.9).
     "failed": (
         f"a.status IN ('timeout', 'anonymization_failed') "
@@ -167,7 +194,7 @@ def _get_credentials_status_fn():
 
     Override via ``app.dependency_overrides[_get_credentials_status_fn]`` to
     inject a callable that returns a ``dict`` describing the QA credential
-    status (e.g., whether ``BUTLERS_QA_GH_TOKEN`` is set).
+    status (e.g., whether ``BUTLERS_QA_GH_READ_TOKEN`` is set).
 
     The callable must be an async function with no required arguments and
     must return a dict with at least ``{"gh_token_present": bool}``.
@@ -221,20 +248,21 @@ async def _resolve_github_token(db: DatabaseManager) -> str | None:
 
     Resolution order (first hit wins):
 
-    1. CredentialStore ``BUTLERS_QA_GH_TOKEN`` (the QA subsystem's canonical
-       token, used for PR creation).
+    1. CredentialStore ``BUTLERS_QA_GH_READ_TOKEN`` (the read-only polling token).
+       The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved (bu-ejow5p.1).
     2. Conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the environment
-       (ops provisions either via the daemon env).
+       (ops provisions either via the daemon env).  Owner-approved scope keeps this
+       fallback; an env token is not visible to the credential-store presence check.
 
-    Returns ``None`` when no token can be found — the PR panel then degrades
+    Returns ``None`` when no token can be found - the PR panel then degrades
     gracefully to the honest "unavailable" state.
     """
     try:
-        from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+        from butlers.core.qa.dispatch import QA_GH_READ_TOKEN_KEY
         from butlers.credential_store import CredentialStore
 
         pool = db.credential_shared_pool()
-        token = await CredentialStore(pool).resolve(QA_GH_TOKEN_KEY)
+        token = await CredentialStore(pool).resolve(QA_GH_READ_TOKEN_KEY)
         if token:
             return token
     except Exception:
@@ -261,6 +289,7 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
     swallows such failures and reports the status as "unknown" (all ``None``).
     """
     from butlers.core.qa.dispatch import (
+        QA_GH_READ_TOKEN_KEY,
         QA_GH_TOKEN_KEY,
         QA_GIT_AUTHOR_EMAIL_KEY,
         QA_GIT_AUTHOR_NAME_KEY,
@@ -269,7 +298,10 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
 
     store = CredentialStore(db.credential_shared_pool())
     return {
-        "gh_token_present": await store.has(QA_GH_TOKEN_KEY),
+        # The read-only polling key; the write key is only checked for presence so a
+        # leftover can be reported as action-needed (it is never resolved).
+        "gh_token_present": await store.has(QA_GH_READ_TOKEN_KEY),
+        "gh_write_token_present": await store.has(QA_GH_TOKEN_KEY),
         "git_author_name_present": await store.has(QA_GIT_AUTHOR_NAME_KEY),
         "git_author_email_present": await store.has(QA_GIT_AUTHOR_EMAIL_KEY),
     }
@@ -317,6 +349,10 @@ async def _row_to_pr_summary_live(
     meta = await client.fetch(owner, repo, number, token=token)
     return summary.model_copy(
         update={
+            # A successful live lifecycle observation supersedes the local
+            # positive mapping; an unavailable observation cannot erase it.
+            "state": meta.state if meta.state is not None else summary.state,
+            "merged_at": meta.merged_at if meta.state is not None else summary.merged_at,
             "ci_status": meta.ci_status,
             "additions": meta.additions,
             "deletions": meta.deletions,
@@ -351,6 +387,9 @@ class QaPatrolSummary(BaseModel):
     log_lookback_minutes: int
     sources_polled: list[str] = Field(default_factory=list)
     error_detail: str | None = None
+    # The gate that stopped dispatch when ``status`` is ``halted``: ``circuit_breaker``,
+    # ``no_model`` or ``concurrency_cap``. ``None`` for every other status.
+    halt_reason: str | None = None
 
 
 class QaFindingRecord(BaseModel):
@@ -494,12 +533,11 @@ class QaPrSummary(BaseModel):
     """Pull request summary embedded in a QA case dossier."""
 
     number: int
-    state: Literal["drafted", "open", "merged", "closed"]
+    state: Literal["drafted", "open", "merged", "closed"] | None = None
     title: str
     branch: str
-    # CI status and diff stats are not tracked locally (no GitHub fetch path
-    # exists yet — see bu-cnvg7.3). ``None`` means "unavailable", which the UI
-    # renders honestly instead of asserting a "unknown" / "+0/-0" placeholder.
+    # Lifecycle may be unknown even when PR identity is known. CI status and
+    # diff stats are optional live observations, not persisted attempt facts.
     ci_status: Literal["passing", "failing", "pending", "unknown"] | None = None
     additions: int | None = None
     deletions: int | None = None
@@ -530,15 +568,24 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
+#: ``unpublished`` requires a publisher trace (a retained sealed export or a
+#: refusal receipt) and ledger proof that no PR exists; ``ambiguous`` means a
+#: retained proposal whose publication outcome awaits exact read-only reconciliation.
+ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
+
+
 class QaCaseDossier(BaseModel):
     """Full case payload for the QA dossier renderer."""
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
+    # "Tracked as <ref>, N occurrences since": the live link and the recurrences it held back.
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_occurrences_since_link: int = 0
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
     journal: list[QaJournalEvent] = Field(default_factory=list)
@@ -567,7 +614,14 @@ class QaCircuitBreaker(BaseModel):
     # Optional (default mirrors _CIRCUIT_BREAKER_THRESHOLD) so existing
     # fixtures/tests that construct this without a threshold keep working;
     # the real endpoint always sets it explicitly.
-    threshold: int = 5
+    threshold: int = QA_BREAKER_THRESHOLD
+    # Why it tripped: the one cause every counted failure shares, ``mixed`` when they differ,
+    # ``None`` while it is closed. ``cause_counts`` carries the per-cause counts.
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    # When the breaker tripped, and when the next half-open probe is admitted (None while closed).
+    opened_at: datetime | None = None
+    next_probe_at: datetime | None = None
 
 
 class QaCredentialsStatus(BaseModel):
@@ -579,8 +633,15 @@ class QaCredentialsStatus(BaseModel):
     so the dashboard can distinguish "unknown" from "missing".
     """
 
+    gh_write_token_present: bool | None = None
+    """Whether a write-scoped ``BUTLERS_QA_GH_TOKEN`` is still in the credential store.
+
+    ``True`` is an action-needed condition: the daemon refuses and never loads it, but it
+    is reachable by investigators in the same pod until deleted and rotated.
+    """
+
     gh_token_present: bool | None = None
-    """Whether ``BUTLERS_QA_GH_TOKEN`` is set in the credential store.
+    """Whether the read-only ``BUTLERS_QA_GH_READ_TOKEN`` is set in the credential store.
 
     ``None`` means the status could not be determined (e.g., no daemon
     wired in).  ``True`` means the token is present; ``False`` means it
@@ -605,10 +666,30 @@ class QaCredentialsStatus(BaseModel):
     """
 
 
+class QaLoopCondition(BaseModel):
+    """One active remediation-loop liveness condition (REQ-qa-remediation-liveness-001)."""
+
+    source: str
+    summary: str | None = None
+    cause: str | None = None
+    first_detected_at: datetime | None = None
+
+
 class QaSummary(BaseModel):
     """QA staffer status summary for the dashboard."""
 
     staffer_status: str = "unknown"
+    loop_conditions: list[QaLoopCondition] = Field(
+        default_factory=list,
+        description=(
+            "Active remediation-loop liveness conditions. A non-empty list means "
+            "staffer_status is never 'healthy'."
+        ),
+    )
+    loop_conditions_known: bool = Field(
+        default=True,
+        description="False when the condition ledger could not be read; never read as none.",
+    )
     last_patrol_at: datetime | None = None
     next_patrol_at: datetime | None = None
     last_patrol: QaPatrolSummary | None = None
@@ -654,6 +735,33 @@ class DismissRequest(BaseModel):
 
     dismissed_until: datetime | None = None
     dismissed_by: str = "dashboard_user"
+
+
+#: A finding fingerprint is a sha256 hex digest; anything else cannot name a finding.
+_FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
+
+
+class QaKnownIssueLink(BaseModel):
+    """A finding fingerprint's link to the bead, PR or issue that tracks it."""
+
+    id: uuid.UUID
+    fingerprint: str
+    tracker_kind: str
+    tracker_ref: str
+    linked_by: str
+    linked_at: datetime
+    fix_ref: str | None = None
+    state: str
+    expires_at: datetime | None = None
+
+
+class KnownIssueLinkRequest(BaseModel):
+    """Request body for linking a finding to a tracked defect (owner action)."""
+
+    tracker_kind: str
+    tracker_ref: str
+    # Omitted: the link lapses after ``DEFAULT_LINK_TTL``, so it never suppresses forever.
+    expires_at: datetime | None = None
 
 
 class QaInvestigation(BaseModel):
@@ -827,7 +935,11 @@ class CircuitBreakerAttempt(BaseModel):
 
     id: str
     status: str
-    closed_at: str
+    closed_at: datetime
+    # The cause code (``classify_cause``) and the first line of the attempt's own error text, so
+    # the owner can see why each counted attempt failed without opening it.
+    reason_class: str | None = None
+    reason_text: str | None = None
 
 
 class CircuitBreakerStatus(BaseModel):
@@ -837,6 +949,10 @@ class CircuitBreakerStatus(BaseModel):
     threshold: int
     recent_statuses: list[str]
     recent_attempts: list[CircuitBreakerAttempt]
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    opened_at: datetime | None = None
+    next_probe_at: datetime | None = None
 
 
 class CircuitBreakerResetResponse(BaseModel):
@@ -844,6 +960,16 @@ class CircuitBreakerResetResponse(BaseModel):
 
     reset: bool
     message: str
+    refusal_reason: str | None = None
+
+
+class CircuitBreakerResetRequest(BaseModel):
+    """Body of a manual breaker reset: the cause it claims to address."""
+
+    cause_ref: str | None = Field(
+        default=None,
+        description="'<cause_code>:<reference>', for example 'publisher_unconfigured:PR-1234'.",
+    )
 
 
 class QaRepoConfig(BaseModel):
@@ -940,6 +1066,7 @@ def _row_to_patrol_summary(row: Any) -> QaPatrolSummary:
         log_lookback_minutes=row["log_lookback_minutes"],
         sources_polled=list(sources),
         error_detail=row["error_detail"],
+        halt_reason=row.get("halt_reason"),
     )
 
 
@@ -1092,7 +1219,7 @@ def _finding_from_case_row(row: Any) -> QaFinding | None:
 
 
 def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed"] | None:
-    """Map healing status into the compact case-list PR state."""
+    """Preserve positive local PR states; a terminal attempt says nothing about its PR."""
     status = row["status"]
     if status == "pr_merged":
         return "merged"
@@ -1100,8 +1227,6 @@ def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed
         return "open"
     if status == "drafted":
         return "drafted"
-    if row.get("pr_url") and status in {"failed", "timeout", "unfixable", "anonymization_failed"}:
-        return "closed"
     return None
 
 
@@ -1185,7 +1310,7 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
     branch = row.get("branch_name")
     pr_state = _pr_state_for_case(row)
 
-    if not pr_url or pr_number is None or not branch or pr_state is None:
+    if not pr_url or pr_number is None or not branch:
         return None
 
     return QaPrSummary(
@@ -1201,7 +1326,9 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
         additions=None,
         deletions=None,
         opened_at=row["created_at"],
-        merged_at=row.get("closed_at") if pr_state == "merged" else None,
+        # Attempt closure is not a GitHub merge timestamp. Only the live
+        # provider observation may populate that field.
+        merged_at=None,
         url=pr_url,
     )
 
@@ -1219,11 +1346,11 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 
 # ---------------------------------------------------------------------------
 # Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
-# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
+# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.constants
 # (the canonical definition). Threshold matches QaDispatchConfig default.
 # ---------------------------------------------------------------------------
 
-_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_THRESHOLD = QA_BREAKER_THRESHOLD
 # Only real launched QA investigations (healing_session_id IS NOT NULL) that
 # closed AFTER the latest manual reset count toward the breaker. Consulting
 # ``public.breaker_resets`` (rather than a forged clean-patrol sentinel) is what
@@ -1231,16 +1358,7 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # attempt/patrol history stays visible in summary + all-time stats. Kept
 # byte-identical to the dispatch-admission filter in
 # ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``.
-_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
-FROM public.healing_attempts
-WHERE qa_patrol_id IS NOT NULL
-  AND closed_at IS NOT NULL
-  AND healing_session_id IS NOT NULL
-  AND closed_at > COALESCE(
-        (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-        '-infinity'::timestamptz
-      )
-"""
+_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = QA_BREAKER_WHERE_SQL
 
 
 async def _fetch_recent_circuit_breaker_rows(
@@ -1248,10 +1366,14 @@ async def _fetch_recent_circuit_breaker_rows(
     *,
     limit: int,
     include_ids: bool = False,
+    include_detail: bool = False,
 ) -> list[asyncpg.Record]:
     """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
 
-    select_cols = "id, status, closed_at" if include_ids else "status"
+    status_col = f"{QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status"
+    select_cols = f"id, {status_col}, closed_at" if include_ids else status_col
+    if include_detail:
+        select_cols = f"id, {status_col}, closed_at, error_detail"
     return await pool.fetch(
         f"""
         SELECT {select_cols}
@@ -1281,6 +1403,38 @@ def _compute_circuit_breaker_state(
         status in CIRCUIT_BREAKER_FAILURE_STATUSES for status in statuses
     )
     return statuses, consecutive_failures, tripped
+
+
+_REASON_TEXT_MAX = 200
+
+
+def _breaker_cause_fields(rows: list[Any], *, threshold: int) -> dict[str, Any]:
+    """Derived cause and probe schedule for the breaker, from rows newest first."""
+    state = derive_breaker_state(
+        [
+            {
+                "status": row["status"],
+                "error_detail": row.get("error_detail"),
+                "closed_at": row.get("closed_at"),
+            }
+            for row in rows
+        ],
+        threshold,
+    )
+    return {
+        "dominant_cause": state.dominant_cause,
+        "cause_counts": dict(state.cause_counts),
+        "opened_at": state.opened_at,
+        "next_probe_at": state.next_probe_at,
+    }
+
+
+def _reason_text(error_detail: str | None) -> str | None:
+    """First non-empty line of an attempt's error text, credential-redacted and bounded."""
+    for line in redact_text(error_detail or "").splitlines():
+        if line.strip():
+            return line.strip()[:_REASON_TEXT_MAX]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1477,7 +1631,8 @@ async def get_qa_summary(
     last_patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE status != 'running'
         ORDER BY started_at DESC
@@ -1672,7 +1827,7 @@ async def get_qa_summary(
 
     # All-time PR stats for QA-originated attempts.
     # Uses the same failure statuses as CIRCUIT_BREAKER_FAILURE_STATUSES in
-    # butlers.core.healing.dispatch: 'failed', 'timeout', 'anonymization_failed'.
+    # butlers.core.healing.constants: 'failed', 'timeout', 'anonymization_failed'.
     # 'unfixable' is intentionally excluded — it indicates "no fix is possible"
     # (a design decision), not a dispatch failure.
     pr_stats_row = await pool.fetchrow(
@@ -1707,16 +1862,22 @@ async def get_qa_summary(
     # dispatcher semantics.
     cb_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
     cb_statuses, consecutive_failures, cb_tripped = _compute_circuit_breaker_state(
-        cb_rows,
+        cb_rows[:_CIRCUIT_BREAKER_THRESHOLD],
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cb_cause = _breaker_cause_fields(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
         consecutive_failures=consecutive_failures,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
+        dominant_cause=cb_cause["dominant_cause"],
+        cause_counts=cb_cause["cause_counts"],
+        opened_at=cb_cause["opened_at"],
+        next_probe_at=cb_cause["next_probe_at"],
     )
 
     # Active sources — derive from the most recent patrols (last 10)
@@ -1751,6 +1912,20 @@ async def get_qa_summary(
     else:
         staffer_status = "healthy"
 
+    # Remediation-loop liveness conditions (REQ-qa-dashboard-801). A condition
+    # downgrades "healthy"; an unreadable ledger is unknown, never none.
+    try:
+        loop_rows = await active_loop_conditions(pool)
+    except Exception:
+        logger.warning("get_qa_summary: loop conditions unreadable (non-fatal)", exc_info=True)
+        loop_rows = None
+    loop_conditions = [QaLoopCondition(**row) for row in (loop_rows or [])]
+    if staffer_status == "healthy":
+        if loop_rows is None:
+            staffer_status = "unknown"
+        elif loop_conditions:
+            staffer_status = "degraded"
+
     # Credentials status — populated when daemon wires credentials_status_fn
     credentials_status = QaCredentialsStatus()
     if credentials_status_fn is not None:
@@ -1770,14 +1945,21 @@ async def get_qa_summary(
 
             if parsed_creds is not None:
                 provisioning_hint: str | None = None
-                if parsed_creds.gh_token_present is False:
+                if parsed_creds.gh_write_token_present is True:
                     provisioning_hint = (
-                        "BUTLERS_QA_GH_TOKEN is missing. "
-                        "Provision via: butler secrets set BUTLERS_QA_GH_TOKEN <token> "
-                        "(requires 'repo' scope)"
+                        "A write-scoped BUTLERS_QA_GH_TOKEN is still in the secrets store. "
+                        "It is refused and never loaded; delete it and rotate the token "
+                        "(investigator containment is not enforced: same pod, root)"
+                    )
+                elif parsed_creds.gh_token_present is False:
+                    provisioning_hint = (
+                        "BUTLERS_QA_GH_READ_TOKEN is missing; PR status stays unknown. "
+                        "Provision a fine-grained read-only token via: "
+                        "butler secrets set BUTLERS_QA_GH_READ_TOKEN <token>"
                     )
                 credentials_status = QaCredentialsStatus(
                     gh_token_present=parsed_creds.gh_token_present,
+                    gh_write_token_present=parsed_creds.gh_write_token_present,
                     git_author_name_present=parsed_creds.git_author_name_present,
                     git_author_email_present=parsed_creds.git_author_email_present,
                     provisioning_hint=provisioning_hint,
@@ -1819,6 +2001,8 @@ async def get_qa_summary(
 
     summary = QaSummary(
         staffer_status=staffer_status,
+        loop_conditions=loop_conditions,
+        loop_conditions_known=loop_rows is not None,
         last_patrol_at=last_patrol_at,
         next_patrol_at=None,  # Requires scheduler integration; not available via DB
         last_patrol=last_patrol,
@@ -1873,7 +2057,8 @@ async def list_patrols(
 
     rows = await pool.fetch(
         f"SELECT id, started_at, completed_at, status, findings_count, novel_count,"
-        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail"
+        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail,"
+        f" halt_reason"
         f" FROM public.qa_patrols{where}"
         f" ORDER BY started_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -1905,7 +2090,8 @@ async def get_patrol(
     patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE id = $1
         """,
@@ -1941,6 +2127,7 @@ async def get_patrol(
         log_lookback_minutes=summary.log_lookback_minutes,
         sources_polled=summary.sources_polled,
         error_detail=summary.error_detail,
+        halt_reason=summary.halt_reason,
         findings=findings,
     )
     return ApiResponse(data=detail)
@@ -2232,7 +2419,30 @@ async def get_case(
             f.first_seen AS finding_first_seen,
             f.last_seen AS finding_last_seen,
             f.source_session_trigger_source AS finding_source_session_trigger_source,
-            f.structured_evidence AS finding_structured_evidence
+            f.structured_evidence AS finding_structured_evidence,
+            NOT EXISTS (
+                SELECT 1
+                FROM public.qa_publication_operations op
+                WHERE op.attempt_id = a.id
+                  AND (
+                      op.stage IN ('egress_started', 'ambiguous')
+                      OR (
+                          op.kind <> 'branch_push'
+                          AND op.stage NOT IN ('bound', 'failed')
+                          AND op.reconciliation IS DISTINCT FROM 'resource_absent'
+                      )
+                  )
+            ) AS pr_absence_proven,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_exports x
+                WHERE x.attempt_id = a.id
+            ) AS export_retained,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_refusals r
+                WHERE r.attempt_id = a.id
+            ) AS refusal_recorded
         FROM public.healing_attempts a
         LEFT JOIN LATERAL (
             SELECT id, fingerprint, source_type, source_butler, severity,
@@ -2269,6 +2479,24 @@ async def get_case(
         if dismissal_row is not None:
             dismissal = _row_to_active_dismissal(dismissal_row)
 
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_since_link = 0
+    if finding_fingerprint:
+        link_row = await get_gating_link(pool, finding_fingerprint)
+        if link_row is not None:
+            known_issue_link = QaKnownIssueLink(**link_row)
+            tracked_since_link = int(
+                await pool.fetchval(
+                    """
+                    SELECT count(*) FROM public.qa_findings
+                    WHERE fingerprint = $1 AND dedup_reason = 'tracked' AND created_at > $2
+                    """,
+                    finding_fingerprint,
+                    known_issue_link.linked_at,
+                )
+                or 0
+            )
+
     journal_rows = await pool.fetch(
         """
         SELECT id, ts, step, text, detail, data
@@ -2288,11 +2516,20 @@ async def get_case(
     proposal_diff_snapshot = _proposal_diff_from_case_row(row)
     gh_token = await _resolve_github_token(db)
     pr_summary = await _row_to_pr_summary_live(row, token=gh_token, client=get_pr_client())
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     if pr_summary is not None:
         proposal_state = "published"
     elif proposal_diff_snapshot:
-        proposal_state = "unpublished"
+        # Absent PR metadata is not proof that no PR exists: a lost pr_create
+        # response leaves none while the PR may be live. Claim "unpublished"
+        # only when the publication ledger proves no PR egress can have landed.
+        # An empty ledger proves that only for an attempt the publisher handled:
+        # it retains the sealed export before its first egress, or receipts a
+        # refusal made before retention (core_302), while an attempt from before
+        # the ledger cutover has no export, receipt or ledger rows.
+        handled = row.get("export_retained") is True or row.get("refusal_recorded") is True
+        absence_proven = row.get("pr_absence_proven") is True and handled
+        proposal_state = "unpublished" if absence_proven else "ambiguous"
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
@@ -2300,6 +2537,8 @@ async def get_case(
         proposal_diff_snapshot=proposal_diff_snapshot,
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
+        known_issue_link=known_issue_link,
+        tracked_occurrences_since_link=tracked_since_link,
         investigation_notes=investigation_notes,
         pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
@@ -2647,6 +2886,98 @@ async def dismiss_known_issue(
         raise HTTPException(status_code=500, detail="Failed to create dismissal")
 
     return ApiResponse(data=_row_to_dismissal(row))
+
+
+# ---------------------------------------------------------------------------
+# POST/DELETE /api/qa/known-issues/{fingerprint}/link — tracked-defect linkage
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/known-issues/{fingerprint}/link",
+    response_model=ApiResponse[QaKnownIssueLink],
+    status_code=201,
+)
+async def link_known_issue(
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
+    body: KnownIssueLinkRequest,
+    response: Response,
+    *,
+    db: Db,
+) -> ApiResponse[QaKnownIssueLink]:
+    """Link a finding to the work item that already tracks it (owner action).
+
+    While the link is open, patrols persist the finding as ``tracked`` and dispatch no
+    investigation. A bead ref is an unverified owner assertion (QA does not read the tracker);
+    a GitHub PR ref is rejected when GitHub says it is already merged or closed. A repeat link
+    is idempotent (200).
+    """
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if body.tracker_kind not in TRACKER_KINDS:
+        raise HTTPException(
+            status_code=422, detail=f"tracker_kind must be one of {', '.join(TRACKER_KINDS)}"
+        )
+    tracker_ref = body.tracker_ref.strip()
+    if not is_valid_tracker_ref(body.tracker_kind, tracker_ref):
+        raise HTTPException(
+            status_code=422,
+            detail=f"tracker_ref is not a well-formed {body.tracker_kind} reference",
+        )
+    now = datetime.now(UTC)
+    if body.expires_at is not None and not (now < body.expires_at <= now + MAX_LINK_TTL):
+        raise HTTPException(
+            status_code=422,
+            detail=f"expires_at must be in the future and within {MAX_LINK_TTL.days} days",
+        )
+
+    pool = _shared_pool(db)
+    if body.tracker_kind == "github_pr":
+        parsed = parse_pr_url(tracker_ref)
+        if parsed is None:  # unreachable once the pattern held; keeps the type narrow
+            raise HTTPException(status_code=422, detail="tracker_ref must be a GitHub PR URL")
+        owner, repo, number = parsed
+        meta = await get_pr_client().fetch(
+            owner, repo, number, token=await _resolve_github_token(db)
+        )
+        # An unreachable or unauthenticated read is not a verdict: the link is accepted as an
+        # owner assertion, exactly as a bead ref is. Only a PR known to be done is refused.
+        if meta.state in ("merged", "closed"):
+            raise HTTPException(
+                status_code=422, detail=f"That pull request is already {meta.state}"
+            )
+
+    expires_at = body.expires_at or (now + DEFAULT_LINK_TTL)
+    row, created = await upsert_link(
+        pool,
+        fingerprint=fingerprint,
+        tracker_kind=body.tracker_kind,
+        tracker_ref=tracker_ref,
+        linked_by="owner",
+        expires_at=expires_at,
+    )
+    response.status_code = 201 if created else 200
+    return ApiResponse(data=QaKnownIssueLink(**row))
+
+
+@router.delete("/known-issues/{fingerprint}/link", response_model=ApiResponse[dict[str, bool]])
+async def unlink_known_issue(
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
+    tracker_ref: str = Query(..., min_length=1, max_length=300),
+    *,
+    db: Db,
+) -> ApiResponse[dict[str, bool]]:
+    """Close a link so its finding is investigated again (owner action)."""
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not await close_link(_shared_pool(db), fingerprint, tracker_ref.strip()):
+        raise HTTPException(status_code=404, detail="No open link for that fingerprint and ref")
+    return ApiResponse(data={"closed": True})
 
 
 # ---------------------------------------------------------------------------
@@ -3355,15 +3686,17 @@ async def get_circuit_breaker_status(
     """Return the current QA dispatch circuit breaker state."""
     pool = _shared_pool(db)
 
-    rows = await _fetch_recent_circuit_breaker_rows(
+    detail_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
-        include_ids=True,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
+    rows = detail_rows[:_CIRCUIT_BREAKER_THRESHOLD]
     statuses, _, tripped = _compute_circuit_breaker_state(
         rows,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cause = _breaker_cause_fields(detail_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
 
     return ApiResponse(
         data=CircuitBreakerStatus(
@@ -3374,10 +3707,13 @@ async def get_circuit_breaker_status(
                 CircuitBreakerAttempt(
                     id=str(row["id"]),
                     status=row["status"],
-                    closed_at=row["closed_at"].isoformat(),
+                    closed_at=row["closed_at"],
+                    reason_class=classify_cause(row.get("error_detail")),
+                    reason_text=_reason_text(row.get("error_detail")),
                 )
                 for row in rows
             ],
+            **cause,
         ),
         meta=ApiMeta(),
     )
@@ -3387,9 +3723,15 @@ async def get_circuit_breaker_status(
 async def reset_circuit_breaker(
     *,
     db: Db,
+    body: CircuitBreakerResetRequest | None = Body(default=None),
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
     """Reset the QA circuit breaker by recording an auditable reset marker.
+
+    The reset must name the cause it addresses (``cause_ref``). While the streak's dominant
+    cause is structural (for example no publisher), the reset must name that cause, and a
+    reference that already bought a reset followed by the same structural failure is refused
+    (REQ-qa-remediation-liveness-003).
 
     Writes one ``public.breaker_resets`` row (who/when/why). The dispatch
     admission gate and every dashboard breaker query only count investigation
@@ -3419,12 +3761,38 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
+    streak = await pool.fetch(_LOOP_STREAK_SQL, _CIRCUIT_BREAKER_THRESHOLD)
+    decision = await evaluate_reset(
+        pool,
+        body.cause_ref if body is not None else None,
+        [row["error_detail"] for row in streak],
+    )
+    if not decision.allowed:
+        logger.warning("QA circuit breaker reset refused (reason=%s)", decision.reason)
+        await record_reset_refusal(pool, decision, reset_by="dashboard")
+        return ApiResponse(
+            data=CircuitBreakerResetResponse(
+                reset=False,
+                message=(
+                    "Reset refused: name the cause it addresses as '<cause_code>:<reference>' "
+                    "and resolve any structural cause first."
+                ),
+                refusal_reason=decision.reason,
+            ),
+            meta=ApiMeta(),
+        )
+
     await pool.execute(
         """
-        INSERT INTO public.breaker_resets (breaker, reset_by, reason)
-        VALUES ('qa', 'dashboard', $1)
+        INSERT INTO public.breaker_resets
+            (breaker, reset_by, reason, cause_code, cause_ref, refusal_reason)
+        VALUES ('qa', 'dashboard', $1, $2, $3, $4)
         """,
         "Manual reset via QA dashboard",
+        decision.cause_code,
+        decision.cause_ref,
+        # 'unprobed' marks a reset accepted with no live probe of its cause (outcome stays 'reset').
+        decision.reason if decision.unprobed else None,
     )
 
     # The cached briefing can otherwise retain the pre-reset urgent verdict for

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
@@ -16,7 +18,10 @@ from uuid import UUID, uuid4
 import asyncpg
 from opentelemetry import trace
 
+from butlers.core.goal_labels import Label, LabelRefused
+from butlers.core.resource_pairs import MAX_ID_LENGTH, pair_scope
 from butlers.core.runtime_config import read_goal_admission_config
+from butlers.core.spend_pools import SpendPolicy, SpendPools
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
 SourceKind = Literal["message", "occurrence", "feed", "domain", "staffer"]
@@ -26,6 +31,42 @@ def digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+#: ``message`` source ids with this prefix are reserved for the owner's Run on a failed goal.
+#: Message ids are not always ours (an email Message-ID is chosen by its sender), so admission
+#: refuses the prefix unless the id's ask is the one being redeemed for Run in this context.
+OWNER_RETRY_PREFIX = "owner_retry:"
+#: Set (to the pending ask id) only by the Run redemption while it admits the retry.
+RUN_REDEMPTION: ContextVar[str | None] = ContextVar("run_redemption", default=None)
+
+
+def retry_source_allowed(source_id: str) -> bool:
+    return source_id == OWNER_RETRY_PREFIX + (RUN_REDEMPTION.get() or "-")
+
+
+#: At most this many lazy attachment refs scope one goal; a source reader keeps the first few
+#: (sorted) of a larger set, which only narrows what the goal can fetch.
+MAX_ATTACHMENT_REFS = 64
+
+#: A Gmail thread id (hex or base64url) and the longest mailbox address admission records.
+_GMAIL_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_MAX_ACCOUNT_LENGTH = 320
+
+
+def valid_trigger_thread(value: object) -> bool:
+    """An exact ``(account, thread_id)``: a lowercased address and a Gmail thread id."""
+    if type(value) is not tuple or len(value) != 2:
+        return False
+    account, thread_id = value
+    return (
+        type(account) is str
+        and 0 < len(account) <= _MAX_ACCOUNT_LENGTH
+        and account == account.strip().lower()
+        and "@" in account
+        and type(thread_id) is str
+        and _GMAIL_THREAD_ID.fullmatch(thread_id) is not None
+    )
 
 
 class EvidenceRefused(ValueError):
@@ -133,6 +174,9 @@ class Capability:
     owner_authority: bool = False
     owner_default: bool = False
     presentable: bool = True
+    # Two resource params scoped as one pair (``core.resource_pairs``): a message-admitted grant
+    # carries the pair scope of the request's own refs, never an unscoped one.
+    resource_pair: tuple[str, str] | None = None
 
     def __post_init__(self):
         if (
@@ -241,8 +285,32 @@ class Evidence:
     owner_entity: UUID | None = None
     owner_channel: str | None = None
     record_only: bool = False
+    # The admitting message's lazy attachment refs, ``(message_id, attachment_id)``, from the
+    # stored message the source reader verified. Only a message's evidence may carry them.
+    attachment_refs: tuple[tuple[str, str], ...] = ()
+    # The admitting Gmail message's ``(account, thread_id)``, from the stored envelope the source
+    # reader verified (RFC 0038 D5, Gmail exposure rule). Only a message's evidence may carry it;
+    # the broker lets an exposed goal change only this thread without a per-event approval.
+    trigger_thread: tuple[str, str] | None = None
 
     def __post_init__(self):
+        if self.trigger_thread is not None and (
+            self.kind != "message" or not valid_trigger_thread(self.trigger_thread)
+        ):
+            raise EvidenceRefused("source_context_invalid")
+        refs = self.attachment_refs
+        if (
+            type(refs) is not tuple
+            or len(refs) > MAX_ATTACHMENT_REFS
+            or (refs and self.kind != "message")
+            or any(
+                type(ref) is not tuple
+                or len(ref) != 2
+                or any(type(i) is not str or not i or len(i) > MAX_ID_LENGTH for i in ref)
+                for ref in refs
+            )
+        ):
+            raise EvidenceRefused("source_context_invalid")
         if (
             self.kind not in {"message", "occurrence", "feed", "domain", "staffer"}
             or (self.kind != "message" and self.owner)
@@ -285,15 +353,35 @@ def derive_admission(evidence: Evidence, catalog: CatalogView) -> AdmissionPlan:
             raise EvidenceRefused("invalid_contract_capabilities")
         return tuple(sorted(grants, key=lambda g: g.capability))
 
+    def grant(capability_id: str, **kwargs) -> Grant:
+        """A message grant; a pair-scoped capability gets the request's own refs and no more.
+
+        With no usable ref the grant carries no pair scope, which the broker treats as an empty
+        scope: the capability is neither listed nor callable. An id the exact-identifier rule
+        refuses is dropped, which only narrows.
+        """
+        pair = eligible[capability_id].resource_pair
+        if pair is None:
+            return Grant(capability_id, **kwargs)
+        usable = []
+        for ref in evidence.attachment_refs:
+            try:
+                Grant(capability_id, (pair_scope(pair, [ref]),))
+            except ValueError:
+                continue
+            usable.append(ref)
+        resources = (pair_scope(pair, usable),) if usable else ()
+        return Grant(capability_id, resources, **kwargs)
+
     if evidence.kind == "message":
         if evidence.owner:
             return AdmissionPlan(
                 "owner",
                 evidence.forwarded or evidence.outside_content,
-                tuple(Grant(c) for c in sorted(eligible)),
+                tuple(grant(c) for c in sorted(eligible)),
             )
         grants = tuple(
-            Grant(c.id, park_only=c.effect_class == "communicate" and not c.owner_default)
+            grant(c.id, park_only=c.effect_class == "communicate" and not c.owner_default)
             for c in eligible.values()
             if c.effect_class == "read"
             or (c.effect_class == "record" and not c.owner_authority)
@@ -335,6 +423,26 @@ def derive_admission(evidence: Evidence, catalog: CatalogView) -> AdmissionPlan:
     return AdmissionPlan("obligation", exposed, checked(grants), obligation.digest)
 
 
+def effect_exposed(effect, goal) -> bool:
+    """Whether an answered or causing effect carries exposure (RFC 0038 S1).
+
+    The effect's own label (sw_057) decides, not its goal's reporting union. A
+    row from a schema before sw_057 has no label and keeps the old Boolean
+    restriction of its goal; an unreadable label fails closed.
+    """
+    if "label_version" not in effect.keys():
+        return goal["exposed"] is not False
+    try:
+        return Label.from_row(
+            effect["label_version"],
+            effect["label_instr"],
+            effect["label_data"],
+            effect["label_sens"],
+        ).exposed
+    except LabelRefused:
+        return True
+
+
 @dataclass(frozen=True)
 class AdmissionResult:
     decision_id: UUID
@@ -374,6 +482,8 @@ class GoalAdmission:
 
     async def _transaction(self, source: SourceRef, attempt_id: UUID) -> AdmissionResult:
         from butlers.core.goal_ledger import GoalLedger
+        from butlers.core.source_containment import contained as source_contained
+        from butlers.core.source_containment import lock_key as containment_lock_key
 
         try:
             async with self.pool.acquire() as connection, connection.transaction():
@@ -385,6 +495,13 @@ class GoalAdmission:
                     return old
                 now = await connection.fetchval("SELECT clock_timestamp()")
                 try:
+                    if (
+                        source.kind == "message"
+                        and source.id.startswith(OWNER_RETRY_PREFIX)
+                        and not retry_source_allowed(source.id)
+                    ):
+                        # Policy, not a crash: a connector message may not claim this identity.
+                        raise EvidenceRefused("source_evidence_unavailable")
                     facts = await self.evidence.load(connection, source)
                     if (
                         (
@@ -397,7 +514,13 @@ class GoalAdmission:
                         or len(facts.source_partition) > 256
                     ):
                         raise EvidenceRefused("source_context_invalid")
-                    if facts.record_only:
+                    # M7 Contain: a contained source's envelopes are recorded with
+                    # no goal, joined reply or wake. The shared partition lock
+                    # orders this read against a concurrent containment.
+                    await ledger.lock_keys([containment_lock_key(facts.source_partition)])
+                    if facts.record_only or await source_contained(
+                        connection, facts.source_partition
+                    ):
                         # A successfully recorded feed with no subscription has
                         # a durable no-goal disposition, even after registry drift.
                         return await ledger.decide(
@@ -413,7 +536,13 @@ class GoalAdmission:
                 try:
                     config = await read_goal_admission_config(connection)
                 except ValueError:
-                    return await ledger.decide(source, attempt_id, "refused", "limits_unavailable")
+                    refused = await ledger.decide(
+                        source, attempt_id, "refused", "limits_unavailable"
+                    )
+                    await ledger.remember_refused_owner_ask(
+                        source, facts, plan.origin, "limits_unavailable"
+                    )
+                    return refused
                 config_data = config.model_dump(mode="json")
                 config_digest = digest(config_data)
                 limits = next(entry for entry in config.origins if entry.origin == plan.origin)
@@ -443,6 +572,8 @@ class GoalAdmission:
             hint = await ledger.effect_hint(facts.caused_by_effect)
             if not hint or hint["goal_id"] != facts.caused_by_goal:
                 return await ledger.decide(source, attempt_id, "refused", "cause_invalid")
+        from butlers.core.goal_wake import WakeAdmission  # goal_wake imports this module
+
         reply = (
             await ledger.reply_hint(facts.reply_delivery)
             if facts.owner and facts.reply_delivery
@@ -470,7 +601,8 @@ class GoalAdmission:
             chain_depth = cause["chain_depth"] + 1
             if chain_depth > config.chain_limit:
                 return await ledger.decide(source, attempt_id, "refused", "causal_chain_limit")
-            exposed |= cause["exposed"]
+            # S1: the causing effect's label, not the causing goal's union.
+            exposed |= effect_exposed(effect, cause)
             ceiling = intersect(ceiling, decode_grants(cause["ceiling"]))
         if reply:
             binding = await ledger.effect(reply["id"])
@@ -487,23 +619,40 @@ class GoalAdmission:
             )
             ledger.reply_effect = binding["id"] if matches else None
             if matches:
-                # Read actual producing-goal exposure under the goal lock, also
+                # Read the answered effect's label under the goal lock, also
                 # when an expired/terminal prompt becomes new owner intent.
-                exposed |= goal["exposed"]
-            if (
+                exposed |= effect_exposed(binding, goal)
+            prompt_live = bool(
                 matches
                 and binding["prompt_accepts_input"]
                 and binding["prompt_expires_at"] is not None
                 and binding["prompt_expires_at"] > prompt_now
-                # D11 has no settling -> running edge: a settling goal can never
-                # consume an inbox row, so a reply to it is admitted as new intent.
-                and goal["status"] in {"admitted", "running", "awaiting_approval", "recovering"}
+            )
+            # A waiting goal joins only by the exact reply to the prompt its wait names (RFC 0038
+            # S2.2). On an owner-answer wait the reply is that wait's one wake. On a conditions
+            # wait with an owner_input leaf on the prompt, the reply joins as an unread inbox row
+            # and the goal stays waiting: the conditions feed makes it the leaf's event. Any
+            # other waiting goal (settle, approval, a conditions wait not naming the prompt) has
+            # no waiting -> running edge for an inbox row, so a reply to it is new intent.
+            answer, awaited = None, False
+            if prompt_live and goal["status"] == "waiting":
+                wakes = WakeAdmission(ledger.connection)
+                answer = await wakes.answer_envelope(goal["id"], binding["id"])
+                if answer is None:
+                    awaited = await wakes.awaits_input(goal["id"], binding["id"])
+            if prompt_live and (
+                goal["status"] in {"admitted", "running"} or answer is not None or awaited
             ):
-                await ledger.increase_exposure(goal["id"], exposed)
                 joined = await ledger.decide(
                     source, attempt_id, "joined", "reply_joined", goal["id"]
                 )
-                await ledger.deliver(joined, source)
+                # The inbox row carries the reply's label (sw_057); its reader
+                # joins it. Only the reply's own outside content is added here.
+                inbox_id = await ledger.deliver(joined, source, outside_content=plan.exposed)
+                if answer is not None:
+                    await WakeAdmission(ledger.connection).admit_answer(
+                        answer, joined.decision_id, inbox_id
+                    )
                 return joined
         await ledger.lock_keys(
             [
@@ -518,10 +667,22 @@ class GoalAdmission:
         )
         origin_count, source_count = await ledger.quota_counts(plan.origin, facts.source_partition)
         if origin_count >= limits.new_goals or source_count >= limits.per_source:
-            return await ledger.decide(
+            refused = await ledger.decide(
                 source, attempt_id, "refused", "quota_exhausted", retry_after=retry_after
             )
+            await ledger.remember_refused_owner_ask(source, facts, plan.origin, "quota_exhausted")
+            return refused
         goal_id = uuid4()
+        # The monthly ceiling (bu-jv1moa.1): reserve this goal's spend before it exists, under
+        # the pool locks, in this transaction. A refusal creates nothing.
+        policy = SpendPolicy(config.spend.owner_reserve_pct, config.spend.lanes_enabled)
+        spend_refusal = await SpendPools(ledger.connection, policy).reserve(
+            goal_id, plan.origin, limits.budget.max_spend
+        )
+        if spend_refusal is not None:
+            refused = await ledger.decide(source, attempt_id, "refused", spend_refusal)
+            await ledger.remember_refused_owner_ask(source, facts, plan.origin, spend_refusal)
+            return refused
         await ledger.create_goal(
             goal_id,
             source,

@@ -29,7 +29,7 @@ NOW = datetime(2026, 3, 25, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture()
-def pool() -> AsyncMock:
+def mock_pool() -> AsyncMock:
     return AsyncMock()
 
 
@@ -55,17 +55,17 @@ class TestDeriveScope:
 
 
 class TestResolveOwner:
-    async def test_resolves_from_contacts(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(
+    async def test_resolves_from_contacts(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(
             side_effect=[{"id": OWNER_UUID, "canonical_name": OWNER_NAME}, None]
         )
-        eid, name = await _resolve_owner(pool)
+        eid, name = await _resolve_owner(mock_pool)
         assert eid == OWNER_UUID and name == OWNER_NAME
 
-    async def test_raises_when_no_owner_found(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=None)
+    async def test_raises_when_no_owner_found(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="Owner entity could not be resolved"):
-            await _resolve_owner(pool)
+            await _resolve_owner(mock_pool)
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +107,16 @@ def mock_store(tmp_path):
 
 class TestSetPreference:
     async def test_basic_storage_returns_expected_shape(
-        self, pool, patch_embedding, mock_owner, mock_store
+        self, mock_pool, patch_embedding, mock_owner, mock_store
     ) -> None:
-        result = await set_preference(pool, "preferences:travel_flight_seat", "window")
+        result = await set_preference(mock_pool, "preferences:travel_flight_seat", "window")
         assert result["id"] == FACT_STR
         assert result["scope"] == "travel"
         assert result["action"] == "created"
         assert result["superseded_id"] is None
 
     async def test_supersession_indicated_as_updated(
-        self, pool, patch_embedding, mock_owner
+        self, mock_pool, patch_embedding, mock_owner
     ) -> None:
         from butlers.modules.memory.tools import _helpers
 
@@ -127,14 +127,14 @@ class TestSetPreference:
             new_callable=AsyncMock,
             return_value={"id": FACT_UUID, "supersedes_id": sup_id},
         ):
-            result = await set_preference(pool, "preferences:travel_flight_seat", "aisle")
+            result = await set_preference(mock_pool, "preferences:travel_flight_seat", "aisle")
         assert result["action"] == "updated"
         assert result["superseded_id"] == str(sup_id)
 
     @pytest.mark.parametrize("bad_predicate", ["travel_flight_seat", "preferences:nodomain"])
-    async def test_invalid_predicate_raises(self, pool: AsyncMock, bad_predicate: str) -> None:
+    async def test_invalid_predicate_raises(self, mock_pool: AsyncMock, bad_predicate: str) -> None:
         with pytest.raises(ValueError, match="preferences:"):
-            await set_preference(pool, bad_predicate, "value")
+            await set_preference(mock_pool, bad_predicate, "value")
 
 
 # ---------------------------------------------------------------------------
@@ -163,15 +163,19 @@ class TestGetPreferences:
             "last_confirmed_at": NOW,
         }
 
-    async def test_returns_empty_when_no_rows(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME})
-        pool.fetch = AsyncMock(return_value=[])
-        assert await get_preferences(pool) == []
+    async def test_returns_empty_when_no_rows(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetch = AsyncMock(return_value=[])
+        assert await get_preferences(mock_pool) == []
 
-    async def test_result_shape(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME})
-        pool.fetch = AsyncMock(return_value=[self._row()])
-        results = await get_preferences(pool)
+    async def test_result_shape(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetch = AsyncMock(return_value=[self._row()])
+        results = await get_preferences(mock_pool)
         assert len(results) == 1
         assert set(results[0].keys()) == {
             "predicate",
@@ -183,17 +187,39 @@ class TestGetPreferences:
             "effective_confidence",
         }
 
-    async def test_effective_confidence_decays(self, pool: AsyncMock) -> None:
+    async def test_effective_confidence_decays(self, mock_pool: AsyncMock) -> None:
         old = datetime.now(UTC) - timedelta(days=100)
         row = self._row(confidence=1.0, decay_rate=0.008)
         row["last_confirmed_at"] = old
-        pool.fetchrow = AsyncMock(return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME})
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await get_preferences(pool)
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        results = await get_preferences(mock_pool)
         assert results[0]["effective_confidence"] < 1.0
 
-    async def test_no_decay_when_rate_zero(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME})
-        pool.fetch = AsyncMock(return_value=[self._row(confidence=0.9, decay_rate=0.0)])
-        results = await get_preferences(pool)
+    async def test_no_decay_when_rate_zero(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetch = AsyncMock(return_value=[self._row(confidence=0.9, decay_rate=0.0)])
+        results = await get_preferences(mock_pool)
         assert results[0]["effective_confidence"] == 0.9
+
+    @pytest.mark.parametrize("view_exists", [True, False])
+    async def test_chronicler_preferences_use_configured_fact_visibility(
+        self, mock_pool: AsyncMock, view_exists: bool
+    ) -> None:
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetchval = AsyncMock(return_value=view_exists)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        assert await get_preferences(mock_pool, memory_schema="chronicler_mem") == []
+
+        query = mock_pool.fetch.await_args.args[0]
+        if view_exists:
+            assert "chronicler_mem.facts_readable" in query
+        else:
+            assert "f.predicate NOT IN" in query

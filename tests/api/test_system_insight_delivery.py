@@ -22,6 +22,8 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -34,16 +36,6 @@ def _make_app_with_db(mock_db):
     app = create_app()
     app.dependency_overrides[get_db] = lambda: mock_db
     return app
-
-
-def _make_pool(row: dict) -> AsyncMock:
-    """Return an AsyncMock pool that yields `row` from fetchrow."""
-    pool = AsyncMock()
-    rec = MagicMock()
-    rec.__getitem__ = MagicMock(side_effect=lambda k: row[k])
-    rec.get = MagicMock(side_effect=lambda k, default=None: row.get(k, default))
-    pool.fetchrow = AsyncMock(return_value=rec)
-    return pool
 
 
 def _make_db(pool: AsyncMock) -> MagicMock:
@@ -59,13 +51,15 @@ def _make_db(pool: AsyncMock) -> MagicMock:
 
 async def test_happy_path_returns_correct_aggregates():
     """Endpoint returns queued/delivered/failed counts from seeded rows."""
-    pool = _make_pool(
-        {
-            "queued": 3,
-            "delivered": 10,
-            "failed": 2,
-            "last_delivery_at": _DELIVERED_AT,
-        }
+    pool = fake_pool(
+        fetchrow=Record(
+            {
+                "queued": 3,
+                "delivered": 10,
+                "failed": 2,
+                "last_delivery_at": _DELIVERED_AT,
+            }
+        )
     )
     mock_db = _make_db(pool)
 
@@ -93,13 +87,15 @@ async def test_happy_path_returns_correct_aggregates():
 
 async def test_empty_state_all_zeros_null_last_delivery():
     """No delivery activity → all zeros and null last_delivery_at."""
-    pool = _make_pool(
-        {
-            "queued": 0,
-            "delivered": 0,
-            "failed": 0,
-            "last_delivery_at": None,
-        }
+    pool = fake_pool(
+        fetchrow=Record(
+            {
+                "queued": 0,
+                "delivered": 0,
+                "failed": 0,
+                "last_delivery_at": None,
+            }
+        )
     )
     mock_db = _make_db(pool)
 
@@ -124,13 +120,15 @@ async def test_empty_state_all_zeros_null_last_delivery():
 
 async def test_delivered_only_no_queued_or_failed():
     """Some delivered, none queued or failed."""
-    pool = _make_pool(
-        {
-            "queued": 0,
-            "delivered": 5,
-            "failed": 0,
-            "last_delivery_at": _DELIVERED_AT,
-        }
+    pool = fake_pool(
+        fetchrow=Record(
+            {
+                "queued": 0,
+                "delivered": 5,
+                "failed": 0,
+                "last_delivery_at": _DELIVERED_AT,
+            }
+        )
     )
     mock_db = _make_db(pool)
 
@@ -160,13 +158,15 @@ async def test_failed_counts_only_delivery_failures():
     This is validated by ensuring the SQL query uses the correct WHERE clause —
     tested here via the aggregate value the mock returns.
     """
-    pool = _make_pool(
-        {
-            "queued": 1,
-            "delivered": 2,
-            "failed": 4,  # delivery-failure filtered
-            "last_delivery_at": _DELIVERED_AT,
-        }
+    pool = fake_pool(
+        fetchrow=Record(
+            {
+                "queued": 1,
+                "delivered": 2,
+                "failed": 4,  # delivery-failure filtered
+                "last_delivery_at": _DELIVERED_AT,
+            }
+        )
     )
     mock_db = _make_db(pool)
 
@@ -196,7 +196,9 @@ async def test_failed_counts_only_delivery_failures():
 
 async def test_query_targets_public_insight_candidates():
     """Endpoint queries public.insight_candidates (not a private schema table)."""
-    pool = _make_pool({"queued": 0, "delivered": 0, "failed": 0, "last_delivery_at": None})
+    pool = fake_pool(
+        fetchrow=Record({"queued": 0, "delivered": 0, "failed": 0, "last_delivery_at": None})
+    )
     mock_db = _make_db(pool)
 
     async with httpx.AsyncClient(
@@ -264,7 +266,9 @@ async def test_graceful_degrade_when_table_query_fails():
 
 async def test_response_shape_all_required_fields_present():
     """Response always contains all four required fields."""
-    pool = _make_pool({"queued": 0, "delivered": 0, "failed": 0, "last_delivery_at": None})
+    pool = fake_pool(
+        fetchrow=Record({"queued": 0, "delivered": 0, "failed": 0, "last_delivery_at": None})
+    )
     mock_db = _make_db(pool)
 
     async with httpx.AsyncClient(

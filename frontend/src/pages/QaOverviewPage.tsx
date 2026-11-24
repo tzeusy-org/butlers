@@ -54,6 +54,11 @@ import {
   useResetQaCircuitBreaker,
 } from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import {
+  breakerCauseLabel,
+  breakerProbeIsDue,
+  breakerResetForecast,
+} from "@/lib/qa-breaker-cause";
 import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 import { usePageSubject } from "@/lib/page-context.tsx";
 
@@ -337,6 +342,9 @@ function ResetBreakerDialog({
   onOpenChange,
   attempts,
   attemptsAvailable,
+  dominantCause,
+  nextProbeAt,
+  threshold,
   onConfirm,
   pending,
 }: {
@@ -344,9 +352,17 @@ function ResetBreakerDialog({
   onOpenChange: (open: boolean) => void;
   attempts: CircuitBreakerAttempt[];
   attemptsAvailable: boolean;
-  onConfirm: () => void;
+  dominantCause: string | null;
+  nextProbeAt: string | null;
+  threshold: number;
+  onConfirm: (causeRef: string) => void;
   pending: boolean;
 }) {
+  // The reset must name the cause it addresses (REQ-qa-remediation-liveness-003).
+  const [causeRef, setCauseRef] = useState("");
+  const causeRefValid = /^[^:\s][^:]*:\s*\S.*$/.test(causeRef.trim());
+  const causeLabel = breakerCauseLabel(dominantCause);
+  const forecast = breakerResetForecast(dominantCause, threshold);
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent data-testid="qa-breaker-reset-dialog">
@@ -359,6 +375,28 @@ function ResetBreakerDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
 
+        {causeLabel && (
+          <p
+            data-testid="qa-breaker-reset-dominant-cause"
+            className="font-mono text-[11px] text-foreground"
+          >
+            Cause: {causeLabel}
+            {nextProbeAt && (
+              <span className="text-muted-foreground">
+                {" "}
+                ·{" "}
+                {breakerProbeIsDue(nextProbeAt) ? (
+                  "automatic probe due"
+                ) : (
+                  <>
+                    next automatic probe <Time value={nextProbeAt} mode="relative" />
+                  </>
+                )}
+              </span>
+            )}
+          </p>
+        )}
+
         {attempts.length > 0 ? (
           <ul
             data-testid="qa-breaker-reset-evidence"
@@ -368,9 +406,18 @@ function ResetBreakerDialog({
               <li
                 key={attempt.id}
                 data-testid="qa-breaker-reset-attempt"
-                className="flex items-baseline justify-between gap-3"
+                className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
               >
                 <span className="truncate text-muted-foreground">{attempt.id}</span>
+                {attempt.reason_text && (
+                  // Wrapped, not truncated: the text must be readable without a hover.
+                  <span
+                    data-testid="qa-breaker-reset-reason"
+                    className="order-last basis-full whitespace-normal break-words"
+                  >
+                    {attempt.reason_text}
+                  </span>
+                )}
                 <span className="text-destructive uppercase tracking-[0.08em]">
                   {attempt.status}
                 </span>
@@ -393,17 +440,37 @@ function ResetBreakerDialog({
           </p>
         )}
 
+        {causeLabel && (
+          <p
+            data-testid="qa-breaker-reset-forecast"
+            className="font-mono text-[11px] text-muted-foreground"
+          >
+            {forecast.text}
+          </p>
+        )}
+
+        <label className="block font-mono text-[11px] text-muted-foreground">
+          Cause addressed, as cause_code:reference (for example publisher_unconfigured:PR-1234)
+          <input
+            data-testid="qa-breaker-reset-cause"
+            className="mt-1 w-full border border-border/60 bg-transparent px-2 py-1 text-foreground"
+            value={causeRef}
+            maxLength={200}
+            onChange={(event) => setCauseRef(event.target.value)}
+          />
+        </label>
+
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={pending}
+            disabled={pending || !causeRefValid}
             data-testid="qa-breaker-reset-confirm"
             onClick={(event) => {
               // Keep the dialog mounted through the mutation so its pending
               // state is visible; the caller closes it on settle.
               event.preventDefault();
-              onConfirm();
+              onConfirm(causeRef.trim());
             }}
           >
             {pending ? "Resetting…" : "Reset breaker"}
@@ -509,7 +576,7 @@ function PatrolPulseStrip() {
           Recent patrols
         </span>
         {rows.map((patrol) => {
-          const status = getQaPatrolStatusPresentation(patrol.status);
+          const status = getQaPatrolStatusPresentation(patrol.status, patrol.halt_reason);
           return (
             <Tip
               key={patrol.id}
@@ -664,10 +731,15 @@ export default function QaOverviewPage() {
     setResetDialogOpen(true);
   }
 
-  function confirmResetCircuitBreaker() {
+  function confirmResetCircuitBreaker(causeRef: string) {
     if (resetCircuitBreaker.isPending) return;
-    resetCircuitBreaker.mutate(undefined, {
+    resetCircuitBreaker.mutate(causeRef, {
       onSuccess: (res) => {
+        if (res.data?.reset === false) {
+          const reason = res.data.refusal_reason;
+          toast.error(reason ? `${res.data.message} (${reason})` : res.data.message);
+          return;
+        }
         toast.success(res.data?.message ?? "Circuit breaker reset");
       },
       onError: (err) => {
@@ -793,6 +865,9 @@ export default function QaOverviewPage() {
         }}
         attempts={circuitBreaker.isError ? [] : (circuitBreaker.data?.data.recent_attempts ?? [])}
         attemptsAvailable={!circuitBreaker.isError}
+        threshold={circuitBreaker.data?.data.threshold ?? 5}
+        dominantCause={circuitBreaker.isError ? null : (circuitBreaker.data?.data.dominant_cause ?? null)}
+        nextProbeAt={circuitBreaker.isError ? null : (circuitBreaker.data?.data.next_probe_at ?? null)}
         onConfirm={confirmResetCircuitBreaker}
         pending={resetCircuitBreaker.isPending}
       />

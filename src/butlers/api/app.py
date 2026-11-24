@@ -15,12 +15,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
+from butlers.api.control_plane_carrier import carry_via_control_plane
 from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
@@ -43,6 +45,8 @@ from butlers.api.owner_auth.service import (
     close_owner_auth_service,
     create_owner_auth_service,
 )
+from butlers.api.readiness import CHECK_KEYS as _READINESS_CHECK_KEYS
+from butlers.api.readiness import FleetReadiness, run_readiness_sampler_loop
 from butlers.api.router_registry import build_router_registry
 from butlers.api.routers.data_ops import _is_production
 from butlers.api.routers.secrets_v2 import (
@@ -51,11 +55,13 @@ from butlers.api.routers.secrets_v2 import (
 from butlers.api.routers.settings_console import (
     run_settings_console_delta_loop,
 )
+from butlers.api.vendor_door_store import VendorDoorStore, create_vendor_door_pool
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
 from butlers.core.definer_search_path import (
     compute_unpinned_definers,
     log_unpinned_definers,
 )
+from butlers.core.job_health import JobHealthStore
 from butlers.core.stored_function_drift import (
     compute_stored_function_drift,
     log_stored_function_drift,
@@ -64,12 +70,31 @@ from butlers.credential_store import CredentialStore
 from butlers.db import (
     check_infra_default_creds,
     has_insecure_infra_defaults,
-    is_grafana_anon_outside_dev,
+    is_grafana_anonymous_enabled,
 )
+from butlers.jobs.backup_facts_snapshot import (
+    DEFAULT_SNAPSHOT_INTERVAL_S,
+    run_backup_facts_snapshot_loop,
+)
+from butlers.jobs.calendar_overcommitment import (
+    CHECK_INTERVAL_ENV as _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+)
+from butlers.jobs.calendar_overcommitment import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+)
+from butlers.jobs.calendar_overcommitment import (
+    resolve_lookahead_days as resolve_calendar_overcommitment_lookahead_days,
+)
+from butlers.jobs.calendar_overcommitment import run_calendar_overcommitment_loop
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
 )
+from butlers.jobs.capability_health import run_capability_health_loop, writer_dsn
+from butlers.jobs.day_sheet_push import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+)
+from butlers.jobs.day_sheet_push import run_day_sheet_push_loop
 from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
@@ -152,9 +177,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         app.state.owner_auth_service = None
         logger.warning("Owner authentication storage is unavailable")
+    # The vendor-door routes get their own restricted login, never the auth pool.
+    app.state.vendor_door_pool = await create_vendor_door_pool()
+    app.state.vendor_door_store = VendorDoorStore(app.state.vendor_door_pool)
 
     # Startup
-    init_dependencies()
+    init_dependencies(carrier=carry_via_control_plane)
 
     # Check infra creds for known-default values (A4 indicator: infra_creds_insecure_default).
     # Dev posture: warns loudly per credential.  Hardened posture: raises RuntimeError.
@@ -182,15 +210,22 @@ async def lifespan(app: FastAPI):
 
     # Initialize DB pools for all discovered butlers
     butler_configs = get_butler_configs()
+    job_health = JobHealthStore(lambda: get_db_manager().pool("switchboard"))
+    app.state.background_job_health = job_health
     secrets_lifecycle_task: asyncio.Task | None = None
+    capability_health_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
+    calendar_overcommitment_task: asyncio.Task | None = None
+    day_sheet_push_task: asyncio.Task | None = None
+    backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
     shadow_observer_task: asyncio.Task | None = None
+    readiness_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         wire_qa_credentials(app)
@@ -205,17 +240,40 @@ async def lifespan(app: FastAPI):
         from butlers.core.control_plane_identity import run_shadow_observer_loop
         from butlers.core.fleet_conditions import controller_after_cycle
 
+        # Semantic readiness (REQ-dashboard-api-063): a separately supervised
+        # controller samples every input into one cached snapshot. Public
+        # GET /ready reads only that snapshot and never probes or writes.
+        readiness = FleetReadiness(
+            lambda: get_db_manager().pool("switchboard"), butler_configs, job_health
+        )
+        app.state.readiness = readiness
+        controller_pass = controller_after_cycle(
+            get_db_manager().pool("switchboard"),
+            butler_configs,
+            get_discovery_diagnostics().is_retired,
+        )
+
+        async def _after_observer_cycle(role_view: Any, cycle: Any) -> None:
+            readiness.note_cycle(cycle)
+            await controller_pass(role_view, cycle)
+
         shadow_observer_task = _track_background_task(
             supervise_lifespan_loop(
                 "fleet_shadow_observer",
                 lambda: run_shadow_observer_loop(
                     get_db_manager().pool("switchboard"),
                     butler_configs,
-                    after_cycle=controller_after_cycle(
-                        get_db_manager().pool("switchboard"),
-                        butler_configs,
-                        get_discovery_diagnostics().is_retired,
-                    ),
+                    after_cycle=_after_observer_cycle,
+                ),
+                health=job_health.recorder("fleet_shadow_observer", "periodic", 150),
+            )
+        )
+        readiness_task = _track_background_task(
+            supervise_lifespan_loop(
+                "fleet_readiness",
+                lambda: run_readiness_sampler_loop(readiness),
+                health=job_health.recorder(
+                    "fleet_readiness", "periodic", readiness.sample_interval_s
                 ),
             )
         )
@@ -270,8 +328,23 @@ async def lifespan(app: FastAPI):
             supervise_lifespan_loop(
                 "secrets_lifecycle",
                 lambda: run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s),
+                health=job_health.recorder("secrets_lifecycle", "periodic", scan_interval_s),
             )
         )
+
+        # Capability health (RFC 0038 S6): publishes system.dep through its own login as
+        # perception_health_writer. No dedicated DSN means no job; readers then see unknown.
+        health_dsn = writer_dsn()
+        if health_dsn is not None:
+            capability_health_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "capability_health",
+                    lambda: run_capability_health_loop(get_db_manager(), health_dsn),
+                    health=job_health.recorder("capability_health", "periodic", 60),
+                )
+            )
+        else:
+            await job_health.recorder("capability_health", "periodic", 60).disabled()
 
         # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
         # closes the loop left open by the manual-only "Verify all" button —
@@ -286,6 +359,7 @@ async def lifespan(app: FastAPI):
             supervise_lifespan_loop(
                 "model_verify",
                 lambda: run_model_verify_loop(get_db_manager(), interval_s=model_verify_interval_s),
+                health=job_health.recorder("model_verify", "periodic", model_verify_interval_s),
             )
         )
 
@@ -305,6 +379,7 @@ async def lifespan(app: FastAPI):
                 supervise_lifespan_loop(
                     "fleet_events_bridge",
                     run_fleet_events_listener,
+                    health=job_health.recorder("fleet_events_bridge", "continuous", 5),
                 )
             )
         except Exception:
@@ -329,6 +404,7 @@ async def lifespan(app: FastAPI):
                     lambda: run_settings_console_delta_loop(
                         butler_configs, get_mcp_manager(), get_pricing(), get_db_manager()
                     ),
+                    health=job_health.recorder("settings_console_delta", "periodic", 5),
                 )
             )
         except Exception:
@@ -357,6 +433,7 @@ async def lifespan(app: FastAPI):
                     interval_s=staleness_interval_s,
                     staleness_s=staleness_window_s,
                 ),
+                health=job_health.recorder("secrets_staleness", "periodic", staleness_interval_s),
             )
         )
 
@@ -376,6 +453,7 @@ async def lifespan(app: FastAPI):
                 supervise_lifespan_loop(
                     "migration_drift",
                     lambda: run_migration_drift_loop(get_db_manager(), interval_s=drift_interval_s),
+                    health=job_health.recorder("migration_drift", "periodic", drift_interval_s),
                 )
             )
         except Exception:
@@ -440,10 +518,81 @@ async def lifespan(app: FastAPI):
                     lambda: run_calendar_sync_deadman_loop(
                         get_db_manager(), interval_s=calendar_deadman_interval_s
                     ),
+                    health=job_health.recorder(
+                        "calendar_sync_deadman", "periodic", calendar_deadman_interval_s
+                    ),
                 )
             )
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
+
+        # Calendar overcommitment (bu-vcjgo8, REQ-owner-condition-ledger-007): the
+        # radar's conflict scan over the owner's forward window, reconciled into the
+        # owner condition ledger. See butlers.jobs.calendar_overcommitment.
+        try:
+            overcommitment_interval_s = _resolve_positive_float_env(
+                _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+                DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+            )
+            overcommitment_lookahead_days = resolve_calendar_overcommitment_lookahead_days()
+            calendar_overcommitment_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "calendar_overcommitment",
+                    lambda: run_calendar_overcommitment_loop(
+                        get_db_manager(),
+                        interval_s=overcommitment_interval_s,
+                        lookahead_days=overcommitment_lookahead_days,
+                    ),
+                    health=job_health.recorder(
+                        "calendar_overcommitment", "periodic", overcommitment_interval_s
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
+
+        # Day sheet push (bu-5ii4gj.2 S3): tomorrow's day sheet to the owner, from the same
+        # projection the dashboard serves. Dark: each tick is a no-op unless
+        # DAY_SHEET_PUSH_ENABLED is set. See butlers.jobs.day_sheet_push.
+        try:
+
+            async def _switchboard_client():
+                return await get_mcp_manager().get_client("switchboard")
+
+            day_sheet_push_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "day_sheet_push",
+                    lambda: run_day_sheet_push_loop(
+                        get_db_manager(),
+                        client_provider=_switchboard_client,
+                        interval_s=DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+                    ),
+                    health=job_health.recorder(
+                        "day_sheet_push", "periodic", DEFAULT_DAY_SHEET_PUSH_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start day-sheet push loop", exc_info=True)
+
+        # Backup facts snapshot (bu-deqpzd): this process alone mounts the dump
+        # volume, so it publishes the content-free facts the QA patrol needs
+        # into public.state. Always on: an unset BUTLERS_BACKUP_DIR is itself
+        # published, so the patrol can tell "unconfigured" from "unseen".
+        try:
+            backup_facts_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "backup_facts_snapshot",
+                    lambda: run_backup_facts_snapshot_loop(
+                        get_db_manager(), interval_s=DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                    health=job_health.recorder(
+                        "backup_facts_snapshot", "periodic", DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start backup-facts-snapshot loop", exc_info=True)
 
         # External deadman: DB write/read and receiver-fleet truth gate the
         # outbound heartbeat. No configured target means no loop or HTTP.
@@ -464,11 +613,17 @@ async def lifespan(app: FastAPI):
                         lambda: run_external_deadman_loop(
                             get_db_manager(), url=deadman_url, interval_s=deadman_interval_s
                         ),
+                        health=job_health.recorder(
+                            "external_deadman", "periodic", deadman_interval_s
+                        ),
                     )
                 )
             except Exception:
                 logger.warning("Failed to start external-deadman ping loop", exc_info=True)
         else:
+            await job_health.recorder(
+                "external_deadman", "periodic", DEFAULT_DEADMAN_CHECK_INTERVAL_S
+            ).disabled()
             logger.info(
                 "%s is not set; external-deadman ping loop disabled "
                 "(no outside heartbeat monitor configured)",
@@ -490,10 +645,18 @@ async def lifespan(app: FastAPI):
         shadow_observer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await shadow_observer_task
+    if readiness_task is not None:
+        readiness_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await readiness_task
     if secrets_lifecycle_task is not None:
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if capability_health_task is not None:
+        capability_health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await capability_health_task
     if model_verify_task is not None:
         model_verify_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -518,10 +681,31 @@ async def lifespan(app: FastAPI):
         calendar_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_deadman_task
+    if calendar_overcommitment_task is not None:
+        calendar_overcommitment_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_overcommitment_task
+    if day_sheet_push_task is not None:
+        day_sheet_push_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await day_sheet_push_task
+    if backup_facts_task is not None:
+        backup_facts_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backup_facts_task
     if external_deadman_task is not None:
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
+    # Detached decision-memory writes need the pools that shutdown_db_manager closes.
+    with contextlib.suppress(Exception):
+        from butlers.api.routers.approvals import drain_decision_writebacks
+
+        await asyncio.wait_for(drain_decision_writebacks(), timeout=30)
+    vendor_door_pool = getattr(app.state, "vendor_door_pool", None)
+    if vendor_door_pool is not None:
+        await vendor_door_pool.close()
+        app.state.vendor_door_pool = None
     if app.state.owner_auth_service is not None:
         await close_owner_auth_service(app.state.owner_auth_service)
         app.state.owner_auth_service = None
@@ -563,6 +747,8 @@ def create_app(
     )
     # Health endpoints return 503 until lifespan startup sets this True.
     app.state.ready = False
+    # Semantic readiness controller; None until lifespan wires it (fails closed).
+    app.state.readiness = None
     app.state.approval_callback_connector_token = None
     app.router.redirect_slashes = False
 
@@ -571,6 +757,7 @@ def create_app(
         try:
             from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
+            from butlers.api.trace_redaction import redact_span_query
             from butlers.core.metrics import init_metrics
             from butlers.core.telemetry import init_telemetry
 
@@ -580,11 +767,16 @@ def create_app(
                 app,
                 # Instrumentor wraps outside user middleware. Exclusion therefore
                 # belongs here as well as at the auth boundary, before URL capture.
+                # Exclusions match the path only (never the query), so credentials
+                # in a query are scrubbed by the request hook on every path instead.
+                server_request_hook=redact_span_query,
                 excluded_urls=",".join(
                     filter(
                         None,
                         [
                             r".*/api/auth/owner(?:[/?]|$)",
+                            # Ambient glance polls: any spelling of the grant route.
+                            r".*/api/projections/.*glance",
                             os.environ.get(
                                 "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
                                 os.environ.get("OTEL_PYTHON_EXCLUDED_URLS", ""),
@@ -605,6 +797,7 @@ def create_app(
                     ".*key.*",
                     ".*secret.*",
                     ".*password.*",
+                    ".*capture-intake.*",
                 ],
             )
             logger.info("FastAPI OTel instrumentation enabled")
@@ -628,6 +821,8 @@ def create_app(
     _effective_api_key = effective_key or None
     app.state.owner_auth_config = OwnerAuthConfig.from_env(effective_key or "")
     app.state.owner_auth_service = None
+    # None selects the shared-pool PostgresProjectionGrantStore at request time.
+    app.state.projection_grant_store = None
 
     register_error_handlers(app)
     # Last registration is outermost: authentication precedes general audit,
@@ -648,6 +843,28 @@ def create_app(
                 "Mounted butler router: %s (prefix=%s)", entry.butler_name, entry.router.prefix
             )
 
+    @app.get("/ready", include_in_schema=False)
+    async def ready() -> JSONResponse:
+        """Content-blind semantic readiness from the cached controller snapshot.
+
+        Exact ``GET /ready`` is the sole public owner-auth exception for
+        readiness. It reads memory only: no database query, daemon call, route
+        preflight, or evidence write happens on the request path. A pass
+        proves control-plane selection and reachability, not transactional
+        ``route.execute`` acceptance. ``/health`` stays process-only.
+        """
+        readiness = getattr(app.state, "readiness", None)
+        if readiness is None:
+            is_ready, checks = False, dict.fromkeys(_READINESS_CHECK_KEYS, False)
+        else:
+            is_ready, checks = readiness.verdict()
+        headers = {"Cache-Control": "no-store"}
+        if is_ready:
+            return JSONResponse(status_code=200, content={"ready": True}, headers=headers)
+        return JSONResponse(
+            status_code=503, content={"ready": False, "checks": checks}, headers=headers
+        )
+
     @app.get("/api/health")
     @app.get("/health")
     async def health():
@@ -667,13 +884,13 @@ def create_app(
         #
         # security.insecure_infra_defaults: True when any infra credential is at
         #   its known default (absent env var = docker-compose default applies) OR
-        #   when Grafana anonymous access is enabled outside dev posture.
+        #   when Grafana anonymous access is configured in this process.
         #   Clears only when all infra creds are overridden AND anon access is
-        #   disabled (or posture is dev).  Read at request time for live updates.
+        #   disabled. This is a configuration diagnostic, not fleet attestation.
         #
         # security.role_enforcement_disabled: True when SET ROLE schema-isolation
-        #   is NOT active for the managed database connections.  In dev posture
-        #   the butler schema isolation layer is disabled (no DB role configured
+        #   is NOT active for the managed database connections. The API
+        #   has its own authority boundary (no DB role configured
         #   on the API pools); this clears only when all managed pools have an
         #   active, verified DB role.  Read from the DatabaseManager singleton
         #   so it reflects real connection state established at startup.
@@ -704,7 +921,7 @@ def create_app(
             },
             "security": {
                 "insecure_infra_defaults": has_insecure_infra_defaults()
-                or is_grafana_anon_outside_dev(),
+                or is_grafana_anonymous_enabled(),
                 "role_enforcement_disabled": role_enforcement_disabled,
             },
         }

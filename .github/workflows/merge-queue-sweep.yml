@@ -1,0 +1,28 @@
+name: Merge queue sweep
+# Force-cancel CI runs left behind when the merge queue rebuilds its groups
+# (bu-29wkwj.16). Each rebuild starts new merge_group runs, so sweeping on that
+# event catches the previous build's runs; the schedule is a fallback.
+on:
+  merge_group:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: merge-queue-sweep
+  cancel-in-progress: true
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/ci_sweep_stale_merge_groups.py
+          sparse-checkout-cone-mode: false
+      - name: Force-cancel merge_group runs whose queue ref is gone
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_sweep_stale_merge_groups.py --repo "$GITHUB_REPOSITORY" --apply

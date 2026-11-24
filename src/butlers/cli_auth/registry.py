@@ -195,6 +195,21 @@ _register(
     )
 )
 
+_register(
+    CLIAuthProviderDef(
+        name="openai",
+        display_name="OpenAI API key (Codex)",
+        runtime="codex",
+        auth_mode="api_key",
+        env_var="CODEX_API_KEY",
+        binary_name="codex",
+        # Store-only, like Claude: the key lives only in the credential store
+        # as cli-auth/openai. CodexAdapter prefers it over the cli-auth/codex
+        # device-code authority and falls back to that authority when the key
+        # is absent or rejected.
+    )
+)
+
 
 def providers_for_runtime(runtime_type: str) -> list[CLIAuthProviderDef]:
     """Return all registered CLI auth providers for a given runtime adapter name.

@@ -12,6 +12,7 @@ this module.  The same pattern is used in :mod:`butlers.lifecycle`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,12 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import asyncpg
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
 from butlers.conversation_identity import event_conversation_identity
 from butlers.core.dashboard_turns import reconcile_route_recovery
+from butlers.core.model_routing import coerce_complexity_tier
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
     route_inbox_mark_errored,
@@ -39,8 +40,10 @@ from butlers.core.route_observability import (
     safe_runtime_failure_class,
 )
 from butlers.core.routing_context import _routing_ctx_var
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 from butlers.core.telemetry import tag_butler_span
+from butlers.mcp_liveness import LivenessClient as MCPClient
 from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.routing_guidance import (
     _build_route_runtime_context,
@@ -87,6 +90,11 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
                 sender_name = participants.get(first)
     elif sender_identity not in ("unknown", ""):
         source_id = str(sender_identity)
+        # The connector's own sender label (e.g. Gmail's From: display name) names
+        # an unknown sender in the owner notice; a blank or non-text value is dropped.
+        display_name = ref.sender.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            sender_name = display_name.strip()
 
     source_sender_identity = source_id or sender_identity
     request_context: dict[str, Any] = {
@@ -198,43 +206,68 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         """Deliver one entity-review notice through the normal notify boundary.
 
         This callback is deliberately deterministic and narrow: identity ingress
-        has already constructed a content-free review message, and this seam
+        has already constructed the body-free owner notice, and this seam
         only resolves the configured owner Telegram recipient before sending a
         ``notify.v1`` envelope through Switchboard → Messenger.  It must raise
         for every unsent result so identity injection can log the failed attempt
         while retaining its durable no-repeat claim.
         """
-        recipient = await daemon._resolve_default_notify_recipient(
-            channel="telegram",
-            intent="send",
-            recipient=None,
-        )
+        from butlers.core.attention_ledger import Outcome, record_attention_event
+
+        async def record(
+            outcome: Outcome, reason: str | None = None, ref: str | None = None
+        ) -> None:
+            await record_attention_event(
+                pool,
+                origin_butler="switchboard",
+                source="notify",
+                outcome=outcome,
+                channel="telegram",
+                intent="send",
+                priority="medium",
+                reason=reason,
+                notification_ref=ref,
+            )
+
+        try:
+            recipient = await daemon._resolve_default_notify_recipient(
+                channel="telegram",
+                intent="send",
+                recipient=None,
+            )
+        except Exception as exc:
+            await record("failed", "preparation_error:" + type(exc).__name__)
+            raise RuntimeError("Owner recipient unavailable") from None
         if not recipient:
+            await record("failed", "no_recipient_configured")
             raise RuntimeError(
                 "No Telegram recipient configured for unknown-sender owner notification"
             )
 
+        from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
         from butlers.tools.switchboard.notification.deliver import deliver
 
-        result = await deliver(
-            pool,
-            source_butler="switchboard",
-            notify_request={
-                "schema_version": "notify.v1",
-                "origin_butler": "switchboard",
-                "delivery": {
-                    "intent": "send",
-                    "channel": "telegram",
-                    "recipient": recipient,
-                    "message": message,
-                },
-            },
+        result = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard",
+                    message=message,
+                    recipient=recipient,
+                ),
+            ),
+            timeout_s=None,
         )
-        if not isinstance(result, dict) or result.get("status") != "sent":
-            detail = result.get("error") if isinstance(result, dict) else None
-            raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
+        await record(
+            "delivered" if result.delivered else "failed", result.reason, result.notification_ref
+        )
+        result.require_delivered()
 
     from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
+    from butlers.roster_imports import roster_module
+
+    _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
 
     daemon._fact_source_registry = FactSourceContextRegistry(pool)
     register_source_registry(daemon._fact_source_registry)
@@ -247,6 +280,8 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         classification_timeout_s=classification_timeout_s,
         enable_identity_resolution=True,
         notify_owner_fn=_notify_owner_about_unknown_sender,
+        # The owner's one-tap Ignore card for the same sender (bu-p7glz9).
+        unknown_sender_card_fn=functools.partial(_unknown_sender_cards.park_ignore_card, pool),
         # daemon.mcp is not yet assigned a real FastMCP instance at this
         # point in startup (see butlers.lifecycle.run_startup: _wire_pipelines
         # runs at step 10b, daemon.mcp = FastMCP(...) at step 12) — a provider
@@ -466,10 +501,19 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         recovered_routing_context["request_context"] = {
             "source_channel": parsed.request_context.source_channel
         }
-        if parsed.request_context.source_sender_entity_id:
-            recovered_routing_context["source_entity_id"] = (
-                parsed.request_context.source_sender_entity_id
+        sender_entity_id = parsed.request_context.source_sender_entity_id
+        if isinstance(sender_entity_id, str) and sender_entity_id.strip():
+            recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
+            if parsed.request_context.source_sender_custody == "endpoint_held":
+                recovered_routing_context["source_custody"] = "endpoint_held"
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            recovered_endpoint = source_endpoint_record(
+                parsed.request_context.source_channel,
+                parsed.request_context.source_sender_identity,
             )
+            if recovered_endpoint is not None:
+                recovered_routing_context[SOURCE_ENDPOINT_KEY] = recovered_endpoint
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):
@@ -553,6 +597,46 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                         )
                         return
 
+                    # Match the live route's anchor semantics under the existing
+                    # heartbeat, after any dashboard predecessor reconciliation.
+                    conversation_id: uuid.UUID | None = None
+                    source_channel = parsed.request_context.source_channel
+                    source_thread_identity = parsed.request_context.source_thread_identity
+                    external_conversation_id = parsed.request_context.external_conversation_id
+                    if source_thread_identity or external_conversation_id:
+                        try:
+                            if source_channel == "dashboard":
+                                from butlers.api.conversations import (
+                                    conversation_get_by_id_any_butler,
+                                )
+
+                                existing_conversation = await conversation_get_by_id_any_butler(
+                                    pool, uuid.UUID(source_thread_identity)
+                                )
+                                if existing_conversation is not None:
+                                    conversation_id = existing_conversation["id"]
+                            elif external_conversation_id:
+                                from butlers.api.conversations import (
+                                    conversation_get_or_create_by_thread,
+                                )
+
+                                conversation, _ = await conversation_get_or_create_by_thread(
+                                    pool,
+                                    butler_name=daemon.config.name,
+                                    source_channel=source_channel,
+                                    external_conversation_id=external_conversation_id,
+                                    first_message=parsed.input.prompt,
+                                )
+                                conversation_id = conversation["id"]
+                        except Exception as exc:
+                            logger.debug(
+                                "conversation anchor lookup/create failed for "
+                                "butler=%s source_channel=%s failure_class=%s",
+                                daemon.config.name,
+                                source_channel,
+                                type(exc).__name__,
+                            )
+
                     result = await route_inbox_wait_while_claimed(
                         pool,
                         row_id,
@@ -563,6 +647,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             context=context_text,
                             trigger_source="route",
                             request_id=route_request_id,
+                            complexity=coerce_complexity_tier(
+                                parsed.input.complexity, strict=False
+                            ),
                             # Recovery dispatches replay the original ingest;
                             # request_id is the same UUID7 the switchboard wrote
                             # as public.ingestion_events.id, so persist it as the
@@ -570,6 +657,8 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             # chronicler contact-resolution join (mirrors the
                             # primary route handler in core_tools/_routing.py).
                             ingestion_event_id=route_request_id,
+                            conversation_id=conversation_id,
+                            attachments=parsed.input.attachments,
                             # Recovered dashboard work must rejoin the same durable
                             # turn, otherwise a Stop during a process restart could
                             # not prevent the replayed target runtime from starting.
@@ -739,14 +828,18 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-                    except Exception:
+                    except (Exception, asyncio.CancelledError) as exc:
+                        # fastmcp re-raises a cancelled session's CancelledError into
+                        # a caller nobody cancelled; that is a dead connection too.
+                        raise_if_task_cancelled(exc)
                         logger.warning(
                             "Switchboard heartbeat: connection dead, reconnecting",
                             exc_info=True,
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.warning("Switchboard heartbeat: unexpected error", exc_info=True)
     except asyncio.CancelledError:
         return

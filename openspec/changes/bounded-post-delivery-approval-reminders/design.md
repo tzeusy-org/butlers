@@ -171,8 +171,10 @@ Ambiguous actions are excluded from outbound content until reconciliation so
 homecoming cannot become an ambiguity bypass.
 
 The activity channel is used only if eligible; otherwise normal eligible order
-applies. Quiet hours and burst counting still apply. Restart and concurrent
-activity replay the epoch key.
+applies. For this summary only, unused-channel state belongs to its singleton
+presence epoch, not to a member action's attention episode. Original/reminder
+channel histories and lifetime ordinals are unchanged. Quiet hours and burst
+counting still apply. Restart and concurrent activity replay the epoch key.
 
 ### D8 - Disengagement keeps its actual denominator
 

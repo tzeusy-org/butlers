@@ -1,6 +1,13 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Model Selection
+
+The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`). Butler authors MUST use the `provider/model` format in `butler.toml` when using the OpenCode runtime.
 
 The adapter SHALL retain the resolved catalog model identifier as the canonical
 caller-visible identity for routing, pricing, spend enforcement, token-ledger
@@ -18,6 +25,15 @@ Provider-registration-specific configuration transforms, including existing
 non-Go provider configuration, remain outside this mapper's scope. The mapper
 SHALL not mutate a catalog row, pricing key, historical dispatch record, or
 provider label.
+
+The goal runner SHALL supply each goal invocation's staged credential and
+broker-only MCP configuration under RFC 0038 D3. The session-host adapter SHALL
+preserve the canonical provider/model selection and every mapping/configuration
+scenario below; it SHALL NOT regain domain credentials or permission bypasses.
+D18 verification and benchmark functions SHALL have no MCP servers or built-in /
+provider-hosted tools, perform one fixed-prompt structured-output measurement
+call and refuse an adapter that cannot enforce that boundary. They share the
+applicable model/adapter/config mapping, not a goal's broker capabilities.
 
 ID: REQ-runtime-opencode-001
 Source: runtime-opencode Model Selection; model-catalog REQ-model-catalog-002; design.md Decision 2

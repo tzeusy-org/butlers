@@ -72,7 +72,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
@@ -149,10 +149,9 @@ ATTENTION_LEDGER_SESSION_KEY = "session_id"
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The
-# attention policy (quiet hours, context-bus dnd/sleeping) fails OPEN for any
-# candidate/notification at or above this threshold — it always gets through,
-# regardless of quiet hours or dnd/sleeping context signals. Only the routine
-# (below-threshold) path is budgeted/suppressible.
+# This is a ranking/ledger convention, not interruption authority. The D7
+# notify and Insight delivery boundaries require a current verified cause for
+# quiet-hours or dnd/sleeping exceptions; a model-assigned score never grants one.
 URGENT_PRIORITY_THRESHOLD = 90
 
 # notify()'s priority parameter is a 3-level enum (high/medium/low), not the
@@ -247,11 +246,10 @@ async def record_attention_event(
 
     priority_label, priority_score = normalize_priority(priority)
 
-    # Pre-serialize + explicit ::jsonb cast (not a raw dict bind): portable
-    # across both a pool with a registered dict->jsonb codec (production, via
-    # Database.connect()) and a bare asyncpg pool with no custom codec (tests
-    # that connect directly). Mirrors the existing pattern in
-    # propose_insight_candidate() — never bind a raw dict without this cast.
+    # Bind serialized JSON as text, then convert it to JSONB in PostgreSQL.
+    # A direct JSONB parameter would run the production codec's encoder again,
+    # storing a JSON string instead of an object. Text also works on bare
+    # asyncpg pools without that codec, and None remains SQL NULL.
     if session_id:
         metadata = {**(metadata or {}), ATTENTION_LEDGER_SESSION_KEY: session_id}
     metadata_json = json.dumps(metadata) if metadata is not None else None
@@ -262,7 +260,7 @@ async def record_attention_event(
             INSERT INTO public.attention_ledger
                 (origin_butler, source, channel, intent, priority_label,
                  priority_score, dedup_key, outcome, reason, notification_ref, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb)
             RETURNING id
             """,
             origin_butler,
@@ -277,16 +275,10 @@ async def record_attention_event(
             notification_ref,
             metadata_json,
         )
-    except Exception:
-        # Never let ledger-write trouble affect the notification it describes.
-        logger.warning(
-            "record_attention_event: failed to record ledger row "
-            "(origin_butler=%s source=%s outcome=%s)",
-            origin_butler,
-            source,
-            outcome,
-            exc_info=True,
-        )
+    except Exception as exc:
+        # A traceback can include a private delivery exception currently being
+        # handled by the caller, as well as database row/parameter details.
+        logger.warning("record_attention_event: ledger write failed: %s", type(exc).__name__)
         return None
     return str(row_id) if row_id is not None else None
 
@@ -471,6 +463,36 @@ async def attention_event_recorded_since(
         logger.warning("attention_event_recorded_since: query failed; failing open", exc_info=True)
         return False
     return row is not None
+
+
+async def failed_attempts(
+    pool: asyncpg.Pool | asyncpg.Connection | None,
+    *,
+    dedup_key: str,
+) -> tuple[int, timedelta | None]:
+    """Return ``(count, age of the newest)`` for ``failed`` ledger rows under *dedup_key*.
+
+    A job that retries an undelivered send every tick derives its backoff from this
+    instead of keeping retry state; the age is measured on the database clock that
+    stamped the rows. Fails open to ``(0, None)``, so ledger trouble never blocks a send.
+    """
+    if pool is None:
+        return 0, None
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT count(*) AS failures, now() - max(occurred_at) AS since_last
+            FROM public.attention_ledger
+            WHERE dedup_key = $1 AND outcome = 'failed'
+            """,
+            dedup_key,
+        )
+    except Exception:
+        logger.warning("failed_attempts: query failed; failing open", exc_info=True)
+        return 0, None
+    if row is None:
+        return 0, None
+    return int(row["failures"]), row["since_last"]
 
 
 async def count_attention_events_since(

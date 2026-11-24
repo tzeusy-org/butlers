@@ -17,11 +17,14 @@ Issue: bu-w5dv
 from __future__ import annotations
 
 import csv
+import importlib
 import io
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -490,7 +493,7 @@ class TestGenericParsing:
 
 class TestDryRun:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -506,7 +509,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -532,7 +536,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/big.csv",
+            storage_ref="s3://bucket/finance/big.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -548,7 +553,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -569,7 +575,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -586,7 +593,7 @@ class TestDryRun:
 
 class TestDeduplication:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -606,37 +613,35 @@ class TestDeduplication:
         # _check_duplicates_batch compares (posted_at, amount, merchant) tuples
         # using native Python types (datetime, Decimal, str) to avoid string
         # serialization mismatches with PostgreSQL's ::text cast.
-        pool = MagicMock()
-        pool.fetch = AsyncMock(
-            return_value=[
-                {
-                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
-                    "amount": Decimal("45.32"),
-                    "merchant": "Whole Foods Market",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
-                    "amount": Decimal("32.00"),
-                    "merchant": "Shell Oil",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
-                    "amount": Decimal("15.49"),
-                    "merchant": "Netflix.Com",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
-                    "amount": Decimal("1200.00"),
-                    "merchant": "Direct Deposit",
-                },
-            ]
-        )
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
+        pool.fetch.return_value = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods Market",
+            },
+            {
+                "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                "amount": Decimal("32.00"),
+                "merchant": "Shell Oil",
+            },
+            {
+                "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
+                "amount": Decimal("15.49"),
+                "merchant": "Netflix.Com",
+            },
+            {
+                "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
+                "amount": Decimal("1200.00"),
+                "merchant": "Direct Deposit",
+            },
+        ]
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -653,14 +658,13 @@ class TestDeduplication:
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates found
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -801,11 +805,15 @@ class TestDeduplication:
         pool.fetch = AsyncMock(return_value=[])
 
         await _check_duplicates_batch(pool, batch, account_id=account_id)
-        # Verify the query includes account_id in WHERE clause.
-        call_args = pool.fetch.call_args
-        assert call_args is not None
-        query = call_args[0][0]
-        assert "account_id = $1" in query
+        pool.fetch.assert_awaited_once()
+        query, bound_account, dates, amounts, merchants = pool.fetch.await_args.args
+        assert "t.account_id IS NOT DISTINCT FROM $1::uuid" in query
+        assert bound_account == account_id
+        assert (dates, amounts, merchants) == (
+            (batch[0]["posted_at"],),
+            (batch[0]["amount"],),
+            (batch[0]["merchant"],),
+        )
 
     async def test_batch_dedup_empty_batch(self):
         """_check_duplicates_batch returns empty set for empty batch."""
@@ -832,7 +840,7 @@ class TestBatchProcessing:
         return "\n".join(lines)
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -842,14 +850,13 @@ class TestBatchProcessing:
 
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates in batch query
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/big.csv",
+            storage_ref="s3://bucket/finance/big.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -863,14 +870,13 @@ class TestBatchProcessing:
         assert _BATCH_SIZE == 500
         content = self._build_large_csv(501)
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/batch.csv",
+            storage_ref="s3://bucket/finance/batch.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -884,7 +890,7 @@ class TestBatchProcessing:
 
 class TestErrorHandling:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -892,35 +898,121 @@ class TestErrorHandling:
         """Blob fetch failure returns structured error, not exception."""
         from butlers.tools.finance.data_import import import_transactions
 
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(side_effect=RuntimeError("S3 unreachable"))
         pool = MagicMock()
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/missing.csv",
+            storage_ref="s3://bucket/finance/missing.csv",
+            origin_butler="finance",
         )
 
         assert result["status"] == "error"
         assert "error" in result
 
-    async def test_undetectable_date_format_returns_error(self):
-        """CSV with unrecognizable date format returns structured error."""
+    @pytest.mark.parametrize(
+        ("storage_ref", "origin_butler", "reason"),
+        [
+            ("s3://bucket/health/records.csv", "finance", "attachment_forbidden"),
+            ("s3://bucket/finance/chase.csv", "", "attachment_forbidden"),
+            ("s3://bucket/chase.csv", "finance", "invalid_storage_ref"),
+            ("s3://bucket/finance/../health/records.csv", "finance", "invalid_storage_ref"),
+            ("s3://other-bucket/finance/chase.csv", "finance", "invalid_storage_ref"),
+            ("s3://bucket/connectors/telegram/chase.csv", "finance", None),
+        ],
+    )
+    async def test_storage_ref_scoped_to_butler_and_connector_prefixes(
+        self, storage_ref, origin_butler, reason
+    ):
+        """RFC 0016: only the butler's own or the connector prefix is read; others refused unread."""
+        import_transactions = importlib.import_module(
+            "butlers.tools.finance.data_import"
+        ).import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        blob_store.bucket = "bucket"
+
+        result = await import_transactions(
+            pool=MagicMock(),
+            blob_store=blob_store,
+            storage_ref=storage_ref,
+            origin_butler=origin_butler,
+            dry_run=True,
+        )
+
+        if reason is None:
+            assert result["detected_format"] == "chase"
+            blob_store.get.assert_awaited_once()
+        else:
+            assert result["status"] == "refused"
+            assert result["reason"] == reason
+            blob_store.get.assert_not_awaited()
+
+    _WIDE_HEADERS = ["Date", "Description", "Amount", "x" * 150] + [f"c{i}" for i in range(56)]
+
+    @pytest.mark.parametrize(
+        ("csv_text", "column_map", "headers", "headers_truncated", "missing_columns"),
+        [
+            # Columns resolve, but the date values match no known format.
+            (
+                "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n",
+                None,
+                ["Transaction Date", "Description", "Amount"],
+                False,
+                [],
+            ),
+            # Dates parse, but no merchant or amount column can be found.
+            (
+                "Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n",
+                None,
+                ["Date", "Memo", "Sum"],
+                False,
+                ["merchant", "amount"],
+            ),
+            # `description` maps the transaction description, not the merchant, so the
+            # merchant column is reported missing instead of silently imported blank.
+            (
+                "Date,Memo,Amount\n2024-01-15,MERCHANT,-10.00\n",
+                {"description": "Memo"},
+                ["Date", "Memo", "Amount"],
+                False,
+                ["merchant"],
+            ),
+            # Untrusted headers are bounded: first 50 names, each cut to 100 chars.
+            (
+                ",".join(_WIDE_HEADERS) + "\nJanuary 15 2024,MERCHANT,-10.00\n",
+                None,
+                ["Date", "Description", "Amount", "x" * 100] + [f"c{i}" for i in range(46)],
+                True,
+                [],
+            ),
+        ],
+        ids=["bad-date", "no-merchant-amount", "description-key-not-merchant", "oversized-headers"],
+    )
+    async def test_unknown_format_returns_unrecognized_format_with_headers(
+        self, csv_text, column_map, headers, headers_truncated, missing_columns
+    ):
+        """Spec 'Unknown format fallback': unrecognized_format plus the headers to map."""
         from butlers.tools.finance.data_import import import_transactions
 
-        bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
-        blob_store = self._make_blob_store(bad_csv)
         pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
 
         result = await import_transactions(
             pool=pool,
-            blob_store=blob_store,
-            storage_ref="s3://bucket/bad.csv",
+            blob_store=self._make_blob_store(csv_text),
+            storage_ref="s3://bucket/finance/bad.csv",
+            origin_butler="finance",
+            column_map=column_map,
         )
 
-        assert result["status"] == "error"
-        assert "date" in result["error"].lower()
+        assert result["status"] == "unrecognized_format"
+        assert result["headers"] == headers
+        assert result["headers_truncated"] is headers_truncated
+        assert result["missing_columns"] == missing_columns
+        pool.execute.assert_not_called()
 
     async def test_row_with_missing_amount_logged_as_error(self):
         """Row with empty amount is captured in error_details, not raised."""
@@ -932,14 +1024,13 @@ class TestErrorHandling:
             "01/16/2024,BAD ROW,\n"
         )
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/partial.csv",
+            storage_ref="s3://bucket/finance/partial.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -952,15 +1043,15 @@ class TestErrorHandling:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # First call succeeds, subsequent ones raise
-        pool.execute = AsyncMock(side_effect=Exception("DB unavailable"))
+        pool.execute.side_effect = Exception("DB unavailable")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["errors"] > 0
@@ -971,14 +1062,13 @@ class TestErrorHandling:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert "import_batch_id" in result
@@ -992,7 +1082,7 @@ class TestErrorHandling:
 
 class TestReturnShape:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1000,14 +1090,13 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "chase"
@@ -1016,14 +1105,13 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(AMEX_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/amex.csv",
+            storage_ref="s3://bucket/finance/amex.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "amex"
@@ -1032,14 +1120,13 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CAPITAL_ONE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/c1.csv",
+            storage_ref="s3://bucket/finance/c1.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "capital_one"
@@ -1048,14 +1135,13 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         for key in ("total", "imported", "skipped", "errors", "import_batch_id", "detected_format"):
@@ -1067,11 +1153,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)  # has a Category column
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         learn_spy = AsyncMock(return_value={"upserted": 3, "as_of": "2024-01-01"})
         with patch(
@@ -1081,7 +1163,8 @@ class TestReturnShape:
             result = await import_transactions(
                 pool=pool,
                 blob_store=blob_store,
-                storage_ref="s3://bucket/chase.csv",
+                storage_ref="s3://bucket/finance/chase.csv",
+                origin_butler="finance",
             )
 
         assert result["imported"] == 4
@@ -1099,16 +1182,13 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)  # 4 rows, distinct dates/categories
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates → all 4 imported
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["imported"] == 4
@@ -1150,7 +1230,7 @@ class TestCurrencyInference:
     """Tests for spec: finance-data-import "Currency inference"."""
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1159,15 +1239,13 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             currency="EUR",  # explicit
         )
 
@@ -1181,16 +1259,15 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # First fetchrow call is _lookup_account_currency, returns GBP.
-        pool.fetchrow = AsyncMock(return_value={"currency": "GBP"})
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool.fetchrow.return_value = {"currency": "GBP"}
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id="11111111-1111-1111-1111-111111111111",
             currency=None,  # not specified — infer from account
         )
@@ -1205,15 +1282,13 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id=None,
             currency=None,
         )
@@ -1226,16 +1301,15 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # Account found but currency field is empty.
-        pool.fetchrow = AsyncMock(return_value={"currency": ""})
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool.fetchrow.return_value = {"currency": ""}
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id="22222222-2222-2222-2222-222222222222",
             currency=None,
         )
@@ -1324,39 +1398,27 @@ class TestCurrencyInference:
         assert cur == "USD"
         assert warn is not None
 
-    async def test_file_import_infers_currency_from_account(self):
-        """import_transactions_from_file also infers currency from the account record."""
-        import os
-        import tempfile
+    async def test_import_infers_currency_from_account_with_full_pipeline(self):
+        """The storage_ref import infers currency from the account through the full pipeline."""
+        from butlers.tools.finance.data_import import import_transactions
 
-        from butlers.tools.finance.data_import import import_transactions_from_file
+        blob_store = AsyncMock(scheme="s3")
+        blob_store.get = AsyncMock(return_value=CHASE_CSV.encode("utf-8"))
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
+        # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
+        pool.fetchrow.side_effect = [
+            {"currency": "AUD"},  # _lookup_account_currency
+            None,  # dedup check rows (fetchrow fallback)
+        ]
 
-        # Write a small Chase CSV to a temp file.
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as fh:
-            fh.write(CHASE_CSV)
-            tmp_path = fh.name
-
-        try:
-            pool = MagicMock()
-            # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
-            pool.fetchrow = AsyncMock(
-                side_effect=[
-                    {"currency": "AUD"},  # _lookup_account_currency
-                    None,  # dedup check rows (fetchrow fallback)
-                ]
-            )
-            pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
-            pool.fetch = AsyncMock(return_value=[])  # batch dedup
-            pool.execute = AsyncMock()
-
-            result = await import_transactions_from_file(
-                pool=pool,
-                file_path=tmp_path,
-                account_id="33333333-3333-3333-3333-333333333333",
-                currency=None,
-            )
-        finally:
-            os.unlink(tmp_path)
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
+            account_id="33333333-3333-3333-3333-333333333333",
+            currency=None,
+        )
 
         assert result.get("currency_warning") is None
         assert "import_batch_id" in result
@@ -1378,7 +1440,7 @@ class TestProgressNotify:
         return "\n".join(lines)
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1390,14 +1452,13 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/small.csv",
+            storage_ref="s3://bucket/finance/small.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1412,14 +1473,13 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1435,14 +1495,13 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1464,15 +1523,14 @@ class TestProgressNotify:
         content = self._build_large_csv(2000)
         blob_store = self._make_blob_store(content)
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         # Should complete without error even though there's no notify_fn.
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=None,
         )
 
@@ -1487,14 +1545,13 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 

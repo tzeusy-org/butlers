@@ -43,3 +43,27 @@ def test_whatsapp_bridge_go_version_contract() -> None:
     assert toolchain is None
     assert builder_version.groups() == (BUILDER_GO_VERSION, BUILDER_DIGEST)
     assert documented_version.group(1) == BUILDER_GO_VERSION
+
+
+def test_go_artifact_producer_and_consumer_use_the_same_pinned_offline_contract() -> None:
+    producer = (REPO_ROOT / "Dockerfile.go-artifacts").read_text()
+    consumer = (REPO_ROOT / "Dockerfile").read_text()
+    source = (REPO_ROOT / "scripts/runtime_clis/go_artifacts.go").read_text()
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+    builder = f"golang:{BUILDER_GO_VERSION}-bookworm@sha256:{BUILDER_DIGEST}"
+    assert f"FROM {builder} AS producer" in producer
+    assert "RUN --network=default" in producer
+    assert "go mod download -json all" in producer
+    assert "cp go.mod go.sum /seed/project/" in producer
+    assert "RUN --network=none GOPROXY=off GOSUMDB=off" in producer
+    assert "--project /source --cache /seed/modules --output /output/context" in producer
+    assert "COPY --from=producer /output/context/ /" in producer
+    assert "--mount=from=go-artifacts,source=.,target=/opt/go-artifacts,readonly" in consumer
+    assert "RUN --network=none --mount=from=go-artifacts" in consumer
+    assert "go run /producer/go_artifacts.go verify --project /build" in consumer
+    assert "go mod verify" in consumer
+    assert "go mod tidy -diff" in consumer
+    assert "go mod download" not in consumer
+    assert "go build -mod=readonly -trimpath -buildvcs=false" in consumer
+    assert '"-trimpath", "-buildvcs=false", "-ldflags=-s -w"' in source
+    assert "go_artifacts.go ../scripts/runtime_clis/go_artifacts_test.go" in workflow

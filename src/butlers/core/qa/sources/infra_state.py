@@ -60,12 +60,16 @@ Four checks, one discovery source
    per-butler ``ButlerHeartbeatStale`` episodes are carried forward in this
    source's snapshot so the handoff cannot resolve them by omission; only the
    fleet controller's complete healthy observation of each daemon closes them.
-3. **backup-stale / backup-run-failed** — reuses
-   ``butlers.core.backup_facts.read_backup_facts_from_dir`` (the same
-   recency/reachability facts ``GET /api/system/backups`` surfaces) against
-   the ``BUTLERS_BACKUP_DIR`` env var. An unset env var is a legitimate
-   absence (not every deployment enables backups) and is silently skipped,
-   matching that endpoint's own documented contract. A *configured* but
+3. **backup-stale / backup-run-failed** — reads the facts
+   ``butlers.core.backup_facts.read_backup_facts_from_dir`` derives (the same
+   recency/reachability facts ``GET /api/system/backups`` surfaces) from the
+   ``public.state`` snapshot dashboard-api publishes
+   (``butlers.core.backup_facts_snapshot``, bu-deqpzd). This daemon hosts
+   every butler's runtime CLI, so it deliberately does not mount the dump
+   volume. A missing or stale snapshot is a ``BackupFactsUnavailable``
+   finding, never a silent skip. A fresh snapshot recording an unset
+   ``BUTLERS_BACKUP_DIR`` is a legitimate absence (not every deployment
+   enables backups), matching that endpoint's own documented contract. A *configured* but
    unreachable directory, or one with no dump ever recorded, or a most-recent
    dump the endpoint itself already flagged ``backup_stale`` (against
    :data:`butlers.core.backup_facts.BACKUP_STALE_THRESHOLD_HOURS`), is a
@@ -134,16 +138,12 @@ import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Final
 
 import asyncpg
 
-from butlers.core.backup_facts import (
-    BACKUP_DIR_ENV,
-    BACKUP_STALE_THRESHOLD_HOURS,
-    read_backup_facts_from_dir,
-)
+from butlers.core.backup_facts import BACKUP_STALE_THRESHOLD_HOURS
+from butlers.core.backup_facts_snapshot import load_backup_facts_snapshot
 from butlers.core.fleet_conditions import (
     FLEET_FINGERPRINT,
     FLEET_SOURCE,
@@ -268,11 +268,8 @@ class InfraStateSource:
         asyncpg connection pool. Must be able to SELECT
         ``public.v_qa_connector_state`` and the active butler-liveness view
         (granted to ``butler_qa_rw`` by ``sw_024`` or ``sw_037``) and
-        ``public.audit_log`` (already granted to every butler role by core
-        migrations).
-    backup_dir_env:
-        Env var naming the backup directory. Defaults to
-        ``BUTLERS_BACKUP_DIR`` (matches ``GET /api/system/backups``).
+        ``public.audit_log`` and ``public.state`` (``SELECT`` on ``public`` is
+        granted to every butler role by core migrations).
     deadman_ping_interval_s:
         Expected external-deadman ping cadence, used to size the staleness
         threshold. Defaults to
@@ -283,11 +280,9 @@ class InfraStateSource:
         self,
         pool: asyncpg.Pool,
         *,
-        backup_dir_env: str = BACKUP_DIR_ENV,
         deadman_ping_interval_s: float | None = None,
     ) -> None:
         self._pool = pool
-        self._backup_dir_env = backup_dir_env
         self._deadman_ping_interval_s = deadman_ping_interval_s
 
     @property
@@ -327,7 +322,7 @@ class InfraStateSource:
             carried = await self._carry_forward_legacy_liveness()
         else:
             findings.extend(await self._check_butler_heartbeats(now))
-        findings.extend(self._check_backup(now))
+        findings.extend(await self._check_backup(now))
         findings.extend(await self._check_external_deadman(now))
 
         # bu-27dxl.6.4: only reached when every check above completed without
@@ -636,24 +631,40 @@ class InfraStateSource:
     # backup-stale
     # ------------------------------------------------------------------
 
-    def _check_backup(self, now: datetime) -> list[QaFinding]:
-        backup_dir_raw = os.environ.get(self._backup_dir_env, "").strip()
-        if not backup_dir_raw:
+    async def _check_backup(self, now: datetime) -> list[QaFinding]:
+        # bu-deqpzd: this daemon must not mount the dumps, so the facts come
+        # from dashboard-api's public.state snapshot. Not seeing them is a
+        # finding; only a fresh snapshot can say "backups not configured".
+        snapshot = await load_backup_facts_snapshot(self._pool)
+        if snapshot is None or snapshot.is_stale(now):
+            state = "missing" if snapshot is None else "stale"
+            return [
+                self._build_finding(
+                    exception_type="BackupFactsUnavailable",
+                    call_site="backup:facts_snapshot",
+                    raw_summary=(
+                        f"Backup facts snapshot from dashboard-api is {state}; "
+                        "backup recency and run outcome cannot be checked"
+                    ),
+                    severity=_SEVERITY_BACKUP_STALE,
+                    source_butler="switchboard",
+                    first_seen=now,
+                    now=now,
+                )
+            ]
+
+        if not snapshot.configured:
             # Not configured -- matches GET /api/system/backups' own
             # documented contract ("expected state for unconfigured
             # deployments") -- a legitimate absence, not a finding.
             return []
 
-        facts = read_backup_facts_from_dir(Path(backup_dir_raw))
-
-        if not facts.backup_source_reachable:
+        if not snapshot.reachable:
             return [
                 self._build_finding(
                     exception_type="BackupSourceUnreachable",
                     call_site="backup:pg_dump",
-                    raw_summary=(
-                        f"Backup directory '{backup_dir_raw}' is configured but unreachable"
-                    ),
+                    raw_summary="Backup directory is configured but unreachable",
                     severity=_SEVERITY_BACKUP_STALE,
                     source_butler="switchboard",
                     first_seen=now,
@@ -667,18 +678,16 @@ class InfraStateSource:
         # (bu-xrqyu). Checked first because it is the cause: when a run has
         # been failing for two days, "the backup is stale" is the symptom, and
         # the reason for the failure is what the operator needs.
-        last_run = facts.last_run
-        if last_run.result == "failed":
+        if snapshot.last_run_result == "failed":
             # read_backup_facts_from_dir normalizes finished_at to a UTC ISO
             # string or None, so this parse cannot fail on a value it produced.
+            finished_at = snapshot.last_run_finished_at
             failed_at = (
-                _as_aware(datetime.fromisoformat(last_run.finished_at))
-                if last_run.finished_at is not None
-                else None
+                _as_aware(datetime.fromisoformat(finished_at)) if finished_at is not None else None
             )
             artifact_note = (
-                f"newest artifact is still {facts.last_backup_at}"
-                if facts.last_backup_at is not None
+                f"newest artifact is still {snapshot.last_backup_at}"
+                if snapshot.last_backup_at is not None
                 else "no backup artifact has ever been published"
             )
             return [
@@ -687,8 +696,8 @@ class InfraStateSource:
                     call_site="backup:pg_dump",
                     raw_summary=(
                         f"Most recent backup run failed "
-                        f"(reason: {last_run.reason or 'unspecified'}, "
-                        f"finished: {last_run.finished_at or 'unrecorded'}); "
+                        f"(reason: {snapshot.last_run_reason or 'unspecified'}, "
+                        f"finished: {finished_at or 'unrecorded'}); "
                         f"{artifact_note}"
                     ),
                     severity=_SEVERITY_BACKUP_RUN_FAILED,
@@ -698,12 +707,12 @@ class InfraStateSource:
                 )
             ]
 
-        if facts.last_backup_at is None:
+        if snapshot.last_backup_at is None:
             return [
                 self._build_finding(
                     exception_type="BackupStale",
                     call_site="backup:pg_dump",
-                    raw_summary=f"Backup directory '{backup_dir_raw}' has no backup on record yet",
+                    raw_summary="Backup directory has no backup on record yet",
                     severity=_SEVERITY_BACKUP_STALE,
                     source_butler="switchboard",
                     first_seen=now,
@@ -711,10 +720,10 @@ class InfraStateSource:
                 )
             ]
 
-        if not facts.backup_stale:
+        if not snapshot.backup_stale:
             return []
 
-        last_backup_at = datetime.fromisoformat(facts.last_backup_at)
+        last_backup_at = datetime.fromisoformat(snapshot.last_backup_at)
         return [
             self._build_finding(
                 exception_type="BackupStale",

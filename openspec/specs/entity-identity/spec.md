@@ -23,7 +23,7 @@ CREATE TABLE public.entities (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_entities_entity_type CHECK (
-        entity_type IN ('person', 'organization', 'place', 'other')
+        entity_type IN ('person', 'organization', 'place', 'animal', 'other')
     ),
     CONSTRAINT uq_entities_canonical_type
         UNIQUE (canonical_name, entity_type)
@@ -39,6 +39,14 @@ CREATE TABLE public.entities (
 **Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `public`. For butlers using the memory module (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `public.entities` via search_path. The `core_014` migration copies all butler-local entities data into `public.entities` as part of the migration.
 
 **Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `public.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
+
+**Entity types (core_355):** the taxonomy is `person`, `organization`, `place`, `animal`, `other`. `animal` was added by owner decision (bu-s11n0s.13) so a pet is a first-class dependent entity rather than an `other` with a role convention. Every code site that enumerates the types (memory tool `VALID_ENTITY_TYPES` and `Literal`s, the memory module `memory_entity_create` schema, the dashboard `PATCH /api/memory/entities/{id}` validator) and the `chk_entities_entity_type` CHECK MUST list the same five values. A dependent animal is an entity only: it is never a principal or a user.
+
+#### Scenario: Animal entity type accepted
+
+- **WHEN** an entity is created or updated with `entity_type = 'animal'`
+- **THEN** the write MUST succeed in the memory tools, the dashboard API and the database CHECK
+- **AND** a value outside the five types MUST still be rejected
 
 #### Scenario: Entities accessible from any butler schema
 
@@ -73,7 +81,7 @@ butlers.
 
 The canonical data model hierarchy SHALL be **Entity → Contact → Contact Details**.
 
-- **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
+- **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, place, or animal (a pet or other dependent animal) is an entity.
 - **Contact** (`public.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
 - **Contact Details** (`public.contact_info`, addresses, etc.) attach to contacts.
 
@@ -218,6 +226,56 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
 - **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
 
+#### Scenario: A forgotten entity cannot be merged
+
+- **WHEN** the source or target of a merge carries `metadata.tombstone = true` or `metadata.deleted_at`
+- **THEN** the merge MUST be refused as tombstoned under the entity locks
+- **AND** both entities MUST be unchanged and no rebind receipt MUST exist
+
+#### Scenario: A contact on a removed entity is refused by name
+
+- **WHEN** a contact merge finds that either contact's entity has been deleted, forgotten or merged away
+- **THEN** it MUST refuse with an error naming that contact and MUST change nothing
+- **AND** the removed entity MUST stay removed
+
+#### Scenario: A forget or delete severs the entity's contact link
+
+- **WHEN** a forget or a memory entity delete removes an entity that a contact is bridged to
+- **THEN** the bridge row MUST be removed in the same transaction, under the entity lock, by one shared unlink
+- **AND** the contact MUST then read as not found
+- **AND** a delete refused or rolled back MUST leave the bridge row
+
+#### Scenario: A forget or delete cannot race a merge or rebind
+
+- **WHEN** a forget or memory entity delete overlaps a merge or rebind of that entity
+- **THEN** it MUST hold the entity row `FOR UPDATE` from before it retires anything until its marker commits
+- **AND** references moved by an operation that finished first MUST be retired with the rest
+- **AND** an operation that waited MUST see the marker and move nothing onto the entity
+- **AND** a memory entity delete that cannot finish MUST write no marker and MUST be retryable
+
+#### Scenario: The enrichment reap cannot remove an entity that gained a reference
+
+- **WHEN** the email enrichment reap finds a clean placeholder while a writer or merge is adding a reference to it
+- **THEN** it MUST hold the entity row `FOR UPDATE` while it repeats its no-references check in a new statement
+- **AND** it MUST skip a row another transaction holds, for its next run, rather than wait
+
+#### Scenario: A memory supersede cannot deadlock a forget or delete
+
+- **WHEN** a memory property fact write, a Dunbar tier pin or a loan settle replaces a fact on an entity that a forget or delete holds or is about to hold
+- **THEN** the write MUST lock its entity rows, in ascending id order, before its first fact lock
+- **AND** the write and the forget or delete MUST both complete, whichever reached the entity first
+
+#### Scenario: A promote cannot cross another writer over identity slots
+
+- **WHEN** an entity promote or create carries several initial facts on identity predicates
+- **THEN** it MUST take the union of their identity slots once, in the shared slot order, before its first write
+- **AND** overlapping requests MUST NOT deadlock, whatever order their bodies list the facts in
+
+#### Scenario: Concurrent memory entity deletes do not starve each other
+
+- **WHEN** two memory entity deletes overlap in one process, at the deployed pool maximum of 2
+- **THEN** they MUST run one at a time and both complete
+
 #### Scenario: Downstream merge failure restores the original owner
 
 - **WHEN** a merge fails after owner roles and references have moved inside its transaction
@@ -235,8 +293,9 @@ receipt. A running daemon SHALL react to the fleet event immediately. Pending
 receipts SHALL be replayed on daemon startup; fleet-event delivery is a
 freshness path, not the recovery authority. The daemon SHALL establish its
 fleet-event listener before startup replay and SHALL re-establish the listener
-and replay pending receipts after a retained-listener connection failure.
-PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+and replay pending receipts after a retained-listener connection failure. While
+idle, it SHALL periodically sweep for pending receipts, and SHALL retry a failed
+receipt after a backoff. PostgreSQL SHALL restrict cohort creation to Relationship and receipt
 settlement to the runtime role bound to the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
@@ -260,6 +319,40 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
 - **AND** an event committed during startup replay MUST NOT be lost
 - **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
+
+#### Scenario: A running daemon recovers a missed event
+
+- **WHEN** a running memory-bearing daemon's schema has a pending receipt and it received no event
+- **THEN** its idle sweep MUST process the receipt without a restart or a reconnect
+
+#### Scenario: A failed receipt is retried
+
+- **WHEN** a schema's receipt is `failed` and its backoff has passed
+- **THEN** that schema's daemon MUST retry it without a restart
+- **AND** a successful retry MUST settle the receipt with the references counted across all attempts
+- **AND** a failing retry MUST leave it `failed`, name the latest error class, and restart the backoff
+- **AND** a live event for that receipt MUST NOT retry it
+
+#### Scenario: A late rebind follows later merges of its target
+
+- **WHEN** a pending or failed receipt from A to B is processed after B was merged into C
+- **THEN** A's references in that schema MUST move to the entity at the end of B's `merged_into` chain
+- **AND** a merge of that entity still in flight MUST be waited for and followed
+- **AND** the receipt MUST keep its original source and target
+
+#### Scenario: A late rebind onto a forgotten entity forgets the source's references
+
+- **WHEN** the entity at the end of a receipt target's `merged_into` chain has been forgotten
+- **THEN** no reference MUST move onto it
+- **AND** the receipt's schema MUST retract the live facts that reference the receipt's source, through the same retraction that forgetting an entity applies in that schema
+- **AND** the receipt MUST settle as `skipped_forgotten` with no error class and MUST NOT be retried
+- **AND** a schema MUST change only its own rows
+
+#### Scenario: A rebind failure log carries no data values
+
+- **WHEN** a rebind attempt fails, first or on a retry
+- **THEN** the log MUST name the rebind id, schema, step, and error class
+- **AND** it MUST NOT include the exception's message or traceback
 
 ---
 
@@ -788,26 +881,58 @@ durable across concurrent ingress workers and SHALL NOT write
 `relationship.entity_facts` from Switchboard; the existing relationship-owned
 post-resolution assertion remains responsible for the channel fact.
 
-The notification SHALL identify the sender only with the safe display label
-and source channel needed for review, SHALL direct the owner to the existing
-Unidentified Entities review flow, and SHALL NOT include the inbound message
-body or grant the unknown sender any role or approval authority.
+The notification is delivered only to the owner. It SHALL identify the sender
+by the connector-supplied display name, when one exists, together with the raw
+sender identifier (for example the email address) and the source channel. For an
+email it SHALL include the message subject. It SHALL link to the transitory
+entity on the dashboard when a dashboard origin is configured, and otherwise
+direct the owner to the existing Unidentified Entities review flow. Every
+sender-controlled field SHALL be bounded in length and neutralised so it cannot
+render as a link or formatting. The notification SHALL NOT include the inbound
+message body or grant the unknown sender any role or approval authority. One
+notification SHALL be sent per sender; senders SHALL NOT be batched into a digest.
+
+The caller that obtains the claim SHALL also park one owner approval, the Ignore
+card, for the transitory entity through the standard approvals park boundary, so
+the owner's decision-loop push can offer Approve, Reject and Open. The parked call
+SHALL carry only the entity, the source channel, the raw sender identifier and the
+bounded display name, each shown on the card; its action identity SHALL derive
+from the entity, so a replayed or rescanned ingress event never parks a second
+card. Approve SHALL ignore the sender: archive the transitory entity and, for an
+email address, add one global sender-address skip rule. It SHALL be idempotent,
+and SHALL refuse a call that does not match the card parked for that entity, an
+owner or merged entity, or an entity the owner has since identified. Reject or
+expiry SHALL change nothing, leaving the sender in Unidentified Entities. While
+the owning schema's approval delivery is disabled, the park SHALL still commit
+the pending action for dashboard review and the plain-text notification SHALL
+still be sent; when the parked card is admitted for delivery with the delivery
+worker enabled, the card SHALL replace the plain-text notification. A park
+failure SHALL NOT block routing or the plain-text notification. This Ignore card
+precedes the signed-confirm cutover.
 
 #### Scenario: New unknown sender is surfaced for entity review
 
-- **WHEN** reverse lookup misses an inbound Telegram sender with display name
-  `Chloe L`
+- **WHEN** reverse lookup misses an inbound email from `chloe@x.com` with display
+  name `Chloe L` and subject `Re: dinner`
 - **AND** the unknown-sender flow creates transitory entity `E` with
-  `metadata.unidentified = true`, `source_channel = 'telegram'`, and the
+  `metadata.unidentified = true`, `source_channel = 'email'`, and the
   observed source value
 - **THEN** the system MUST atomically reserve one owner-notification attempt
   for that sender
-- **AND** the system MUST make that attempt identifying `Chloe L` and the
-  Telegram source
-- **AND** the notification MUST direct the owner to the Unidentified Entities
-  review flow for `E`
+- **AND** the system MUST make that attempt identifying `Chloe L <chloe@x.com>`,
+  the email source and the subject `Re: dinner`
+- **AND** the notification MUST link to `E` on the dashboard, or direct the
+  owner to the Unidentified Entities review flow when no dashboard origin is
+  configured
 - **AND** the notification MUST NOT expose the inbound message body or a
   contact-table identifier
+
+#### Scenario: Sender-controlled text cannot plant a link
+
+- **WHEN** an unknown sender's display name or subject contains Markdown link
+  or emphasis syntax such as `[Bank](https://evil.example)`
+- **THEN** the owner notification MUST show that text without rendering a link
+  to the sender-chosen target or any formatting
 
 #### Scenario: Repeated sender does not create a notification storm
 
@@ -817,6 +942,30 @@ body or grant the unknown sender any role or approval authority.
   attempt for that sender
 - **AND** the later message MUST continue through normal known-entity
   resolution and routing
+
+#### Scenario: New unknown sender gets one Ignore card
+
+- **WHEN** reverse lookup first surfaces email sender `chloe@x.com` as transitory
+  entity `E` and the notification claim is obtained
+- **THEN** the system MUST park one pending Ignore approval for `E` carrying the
+  email channel, `chloe@x.com` and the display name
+- **AND** a later ingress event or replay for the same sender MUST NOT park a
+  second approval for `E`
+
+#### Scenario: Approving the Ignore card ignores the sender
+
+- **WHEN** the owner approves the Ignore card for email sender `chloe@x.com`
+- **THEN** the system MUST archive entity `E` and add one global sender-address
+  skip rule for `chloe@x.com`
+- **AND** replaying the approved call MUST NOT add a second rule
+- **AND** for a non-email sender the system MUST archive `E` without adding a rule
+
+#### Scenario: Ignore card with approval delivery disabled
+
+- **WHEN** a new unknown sender is surfaced while the owning schema's approval
+  delivery admission is disabled
+- **THEN** the pending Ignore approval MUST still be committed for dashboard review
+- **AND** the plain-text owner notification MUST still be sent
 
 #### Scenario: Concurrent first messages reuse one transitory entity
 

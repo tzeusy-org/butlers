@@ -17,12 +17,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import NAMESPACE_URL, uuid5
 
+import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.models import Episode, PointEvent, Privacy
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _SPOTIFY_ENDPOINT = "spotify_user_client:spotify:user123"
@@ -32,17 +35,6 @@ _OWNTRACKS_ENDPOINT = "owntracks:alice"
 # ---------------------------------------------------------------------------
 # Helpers (copied from per-adapter test modules to keep this file self-contained)
 # ---------------------------------------------------------------------------
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 class _NullCtx:
@@ -60,28 +52,34 @@ def _spotify_pool(row: dict) -> AsyncMock:
         return_value=[MagicMock(**row, **{"__getitem__": lambda s, k, _r=row: _r[k]})]
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
-def _owntracks_pool(row: dict) -> AsyncMock:
-    conn = AsyncMock()
+def _owntracks_pool(*rows: dict) -> AsyncMock:
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(
-        return_value=[MagicMock(**row, **{"__getitem__": lambda s, k, _r=row: _r[k]})]
+        return_value=[MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]}) for r in rows]
     )
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
 def _chronicler_pool() -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
+
+
+async def _return_point_event(_conn: object, event: PointEvent) -> PointEvent:
+    """Represent the persisted-point return contract while isolating privacy."""
+    return event
 
 
 def _make_spotify_row() -> dict:
@@ -104,7 +102,7 @@ def _make_spotify_row() -> dict:
 def _make_owntracks_row(ts: datetime = _NOW) -> dict:
     ikey = f"owntracks:{_OWNTRACKS_ENDPOINT}:{int(ts.timestamp())}:location"
     return {
-        "id": "some-uuid",
+        "id": uuid5(NAMESPACE_URL, ikey),
         "idempotency_key": ikey,
         "ts": ts,
         "lat": 1.2345,
@@ -217,7 +215,8 @@ async def test_owntracks_movement_episode_privacy_is_normal() -> None:
     Same rationale as the point-event invariant: the dashboard is the
     owner's view of their own travel trajectory.
     """
-    row = _make_owntracks_row()
+    # A movement needs two fixes (bu-2tsgqb.6).
+    rows = (_make_owntracks_row(), _make_owntracks_row(_NOW + timedelta(minutes=5)))
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
 
@@ -225,11 +224,14 @@ async def test_owntracks_movement_episode_privacy_is_normal() -> None:
         upserted_episodes.append(episode)
         return episode
 
-    pool = _owntracks_pool(row)
+    pool = _owntracks_pool(*rows)
     cp = _chronicler_pool()
 
     with (
-        patch("butlers.chronicler.adapters.owntracks.upsert_point_event", return_value=None),
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_point_event",
+            side_effect=_return_point_event,
+        ),
         patch(
             "butlers.chronicler.adapters.owntracks.upsert_episode",
             side_effect=_fake_upsert_episode,

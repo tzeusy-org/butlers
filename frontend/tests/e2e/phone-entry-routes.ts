@@ -15,6 +15,8 @@ import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 
 import type { Locator, Page } from "@playwright/test";
 
+import type { DecisionSet, DecisionSetItem } from "../../src/api/decision-sets";
+
 type Fixtures = Record<string, string>;
 
 export interface PhoneEntryRoute {
@@ -33,6 +35,7 @@ export interface PhoneEntryRoute {
 const NOW = "2026-10-01T09:00:00Z";
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
+const DECISION_SET_ID = "44444444-4444-4444-8444-444444444444";
 
 const APPROVAL_SUMMARY: ResponseOf<"getApprovalsFlat">["data"][number] = {
   id: APPROVAL_ID,
@@ -146,6 +149,55 @@ const CHAT_FIXTURES: Fixtures = {
   "**/api/pricing*": mockJson("fetchPricingMap", { data: {}, meta: {} }),
 };
 
+const DECISION_ITEM: Pick<
+  DecisionSetItem,
+  "capability" | "explicit_only" | "in_default_selection" | "recipient_channel" | "exact" | "reason" | "claims" | "lineage"
+> = {
+  capability: "messenger__notify",
+  explicit_only: false,
+  in_default_selection: true,
+  recipient_channel: "telegram",
+  exact: true,
+  reason: null,
+  claims: [{ label: "Why", value: "The landlord asked for a reply." }],
+  lineage: { facts: [{ label: "Origin", value: "Owner" }] },
+};
+
+const DECISION_SET: DecisionSet = {
+  set_id: DECISION_SET_ID,
+  version: 1,
+  goal_id: "55555555-5555-4555-8555-555555555555",
+  state: "open",
+  expires_at: "2026-10-02T09:00:00Z",
+  digest: "d".repeat(64),
+  decidable: true,
+  decisions_live: true,
+  reason: null,
+  unticked_outcome: "left",
+  items: [
+    {
+      ...DECISION_ITEM,
+      position: 0,
+      effect_id: "66666666-6666-4666-8666-666666666666",
+      item_digest: "a".repeat(64),
+      title: "Send message to the landlord",
+      facts: [{ label: "Message", value: "I will renew the lease." }],
+    },
+    {
+      ...DECISION_ITEM,
+      position: 1,
+      effect_id: "77777777-7777-4777-8777-777777777777",
+      item_digest: "b".repeat(64),
+      title: "Send message to the agent",
+      facts: [{ label: "Message", value: "Please book the viewing." }],
+    },
+  ],
+};
+
+const DECISION_SET_FIXTURES: Fixtures = {
+  [`**/api/decision-sets/${DECISION_SET_ID}`]: JSON.stringify({ data: DECISION_SET, meta: {} }),
+};
+
 export const PHONE_ENTRY_ROUTES: PhoneEntryRoute[] = [
   {
     name: "approvals queue",
@@ -158,6 +210,12 @@ export const PHONE_ENTRY_ROUTES: PhoneEntryRoute[] = [
     path: `/approvals/${APPROVAL_ID}`,
     fixtures: APPROVALS_FIXTURES,
     primaryAction: (page) => page.getByRole("button", { name: "Approve", exact: true }),
+  },
+  {
+    name: "decision set card",
+    path: `/decision-sets/${DECISION_SET_ID}`,
+    fixtures: DECISION_SET_FIXTURES,
+    primaryAction: (page) => page.getByRole("button", { name: "Approve 2 ticked" }),
   },
   {
     name: "secrets passport (OAuth return)",

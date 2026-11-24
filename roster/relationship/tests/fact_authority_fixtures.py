@@ -8,46 +8,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
 
-from butlers.core.fact_authority import FactWriteContext, _current_report
 from butlers.modules.approvals.execution_context import (
     ApprovalExecutionContext,
     approval_tool_args_digest,
     reset_approval_execution_context,
     set_approval_execution_context,
 )
-from butlers.testing.schema_standins import APPROVAL_EVENTS
 from butlers.tools.relationship.fact_authority import record_admitted_approval
-
-
-@asynccontextmanager
-async def synthetic_owner(pool):
-    owner = await pool.fetchrow(
-        "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles) ORDER BY id LIMIT 1"
-    )
-    if owner is None:
-        owner = await pool.fetchrow(
-            "INSERT INTO public.entities(canonical_name,entity_type,roles) "
-            "VALUES('Synthetic fixture owner','person',ARRAY['owner']) RETURNING id,created_at"
-        )
-    token = _current_report.set(
-        FactWriteContext(
-            "owner_device",
-            owner["id"],
-            owner["created_at"],
-            owner["id"],
-        )
-    )
-    try:
-        yield
-    finally:
-        _current_report.reset(token)
+from tests.relationship.synthetic_authority import synthetic_owner
 
 
 async def approve_fixture(pool, action_id):
-    """A synthetic decision with actual stored arguments and append-only event."""
-    await pool.execute(APPROVAL_EVENTS.ddl())
+    """A synthetic decision with actual stored arguments and append-only event.
+
+    *pool* must carry the approvals chain (``approval_events``).
+    """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("UPDATE pending_actions SET status='approved' WHERE id=$1", action_id)
         await conn.execute(

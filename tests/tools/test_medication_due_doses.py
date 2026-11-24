@@ -65,13 +65,24 @@ def test_unrecognised_or_empty_frequency_is_not_reported():
     assert _status(None, None) == DoseStatus()
 
 
-def test_unscheduled_daily_dose_keeps_legacy_missed_behaviour():
-    assert _status("daily", None) == DoseStatus(missed=1, due_later=0)
-    assert _status("daily", None, taken=1) == DoseStatus()
+_EVENING = datetime(2026, 3, 25, 21, 30, tzinfo=SGT)
 
 
-@pytest.mark.parametrize("entry", ["8am", "8:00 AM", "08:00", "0800x", "8"])
-def test_clock_formats_and_ambiguous_entries(entry):
-    status = _status("daily", [entry], now=_NOON)
-    # Recognised forms are due by noon; unparseable ones fall back to undated (also missed).
-    assert status == DoseStatus(missed=1, due_later=0)
+def test_unscheduled_dose_is_due_later_until_the_window_passes_then_missed():
+    # Schedule-less daily and weekday-only weekly share the undated path (bu-6cdsvf).
+    for frequency, schedule in [("daily", None), ("weekly", ["wednesday"])]:
+        assert _status(frequency, schedule) == DoseStatus(missed=0, due_later=1)
+        assert _status(frequency, schedule, now=_NOON) == DoseStatus(missed=0, due_later=1)
+        assert _status(frequency, schedule, now=_EVENING) == DoseStatus(missed=1, due_later=0)
+        assert _status(frequency, schedule, taken=1) == DoseStatus()
+        assert _status(frequency, schedule, taken=1, now=_EVENING) == DoseStatus()
+
+
+@pytest.mark.parametrize("entry", ["8am", "8:00 AM", "08:00", "0800"])
+def test_recognised_clock_formats_are_due_by_noon(entry):
+    assert _status("daily", [entry], now=_NOON) == DoseStatus(missed=1, due_later=0)
+
+
+@pytest.mark.parametrize("entry", ["0800x", "8"])
+def test_ambiguous_entries_are_undated(entry):
+    assert _status("daily", [entry], now=_NOON) == DoseStatus(missed=0, due_later=1)

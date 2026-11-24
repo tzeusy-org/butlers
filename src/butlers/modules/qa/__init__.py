@@ -37,6 +37,7 @@ from butlers.core.fleet_conditions import fleet_condition_handoff_enabled
 from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
+    QA_GH_READ_TOKEN_KEY,
     QA_GH_TOKEN_KEY,
     QA_GIT_AUTHOR_EMAIL_KEY,
     QA_GIT_AUTHOR_NAME_KEY,
@@ -45,7 +46,9 @@ from butlers.core.qa.dispatch import (
     dispatch_novel_findings,
 )
 from butlers.core.qa.findings import get_dispatch_queued_findings
+from butlers.core.qa.job_isolation import JobIsolation, JobIsolationSettings, sweep_orphans
 from butlers.core.qa.journal import record_patrol_tick_events
+from butlers.core.qa.k8s_job_process import K8sJobProcess
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.patrol_provenance import (
     DEFAULT_ENABLED_SOURCES,
@@ -53,7 +56,13 @@ from butlers.core.qa.patrol_provenance import (
     enabled_sources_digest,
     enabled_sources_snapshot,
 )
-from butlers.core.qa.patrol_status import QaPatrolStatus, require_patrol_status
+from butlers.core.qa.patrol_status import (
+    HALT_REASONS,
+    QaPatrolStatus,
+    derive_halt_reason,
+    require_patrol_status,
+)
+from butlers.core.qa.publication.retention import prune_retained_exports
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
@@ -319,6 +328,8 @@ class QaConfig(BaseModel):
     patrol_interval_minutes: int = _DEFAULT_PATROL_INTERVAL
     log_lookback_minutes: int = _DEFAULT_LOG_LOOKBACK
     max_concurrent_investigations: int = _DEFAULT_MAX_CONCURRENT
+    job_isolation: JobIsolationSettings | None = None
+    """Per-attempt Job isolation (bu-ejow5p.11); ``None`` keeps in-daemon worktrees."""
     severity_threshold: int = _DEFAULT_SEVERITY_THRESHOLD
     enabled_sources: list[str] = list(DEFAULT_ENABLED_SOURCES)
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
@@ -405,6 +416,32 @@ def _coerce_jsonb(value: Any) -> Any:
     return value
 
 
+def _record_findings_metric(triage_result: Any, dispatch_results: list[Any]) -> None:
+    """Count each triaged finding by its authoritative outcome (RFC 0005 low-cardinality labels).
+
+    Runs after dispatch so a finding a halting gate stopped carries that gate's reason instead of
+    reading as ``novel``; on a dispatch error it runs with no results, as before.
+    """
+    if _qa_findings_total is None:
+        return
+    try:
+        gate_by_id = {
+            t.finding_id: r.reason
+            for t, r in zip(triage_result.novel_findings, dispatch_results, strict=False)
+            if not r.accepted and (r.reason in HALT_REASONS or r.reason == "hold_failed")
+        }
+        for tf in triage_result.all_findings:
+            dedup_label = tf.dedup_reason
+            if dedup_label is None:
+                dedup_label = gate_by_id.get(tf.finding_id, "novel")
+            _qa_findings_total.labels(
+                source_type=tf.finding.source_type,
+                dedup_reason=dedup_label,
+            ).inc()
+    except Exception:
+        logger.debug("QaModule: failed to record qa_findings_total metric", exc_info=True)
+
+
 class QaModule(Module):
     """QA Staffer module — patrol loop, triage, and investigation dispatch.
 
@@ -419,11 +456,13 @@ class QaModule(Module):
     """
 
     def __init__(self) -> None:
+        self._isolation: JobIsolation | None = None
         self._config = QaConfig()
         self._butler_name: str = "qa"
         self._pool: Any = None
         self._repo_root: Path = Path(".")
         self._credential_store: Any = None
+        self._last_write_token_notified_patrol_id: uuid.UUID | None = None
 
         # Managed repo clone — initialized on startup
         self._managed_clone: ManagedRepoClone | None = None
@@ -626,6 +665,38 @@ class QaModule(Module):
             await reap_stale_worktrees(self._repo_root, pool)
         except Exception:
             logger.warning("QaModule startup: reap_stale_worktrees failed", exc_info=True)
+
+        # Sweep Jobs and exchange directories orphaned by the previous run (before any attempt).
+        isolation = self._job_isolation()
+        if isolation is not None:
+            try:
+                report = await sweep_orphans(isolation)
+                logger.info(
+                    "QaModule startup: orphan sweep removed %d job(s), %d dir(s); %d undeleted",
+                    report.jobs_deleted,
+                    report.directories_removed,
+                    report.jobs_undeleted,
+                )
+            except Exception:
+                logger.warning("QaModule startup: orphan sweep failed", exc_info=True)
+
+    def _job_isolation(self) -> JobIsolation | None:
+        """The configured per-attempt isolation, built once; ``None`` when not configured."""
+        settings = self._config.job_isolation
+        if settings is None:
+            return None
+        if self._isolation is None:
+            runner = K8sJobProcess.in_cluster(namespace=settings.namespace)
+            self._isolation = JobIsolation(
+                namespace=runner.namespace,
+                release=settings.release,
+                image=settings.image,
+                exchange_claim=settings.exchange_claim,
+                exchange_root=settings.exchange_root,
+                runner=runner,
+                model_proxy_url=settings.model_proxy_url,
+            )
+        return self._isolation
 
     async def _recover_stale_patrols(self, pool: Any) -> None:
         """Mark any stale 'running' patrol rows as 'error' after daemon restart.
@@ -1132,7 +1203,22 @@ class QaModule(Module):
                 self._config.retention_cleanup_hour,
             )
             return {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
-        return await self.daily_evidence_cleanup(now=run_at)
+        result = await self.daily_evidence_cleanup(now=run_at)
+        result["pruned_exports"] = await self._prune_retained_exports()
+        return result
+
+    async def _prune_retained_exports(self) -> int:
+        """Empty sealed export bytes past retention (bu-mc01y5.25); never fails the job."""
+        if self._pool is None:
+            return 0
+        try:
+            pruned = await prune_retained_exports(self._pool)
+        except Exception:
+            logger.warning("QaModule: retained QA export prune failed", exc_info=True)
+            return 0
+        if pruned:
+            logger.info("QaModule: pruned %d retained QA export(s) past retention", pruned)
+        return pruned
 
     async def _run_patrol_cycle(self) -> dict:
         """Execute one complete patrol cycle under the asyncio.Lock.
@@ -1185,6 +1271,9 @@ class QaModule(Module):
             tag_butler_span(_patrol_span, "qa")
             _patrol_span_token = otel_context.attach(trace.set_span_in_context(_patrol_span))
 
+        # Triage result whose findings metric is still unrecorded; any exit before the post-dispatch
+        # recording (a raise in a pre-dispatch step included) counts the findings with no results.
+        pending_findings_metric: Any = None
         try:
             # Phase 1: Discover
             for source in self._sources:
@@ -1279,24 +1368,12 @@ class QaModule(Module):
                     if _triage_span_token is not None:
                         otel_context.detach(_triage_span_token)
 
+            pending_findings_metric = triage_result
             findings_count = len(triage_result.all_findings)
             novel_count = len(triage_result.novel_findings)
 
-            # Increment qa_findings_total per triaged finding (RFC 0005 low-cardinality labels)
-            if _qa_findings_total is not None:
-                try:
-                    for tf in triage_result.all_findings:
-                        dedup_label = tf.dedup_reason if tf.dedup_reason is not None else "novel"
-                        _qa_findings_total.labels(
-                            source_type=tf.finding.source_type,
-                            dedup_reason=dedup_label,
-                        ).inc()
-                except Exception:
-                    logger.debug(
-                        "QaModule: failed to record qa_findings_total metric", exc_info=True
-                    )
-
             # Phase 3: Dispatch
+            await self._refuse_write_token(patrol_id)
             gh_token = await self._resolve_gh_token()
             git_author_name, git_author_email = await self._resolve_git_identity()
             if not gh_token:  # None or empty string
@@ -1306,6 +1383,7 @@ class QaModule(Module):
                 max_concurrent=self._config.max_concurrent_investigations,
                 dashboard_base_url=self._config.dashboard_base_url,
                 repo_whitelist=self._repo_whitelist,
+                job_isolation=self._job_isolation(),
             )
 
             # Prune completed watchdog tasks before dispatching
@@ -1343,7 +1421,9 @@ class QaModule(Module):
                     config=dispatch_config,
                     repo_root=self._repo_root,
                     spawner=_spawner,
-                    gh_token=gh_token,
+                    # Investigation dispatch gets no GitHub token; the read-only token
+                    # below is for PR-status polling only.
+                    gh_token=None,
                     git_author_name=git_author_name,
                     git_author_email=git_author_email,
                     task_registry=self._watchdog_tasks,
@@ -1361,6 +1441,9 @@ class QaModule(Module):
                         otel_context.detach(_dispatch_span_token)
 
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
+
+            _record_findings_metric(triage_result, dispatch_results)
+            pending_findings_metric = None
 
             # Phase 4: PR status check
             await self._check_pr_statuses(
@@ -1388,6 +1471,11 @@ class QaModule(Module):
             # "suppressed" means findings were found but all were filtered out
             # by cooldown or severity threshold (novel_count > 0 but nothing
             # dispatched and no dispatch error).
+            halt_reason = (
+                derive_halt_reason(r.gate or r.reason for r in dispatch_results if not r.accepted)
+                if dispatched_count == 0
+                else None
+            )
             patrol_status: QaPatrolStatus
             if error_detail:
                 patrol_status = "error"
@@ -1395,6 +1483,11 @@ class QaModule(Module):
                 patrol_status = "clean"
             elif dispatched_count > 0:
                 patrol_status = "findings_dispatched"
+            elif halt_reason is not None:
+                # A halting gate (breaker, no model, cap) stopped the novel findings from being
+                # dispatched; a breaker or cap hold queues them. Remediation stopped, which is not
+                # the healthy "suppressed" outcome.
+                patrol_status = "halted"
             elif novel_count > 0:
                 # Novel findings exist but none were dispatched (suppressed by
                 # cooldown or severity threshold).
@@ -1413,6 +1506,7 @@ class QaModule(Module):
                 dispatched_count=dispatched_count,
                 sources_polled=sources_polled,
                 error_detail=error_detail,
+                halt_reason=halt_reason if patrol_status == "halted" else None,
             )
 
             # Update module state
@@ -1505,6 +1599,8 @@ class QaModule(Module):
 
             return {"status": "error", "reason": error_msg}
         finally:
+            if pending_findings_metric is not None:
+                _record_findings_metric(pending_findings_metric, [])
             if _HAS_OTEL and _patrol_span is not None:
                 _patrol_span.end()
                 if _patrol_span_token is not None:
@@ -1598,6 +1694,7 @@ class QaModule(Module):
         dispatched_count: int,
         sources_polled: list[str],
         error_detail: str | None,
+        halt_reason: str | None = None,
     ) -> None:
         """Update the patrol record with final outcome."""
         status = require_patrol_status(status)
@@ -1613,6 +1710,7 @@ class QaModule(Module):
                 dispatched_count = $5,
                 sources_polled = $6,
                 error_detail = $7,
+                halt_reason = $8,
                 discovery_complete = COALESCE(
                     $7::text IS NULL AND $2 <> 'error'
                     AND enabled_sources_snapshot <@ $6::text[]
@@ -1628,6 +1726,7 @@ class QaModule(Module):
             dispatched_count,
             sources_polled,
             error_detail,
+            halt_reason,
         )
 
     async def _record_patrol_skip(self, pool: Any) -> None:
@@ -1753,15 +1852,63 @@ class QaModule(Module):
     # ------------------------------------------------------------------
 
     async def _resolve_gh_token(self) -> str | None:
-        """Resolve BUTLERS_QA_GH_TOKEN from the credential store."""
+        """Resolve the read-only polling token (``BUTLERS_QA_GH_READ_TOKEN``).
+
+        The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved here or anywhere in the
+        daemon: investigators share the pod, so any credential held in memory or fetched
+        from the store is reachable by them.
+        """
         if self._credential_store is None:
             return None
         try:
-            token = await self._credential_store.resolve(QA_GH_TOKEN_KEY)
+            token = await self._credential_store.resolve(QA_GH_READ_TOKEN_KEY)
             return token
         except Exception:
-            logger.debug("QaModule: failed to resolve GH token", exc_info=True)
+            logger.debug("QaModule: failed to resolve GH read token", exc_info=True)
             return None
+
+    async def _refuse_write_token(self, patrol_id: uuid.UUID) -> bool:
+        """Report a leftover write-scoped key and refuse to load it; True when present.
+
+        Checks presence only (``has``), never ``resolve``, so the value never enters this
+        process.  One content-blind action-needed alert per patrol cycle.
+        """
+        if self._credential_store is None:
+            return False
+        try:
+            present = await self._credential_store.has(QA_GH_TOKEN_KEY)
+        except Exception:
+            logger.debug("QaModule: write-token presence check failed", exc_info=True)
+            return False
+        if not present:
+            return False
+        if self._last_write_token_notified_patrol_id == patrol_id:
+            return True
+        self._last_write_token_notified_patrol_id = patrol_id
+        logger.warning(
+            "QaModule: a write-scoped GitHub key (%s) exists in the credential store; it is "
+            "refused and never loaded. Investigator containment is not enforced (same pod, "
+            "root), so remove the key and rotate the token.",
+            QA_GH_TOKEN_KEY,
+        )
+        if self._notify_fn is not None:
+            try:
+                await self._notify_fn(
+                    channel="telegram",
+                    message=(
+                        "QA Staffer action needed: a write-scoped GitHub key "
+                        f"({QA_GH_TOKEN_KEY}) is still in the secrets store.\n\n"
+                        "It is refused and never loaded. Investigator containment is not "
+                        "enforced (same pod, root): delete the key from the secrets store and "
+                        "rotate the token."
+                    ),
+                    priority="high",
+                )
+            except Exception:
+                logger.warning(
+                    "QaModule: failed to send write-token notification (non-fatal)", exc_info=True
+                )
+        return True
 
     async def _resolve_git_identity(self) -> tuple[str | None, str | None]:
         """Resolve optional git author identity for QA-generated commits."""
@@ -1819,6 +1966,7 @@ class QaModule(Module):
                 severity_threshold=self._config.severity_threshold,
                 max_concurrent=self._config.max_concurrent_investigations,
                 dashboard_base_url=self._config.dashboard_base_url,
+                job_isolation=self._job_isolation(),
             )
 
         try:
@@ -1866,19 +2014,21 @@ class QaModule(Module):
         self._last_missing_token_notified_patrol_id = patrol_id
 
         logger.warning(
-            "QaModule: BUTLERS_QA_GH_TOKEN is missing — investigations cannot open PRs. "
-            "Provision the credential via: butler secrets set BUTLERS_QA_GH_TOKEN <token>"
+            "QaModule: BUTLERS_QA_GH_READ_TOKEN is missing — PR status polling is skipped and "
+            "PR state stays unknown. Provision a fine-grained read-only token via: "
+            "butler secrets set BUTLERS_QA_GH_READ_TOKEN <token>"
         )
 
         if self._notify_fn is None:
             return
 
         message = (
-            "QA Staffer alert: GitHub token is missing.\n\n"
-            "Investigations cannot open pull requests until the credential is provisioned.\n\n"
+            "QA Staffer alert: the read-only GitHub polling token is missing.\n\n"
+            "Pull request status stays unknown until the credential is provisioned.\n\n"
             "To fix, provision the secret via the butler CLI or dashboard:\n"
-            "  butler secrets set BUTLERS_QA_GH_TOKEN <your-github-token>\n\n"
-            "The token requires at least 'repo' scope to create pull requests."
+            "  butler secrets set BUTLERS_QA_GH_READ_TOKEN <your-read-only-token>\n\n"
+            "Use a fine-grained token with Pull requests, Commit statuses and Metadata read "
+            "only; never a write-scoped token."
         )
         try:
             await self._notify_fn(

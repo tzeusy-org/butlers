@@ -153,6 +153,36 @@ class TestToolCallsSuppressFailover:
         )
         assert _suppressed(dec)
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # Claude terminal failure with empty stderr: the message embeds the raw
+            # stdout JSONL, so a tool's output mentioning a rate limit lands in it.
+            'Claude CLI exited with code 1: {"type":"user","message":{"content":'
+            '[{"type":"tool_result","content":"429 rate limit exceeded"}]}}\n'
+            '{"type":"result","is_error":true,"num_turns":3}',
+            "You've hit your usage limit",
+            "authentication failed",
+            "503 service unavailable",
+            "Runtime returned no response",
+            # Generic runtime-config wording inside embedded tool output.
+            'Claude CLI exited with code 1: {"type":"tool_result","content":"invalid runtime"}',
+        ],
+    )
+    @pytest.mark.parametrize(("pre_tool_call", "eligible"), [(False, False), (True, True)])
+    def test_message_markers_respect_adapter_reported_tool_work(
+        self, message: str, pre_tool_call: bool, eligible: bool
+    ) -> None:
+        """An adapter's explicit is_pre_tool_call=False means tools ran natively
+        even when Gate 1 captured nothing, so no message marker may reopen
+        failover; the same failure before any tool work still fails over."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(message), process_info={"is_pre_tool_call": pre_tool_call})
+        )
+        assert dec.eligible is eligible, dec.reason
+        if not eligible:
+            assert dec.reason.startswith("adapter_reported_tool_work"), dec.reason
+
 
 # ---------------------------------------------------------------------------
 # AC-3: Guardrail terminations suppress failover
@@ -778,6 +808,42 @@ class TestEmptyRuntimeResponsesEligible:
         assert "empty_runtime_response" in dec.reason
 
 
+class TestStaleResumeHandleEligible:
+    """A rejected ``--resume`` handle is a pre-work handle fault (bu-089bjy).
+
+    Live 2026-11-18: the Claude CLI exited 1 with "No conversation found with
+    session ID <id>" for every second conversational turn. Classified as an
+    unknown error it was terminal and counted against the model breaker; it must
+    instead be eligible so the spawner's resume branch evicts the handle and
+    retries the same candidate cold under the non-breaker ``resume_failure``.
+    """
+
+    _MSG = (
+        "Claude CLI exited with code 1: No conversation found with session ID: "
+        "163fca0a-59fe-4ab6-848f-5dd3f31d3426"
+    )
+
+    def test_no_conversation_found_is_eligible(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": True})
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("stale_resume_handle")
+
+    def test_tool_work_still_suppresses(self) -> None:
+        """Gate 6a wins: adapter-reported tool work is never retried."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": False})
+        )
+        assert _suppressed(dec), dec.reason
+
+    def test_captured_tool_calls_still_suppress(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), tool_calls=[{"name": "notify"}])
+        )
+        assert _suppressed(dec), dec.reason
+
+
 # ---------------------------------------------------------------------------
 # AC-1c: Rate-limit errors ARE eligible
 # ---------------------------------------------------------------------------
@@ -853,34 +919,37 @@ class TestRateLimitErrorsEligible:
             "reached usage limit for this period",
         ],
     )
-    def test_codex_usage_limit_is_eligible(self, msg: str) -> None:
+    @pytest.mark.parametrize("trusted_key", ["terminal_error_text", "stderr"])
+    def test_codex_usage_limit_is_eligible(self, msg: str, trusted_key: str) -> None:
         """Codex plan usage-cap exhaustion is failover-eligible.
 
         Exit 1 with no tool calls is a pre-invocation systemic rejection; the
         spawner should fail over to a same-tier non-codex model rather than
-        terminating the session.
+        terminating the session. The adapter's trusted text carries the limit.
         """
-        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(msg), process_info={trusted_key: msg})
+        )
         assert _eligible(dec), f"Expected eligible for usage-limit msg={msg!r}, got: {dec.reason}"
         assert dec.reason.startswith("usage_limit")
 
     def test_codex_clock_time_reset_is_not_guessed(self) -> None:
         """ "try again at 12:25 PM" has no date or timezone, so no reset is invented."""
+        msg = (
+            "Codex CLI exited with code 1: You've hit your usage limit. "
+            "Visit https://example.invalid/usage or try again at 12:25 PM."
+        )
         dec = classify_failover_eligibility(
-            _ctx(
-                RuntimeError(
-                    "Codex CLI exited with code 1: You've hit your usage limit. "
-                    "Visit https://example.invalid/usage or try again at 12:25 PM."
-                )
-            )
+            _ctx(RuntimeError(msg), process_info={"terminal_error_text": msg})
         )
         assert dec.reason.startswith("usage_limit")
         assert dec.reset_at is None
 
     def test_claude_usage_limit_epoch_reset_is_parsed(self) -> None:
         reset = datetime.now(UTC) + timedelta(hours=2)
+        msg = f"Claude AI usage limit reached|{int(reset.timestamp())}"
         dec = classify_failover_eligibility(
-            _ctx(RuntimeError(f"Claude AI usage limit reached|{int(reset.timestamp())}"))
+            _ctx(RuntimeError(msg), process_info={"terminal_error_text": msg})
         )
         assert dec.reason.startswith("usage_limit")
         assert dec.reset_at == reset.replace(microsecond=0)
@@ -899,6 +968,52 @@ class TestRateLimitErrorsEligible:
         assert _eligible(dec)
         assert dec.reason.startswith("usage_limit")
 
+    @pytest.mark.parametrize(
+        ("exc_msg", "process_info"),
+        [
+            # Exception text falls back to the stdout transcript: a pre-tool
+            # transcript quoting "usage limit" with no trusted adapter text.
+            ("Claude CLI exited with code 1: tool said: You've hit your usage limit", None),
+            (
+                "Claude CLI exited with code 1: tool said: You've hit your usage limit",
+                {"is_pre_tool_call": True, "stderr": "", "terminal_error_text": None},
+            ),
+            # error_detail reaches the stderr gate but can be raw stdout too.
+            (
+                "runtime exited with code 1",
+                {
+                    "is_pre_tool_call": True,
+                    "error_detail": "tool said: You've hit your usage limit",
+                    "stderr": "",
+                },
+            ),
+        ],
+    )
+    def test_untrusted_usage_limit_text_never_exhausts_the_account(
+        self, exc_msg: str, process_info: dict | None
+    ) -> None:
+        """Without trusted evidence a usage-limit marker reads as a transient
+        pre-work rate limit: still failed over, but never ``usage_limit``, so the
+        spawner records ``runtime_failure`` and leaves the account alone."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(exc_msg), process_info=process_info))
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("rate_limit_before_work"), dec.reason
+        assert dec.reset_at is None
+
+    def test_usage_limit_reset_comes_from_trusted_text(self) -> None:
+        """The reset window is read from the trusted source, not transcript text."""
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("Claude CLI exited with code 1: usage limit reached|4102444800"),
+                process_info={
+                    "terminal_error_text": f"Claude AI usage limit reached|{int(reset.timestamp())}"
+                },
+            )
+        )
+        assert dec.reason.startswith("usage_limit")
+        assert dec.reset_at == reset.replace(microsecond=0)
+
     def test_plain_rate_limit_stays_a_rate_limit(self) -> None:
         dec = classify_failover_eligibility(_ctx(RuntimeError("429 Too Many Requests")))
         assert dec.reason.startswith("rate_limit_before_work")
@@ -910,6 +1025,41 @@ class TestRateLimitErrorsEligible:
             _ctx(RuntimeError("You've hit your usage limit"), tool_calls=[{"name": "x"}])
         )
         assert not _eligible(dec)
+
+
+class TestUsageLimitSignal:
+    """Usage-limit exhaustion is read apart from eligibility, from trusted text only.
+
+    A suppressed attempt (tool work already ran) can still mean the account is
+    out of allowance (bu-s11n0s.34). Exception text and ``error_detail`` can
+    embed the stdout transcript, tool output included, so only the adapter's
+    structured terminal error and its stderr count.
+    """
+
+    @pytest.mark.parametrize("key", ["terminal_error_text", "stderr"])
+    def test_trusted_source_yields_signal_with_reset(self, key: str) -> None:
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        signal = _fc.usage_limit_signal(
+            {
+                "is_pre_tool_call": False,
+                key: f"Claude AI usage limit reached|{int(reset.timestamp())}",
+            }
+        )
+        assert signal is not None
+        assert signal.reset_at == reset.replace(microsecond=0)
+
+    @pytest.mark.parametrize(
+        "process_info",
+        [
+            None,
+            {"stderr": "", "terminal_error_text": None},
+            {"stderr": "429 Too Many Requests"},
+            # error_detail falls back to raw stdout, which can quote tool output.
+            {"error_detail": "tool said: You've hit your usage limit", "stderr": ""},
+        ],
+    )
+    def test_untrusted_or_absent_text_yields_no_signal(self, process_info: dict | None) -> None:
+        assert _fc.usage_limit_signal(process_info) is None
 
 
 class TestParseUsageLimitReset:
@@ -1168,7 +1318,7 @@ class TestMarkerBucketDisjointness:
             if name.endswith("_MARKERS") and isinstance(getattr(_fc, name), tuple)
         }
 
-    def test_expected_eight_marker_buckets_present(self) -> None:
+    def test_expected_nine_marker_buckets_present(self) -> None:
         """Guards against a bucket being renamed/dropped out of the invariant."""
         assert set(self._marker_buckets()) == {
             "_PROVIDER_AUTH_MARKERS",
@@ -1179,6 +1329,7 @@ class TestMarkerBucketDisjointness:
             "_MCP_DISCOVERY_MARKERS",
             "_RUNTIME_CONFIG_MARKERS",
             "_GUARDRAIL_MARKERS",
+            "_STALE_RESUME_MARKERS",
         }
 
     def test_no_pairwise_substring_overlap_across_buckets(self) -> None:
@@ -1203,3 +1354,24 @@ class TestMarkerBucketDisjointness:
             for marker in bucket:
                 assert marker == marker.lower(), f"{name}: {marker!r} is not lowercase"
                 assert marker == marker.strip(), f"{name}: {marker!r} has surrounding whitespace"
+
+
+class TestExecutorEnvUnfit:
+    """bu-ejow5p.5: a provider auth failure in an executor sandbox is an environment fault."""
+
+    MSG = "Claude CLI exited with code 1: authentication failed: invalid api key"
+
+    def test_auth_failure_in_an_executor_is_executor_env_unfit(self) -> None:
+        ctx = _ctx(RuntimeError(self.MSG))
+        ctx.executor_env = True
+        dec = classify_failover_eligibility(ctx)
+        assert dec.reason.startswith("executor_env_unfit"), dec.reason
+
+    def test_the_same_failure_outside_an_executor_keeps_provider_auth_error(self) -> None:
+        dec = classify_failover_eligibility(_ctx(RuntimeError(self.MSG)))
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_availability_failures_in_an_executor_are_unchanged(self) -> None:
+        ctx = _ctx(RuntimeError("connection refused: provider unavailable"))
+        ctx.executor_env = True
+        assert classify_failover_eligibility(ctx).reason.startswith("provider_unavailable")

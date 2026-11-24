@@ -10,6 +10,8 @@ import pytest
 
 import butlers.modules.qa as qa_module
 from butlers.modules.qa import QaConfig, QaModule
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
@@ -22,22 +24,17 @@ class _FakeRetentionCounter:
         self.value += amount
 
 
-class _FakePool:
-    def __init__(self, rows: list[dict]) -> None:
-        self.rows = rows
-        self.fetch = AsyncMock(side_effect=self._fetch)
-        self.execute = AsyncMock(side_effect=self._execute)
-        self.updated: dict[uuid.UUID, dict] = {}
-
-    async def _fetch(self, *_args, **_kwargs) -> list[dict]:
-        return self.rows
-
-    async def _execute(self, _sql: str, finding_id: uuid.UUID, structured_evidence: dict) -> str:
-        self.updated[finding_id] = structured_evidence
-        return "UPDATE 1"
+def _retention_pool(rows: list[dict]) -> FakePool:
+    """Candidate findings for one cleanup pass; each UPDATE succeeds."""
+    return fake_pool(fetch=records(rows), execute="UPDATE 1")
 
 
-def _module_with_pool(pool: _FakePool) -> QaModule:
+def _updated(pool: FakePool) -> dict[uuid.UUID, dict]:
+    """finding id -> rewritten structured_evidence, from the cleanup's UPDATEs."""
+    return {call.args[1]: call.args[2] for call in pool.execute.await_args_list}
+
+
+def _module_with_pool(pool: FakePool) -> QaModule:
     module = QaModule()
     module._pool = pool
     return module
@@ -90,14 +87,14 @@ def _row(
 async def test_daily_evidence_cleanup_removes_evidence_lines_for_old_finding(monkeypatch):
     now = datetime(2026, 5, 15, 4, tzinfo=UTC)
     row = _row(created_at=now - timedelta(days=31))
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
 
     result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
 
     assert result == {"status": "completed", "cleaned_rows": 1, "malformed_rows": 0}
-    updated = pool.updated[row["id"]]
+    updated = _updated(pool)[row["id"]]
     assert "evidence_lines" not in updated["investigation_notes"]
     assert updated["source"] == "qa-agent"
     assert counter.value == 1
@@ -107,14 +104,14 @@ async def test_daily_evidence_cleanup_removes_evidence_lines_for_old_finding(mon
 async def test_daily_evidence_cleanup_exempts_non_terminal_recent_finding(monkeypatch):
     now = datetime(2026, 5, 15, 4, tzinfo=UTC)
     row = _row(created_at=now - timedelta(days=10), closed_at=None)
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
 
     result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
 
     assert result == {"status": "completed", "cleaned_rows": 0, "malformed_rows": 0}
-    assert pool.updated == {}
+    pool.execute.assert_not_awaited()
     assert counter.value == 0
 
 
@@ -126,14 +123,14 @@ async def test_daily_evidence_cleanup_exempts_non_terminal_old_finding(monkeypat
         healing_attempt_id=uuid.uuid4(),
         closed_at=None,
     )
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
 
     result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
 
     assert result == {"status": "completed", "cleaned_rows": 0, "malformed_rows": 0}
-    assert pool.updated == {}
+    pool.execute.assert_not_awaited()
     assert counter.value == 0
 
 
@@ -155,13 +152,13 @@ async def test_daily_evidence_cleanup_preserves_narrative_fields(monkeypatch):
             },
         },
     )
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
 
     await _module_with_pool(pool).daily_evidence_cleanup(now=now)
 
-    updated = pool.updated[row["id"]]
+    updated = _updated(pool)[row["id"]]
     assert updated["repository"] == "Tzeusy/butlers"
     assert updated["investigation_notes"] == {
         "headline": "Failure has a known cause",
@@ -181,7 +178,7 @@ async def test_daily_evidence_cleanup_skips_malformed_investigation_notes(caplog
             "investigation_notes": ["raw line without narrative object"],
         },
     )
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
 
@@ -189,7 +186,7 @@ async def test_daily_evidence_cleanup_skips_malformed_investigation_notes(caplog
         result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
 
     assert result == {"status": "completed", "cleaned_rows": 0, "malformed_rows": 1}
-    assert pool.updated == {}
+    pool.execute.assert_not_awaited()
     assert counter.value == 0
     assert "malformed investigation_notes shape" in caplog.text
 
@@ -198,9 +195,11 @@ async def test_daily_evidence_cleanup_skips_malformed_investigation_notes(caplog
 async def test_scheduled_evidence_cleanup_honors_configured_hour(monkeypatch):
     now = datetime(2026, 5, 15, 3, tzinfo=UTC)
     row = _row(created_at=now - timedelta(days=31))
-    pool = _FakePool([row])
+    pool = _retention_pool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
+    prune = AsyncMock(return_value=2)
+    monkeypatch.setattr(qa_module, "prune_retained_exports", prune)
     module = _module_with_pool(pool)
     module._config = QaConfig(retention_cleanup_hour=4)
 
@@ -208,4 +207,26 @@ async def test_scheduled_evidence_cleanup_honors_configured_hour(monkeypatch):
     cleaned = await module.run_scheduled_evidence_cleanup(now=now.replace(hour=4))
 
     assert skipped == {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
-    assert cleaned == {"status": "completed", "cleaned_rows": 1, "malformed_rows": 0}
+    assert cleaned == {
+        "status": "completed",
+        "cleaned_rows": 1,
+        "malformed_rows": 0,
+        "pruned_exports": 2,
+    }
+    prune.assert_awaited_once_with(pool)
+
+
+@pytest.mark.asyncio
+async def test_export_prune_failure_does_not_fail_the_evidence_cleanup(monkeypatch, caplog):
+    now = datetime(2026, 5, 15, 4, tzinfo=UTC)
+    pool = _retention_pool([_row(created_at=now - timedelta(days=31))])
+    monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", _FakeRetentionCounter())
+    monkeypatch.setattr(qa_module, "prune_retained_exports", AsyncMock(side_effect=OSError))
+    module = _module_with_pool(pool)
+    module._config = QaConfig(retention_cleanup_hour=4)
+
+    with caplog.at_level("WARNING", logger="butlers.modules.qa"):
+        cleaned = await module.run_scheduled_evidence_cleanup(now=now)
+
+    assert cleaned["cleaned_rows"] == 1 and cleaned["pruned_exports"] == 0
+    assert "export prune failed" in caplog.text

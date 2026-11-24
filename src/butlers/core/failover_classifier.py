@@ -23,7 +23,9 @@ Eligible (pre-tool-call systemic failures):
 - Provider plan usage-limit exhaustion (``RuntimeError`` with a recognized usage-limit
   message) — reason prefix ``usage_limit``.  Distinct from a transient rate limit: the
   whole provider account is out of allowance until its reset window, so the decision
-  also carries the reset instant when the message states one (bu-q7vx1q.13)
+  also carries the reset instant when the message states one (bu-q7vx1q.13).  It
+  requires trusted adapter text (``terminal_error_text`` or ``stderr``); a marker seen
+  only in transcript-bearing text is a ``rate_limit_before_work`` (bu-s11n0s.37)
 - MCP discovery failure before any tool was executed (``MCPToolDiscoveryError``
   when ``tool_calls`` is empty)
 - Timeout before any tool call or side-effect-capable output (``TimeoutError``
@@ -38,6 +40,10 @@ Eligible (pre-tool-call systemic failures):
 
 Suppressed (default-closed, any of the following):
 - Any captured MCP tool call  — world may have been touched
+- A ``RuntimeError`` whose adapter reported ``process_info["is_pre_tool_call"]
+  is False`` — tools ran natively, so no message marker reopens failover
+  (runtime config markers included: adapters set False only after the CLI ran,
+  so a genuine config error never carries it)
 - Guardrail terminations (``degenerate_tool_loop``, ``tool_call_budget_exceeded``,
   ``token_budget_exceeded``) — intentional runtime terminations
 - Business / validation errors (``ValueError``, ``TypeError``, application errors)
@@ -256,6 +262,13 @@ _EMPTY_RESPONSE_MARKERS: tuple[str, ...] = (
     "no result, tool calls, token usage, or stderr",
 )
 
+# Substrings matched (lowercased) against the exception message to detect a
+# provider rejecting a ``--resume`` handle it does not know (expired, never
+# persisted, or from another host). The CLI rejects the handle before any turn
+# runs, so the failure is about the handle, not the model: eligible, so the
+# spawner's resume branch evicts the handle and retries cold (bu-089bjy).
+_STALE_RESUME_MARKERS: tuple[str, ...] = ("no conversation found with session id",)
+
 # Substrings matched (lowercased) against the exception message to detect
 # MCP discovery / transport failures that are pre-invocation.
 _MCP_DISCOVERY_MARKERS: tuple[str, ...] = (
@@ -319,12 +332,23 @@ class FailoverContext:
     trigger_context:
         Optional free-form trigger metadata.  Reserved for future classifiers;
         not currently used for eligibility decisions.
+    executor_env:
+        True when the failed session is an engineering executor running in a
+        sandbox environment (``env_override``). A provider auth rejection there
+        says the sandbox cannot reach the credential, not that the model is
+        unhealthy, so it is labelled ``executor_env_unfit`` (bu-ejow5p.5).
+    job_isolated:
+        True when the attempt ran (or tried to launch) as a per-attempt Job. The attempt
+        owns one exchange directory, one Job name and one sealed output, so a second model
+        attempt against it is never safe and no failure there is failover-eligible.
     """
 
     exception: BaseException
     tool_calls: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     process_info: dict[str, Any] | None = None
     trigger_context: dict[str, Any] | None = None
+    executor_env: bool = False
+    job_isolated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +395,12 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 
     exc_msg = str(exc).lower()
     exc_class = type(exc).__name__
+
+    if ctx.job_isolated:
+        return FailoverDecision(
+            eligible=False,
+            reason="job_attempt_not_retryable: a per-attempt Job owns its exchange and name",
+        )
 
     # ------------------------------------------------------------------
     # GATE 2: Guardrail terminations — intentional, not a systemic failure.
@@ -425,6 +455,36 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
     # message detail that identifies the failure class.
     # ------------------------------------------------------------------
     if isinstance(exc, RuntimeError):
+        # GATE 6a: adapter-reported tool work (bu-s11n0s.28). Every marker
+        # branch below reads text that can embed the session transcript — the
+        # Claude adapter's error_detail falls back to raw stdout JSONL, tool
+        # output included — so a post-tool failure whose transcript mentions
+        # "rate limit" would otherwise read as a pre-work rejection. An
+        # explicit is_pre_tool_call=False means tools ran natively even though
+        # Gate 1 captured nothing; a retry could duplicate their side effects.
+        # It precedes the runtime-config markers too: adapters set False only
+        # after the CLI process ran (worker instances are per invocation), so a
+        # genuine config error never carries it, while generic config markers
+        # such as "runtime type" can appear in embedded tool output.
+        # Absent or True keeps the marker branches open.
+        if (ctx.process_info or {}).get("is_pre_tool_call") is False:
+            logger.debug("Failover suppressed: adapter reported tool work (exc=%s)", exc_class)
+            return FailoverDecision(
+                eligible=False,
+                reason="adapter_reported_tool_work: process_info.is_pre_tool_call=False; "
+                "tools ran before the failure, retry suppressed to prevent duplicate "
+                "side effects",
+            )
+
+        # Rejected provider resume handle: a handle fault before any turn ran.
+        if _matches_any(exc_msg, _STALE_RESUME_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — provider rejected resume handle")
+            return FailoverDecision(
+                eligible=True,
+                reason="stale_resume_handle: provider rejected the resume session id "
+                "before any turn ran",
+            )
+
         # Runtime config / registration errors
         if _matches_any(exc_msg, _RUNTIME_CONFIG_MARKERS):
             logger.debug("Failover eligible: RuntimeError — runtime config/registration error")
@@ -436,21 +496,20 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 
         # Plan usage-limit exhaustion: account-scoped, with its own reset window.
         # Checked before the generic rate-limit bucket so it never reads as a
-        # transient per-model fault.
+        # transient per-model fault. The exception message can fall back to the
+        # stdout transcript, so it only routes the failure; exhausting the
+        # account needs trusted adapter text (bu-s11n0s.37). Without it the
+        # marker is treated as a transient pre-work rate limit.
         if _matches_any(exc_msg, _USAGE_LIMIT_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider usage limit before work")
-            return _usage_limit_decision(exc_msg)
+            return _usage_limit_or_rate_limit_decision(ctx.process_info)
 
         # Rate-limit / quota / billing exhaustion before work. Check this before
         # generic provider/auth markers because structured OpenCode APIError
         # messages can include both "APIError" and a more specific quota marker.
         if _matches_any(exc_msg, _RATE_LIMIT_MARKERS):
             logger.debug("Failover eligible: RuntimeError — rate-limit before work")
-            return FailoverDecision(
-                eligible=True,
-                reason="rate_limit_before_work: provider rate-limit, quota, or billing rejection "
-                "before any tool call was executed",
-            )
+            return _rate_limit_before_work_decision()
 
         # OpenCode may surface provider-side failures as a structured
         # ``APIError`` envelope that has no stable vendor-specific wording.
@@ -466,6 +525,12 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
         # Provider / auth failures — genuine identity/credential rejections.
         if _matches_any(exc_msg, _PROVIDER_AUTH_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider/auth failure")
+            if ctx.executor_env:
+                return FailoverDecision(
+                    eligible=True,
+                    reason="executor_env_unfit: provider credential unavailable in the "
+                    "executor sandbox before session work started",
+                )
             return FailoverDecision(
                 eligible=True,
                 reason="provider_auth_error: provider or authentication failure "
@@ -636,13 +701,70 @@ def parse_usage_limit_reset(text: str, *, now: datetime | None = None) -> dateti
     return candidate.astimezone(UTC)
 
 
-def _usage_limit_decision(text: str, *, source: str = "exception message") -> FailoverDecision:
+def _rate_limit_before_work_decision(source: str = "") -> FailoverDecision:
     return FailoverDecision(
         eligible=True,
-        reason="usage_limit: provider plan usage-limit exhaustion detected in "
-        f"{source}; the provider account is exhausted until its reset window",
-        reset_at=parse_usage_limit_reset(text),
+        reason="rate_limit_before_work: provider rate-limit, quota, or billing rejection "
+        f"{source}before any tool call was executed",
     )
+
+
+def _usage_limit_or_rate_limit_decision(
+    process_info: dict[str, Any] | None, *, rate_limit_source: str = ""
+) -> FailoverDecision:
+    """Route a usage-limit marker: ``usage_limit`` only on trusted evidence.
+
+    A ``usage_limit`` decision makes the spawner mark the whole provider account
+    exhausted, so it requires :func:`usage_limit_signal` (the adapter's
+    structured terminal error or raw stderr), and the reset window is read from
+    that same trusted text. A marker seen only in transcript-backed text (the
+    exception message or ``error_detail``) is still a pre-work rejection, so it
+    fails over as a transient ``rate_limit_before_work`` and never exhausts the
+    account.
+    """
+    signal = usage_limit_signal(process_info)
+    if signal is None:
+        return _rate_limit_before_work_decision(rate_limit_source)
+    return FailoverDecision(
+        eligible=True,
+        reason="usage_limit: provider plan usage-limit exhaustion detected in adapter "
+        f"{signal.source}; the provider account is exhausted until its reset window",
+        reset_at=signal.reset_at,
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class UsageLimitSignal:
+    """Evidence that the provider account is out of plan allowance.
+
+    ``reset_at`` follows :func:`parse_usage_limit_reset`: ``None`` means no
+    reset was stated, never "available now".
+    """
+
+    reset_at: datetime | None
+    source: str
+
+
+# Usage-limit exhaustion is account state, independent of whether the failed
+# attempt may be retried (bu-s11n0s.34). A limit hit after tool work is still
+# suppressed (Gate 1 / Gate 6a), but the account must be marked exhausted so the
+# next session does not retry it. Only text the adapter attributes to the
+# provider counts: its structured terminal error (``terminal_error_text``, the
+# CLI's failed result / ``turn.failed`` / ``error`` event) and raw stderr. The
+# exception message and ``error_detail`` fall back to the stdout transcript,
+# where tool output can quote "usage limit" verbatim.
+_USAGE_LIMIT_TRUSTED_SOURCES: tuple[str, ...] = ("terminal_error_text", "stderr")
+
+
+def usage_limit_signal(process_info: dict[str, Any] | None) -> UsageLimitSignal | None:
+    """Return a usage-limit signal from trusted adapter text, else ``None``."""
+    if not isinstance(process_info, dict):
+        return None
+    for key in _USAGE_LIMIT_TRUSTED_SOURCES:
+        value = process_info.get(key)
+        if isinstance(value, str) and _matches_any(value.lower(), _USAGE_LIMIT_MARKERS):
+            return UsageLimitSignal(reset_at=parse_usage_limit_reset(value), source=key)
+    return None
 
 
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
@@ -718,7 +840,11 @@ def _classify_stderr_gate(process_info: dict[str, Any] | None) -> FailoverDecisi
     for reason_prefix, markers, description in _STDERR_GATE_BUCKETS:
         if _matches_any(text, markers):
             if reason_prefix == "usage_limit":
-                return _usage_limit_decision(text, source="adapter stderr (opt-in gate)")
+                return _usage_limit_or_rate_limit_decision(
+                    process_info,
+                    rate_limit_source="detected in adapter error_detail (opt-in "
+                    "pre-tool-call stderr gate; process_info.is_pre_tool_call=True) ",
+                )
             return FailoverDecision(
                 eligible=True,
                 reason=f"{reason_prefix}: {description} detected in adapter stderr "

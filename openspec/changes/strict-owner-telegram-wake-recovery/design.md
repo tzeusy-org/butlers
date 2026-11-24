@@ -143,6 +143,16 @@ envelope hash, and the original stored `deliver_at`. Existing rows that lack
 this provenance are never guessed into a wake cohort; their current scheduler
 behavior remains intact.
 
+**Known gap (slice A, bu-kqnum.3.6.1):** the stored target tuple has the provider,
+chat and thread but not the bot endpoint identity. That identity lives in the
+telegram-bot connector configuration, not in the notify path, and `wake_*`
+provenance is immutable, so already-parked rows can never gain it. Prepare MUST
+therefore treat a row without a bot endpoint as ineligible: it stays ordinary
+`pending`, releases at its stored `deliver_at`, and is never counted against a
+cohort, so it cannot produce a `target_mismatch`. The bot field is added once a
+resolution path exists. Holds are transient (they release at quiet-hours end),
+so the only cost is wake eligibility for rows parked before the field exists.
+
 For every participant, `wake_recovery.prepare.v1` atomically obtains its local
 release lock, verifies the run fence, selects its eligible rows in deterministic
 admission order, records the local cutoff sequence, and moves them from

@@ -8,6 +8,10 @@ This module is the single source of truth for:
    (``expected_dose_count``), capped at the medication's own age so a
    medication created partway through the window is never scored against
    doses expected before it existed.
+3. A medication's course across edits (``dose_of_medication_sql``,
+   ``medication_first_seen``): every edit supersedes the medication fact with a
+   new id, so doses and the age cap follow every fact of the medication's subject
+   since its last delete rather than the current id alone.
 
 It is imported by:
 
@@ -26,6 +30,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
+from typing import Any
 
 # Textual frequency → doses per day conversion table.
 # All keys are normalised to lowercase with leading/trailing whitespace stripped.
@@ -72,6 +77,19 @@ def frequency_to_doses_per_day(frequency: str) -> float:
     return _FREQUENCY_DOSES_PER_DAY.get(normalized, 1.0)
 
 
+def scheduled_doses_per_day(frequency: str) -> float:
+    """Doses per day that count toward an adherence denominator.
+
+    As-needed (PRN) frequencies have no scheduled doses, so they contribute ``0.0``
+    and an adherence rate is ``None`` rather than a penalty for rare use (bu-2yeqd1,
+    consistent with bu-ikq7vr: PRN is never missed).  Refill estimation keeps using
+    ``frequency_to_doses_per_day``, whose 1.0/day PRN fallback is a consumption guess.
+    """
+    if is_as_needed(frequency):
+        return 0.0
+    return frequency_to_doses_per_day(frequency)
+
+
 def expected_dose_count(
     *,
     doses_per_day: float,
@@ -89,7 +107,7 @@ def expected_dose_count(
     Parameters
     ----------
     doses_per_day:
-        From ``frequency_to_doses_per_day``.
+        From ``scheduled_doses_per_day`` (``0.0`` for as-needed medications).
     window_start, window_end:
         The requested lookback window.
     medication_created_at:
@@ -141,7 +159,11 @@ _DAY_PART_TIMES: dict[str, time] = {
     "bedtime": time(21, 0),
 }
 
-_CLOCK_RE = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$")
+_CLOCK_RE = re.compile(r"^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?$")
+
+# A dose with no known time is expected sometime today: it is due later until this
+# time has passed, and only then missed (bu-6cdsvf).
+_UNDATED_DOSE_DUE = time(21, 0)
 
 
 @dataclass(frozen=True)
@@ -200,8 +222,8 @@ def dose_status_today(
       ``doses_per_day`` doses.  Times come from *schedule* (``"08:00"``, ``"8am"``,
       ``"evening"``) or from a day-part word in *frequency*.  A dose whose time has
       passed and has not been taken is missed; a later one is due later.
-    - A dose with no known time keeps the legacy behaviour and counts as missed if
-      untaken (the briefing cannot tell it is not yet due).
+    - A dose with no known time (schedule-less daily, weekday-only weekly) is due
+      later until ``_UNDATED_DOSE_DUE`` has passed, then missed if untaken.
     """
     normalized = (frequency or "").strip().lower()
     if not normalized or is_as_needed(normalized) or normalized in _PHASE_UNKNOWN_FREQUENCIES:
@@ -226,9 +248,99 @@ def dose_status_today(
     times = sorted(t for t in (_parse_dose_time(e) for e in entries) if t is not None)[:count]
     now_time = now_local.time().replace(second=0, microsecond=0)
     undated = count - len(times)
-    due_now = sum(1 for t in times if t <= now_time) + undated
-    later = len(times) - sum(1 for t in times if t <= now_time)
+    timed_due = sum(1 for t in times if t <= now_time)
+    undated_due = undated if now_time >= _UNDATED_DOSE_DUE else 0
+    due_now = timed_due + undated_due
+    later = len(times) - timed_due + undated - undated_due
     taken = max(doses_taken, 0)
     missed = max(due_now - taken, 0)
     later = max(later - max(taken - due_now, 0), 0)
     return DoseStatus(missed=missed, due_later=later)
+
+
+def _medication_course_sql(param: str) -> str:
+    """SELECT of the medication facts in the same course as the fact bound to ``param``.
+
+    A course is the run of ``medication`` facts of one subject between deletes:
+    ``medication_update`` supersedes the fact (new id, fresh ``created_at``) on every
+    edit, so the course spans all of them, across all validities. ``medication_delete``
+    retracts the fact current at the time, which therefore closes its course; a later
+    re-add under the same name (same subject) starts a new course, because a delete
+    means the owner stopped. The course of a fact runs after the latest retracted fact
+    created before it, up to and including the first retracted fact at or after it.
+
+    ``param`` is bound to the fact id as text, so a non-UUID path parameter matches
+    nothing instead of raising. A fact without a subject has no course here.
+    """
+    return f"""
+        SELECT course.id, course.created_at
+        FROM facts course
+        JOIN facts this_med
+          ON this_med.id::text = {param}
+         AND this_med.predicate = 'medication'
+         AND this_med.scope = 'health'
+        WHERE course.predicate = 'medication'
+          AND course.scope = 'health'
+          AND course.subject = this_med.subject
+          AND course.created_at > COALESCE(
+              (
+                  SELECT MAX(ended.created_at)
+                  FROM facts ended
+                  WHERE ended.predicate = 'medication'
+                    AND ended.scope = 'health'
+                    AND ended.subject = this_med.subject
+                    AND ended.validity = 'retracted'
+                    AND ended.created_at < this_med.created_at
+              ),
+              '-infinity'::timestamptz
+          )
+          AND course.created_at <= COALESCE(
+              (
+                  SELECT MIN(ended.created_at)
+                  FROM facts ended
+                  WHERE ended.predicate = 'medication'
+                    AND ended.scope = 'health'
+                    AND ended.subject = this_med.subject
+                    AND ended.validity = 'retracted'
+                    AND ended.created_at >= this_med.created_at
+              ),
+              'infinity'::timestamptz
+          )
+    """
+
+
+def dose_of_medication_sql(param: str) -> str:
+    """SQL predicate matching ``took_dose`` facts that belong to a medication's course.
+
+    ``param`` is the placeholder (e.g. ``"$1"``) bound to the medication fact id as
+    text. A dose carries the medication fact id that was current when it was logged,
+    and every edit supersedes that fact (new id), so matching the given id alone
+    forgets every dose logged before the last edit. This matches any fact of the
+    medication's course (see ``_medication_course_sql``): every edit is included, and
+    doses from before a delete are not (bu-2eaep2; the refill scan's subject rule is
+    bu-uc6wh2). Dose records are never rewritten. Columns of the outer ``facts`` row
+    are unqualified.
+    """
+    return f"""(
+        metadata->>'medication_id' = {param}
+        OR metadata->>'medication_id' IN (
+            SELECT medication_course.id::text
+            FROM ({_medication_course_sql(param)}) medication_course
+        )
+    )"""
+
+
+async def medication_first_seen(pool: Any, medication_id: str) -> datetime | None:
+    """When the medication's current course started: its earliest fact's ``created_at``.
+
+    Each edit supersedes the medication fact with a fresh ``created_at``, so the
+    current fact's age understates how long the owner has taken the medication. The
+    expected-dose age cap uses this course start instead (bu-wfxau8). A delete ends
+    the course, so a re-add starts again at the re-add. Same course rule as
+    ``dose_of_medication_sql``. ``None`` when the id is unknown.
+    """
+    return await pool.fetchval(
+        f"SELECT MIN(medication_course.created_at)"
+        f" FROM ({_medication_course_sql('$1')}) medication_course",
+        medication_id,
+    )

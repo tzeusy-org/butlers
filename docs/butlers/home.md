@@ -51,11 +51,21 @@ name for the device. A declared sensor that stays on for 60 seconds opens an own
 (source `home:safety`) and sends one high-priority message through the notify path, which
 quiet hours and do-not-disturb do not hold. Two triggers feed the same ledger: the websocket
 event hook (seconds) and the `home_safety_sentinel` job every five minutes, so they never
-double-alert. If delivery fails the condition stays open and is retried, and a still-active alarm
-re-sends as the condition ages. A sensor that reads `unavailable`, or a Home Assistant source
-that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
+double-alert. Both judge the 60-second hold from the sensor's last state change (`last_changed`),
+so an attribute-only update never makes an old alarm look new. If delivery fails the condition
+stays open and is retried, and a still-active alarm re-sends after 15 minutes, 1 hour and 4 hours,
+then daily, while the sensor stays on; a duplicate send between the two triggers is prevented by
+keeping the delivery marker across confirmations. A sensor that reads `unavailable`, or a Home
+Assistant source that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
 Assistant service. Code: `src/butlers/jobs/home_safety.py`; requirement: `home-deterministic-jobs`
 spec, "Home Safety Sentinel Job".
+
+Not shipped: a "home sensing blind" condition while the owner is away, a freezer-temperature
+alarm and a door left open while away. They are specified, not implemented, in
+[specify-home-away-safety](../../openspec/changes/specify-home-away-safety/proposal.md).
+- Thresholds are the owner's own values; a missing one means the watch is unconfigured and silent.
+- Blindness never reads as all clear.
+- Whether any of the three may break quiet hours is an open owner decision.
 
 ## Private person mappings
 
@@ -67,9 +77,266 @@ entity, or exposes a mapping read surface, and it returns only an opaque receipt
 Remap, delete, and rollback are separate owner-authorized operations. Route:
 `src/butlers/api/routers/home_person_mappings.py`.
 
+## Owner places
+
+The dashboard's **Devices → Places** panel, behind dashboard owner-auth, edits the owner place
+registry `public.owner_places` (core migration `core_303`): named places with a kind
+(home/work/airport/other), a centre at no more than five decimals, a 50-2000 m radius, other
+names, exact Wi-Fi SSIDs and an optional Home Assistant zone. Edits replace the whole row under
+compare-and-swap (a stale changed edit is `409`); pausing keeps a place but drops it from
+resolution; removal is a soft delete that never reuses the place id. Refusals are content-blind,
+the generic audit middleware never reads these bodies, and the explicit audit row records only
+operation, outcome and versions. Only the Travel and Chronicler runtime roles can read the table
+(row security) and no runtime role can write it. Deterministic readers use
+`butlers.owner_places.load_active_owner_places`; no coordinate or SSID reaches a model.
+
+Not yet cut over: the commuting ETA producer and the OwnTracks place-cluster and SSID projections
+still read `OWNTRACKS_PLACE_REFERENCES` and `chronicler/owntracks/ssid_places`. A later slice
+imports those once and moves the readers to the registry. Routes: `roster/home/api/router.py`
+(`/api/home/places`); requirement: `butler-home` spec, "Owner place registry and dashboard
+editor".
+
+## Owner presence entities
+
+The **Devices → Who counts as you** panel, behind dashboard owner-auth, edits
+`home:presence:owner_entities`: the Home Assistant entity ids (any domain, including room sensors)
+that the presence producer treats as the owner. `GET/PUT /api/home/settings/presence/owner-entities`
+implement the adopted `home-presence-configuration` contract
+(`openspec/changes/specify-home-presence-owner-entity-configuration/`): exact ids only (no trimming,
+case-folding or name lookup), at most 50, each already present in `ha_entity_snapshot` (unseen ids are
+one count-only `422 INVALID_REFERENCE`); writes serialize on a fixed advisory lock and compare-and-swap
+the state row's version (identical list is a no-op at any version, a stale changed list is `409`); a
+malformed stored value is a blind `503`, never an empty success. The generic audit middleware never
+reads the PUT body; one allowlisted audit event records counts, versions and outcome. A PUT is a
+settings receipt only: the next scheduled `run_home_presence_context_producer` run reads the list.
+
+These guarantees cover only these two routes. The generic state API and the `state_*` MCP tools can
+still read and overwrite the same key without this validation or lock.
+
+## Owner presence reducer
+
+`butlers.perception.presence` is a pure reducer; `butlers.jobs.home_presence_reducer` is its Home
+adapter. Observations are typed and coordinate-free (side, opaque place reference, opaque key). The
+Home Assistant input is the owner entities' `home`/`not_home` rows in `ha_entity_snapshot`, gated
+by `ha_source_health`; the OwnTracks input is `public.owner_presence_observations(since, until, limit)`
+(core_330): a SECURITY DEFINER feed, executable by `butler_home_rw` alone, that classifies
+`connectors.owntracks_points` fixes against the live `owner_places` inside the database and returns only
+`(observed_at, accuracy_m, place_ref, side, ssid_match)` (no coordinate, SSID or payload). Outside is
+accuracy <= 100 m and distance > radius + max(accuracy, 50 m); inside is accuracy <= 100 m and
+distance <= radius; the band between is no signal, which gives hysteresis; an exact case-sensitive
+SSID match is an inside row that vetoes a leave. The init-db blanket `GRANT SELECT ON ALL TABLES IN
+SCHEMA connectors` still lets Home read the raw table; Home code does not, and the feed is the one
+place that classifies. A missing or ungranted feed degrades to Home Assistant alone. Confirmed leave/enter
+transitions are written to the canonical `owner.place` slot and timeline as source `home.dots`; no
+presence tables exist. Thresholds are named constants (3 minute quiet period, 2 distinct fixes at least 30 seconds apart,
+100 m accuracy ceiling, 50 m margin floor, 10 minute retraction window, 5 minute heartbeat).
+Reducer state lives in memory, so a restart makes the next confirmed side an `establish` preceded
+by an `unknown` assertion, never a fabricated leave. A restart therefore costs one confirmation
+window and any pending candidate, and a leave that happens while the reducer is down is not recorded. Activation (the `home.dots` profile with a
+finite freshness maximum above the heartbeat, the owner subject, a `place` reference per home
+place, the evidence references from `evidence_ref`, a writer login and the schedule) is a
+separate owner-authorized act; until then nothing runs. `GET /api/home/presence/transitions`
+(owner-only) lists confirmed edges with `late` and `retracted` flags; the Devices page shows them in
+`PresenceTimeline`, with a quiet "not activated" state while the reader login is absent.
+
+## Departure card (dark)
+
+When the owner leaves home, Home can send one plain-text card listing what they asked to have
+checked and is not secure, for example "You left home. Front door: on". The owner declares each
+entity, the label to use and the states that count as secure (`off`, `closed`, `locked`...) in
+`home.departure_watch` through the owner-only `GET/PUT /api/home/departure-watch` and
+`DELETE /api/home/departure-watch/{entity_id}` (no dashboard panel yet). The deterministic
+`home_departure_watch` job (`src/butlers/jobs/home_departure.py`) runs each minute once scheduled:
+
+- it reads confirmed `owner.place` edges from the perception timeline as the owner reader; without
+  `BUTLERS_PERCEPTION_READER_DSN` it does nothing (`reader_unavailable`);
+- for a leave confirmed 2 to 30 minutes ago it records `home.departure_cards` and queues one timed
+  insight (`home:departure:<edge id>`, delivered by confirmed + 30 minutes or not at all);
+- a retracted or late leave, a later enter, or an all-secure home queues nothing;
+- an unhealthy Home Assistant source gives "Home: cannot see (last good reading N min ago)", and a
+  missing or unavailable entity gives "<label>: cannot see"; neither ever reads as secure;
+- every run rechecks open cards, and the Switchboard asks `public.resolve_home_departure`
+  (core_335) before sending: a closed card, or one whose lines changed since it was queued, is
+  withdrawn unsent; a card not rechecked for three minutes holds. A changed card's evidence row
+  closes as `withdrawn_changed`, which records why it never arrived but not what it said.
+
+The card names things only by the owner's labels, never Home Assistant's `friendly_name`, and has
+no buttons and no Home Assistant service call of its own. Per-item fixes (below), an arrival card
+and a prepared-action status resolver are specified in
+[specify-home-departure-fixes-arrival](../../openspec/changes/specify-home-departure-fixes-arrival/proposal.md);
+an immediate lane is not specified and waits for exact-text owner adoption (bu-jv1moa.29). It is dark: `DEPARTURE_CARD_LIVE` is off and no roster schedules
+the job; activation turns it on with the timed insight lane, the perception reader login and the
+presence reducer. Requirement: `home-deterministic-jobs` spec delta in
+`openspec/changes/insight-timed-lane/`, "Home Departure Card Job".
+
+### Departure fixes (dark)
+
+The owner can declare, per watched item, the one exact call that would fix it (bu-jv1moa.115,
+REQ-home-deterministic-jobs-008 and -009). A declaration lives in `home.departure_fixes` (home_009):
+`(domain, service)`, one explicit target entity and allowed `data`, for an entity already in
+`home.departure_watch`. It is written only by the owner-only `GET/PUT /api/home/departure-fixes` and
+`DELETE /api/home/departure-fixes/{entity_id}`, never by conversation or tool (decided D7). A route
+refuses, with one fixed code and no echoed value, an unwatched entity, a non-explicit target, a
+service outside the allowlist in `src/butlers/jobs/home_departure_fixes.py` and any `data` key a
+pair does not allow.
+
+- **Parking.** When the departure job queues a card it parks one `origin='prepared'` approval per
+  listed item that has a declaration (`home:departure-fix:<leave edge id>:<entity>`), carrying the
+  stored call unchanged. The job never calls Home Assistant and no fix runs without an owner
+  approval, whatever its RFC 0028 class (decided D5); a `protected` fix says so on its card line.
+  There is no "secure all": each item has its own action, approval and receipt.
+- **Dispatch.** After an owner approves it on the dashboard, the approvals executor replays it
+  through `ha_call_service`. Before any receipt or request that path refuses unless the leave edge
+  the fix was parked for is still the latest confirmed, unretracted `owner.place` edge, so leave,
+  return, leave again dispatches nothing. An unreadable timeline refuses too. A refused replay
+  leaves the row `approved` (status `approved_not_run`) with no receipt.
+- **Cancellation.** Each run rejects a still-pending fix as `system:home-departure-fix` with reason
+  `owner_returned`, `premise_retracted`, `already_secure` or `watch_removed`; its status then reads
+  `cancelled`. An unreadable timeline leaves it pending. A receipt is never edited, and no text
+  says a fix was undone, reverted or restored.
+
+It is dark: `DEPARTURE_FIX_LIVE` is off and nothing is scheduled. The owner declares fixes in the
+Home, Devices, "Departure fixes" panel; approval happens on Approvals.
+
+## Away safety (dark)
+
+The deterministic `home_away_safety` job (`src/butlers/jobs/home_away_safety.py`) keeps three
+owner conditions and tells the owner through the routine notify path (quiet hours apply):
+
+- `home:freezer`: a declared freezer read above the owner's maximum on every run for the owner's
+  dwell; it clears only on a fresh reading at or below the maximum minus the owner's hysteresis;
+- `home:away-door`: an armed departure-watch item left not secure while the owner is confirmed
+  away, for that item's `away_alert_after_minutes` (at least 30, the departure card's window);
+- `home:sensing-blind`: while the owner is away, Home cannot read a declared role (leak, smoke,
+  CO, gas, freezer, doors) or has lost the Home Assistant lease for the owner's blind wait.
+
+Every value is the owner's, typed on the dashboard (Home, Devices, Away safety) through the
+owner-only, content-blind `/api/home/away-safety` routes; a missing value leaves that alert
+`unconfigured` and silent. Unknown is never clear: a stale reading, a lost lease or an uncertain
+presence premise carries an open condition and opens nothing. Each run also writes the canonical
+`home.sensing` slot as `perception_sensing_writer` (`BUTLERS_SENSING_WRITER_DSN`); registering
+the sensing group is a privileged activation step, and no route or job creates it. There is no
+tool, skill or session control for these alerts. It is dark: `HOME_AWAY_SAFETY_LIVE` is off and
+no roster schedules the job. Requirement: `home-deterministic-jobs` spec delta in
+`openspec/changes/specify-home-away-safety/`.
+
+### Arrival card
+
+When the owner gets home after an absence of at least 30 minutes for which Home had something to say
+(a departure card, a Home condition that opened or resolved during the absence, or a parked fix),
+the zero-LLM `home_arrival_watch` job queues one read-only card on the timed insight lane
+(bu-jv1moa.116, REQ-home-deterministic-jobs-010). It is dark: `ARRIVAL_CARD_LIVE` is off and no
+roster schedules it.
+
+- Window: deliverable from the enter edge's confirmation + 2 minutes to + 30 minutes, dedup
+  `home:arrival:<edge id>`, routine priority, premise probe `("home", "arrival_card_current")`. The
+  lane treats it as a confirmed presence edge, so quiet hours yield to it for 15 minutes; `dnd` and
+  `sleeping` still hold it.
+- Lines: conditions named by their source family ("Freezer temperature", "Door or window left
+  open") with the recorded open and resolve times and resolution reason (never the condition's own
+  text); departure-watch items still not secure, or "cannot see", by the owner's labels; each fix
+  with its resolver status. A departure card counts only if it was queued; an absence whose queued card
+  stayed secure says everything on it is secure now and that Home only tracks what the owner
+  declared. A source error recorded inside the absence adds "Home could not see for part of the
+  time you were away" and never the quiet card.
+- Nothing is queued for a retracted or late enter, one followed by another leave, an absence under 30
+  minutes, or one with nothing to report; each decision is recorded once in `home.arrival_cards`
+  (kept 7 days). Every run rechecks open cards: one whose lines changed is closed
+  `withdrawn_changed`, and `public.resolve_home_arrival` (core_338) makes the Switchboard
+  withdraw it unsent or hold it when not rechecked for three minutes.
+- No Home Assistant call, button, prepared action, `friendly_name` or coordinate. Nothing is
+  inferred from Home Assistant history; exact outage stretches are not recorded, so only the
+  current lease, a source error inside the absence and any `home:sensing-blind` condition appear. Fix lines come from an injected
+  reader that the departure-fix slice (bu-jv1moa.115) supplies; until then none appear.
+
+### Prepared-action status
+
+`butlers.jobs.home_prepared_status.prepared_action_status` answers, for a parked Home action, one of
+`awaiting_approval`, `approved_not_run`, `succeeded`, `unverified`, `failed`, `rejected`,
+`cancelled`, `expired`, `abandoned` or `unknown` (bu-jv1moa.114, REQ-home-deterministic-jobs-011).
+The actuation receipt decides the executed case (an `attempting` receipt reads `unverified`, never
+success); a system withdrawal by `system:home-departure-fix` reads `cancelled`; a missing or
+unclassifiable row reads `unknown`. The answer carries no arguments, target or reason. The
+Switchboard reaches the same mapping through `public.resolve_home_action_status` (core_337,
+SECURITY DEFINER, executable by `butler_switchboard_rw` only) and the premise probe
+`("home", "fix_status_unchanged")`, which is true while the status a card showed is unchanged and
+holds on `unknown`. Nothing consumes it yet: fixes and the arrival card are bu-jv1moa.115 and
+bu-jv1moa.116.
+
+### Critical entities and safety mitigations (proposed)
+
+Owner-marked critical entities that always park, a fail-closed registry, pre-call state with an
+`already_satisfied` no-op, and per-item safety mitigations parked when a `home:safety` condition
+opens are specified in
+[specify-home-critical-entities-mitigations](../../openspec/changes/specify-home-critical-entities-mitigations/proposal.md)
+(bu-jv1moa.33). The owner adopted RFC 0028 Amendment 1 on 2026-11-21. Built so far
+(bu-jv1moa.122, REQ-module-home-assistant-001 and -002):
+
+- **Registry.** `home.critical_entities` (home_010) is written only by the owner-only
+  `GET/PUT /api/home/critical-entities` and `DELETE /api/home/critical-entities/{entity_id}`. Each
+  add, relabel and removal writes one audit row naming the entity id and the authenticated actor in
+  the write's own transaction, never the owner label. No tool, session, goal, rule or job writes it,
+  and nothing infers membership from a Home Assistant label, area, device class or name. Marking an
+  entity critical is an owner act at the dashboard; nothing seeds it, and an empty registry changes
+  nothing.
+- **Gate.** `ha_call_service` reads the registry in each evaluation (no cache past the call). A call
+  naming a critical entity is at least `consequential` and parks with the fixed reason category
+  `critical_entity` (a `protected` call stays `protected`). While the registry is non-empty a call
+  is also critical when its target is not an explicit entity list, when it is an indirect actuator
+  (`scene.turn_on`, `script.turn_on`, any `script.<name>`, `automation.trigger`, any non-`safe`
+  `homeassistant` service, any pair the RFC 0028 map does not list), when a target is missing from
+  Home's entity cache, or when a target is a group whose members, followed through nested groups,
+  are critical or unreadable (malformed list, cycle, depth over 8). An unreadable registry makes
+  every call critical. `homeassistant.update_entity` is never promoted.
+- **No shortcut.** A critical call replays only on an owner approval (`human:` decider); a standing
+  rule, suggestion, grant or system actor gets `not_run` / `critical_needs_owner_approval` before
+  any receipt or request. The capability broker classifies a goal call naming a critical entity
+  `consequential` and every Home call `unknown` when its registry reader fails or is absent.
+- **Pre-call state (bu-jv1moa.123, REQ-003 and -004).** An approved replay of a critical call, or of
+  any call while the registry is unreadable, first reads every target live from Home Assistant
+  (`GET /api/states/<entity>`, never the cache; at most 10 seconds old at the receipt claim). A
+  non-explicit target is `target_unbound`; a failed or `unavailable`/`unknown` read or a partial
+  read set is `pre_state_unavailable`; an older read is `pre_state_stale`. Each sends nothing,
+  writes no receipt, leaves the approval `approved` (`approved_not_run`) and the executor records
+  one approval event naming only the reason; the same approval may replay later. A successful read
+  is stored on the receipt as `pre_state` (`home_011`). If it already meets the declared
+  post-condition the receipt settles directly to `already_satisfied`: nothing is sent, no effect is
+  claimed, it is terminal and a later replay returns it without a request or attention. A call
+  with no verifier, or carrying `data` the verifier does not read (a light's brightness), is never
+  `already_satisfied` and takes the normal attempt. The status resolver still reads an
+  `already_satisfied` receipt as `unknown` (never success) until the REQ-home-deterministic-jobs-011
+  delta, which waits for `specify-home-departure-fixes-arrival` to be archived.
+- **Dashboard.** Home, Devices, Critical entities (`HomeCriticalEntitiesPanel`) lists, marks and
+  unmarks entities, says that unmarking never releases a call already waiting for approval, states
+  the coverage limit below, and shows a failed read as degraded, never as an empty registry.
+- **Not covered, stated plainly.** Home Assistant automations that fire on their own triggers and
+  changes made outside Butlers never pass through `ha_call_service`. A helper that wraps an entity
+  without exposing its membership is covered only when the owner marks the helper itself critical.
+
+Safety mitigations are not built, and the safety sentinel stays read-only.
+
+## Proposed realtime feature specifications
+
+The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
+is owner-adopted. Two domain feature specifications are under review; their numerical profiles
+and behavior are proposed and do not describe currently shipped features:
+
+- [Appliance handoffs](../../openspec/changes/specify-home-appliance-handoff/proposal.md): explicit
+  washer/dishwasher cycle evidence opens one unload/transfer task; only owner Done completes it.
+  Monitoring and fixed reminders require no model calls. Stop watching preserves a fresh Done-only
+  action for an existing task. Actual appliance mappings must pass commissioning before enrollment.
+- [Comfort sessions](../../openspec/changes/specify-home-comfort-sessions/proposal.md): observe a
+  room band for a finite period, optionally applying one exact authorized thermostat setpoint.
+  Fresh room observations establish attainment; command acknowledgement does not. Manual override,
+  source uncertainty and Stop remain explicit. Expiry does not automatically restore a setpoint.
+
+Both reuse existing Home authority, canonical owner delivery and deterministic infrastructure.
+Their design documents contain concrete initial runtime profiles and behavior-executing
+verification matrices; they claim no measured live latency or token savings.
+
 ## Implementation Notes
 
-- Recorder statistics go through `connectors/home_assistant_statistics.py::HAStatisticsClient` and
+- Recorder statistics go through `butlers.home_assistant_client.HAStatisticsClient` and
   the WebSocket command `recorder/statistics_during_period`. Energy consumption aggregates the
   per-period `change`, never cumulative `sum`; provider errors stay bounded and sanitised.
 - Transport readiness is stronger than WebSocket authentication: health stays degraded, with REST
@@ -85,7 +352,12 @@ Remap, delete, and rollback are separate owner-authorized operations. Route:
   `conversation.*`, `tts.*`, IR/RF blasters, Zigbee2MQTT gesture `*_action_*` sensors) as healthy at
   `unknown` (`is_steady_state_unknown`). `select_due_issues` throttles repeat alerts via state key
   `home:health_check:last_alerted` and the `realert` threshold (default 24h); returned counts still
-  reflect current state.
+  reflect current state. Best-effort, it also reconciles owner-condition source
+  `home:device-threshold`: identity `{entity_id, issue}` (`battery` or `offline`), only `warning`
+  and `critical` qualify, and severity and battery percentage are evidence. A non-numeric battery
+  is carried forward `confirm_only`; an unmeasurable HA source or empty snapshot skips the
+  reconcile, and a ledger failure never breaks the job. A numeric reading with an old HA
+  `last_updated` counts as measured, since HA bumps it only when the value changes.
 - Actuation outcomes: only a connection-establishment failure or an HTTP rejection is `failed`. A
   timeout or reset after dispatch, or an unparseable 2xx, is `unverified` and still attempts live
   read-back.
@@ -94,3 +366,47 @@ Remap, delete, and rollback are separate owner-authorized operations. Route:
 
 - [Health Butler](health.md) -- reads Home Assistant sensors (read-only) for health correlation
 - [Switchboard Butler](switchboard.md) -- routes home automation messages here
+
+### Communication audience and physical risk
+
+Notify, TTS, persistent notifications and explicitly messaging/announcement
+services additionally classify their complete target selectors as communication.
+Target selectors are separate from message/title and other service data; both
+remain safety-critical in the exact parked command. Ownership uses the existing
+identity resolver's `other` handles (`home_assistant:notify:<service>` or
+`home_assistant:<selector>:<id>`), never friendly names or inferred household
+ownership. Missing, bulk, shared or unresolved targets require owner approval.
+
+This adds no device registry and never downgrades physical risk. Unknown notify
+and TTS services remain protected even when their targets resolve to the owner;
+a standing rule cannot bypass a consequential or protected physical call.
+
+Legacy notify `data.target` and unresolved area, label or floor selectors do not
+inherit an owner-mapped service handle's identity. They remain unresolved
+communication audiences while the independent protected-actuation gate remains
+in force. Home Assistant's [legacy notify handler](https://github.com/home-assistant/core/blob/dev/homeassistant/components/notify/legacy.py)
+forwards a generic service's explicit target to its notification platform.
+
+
+### Shared Home Assistant transports
+
+`butlers.home_assistant_client` owns the shared WebSocket authentication exchange,
+closed dictionary/coalesced-list decoding, recorder statistics and REST factory.
+Connector and module reconnect loops keep their own sessions, subscriptions,
+message IDs, caches and keepalive tasks. One-shot statistics owns and closes its
+own session; it does not share the persistent connection unless its caller
+explicitly supplies the existing command sender.
+
+Malformed frames are withheld from diagnostics. Authentication refusal retains
+fixed configuration guidance rather than provider-supplied text. The older
+module authentication scenario's server-message wording does not describe this
+existing privacy boundary; this refactor preserves the content-free mapping.
+The shared client adds no service-call WebSocket command, actuation authority,
+POST retry or approval/receipt bypass.
+
+REST fallback and history recovery keep an absolute 30-second per-call budget
+around the caller-owned HTTPX client. HTTPX phase timeouts alone do not provide
+that total bound. These migrated aiohttp owners keep redirects enabled and environment proxies off;
+existing HTTPX owners keep their prior environment policy, TLS and timeout
+settings. The module retains its long-lived client; jobs and settings probes
+close their per-call clients. Missing job credentials still omit Authorization.

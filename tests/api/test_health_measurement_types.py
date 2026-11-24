@@ -15,6 +15,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -26,21 +27,7 @@ _APP_SEED = create_app(api_key="")
 _health_get_db_manager = get_db
 
 
-class _Row(dict):
-    """dict subclass mimicking an asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
-def _row(data: dict[str, Any]) -> _Row:
-    return _Row(data)
-
-
-def _make_app(*, rows: list[_Row]) -> tuple[Any, AsyncMock, MagicMock]:
+def _make_app(*, rows: list[Record]) -> tuple[Any, AsyncMock, MagicMock]:
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)
 
@@ -56,7 +43,7 @@ async def test_measurement_types_observe_mixed_active_types_from_health_facts() 
     """Unknown observed types appear without widening the manual writer vocabulary."""
     latest = datetime(2026, 7, 20, 1, 2, 3, tzinfo=UTC)
     rows = [
-        _row(
+        Record(
             {
                 "predicate": "measurement_blood_pressure",
                 "latest_at": latest,
@@ -64,7 +51,7 @@ async def test_measurement_types_observe_mixed_active_types_from_health_facts() 
                 "sample_count": 4,
             }
         ),
-        _row(
+        Record(
             {
                 "predicate": "measurement_hrv",
                 "latest_at": latest,
@@ -72,7 +59,7 @@ async def test_measurement_types_observe_mixed_active_types_from_health_facts() 
                 "sample_count": 2,
             }
         ),
-        _row(
+        Record(
             {
                 "predicate": "measurement_recovery_note",
                 "latest_at": latest,
@@ -80,7 +67,7 @@ async def test_measurement_types_observe_mixed_active_types_from_health_facts() 
                 "sample_count": 1,
             }
         ),
-        _row(
+        Record(
             {
                 "predicate": "measurement_weight",
                 "latest_at": latest,
@@ -156,7 +143,7 @@ async def test_measurement_types_treats_overflowing_numeric_metadata_as_not_char
     latest = datetime(2026, 7, 20, 1, 2, 3, tzinfo=UTC)
     overflowing_value = 10**309
     rows = [
-        _row(
+        Record(
             {
                 "predicate": "measurement_overflowing_integer",
                 "latest_at": latest,
@@ -164,7 +151,7 @@ async def test_measurement_types_treats_overflowing_numeric_metadata_as_not_char
                 "sample_count": 1,
             }
         ),
-        _row(
+        Record(
             {
                 "predicate": "measurement_overflowing_numeric_text",
                 "latest_at": latest,

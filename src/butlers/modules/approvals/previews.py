@@ -88,7 +88,15 @@ def args_digest(tool_args: Mapping[str, Any] | None) -> str:
 
 
 def resolve_call_preview(tool_name: str, tool_args: Any) -> CallPreview | None:
-    """Return the exact-call preview, or ``None`` when the card must be Open only."""
+    """Return the exact-call preview, or ``None`` when the card must be Open only.
+
+    A tool whose catalog descriptor declares ``content_params`` is previewed from the catalog
+    alone: a failure there stays Open only and never falls back to a hand-written renderer.
+    Every other tool uses the S1 registry.
+    """
+    descriptor = _catalog_descriptor(tool_name)
+    if descriptor is not None and descriptor.content_params is not None:
+        return _catalog_preview(tool_name, descriptor, tool_args)
     registration = _REGISTRY.get(tool_name)
     if registration is None or registration.effect_class in OPEN_ONLY_EFFECT_CLASSES:
         return None
@@ -121,6 +129,85 @@ def dashboard_call_preview(tool_name: str, tool_args: Any) -> dict[str, Any] | N
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 16_384:
         return None
     return result
+
+
+# ---------------------------------------------------------------------------
+# Catalog-driven previews (RFC 0038 D19)
+# ---------------------------------------------------------------------------
+
+_CATALOG_PREVIEW_EFFECT_CLASSES = frozenset({"communicate"})
+_LABELS = {
+    "to": "To",
+    "recipient": "To",
+    "chat_id": "Chat",
+    "chat_jid": "Chat",
+    "message_id": "Message ID",
+    "text": "Message",
+    "message": "Message",
+    "subject": "Subject",
+    "body": "Body",
+}
+
+
+def _catalog_descriptor(tool_name: str) -> Any:
+    """The checked-in presentation descriptor of a canonical tool name, or ``None``."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+
+    return TOOL_PRESENTATION_BY_NAME.get(tool_name)
+
+
+def _label(argument: str) -> str:
+    return _LABELS.get(argument) or argument.replace("_", " ").capitalize()
+
+
+def _catalog_value(args: Mapping[str, Any], name: str, *, content: bool) -> str:
+    value = args.get(name)
+    if isinstance(value, bool):
+        raise PreviewError(f"{name} is not shown")
+    if isinstance(value, int):
+        if value <= 0:
+            raise PreviewError(f"{name} is not a positive integer")
+        return str(value)
+    if isinstance(value, str):
+        if not value.strip():
+            raise PreviewError(f"{name} is blank")
+        return value
+    if not content and isinstance(value, list):
+        return _recipients(args, name, required=True) or ""
+    raise PreviewError(f"{name} is missing or not text")
+
+
+def _catalog_preview(tool_name: str, descriptor: Any, tool_args: Any) -> CallPreview | None:
+    """Rebuild the complete stored call from ``recipient_params`` plus ``content_params``."""
+    try:
+        if not isinstance(tool_args, Mapping):
+            return None
+        if descriptor.effect_class not in _CATALOG_PREVIEW_EFFECT_CLASSES:
+            return None
+        recipients = descriptor.recipient_params
+        recipient_names: tuple[str, ...] = tuple(getattr(recipients, "argument_names", None) or ())
+        content_names: tuple[str, ...] = tuple(descriptor.content_params or ())
+        if not recipient_names or not content_names:
+            raise PreviewError("descriptor does not name both recipients and content")
+        # Every non-empty argument must be one the descriptor names, and so shown.
+        _reject_unshown(tool_args, frozenset(recipient_names) | frozenset(content_names))
+        # Every declared recipient and content argument must be present and well-formed.
+        facts = [
+            PreviewFact(_label(name), _catalog_value(tool_args, name, content=False))
+            for name in recipient_names
+        ]
+        facts += [
+            PreviewFact(_label(name), _catalog_value(tool_args, name, content=True))
+            for name in content_names
+        ]
+        return CallPreview(title=tool_name.replace("_", " ").capitalize(), facts=tuple(facts))
+    except PreviewError as exc:
+        logger.info("catalog approval preview for %s fails closed: %s", tool_name, exc)
+    except Exception:  # noqa: BLE001 - a renderer bug must never offer a blind Approve
+        logger.warning(
+            "catalog approval preview for %s raised; failing closed", tool_name, exc_info=True
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +282,54 @@ def _telegram_preview(args: Mapping[str, Any]) -> CallPreview:
     )
 
 
+def _positive_message_id(args: Mapping[str, Any]) -> str:
+    message_id = args.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+        raise PreviewError("message_id is missing or not a positive integer")
+    return str(message_id)
+
+
+def _telegram_reply_preview(args: Mapping[str, Any]) -> CallPreview:
+    _reject_unshown(args, frozenset({"chat_id", "message_id", "text"}))
+    return CallPreview(
+        title="Reply to Telegram message",
+        facts=(
+            PreviewFact("To", _require_text(args, "chat_id")),
+            PreviewFact("In reply to", _positive_message_id(args)),
+            PreviewFact("Message", _require_text(args, "text")),
+        ),
+    )
+
+
+def _email_reply_preview(args: Mapping[str, Any]) -> CallPreview:
+    _reject_unshown(args, frozenset({"to", "thread_id", "subject", "body"}))
+    facts = [
+        PreviewFact("To", _recipients(args, "to", required=True) or ""),
+        PreviewFact("Thread", _require_text(args, "thread_id")),
+    ]
+    subject = _optional_text(args, "subject")
+    if subject is not None:
+        facts.append(PreviewFact("Subject", subject))
+    facts.append(PreviewFact("Body", _require_text(args, "body", allow_empty=True)))
+    return CallPreview(title="Reply to email thread", facts=tuple(facts))
+
+
+def _telegram_reaction_preview(args: Mapping[str, Any]) -> CallPreview:
+    if set(args) - {"chat_id", "message_id", "emoji"} - _DOSSIER_KEYS:
+        raise PreviewError("reaction has unshown arguments")
+    message_id = args.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+        raise PreviewError("message_id is missing or not a positive integer")
+    return CallPreview(
+        title="React to Telegram message",
+        facts=(
+            PreviewFact("Chat", _require_text(args, "chat_id")),
+            PreviewFact("Message ID", str(message_id)),
+            PreviewFact("Emoji", _require_text(args, "emoji")),
+        ),
+    )
+
+
 def _whatsapp_preview(args: Mapping[str, Any]) -> CallPreview:
     _reject_unshown(args, frozenset({"recipient", "text"}))
     return CallPreview(
@@ -227,10 +362,40 @@ def _notify_preview(args: Mapping[str, Any]) -> CallPreview:
     return CallPreview(title="Send notification", facts=tuple(facts))
 
 
+def _unknown_sender_ignore_preview(args: Mapping[str, Any]) -> CallPreview:
+    """Switchboard's pre-cutover unknown-sender Ignore card (bu-p7glz9)."""
+    _reject_unshown(args, frozenset({"entity_id", "channel", "address", "display_name"}))
+    channel = _require_text(args, "channel")
+    address = _require_text(args, "address")
+    facts = []
+    if name := _optional_text(args, "display_name"):
+        facts.append(PreviewFact("Name", name))
+    effect = "Archive this sender"
+    if channel == "email":
+        effect += " and skip their future email"
+    facts.extend(
+        (
+            PreviewFact("Address", address),
+            PreviewFact("Channel", channel),
+            PreviewFact("Entity", _require_text(args, "entity_id")),
+            PreviewFact("Effect", effect),
+        )
+    )
+    return CallPreview(title="Ignore this new sender", facts=tuple(facts))
+
+
 register_preview("email_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
+register_preview("telegram_reply_to_message", _telegram_reply_preview)
+register_preview("email_reply_to_thread", _email_reply_preview)
+register_preview(
+    "telegram_react_to_message", _telegram_reaction_preview, effect_class="communicate"
+)
 register_preview("whatsapp_send_message", _whatsapp_preview)
 register_preview("notify", _notify_preview)
+register_preview(
+    "identity_ignore_unknown_sender", _unknown_sender_ignore_preview, effect_class="record"
+)
 
 
 # ---------------------------------------------------------------------------

@@ -728,6 +728,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     + ("today!" if days_until == 0 else f"in {days_until} day(s).")
                 )
 
+                event_date_iso = upcoming_date.isoformat()
+
                 should_continue = await _submit(
                     priority=_GIFT_PRIORITY,
                     category="pending-gift",
@@ -736,7 +738,13 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     expires_at=expires_at,
                     metadata={
                         "entity_id": entity_id,
-                        "event_date": upcoming_date.isoformat(),
+                        "event_date": event_date_iso,
+                        # Two pending gifts for one person and date are exclusive
+                        # options; the broker turns that tension into one question.
+                        "choice": {
+                            "key": f"gift:{entity_id}:{event_date_iso}",
+                            "option": description[:80],
+                        },
                     },
                 )
                 if not should_continue:
@@ -1409,6 +1417,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     try:
         cal_rows = await db_pool.fetch(
             """
+            -- quarantine-exempt: filtered in Python by is_owner_attending
             SELECT
                 id,
                 title,
@@ -1473,12 +1482,12 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Same RSVP rule as the calendar conflict radar (shared helper).
-        owner_declined = not is_owner_attending(meta)
-
-        if owner_declined:
+        # Same RSVP rule as the calendar conflict radar (shared helper): an event the owner
+        # declined, or an unanswered invitation from an untrusted organizer, is not attended.
+        if not is_owner_attending(meta):
             logger.debug(
-                "interaction_sync: skipping calendar event %s — owner declined",
+                "interaction_sync: skipping calendar event %s — owner not attending "
+                "(declined or quarantined invitation)",
                 event_id,
             )
             continue
@@ -1787,6 +1796,70 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["errors"],
     )
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Automated email evidence job (bu-s11n0s.14, slice S2b)
+# ---------------------------------------------------------------------------
+
+# The inverse of interaction_sync's automated_kind filter: only the rows it skips, and only
+# when ingest persisted the connector's typed evidence object.
+_AUTOMATED_EVIDENCE_INBOX_SQL = """
+SELECT id,
+       received_at,
+       request_context ->> 'source_sender_identity'    AS sender,
+       raw_payload -> 'control' ->> 'automated_kind'    AS automated_kind,
+       raw_payload -> 'control' -> 'automated_evidence' AS automated_evidence
+FROM   switchboard.message_inbox
+WHERE  direction = 'inbound'
+  AND  received_at >= $1
+  AND  request_context ->> 'source_channel' = 'email'
+  AND  raw_payload -> 'control' ->> 'automated_kind' IN ('auto_reply', 'bounce')
+  AND  jsonb_typeof(raw_payload -> 'control' -> 'automated_evidence') = 'object'
+ORDER  BY received_at, id
+"""
+
+
+# Newest inbound email per exact sender address (bu-s11n0s.90): the same table, the same SELECT
+# grant. The sender is stripped and lower-cased the way the dead-address fact was keyed.
+_LATEST_INBOUND_BY_SENDER_SQL = """
+SELECT DISTINCT ON (sender) sender, id, received_at
+FROM (
+    SELECT lower(btrim(request_context ->> 'source_sender_identity')) AS sender,
+           id,
+           received_at
+    FROM   switchboard.message_inbox
+    WHERE  direction = 'inbound'
+      AND  received_at > $1
+      AND  request_context ->> 'source_channel' = 'email'
+      AND  lower(btrim(request_context ->> 'source_sender_identity')) = ANY($2::text[])
+      AND  COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') <> 'bounce'
+) latest
+ORDER  BY sender, received_at DESC, id DESC
+"""
+
+
+async def run_automated_evidence_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Away-until and dead-address facts from bound Gmail auto-replies and bounces.
+
+    Deterministic and model-free. Reads ``switchboard.message_inbox`` here, beside
+    ``run_interaction_sync``, with the same SELECT grant; the claim rules and fact writes live
+    in ``tools/automated_evidence_facts.py``. The result holds counts only.
+    """
+    from butlers.roster_imports import roster_module
+
+    facts = roster_module("relationship", "tools/automated_evidence_facts")
+
+    async def read_inbox(since: datetime) -> list[asyncpg.Record]:
+        return await db_pool.fetch(_AUTOMATED_EVIDENCE_INBOX_SQL, since)
+
+    async def read_senders(
+        addresses: list[str], since: datetime
+    ) -> dict[str, tuple[Any, datetime]]:
+        rows = await db_pool.fetch(_LATEST_INBOUND_BY_SENDER_SQL, since, list(addresses))
+        return {row["sender"]: (row["id"], row["received_at"]) for row in rows}
+
+    return await facts.sync(db_pool, read_inbox=read_inbox, read_senders=read_senders)
 
 
 # ---------------------------------------------------------------------------
@@ -3107,6 +3180,8 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 SELECT id, canonical_name, entity_type, roles
                   FROM public.entities
                  WHERE (metadata->>'merged_into') IS NULL
+                   AND (metadata->>'tombstone') IS DISTINCT FROM 'true'
+                   AND (metadata->>'deleted_at') IS NULL
                    AND TRIM(canonical_name) != ''
                  ORDER BY created_at ASC, id ASC
                 """
@@ -3471,6 +3546,95 @@ _EMAIL_ENRICHMENT_MIN_THREADS = 3
 _EMAIL_ENRICHMENT_MIN_DISTINCT_DAYS = 2
 
 
+_CLEAN_ENRICHMENT_ORPHAN = """
+    e.metadata ->> 'proposed_source' = 'email_identity_enrichment'
+    AND (e.metadata ->> 'deleted_at') IS NULL
+    AND (e.metadata ->> 'merged_into') IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.entity_facts ef WHERE ef.subject = e.id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.entity_facts ef
+        WHERE ef.object = e.id::text AND ef.object_kind = 'entity'
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM pending_actions pa
+        WHERE pa.tool_args ->> 'subject' = e.id::text
+          AND pa.status IN ('pending', 'approved', 'executed')
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM public.memory_catalog mc
+        WHERE (mc.entity_id = e.id OR mc.object_entity_id = e.id)
+          AND mc.invalid_at IS NULL
+    )
+    AND NOT EXISTS (SELECT 1 FROM contact_entity_map m WHERE m.entity_id = e.id)
+    AND NOT EXISTS (SELECT 1 FROM public.entity_info i WHERE i.entity_id = e.id)
+    AND NOT EXISTS (SELECT 1 FROM public.priority_contacts pc WHERE pc.entity_id = e.id)
+"""
+
+
+# Memory facts live in each butler's own schema, which this role cannot read, so the cross-butler
+# check is ``public.memory_catalog`` above (every schema's facts; supersede, forget, expire and
+# purge all set ``invalid_at``). This adds the relationship schema's own ``facts`` where the
+# memory module is enabled, covering a fact its catalog row has not caught up to yet.
+_NO_LIVE_MEMORY_FACT = """
+    AND NOT EXISTS (
+        SELECT 1 FROM facts f
+        WHERE (f.entity_id = e.id OR f.object_entity_id = e.id)
+          AND f.validity IN ('active', 'fading')
+    )
+"""
+
+# A knowledge gap is an open question to the owner about an entity, closed by a later fact
+# write. Reaping the entity first makes ``store_fact`` refuse it, so the question would hang
+# until it expires. Only this schema's gaps are readable; other butlers' gaps are out of reach.
+_NO_OPEN_KNOWLEDGE_GAP = """
+    AND NOT EXISTS (
+        SELECT 1 FROM knowledge_gaps g
+        WHERE g.entity_id = e.id AND g.status IN ('open', 'answerable')
+    )
+"""
+
+# A live commitment candidate's confirm card names its counterparty, and rel_042 has no FK to
+# hold the entity. Every terminal candidate nulls the column (ck_cc_tombstone), so this matches
+# only pending and carded candidates.
+_NO_LIVE_COMMITMENT_CANDIDATE = """
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.commitment_candidates cc
+        WHERE cc.counterparty_entity_id = e.id
+    )
+"""
+
+
+# A care duty names its dependent and default carer, a care occurrence its carer, and rel_045 holds
+# no FK to the entity. Duties and occurrences are retained (retiring keeps history), so a row
+# naming an entity pins it: reaping a carer or dependent the owner chose would orphan the rota.
+_NO_CARE_DUTY = """
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.care_duties cd
+        WHERE cd.subject_entity_id = e.id OR cd.default_carrier_entity_id = e.id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.care_occurrences co WHERE co.carrier_entity_id = e.id
+    )
+"""
+
+
+# A vendor door names its owner and vendor entity, rows are retained forever, and this role cannot
+# read the table: the core_336 definer answers only whether a row names the entity (either column).
+_NO_VENDOR_DOOR = """
+    AND NOT public.vendor_door_entity_pinned(e.id)
+"""
+
+
+# An owner-confirmed household subject names its entity on a calendar source (core_368). Archiving a
+# placeholder that a source's role names would silently unassign the household role, and this role
+# cannot read other butlers' calendar_sources: the core_368 definer answers across every schema.
+_NO_CALENDAR_ROLE_SUBJECT = """
+    AND NOT public.calendar_role_subject_entity_pinned(e.id)
+"""
+
+
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
 
@@ -3492,10 +3656,18 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
-    intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact
-    linkage lives in ``relationship.entity_facts`` now that ``public.contacts`` is retired,
-    so the entity_facts checks cover it.) Any acquired reference means the entity graduated
-    to a real entity and is left fully intact.
+    intact), no live (pending/approved/executed) ``pending_actions`` subject, no live
+    memory fact as subject or object (read from ``public.memory_catalog`` for every butler's
+    schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
+    schema's own ``facts`` where present), no open knowledge gap in this schema (other
+    butlers' gaps are out of reach), no live commitment candidate naming it as counterparty,
+    no care duty or care occurrence naming it, no vendor door naming it (owner or vendor, any
+    status), no ``contact_entity_map`` link, no ``public.entity_info`` row and no
+    ``public.priority_contacts`` entry. Any acquired reference means the entity graduated to a real
+    entity and is left fully intact.
+    ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
+    column named ``*entity_id`` (or an FK to ``public.entities``) appears in the public or
+    relationship schemas without being decided here; it cannot see other butlers' schemas.
 
     We *soft-delete* (set ``metadata.deleted_at`` -- the ecosystem tombstone convention,
     honored alongside ``merged_into`` by every entity query) rather than hard-DELETE, for
@@ -3506,42 +3678,68 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     reversible. Returns the number of entities archived.
     """
     # NB: public.contacts / public.contact_info were retired (DROPped by core_115 /
-    # core_134); contact linkage now lives entirely in relationship.entity_facts, so the
-    # entity_facts subject/object checks below fully cover "is this entity referenced".
-    archived = await db_pool.fetch(
-        """
-        UPDATE public.entities e
-        SET metadata = e.metadata
-                || jsonb_build_object(
-                    'deleted_at', to_jsonb(now()),
-                    'archived_reason', 'rejected_email_identity_enrichment'
-                ),
-            updated_at = now()
-        WHERE e.metadata ->> 'proposed_source' = 'email_identity_enrichment'
-          AND (e.metadata ->> 'deleted_at') IS NULL
-          AND (e.metadata ->> 'merged_into') IS NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM relationship.entity_facts ef WHERE ef.subject = e.id
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM relationship.entity_facts ef
-              WHERE ef.object = e.id::text AND ef.object_kind = 'entity'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM pending_actions pa
-              WHERE pa.tool_args ->> 'subject' = e.id::text
-                AND pa.status IN ('pending', 'approved', 'executed')
-          )
-        RETURNING e.id
-        """
+    # core_134); the contact bridge is relationship.contact_entity_map, which
+    # _CLEAN_ENRICHMENT_ORPHAN checks beside the facts and the other entity references.
+    clean_orphan = _CLEAN_ENRICHMENT_ORPHAN
+    if await db_pool.fetchval("SELECT to_regclass('facts') IS NOT NULL"):
+        clean_orphan += _NO_LIVE_MEMORY_FACT
+    if await db_pool.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+        clean_orphan += _NO_OPEN_KNOWLEDGE_GAP
+    if await db_pool.fetchval(
+        "SELECT to_regclass('relationship.commitment_candidates') IS NOT NULL"
+    ):
+        clean_orphan += _NO_LIVE_COMMITMENT_CANDIDATE
+    if await db_pool.fetchval("SELECT to_regclass('relationship.care_duties') IS NOT NULL"):
+        clean_orphan += _NO_CARE_DUTY
+    if await db_pool.fetchval(
+        "SELECT to_regprocedure('public.vendor_door_entity_pinned(uuid)') IS NOT NULL"
+    ):
+        clean_orphan += _NO_VENDOR_DOOR
+    if await db_pool.fetchval(
+        "SELECT to_regprocedure('public.calendar_role_subject_entity_pinned(uuid)') IS NOT NULL"
+    ):
+        clean_orphan += _NO_CALENDAR_ROLE_SUBJECT
+    candidates = await db_pool.fetch(
+        f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )
+    archived = 0
+    for candidate in candidates:
+        async with db_pool.acquire() as conn, conn.transaction():
+            # The lock forget and merge take. An entity another writer or merge holds is
+            # left for the next run. The check must then be repeated in a new statement,
+            # because one that waited or locked would still read its earlier snapshot and
+            # miss a reference committed since.
+            if (
+                await conn.fetchval(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE SKIP LOCKED",
+                    candidate["id"],
+                )
+                is None
+            ):
+                continue
+            reaped = await conn.fetchval(
+                f"""
+                UPDATE public.entities e
+                SET metadata = e.metadata
+                        || jsonb_build_object(
+                            'deleted_at', to_jsonb(now()),
+                            'archived_reason', 'rejected_email_identity_enrichment'
+                        ),
+                    updated_at = now()
+                WHERE e.id = $1 AND {clean_orphan}
+                RETURNING e.id
+                """,
+                candidate["id"],
+            )
+            if reaped is not None:
+                archived += 1
     if archived:
         logger.info(
             "email_identity_enrichment: archived %d orphaned entity(ies) from "
             "rejected/expired proposals",
-            len(archived),
+            archived,
         )
-    return len(archived)
+    return archived
 
 
 async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]:
@@ -4292,3 +4490,28 @@ def _stamp_checkpoint(db_pool: asyncpg.Pool) -> None:  # pragma: no cover
         loop.create_task(_write())
     except RuntimeError:
         pass  # No running loop in sync context (e.g. tests that call synchronously)
+
+
+async def run_commitment_candidate_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Owner-chat commitment candidates (bu-jv1moa.11, REQ-commitment-lifecycle-011).
+
+    Deterministic and model-free. Lapse and purge always run; spans are read through
+    Switchboard's ``owner_chat.spans`` relay only once the signed-confirm composition
+    is live (``COMMITMENT_CANDIDATES_LIVE``). The result holds counts only.
+    """
+    from pathlib import Path
+
+    from butlers.config import load_config
+    from butlers.roster_imports import roster_module
+
+    candidates = roster_module("relationship", "tools/commitment_candidates")
+
+    def switchboard_url() -> str | None:
+        # The same configured value the daemon's Switchboard client is built from.
+        return load_config(Path(__file__).resolve().parents[1]).switchboard_url
+
+    return await candidates.scan(
+        db_pool,
+        read_spans=candidates.relay_span_reader(switchboard_url),
+        live=candidates.COMMITMENT_CANDIDATES_LIVE,
+    )

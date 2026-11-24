@@ -66,6 +66,43 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 
+# These existing init-db guards consume a subset of core240's tables. Read the
+# actual provider rather than treating external tables as absent or ignoring
+# their guards. No other externally owned schema is admitted here.
+_TABLE_PROVIDERS = {
+    "dashboard_auth": (
+        _REPO_ROOT / "alembic/versions/core/core_240_dashboard_owner_auth.sql",
+        frozenset({"instance", "sessions", "csrf"}),
+    ),
+}
+
+# This fixed schema-export reader inventories mixed-arity public functions;
+# it is not an admin ownership guard. Keep its exact function/schema/list
+# explicit, and reject drift rather than suppressing all non-admin lists.
+_CATALOG_FUNCTION_NAMES = frozenset(
+    {
+        "perception_write",
+        "perception_read",
+        "perception_timeline",
+        "perception_bind",
+        "perception_registry",
+        "perception_purge_place_history",
+    }
+)
+_CATALOG_FUNCTION_READERS = {
+    ("perception_private", "backup_catalog", "public"): (
+        "jsonb",
+        "sql",
+        "pg_get_functiondef(p.oid)",
+    ),
+    ("perception_backup", "export_schema_v1", "public"): (
+        "SETOF text",
+        "plpgsql",
+        "pg_get_functiondef(item.oid)",
+    ),
+}
+
+
 # Any schema whose name is an ``*_admin`` identifier anywhere in the file. Kept
 # as a whole-file token sweep rather than a targeted pattern so a newly added
 # admin schema is discovered without editing this test. Known blind spot: an
@@ -126,6 +163,7 @@ class _TableDefinition:
     schema: str
     name: str
     line: int
+    source: str = "init-db.sql"
 
 
 @dataclass(frozen=True)
@@ -202,6 +240,39 @@ def _guard_blocks(source: str) -> list[_GuardBlock]:
         close_index = _close_paren(source, open_index)
         names = tuple(_QUOTED_NAME.findall(source[open_index + 1 : close_index]))
         assert names, f"init-db.sql:{line}: `proname IN ()` guard list is empty."
+
+        enclosing = list(_CREATE_FUNCTION.finditer(source, 0, match.start()))
+        if enclosing:
+            definition = enclosing[-1]
+            key = (*[v.lower() for v in definition.groups()], schema_filters[-1].lower())
+            provider = _CATALOG_FUNCTION_READERS.get(key)
+            if provider is not None:
+                result, language, projection = provider
+                following = _CREATE_FUNCTION.search(source, match.end())
+                declaration = source[
+                    definition.start() : following.start() if following else len(source)
+                ]
+                assert re.search(
+                    r"RETURNS\s+"
+                    + re.escape(result)
+                    + r"\s+LANGUAGE\s+"
+                    + language
+                    + r"\s+STABLE\s+SECURITY\s+DEFINER",
+                    declaration,
+                    re.IGNORECASE,
+                ), "catalog reader declaration drift"
+                assert projection in declaration, "catalog reader definition projection missing"
+                assert (
+                    len(names) == len(_CATALOG_FUNCTION_NAMES)
+                    and set(names) == _CATALOG_FUNCTION_NAMES
+                ), "catalog reader function list drift"
+                actual = {
+                    d.name
+                    for d in _function_definitions(source)
+                    if d.schema == key[2] and d.name.startswith("perception_")
+                }
+                assert actual == _CATALOG_FUNCTION_NAMES, "catalog reader API inventory drift"
+                continue
 
         tail = source[close_index : close_index + _PRONARGS_LOOKAHEAD]
         assert _PRONARGS_ZERO.search(tail), (
@@ -322,12 +393,13 @@ def test_guard_lists_match_the_functions_defined_in_their_own_schema() -> None:
     )
 
 
-def _table_definitions(source: str) -> list[_TableDefinition]:
+def _table_definitions(source: str, *, source_name: str = "init-db.sql") -> list[_TableDefinition]:
     return [
         _TableDefinition(
             schema=match.group(1).lower(),
             name=match.group(2).lower(),
             line=_line_of(source, match.start()),
+            source=source_name,
         )
         for match in _CREATE_TABLE.finditer(source)
     ]
@@ -382,7 +454,7 @@ def _describe_unguarded_table(
 ) -> str:  # pragma: no cover - exercised only on failure
     return (
         f"table {definition.name!r} is created in schema '{definition.schema}' "
-        f"(init-db.sql:{definition.line}) but the ownership guard for that schema at "
+        f"({definition.source}:{definition.line}) but the ownership guard for that schema at "
         f"init-db.sql:{block.line} does not name it, so its owner is never asserted. A "
         "renamed or newly added table drops out of the guard silently: the lookup simply "
         "stops matching and the guard reports success."
@@ -397,14 +469,14 @@ def _describe_unmatched_table(
         return (
             f"table {name!r} is named by the ownership guard for '{block.schema}' at "
             f"init-db.sql:{block.line} but no table of that name is created anywhere in "
-            "init-db.sql, so that guard asserts nothing."
+            "the local source or its admitted provider, so that guard asserts nothing."
         )
     elsewhere = sorted({item.schema for item in same_name})
     return (
         f"table {name!r} is named by the ownership guard for '{block.schema}' at "
         f"init-db.sql:{block.line} but is created in "
         f"{', '.join(repr(schema) for schema in elsewhere)} instead "
-        f"(init-db.sql:{same_name[0].line}). The nspname filter and the relname filter "
+        f"({same_name[0].source}:{same_name[0].line}). The nspname filter and the relname filter "
         "disagree, so this guard can never match."
     )
 
@@ -438,6 +510,19 @@ def test_table_guards_match_the_tables_defined_in_their_own_schema() -> None:
 
     assert blocks, "no `relname` table-ownership guard was found in init-db.sql."
 
+    # Validate the fixed consumed set against genuine provider CREATEs even if
+    # a guard member disappears. Comparing only discovered/listed names would
+    # make a renamed or missing provider table vacuously pass.
+    for schema, (path, consumed) in _TABLE_PROVIDERS.items():
+        provided = _table_definitions(path.read_text(encoding="utf-8"), source_name=str(path))
+        actual = {item.name for item in provided if item.schema == schema}
+        assert consumed <= actual, (
+            f"{path}: consumed tables missing from schema '{schema}': {sorted(consumed - actual)}"
+        )
+        definitions.extend(
+            item for item in provided if item.schema == schema and item.name in consumed
+        )
+
     failures: list[str] = []
     for block in blocks:
         defined = [definition for definition in definitions if definition.schema == block.schema]
@@ -457,3 +542,79 @@ def test_table_guards_match_the_tables_defined_in_their_own_schema() -> None:
             failures.append(_describe_unmatched_table(block, name, definitions))
 
     assert not failures, "admin table-ownership guards are out of sync:\n" + "\n".join(failures)
+
+
+def test_external_table_provider_and_local_guard_refusals(monkeypatch, tmp_path) -> None:
+    source = _read_sql()
+    provider_path, consumed = _TABLE_PROVIDERS["dashboard_auth"]
+    provider = provider_path.read_text(encoding="utf-8")
+
+    # The real source/parser/comparison must pass before testing mutations.
+    test_table_guards_match_the_tables_defined_in_their_own_schema()
+    assert "('instance','sessions','csrf')" in source
+    assert "CREATE TABLE dashboard_auth.csrf (" in provider
+    local = (
+        "CREATE TABLE local_admin.first (id int); "
+        "CREATE TABLE local_admin.second (id int); "
+        "SELECT relowner FROM pg_class JOIN pg_namespace ON true "
+        "WHERE nspname='local_admin' AND relname IN ('first','second') AND relkind='r';"
+    )
+    mutations = (
+        (source.replace("('instance','sessions','csrf')", "('instance','sessions')"), provider),
+        (
+            source,
+            provider.replace("CREATE TABLE dashboard_auth.csrf (", "CREATE TABLE other.csrf ("),
+        ),
+        (
+            source,
+            provider.replace(
+                "CREATE TABLE dashboard_auth.csrf (", "CREATE TABLE dashboard_auth.renamed ("
+            ),
+        ),
+        (source, provider.replace("CREATE TABLE dashboard_auth.csrf (", "-- omitted table (")),
+        (source.replace("n.nspname='dashboard_auth'", "n.nspname='unowned_auth'"), provider),
+        (local.replace("('first','second')", "('first')"), provider),
+        (local.replace("('first','second')", "('first','misspelled')"), provider),
+    )
+    with monkeypatch.context() as patch:
+        patch.setitem(globals(), "_read_sql", lambda: local)
+        test_table_guards_match_the_tables_defined_in_their_own_schema()
+    temporary_provider = tmp_path / "core240.sql"
+    for changed_source, changed_provider in mutations:
+        temporary_provider.write_text(changed_provider, encoding="utf-8")
+        with monkeypatch.context() as patch:
+            patch.setitem(globals(), "_read_sql", lambda source=changed_source: source)
+            patch.setitem(_TABLE_PROVIDERS, "dashboard_auth", (temporary_provider, consumed))
+            with pytest.raises(AssertionError):
+                test_table_guards_match_the_tables_defined_in_their_own_schema()
+    temporary_provider.unlink()
+    with monkeypatch.context() as patch:
+        patch.setitem(_TABLE_PROVIDERS, "dashboard_auth", (temporary_provider, consumed))
+        with pytest.raises(FileNotFoundError):
+            test_table_guards_match_the_tables_defined_in_their_own_schema()
+
+
+def test_fixed_catalog_reader_refuses_foreign_list_or_declaration():
+    source = _read_sql()
+    assert len(_guard_blocks(source)) > 0
+    for (schema, function, _), (_, language, projection) in _CATALOG_FUNCTION_READERS.items():
+        start = source.index(f"CREATE OR REPLACE FUNCTION {schema}.{function}()")
+        following = _CREATE_FUNCTION.search(source, start + 1)
+        end = following.start() if following else len(source)
+        prefix, reader, suffix = source[:start], source[start:end], source[end:]
+        for old, new in (
+            ("'perception_registry'", "'foreign_registry'"),
+            (
+                f"LANGUAGE {language} STABLE SECURITY DEFINER",
+                "LANGUAGE python STABLE SECURITY DEFINER",
+            ),
+            (projection, "pg_get_functiondef(NULL)"),
+        ):
+            assert reader.count(old) == 1
+            with pytest.raises(AssertionError, match="catalog reader"):
+                _guard_blocks(prefix + reader.replace(old, new, 1) + suffix)
+    # A genuine admin guard with a damaged arity fence remains a refusal.
+    damaged = source.replace("admin_function.pronargs = 0", "admin_function.pronargs = 1", 1)
+    assert damaged != source
+    with pytest.raises(AssertionError, match="pronargs = 0"):
+        _guard_blocks(damaged)

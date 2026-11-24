@@ -56,6 +56,37 @@ The connector extracts normalized text from Telegram messages using a tiered str
    - `[Photo]`, `[Sticker: emoji]`, `[Voice message]`, `[Video]`, `[GIF]`, `[Document]`, `[Audio]`, `[Location]`, `[Contact: Name]`, `[Poll: Question]`, `[Dice]`
 4. **None** -- Service messages with no user content (e.g., `new_chat_members`).
 
+## Voice-Note Transcription
+
+Off by default. With `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED=true`, a caption-less voice
+note from the verified owner becomes its transcript in `payload.normalized_text` instead of
+`[Voice message]` (spec: `openspec/specs/telegram-voice-transcription/spec.md`).
+
+- **Pipeline.** Owner check (`resolve_owner_channel_via_definer`) and forward check, then the size
+  (20 MB) and duration (`CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S`) bounds, all before any Telegram
+  file call. Then `getFile` plus a capped download (one retry), an `ffmpeg` transcode to 16 kHz mono
+  PCM (`src/butlers/connectors/telegram_voice.py`), and one call on the shared
+  `TranscriptionClient` from `connectors/live_listener/transcription.py`.
+- **Fallback.** Disabled, non-owner, forwarded, oversize, overlong, download, transcode, STT or
+  empty/low-confidence outcomes keep `[Voice message]`; the message is still ingested.
+- **Outcome.** Every caption-less voice note carries `payload.transcription`
+  (`source_media`, `status`, `confidence`, `language`, `stt_backend`), which Switchboard stores with
+  the message so the responding session can tell the owner a note was not transcribed. The counter
+  `connector_telegram_voice_transcription_total{status}` counts outcomes.
+- **Authorship.** A successful owner transcript also carries `payload.audio_authorship`, an
+  HMAC-SHA256 binding (`src/butlers/audio_authorship.py`) of the channel, endpoint, original
+  idempotency key and event id, sender, the voice note's `file_unique_id` and audio SHA-256, the
+  declared transform for the configured protocol and the transcript's SHA-256. It is keyed by the
+  Tier-1 `AUDIO_AUTHORSHIP_KEY` and omitted when that credential is absent. Goal admission keeps the
+  transcript as owner input only when the binding verifies against the accepted row; without it,
+  the transcript is fenced as third-party data and the goal starts exposed
+  (`docs/architecture/goal-ledger-and-admission.md`, Owner audio). Audio files (`[Audio]`) are not
+  transcribed by this transport.
+- **Privacy.** Audio stays in memory for one note and is never written to disk, attached, logged or
+  put in a metric label. Logs never carry transcript text. The binding carries digests only.
+- **Deployment.** No STT service is deployed today. Enabling needs a reachable Wyoming, WebSocket
+  or HTTP endpoint in `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL`; the runtime image ships `ffmpeg`.
+
 ## Update Retrieval Modes
 
 ### Polling (Development)
@@ -109,20 +140,43 @@ Lifecycle reactions on inbound messages (in progress, success, failure) are set 
 Switchboard through the module's `react_for_ingest()`; the emoji constants live in
 `src/butlers/core/channel_reactions.py`. A rejected reaction is logged and never blocks processing.
 
+## Dashboard links in Telegram messages
+
+Every dashboard link the bot puts in a message is built from `DASHBOARD_URL` by one helper,
+`butlers.core.dashboard_links` (`dashboard_base_url()`, `dashboard_link()`). With `DASHBOARD_URL`
+unset the message is sent **without** a link and one warning is logged: a `localhost` URL is dead on
+a phone. Approval buttons are resolved separately by
+`roster/switchboard/tools/notification/self_links.py`, which is https-only.
+
+The routes a message may link to are listed in `frontend/tests/e2e/telegram-minted-routes.json`
+(approvals queue and dossier, secrets passport, `/system`, the two `/spend` doors, and
+`/settings/models?highlight=`). Rule: **a new Telegram link needs a registry entry** naming the
+payload that must be visible first. `tests/core/test_dashboard_links.py` fails when a seeded door,
+an approval self route or a secrets link is not registered, and when code outside the helper reads
+`DASHBOARD_URL` (non-Telegram redirect builders are on a frozen allowlist in that test). Entries with
+`phone_walk: "pending"` still need a Playwright phone walk in `phone-entry-routes.ts`.
+
 ## Environment Variables
+
+The canonical descriptor supplies provider `telegram` and channel `telegram_bot`;
+identity environment variables cannot relabel emitted envelopes.
 
 | Variable | Required | Description |
 |---|---|---|
 | `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `telegram_bot`) | Channel name |
 | `BUTLER_TELEGRAM_TOKEN` | Yes | Bot token (resolved from DB first, then env) |
 | `CONNECTOR_POLL_INTERVAL_S` | For polling | Poll interval in seconds (default: 1.0) |
+| `CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S` | No | Seconds between stale owner-card retraction sweeps (default: `60`; must be positive and finite) |
+| `CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED` | No | Whether this connector retracts stale owner cards (default: `true`). Set `false` on any connector for a bot other than the one that sends owner cards. |
 | `CONNECTOR_WEBHOOK_URL` | For webhook | Public webhook URL |
 | `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
 | `CONNECTOR_HEALTH_PORT` | No (default: 40081) | HTTP port for health endpoint |
 | `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler secret overrides |
 | `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB name |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED` | No (default: false) | Transcribe owner voice notes |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL` | When enabled | STT service URL (no default) |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL` | No (default: `wyoming`) | `wyoming`, `websocket` or `http` |
+| `CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S` | No (default: 120) | Longest voice note transcribed, in seconds |
 
 ## Health Endpoint
 
@@ -130,6 +184,13 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 
 - `GET /health` -- Returns status (`healthy`/`unhealthy`), uptime, last checkpoint save, last ingest submit, and source API connectivity.
 - `GET /metrics` -- Prometheus metrics endpoint.
+
+## Capture manifest
+
+- **Provider offers:** Bot API updates (`getUpdates` or webhook), retained by Telegram for about 24 hours and not re-readable once the offset moves past them.
+- **We keep:** one `connectors.evidence_journal` row per submitted update (`source = telegram_bot`, `provider_id` = the update's external event id), committed before the Switchboard submit and the offset advance. `raw` is the envelope's inbox-equivalent at its tier after the bearer scrub. Policy-blocked updates are never journaled.
+- **If the journal write fails:** nothing is submitted and the polling offset (or a webhook's 2xx) is not confirmed, so Telegram redelivers. A failed submit keeps the row; the park and replay path is unchanged.
+- **Provider retention and backfill:** there is no backfill door after the 24-hour window, so this row is the verbatim copy.
 
 ## Idempotency and Resume
 
@@ -199,3 +260,13 @@ grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/d
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+## Owner-delivery card taps (`od1`, dark)
+
+When canonical owner delivery is enabled, approval cards carry `od1:` single-use tokens.
+The connector handles them before `apr1:` callbacks: only the primary owner channel is
+accepted; the token goes unchanged to `POST /api/owner-delivery/actions` with the callback
+credential; the tapped card is edited to its outcome (a refused tap only loses its buttons,
+and a changed call says nothing ran); then it drains `GET /api/owner-delivery/retractions`,
+editing each stale card and receipting `retracted` true or false per card. Tokens are never
+logged. See [Owner delivery](../api_and_protocols/owner-delivery.md).

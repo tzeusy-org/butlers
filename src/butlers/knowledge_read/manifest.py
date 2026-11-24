@@ -1,0 +1,668 @@
+"""The closed v1 projection manifest (RFC 0039 D2/D4).
+
+Exposure is explicit data in projection.toml. This module enforces the contract;
+loading a registry or observing a new catalog column never expands that exposure.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import tomllib
+from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
+from importlib.resources import files
+
+_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*\Z")
+_TYPE = re.compile(
+    r"(?:text|uuid|boolean|integer|bigint|smallint|real|double precision|date|tsvector|bytea|"
+    r"timestamp (?:with|without) time zone|time (?:with|without) time zone|numeric(?:\(\d+,\d+\))?|"
+    r"character(?: varying)?(?:\(\d+\))?)(?:\[\])?\Z"
+)
+_CREDENTIALS = tuple(
+    tuple(x.split("_"))
+    for x in (
+        "secret",
+        "token",
+        "password",
+        "credential",
+        "otp",
+        "cvv",
+        "card",
+        "api_key",
+        "private_key",
+        "access_key",
+        "client_key",
+        "signing_key",
+        "access_url",
+        "passcode",
+        "passphrase",
+        "pin",
+        "bearer",
+        "cookie",
+        "auth",
+        "authorization",
+        "authentication",
+    )
+)
+_BREADTH = tuple(
+    tuple(x.split("_"))
+    for x in (
+        "iban",
+        "account_number",
+        "cancellation_url",
+        "raw",
+        "body",
+        "metadata",
+        "tags",
+        "confirmation",
+        "pnr",
+        "seat",
+        "address",
+        "passport",
+        "document_number",
+        "last_four",
+        "phone",
+        "email",
+        "description",
+        "memo",
+        "note",
+        "notes",
+        "receipt_url",
+        "external_ref",
+        "source_message",
+        "source_value",
+        "source_schema",
+        "source_table",
+        "source_id",
+        "blob_ref",
+        "payment_method",
+    )
+)
+# Per-column data class (bu-y66o00.13). Every published column must declare one.
+# credential and third_party_pii are never publishable; the rest are allowed.
+COLUMN_CLASSES = frozenset(
+    {"credential", "personal_record", "third_party_pii", "third_party_content", "system"}
+)
+_REFUSED_CLASSES = frozenset({"credential", "third_party_pii"})
+_DOMAINS = {"knowledge", "travel", "relationship", "time", "finance", "health", "proposals", ""}
+_PRIVATE_TABLES = {
+    "butler_secrets",
+    "entity_info",
+    "credentials",
+    "pending_actions",
+    "approval_events",
+    "sessions",
+    "session_process_logs",
+    "state",
+    "scheduled_tasks",
+    "route_inbox",
+    "corrections",
+    "overrides",
+    "episodes",
+    "point_events",
+    "location_fixes",
+    "memory_catalog",
+    "rules",
+    "predicate_registry",
+    "entity_predicate_registry",
+}
+
+
+class ManifestError(ValueError):
+    """A manifest or catalog violates the declared public boundary."""
+
+
+def identifier(value: object) -> str:
+    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+        raise ManifestError(f"unsafe identifier: {value!r}")
+    return value
+
+
+def quote(value: str) -> str:
+    return '"' + identifier(value) + '"'
+
+
+def qualified(source: str) -> str:
+    return ".".join(quote(part) for part in source.split("."))
+
+
+# The credential-name rule (bu-y66o00.71). Python is the reference; its SQL twins are
+# public.mcp_json_tokens and public.mcp_json_credential (core_356, which pins these constants) and
+# the owner step's applied-manifest decoder (tokens_sql and CREDENTIAL_PATTERN, rendered from here).
+#
+# 1. Tokenize: split acronym, camel and letter/digit boundaries in this order (APIKey -> API Key,
+#    apiKey -> api Key, cvv2 -> cvv 2, 2fa -> 2 fa), lowercase, then split on . whitespace _ -.
+# 2. A rule matches whole consecutive tokens; its last word may carry a tail of s, key(s),
+#    code(s) or number(s): api_keys, PINCode, card_number, cvv2, password1.
+# 3. A rule of five or more letters, written without separators, also matches at the end of a
+#    token, with the same tail: apikey, accesstoken, clientsecret, awssecretkey, proxyAuthorization.
+#    The short words (otp, cvv, pin, card, auth) never match inside a token, and no word matches
+#    when other letters follow it, so secretary, secretion, tokenization, tokenizer, pinned,
+#    spinach, spin, cardio, postcard, author, authority, hotpot, keyboard and monkey stay
+#    publishable (tests/credential_key_cases.py lists every checked key).
+#    Accepted over-matches, dropped as the fail-closed side: preauthorization, pallbearer, any
+#    whole token followed by a tail (token_count, cards, pins).
+# Known misses: a concatenated short word (creditcard, oauth) and a credential word with mixed
+# case inside it (SEcret splits as s ecret). Response DLP still scans every unmarked leaf.
+_SPLITS = (
+    (r"([A-Z]+)([A-Z][a-z])", r"\1_\2"),
+    (r"([a-z])([A-Z])", r"\1_\2"),
+    (r"([A-Za-z])([0-9])", r"\1_\2"),
+    (r"([0-9])([A-Za-z])", r"\1_\2"),
+)
+_TAIL = "(s|keys?|codes?|numbers?)?"
+
+
+def _credential_pattern(rules: tuple[tuple[str, ...], ...]) -> str:
+    whole = "|".join("_".join(rule) for rule in rules)
+    inner = "|".join(x for x in ("".join(rule) for rule in rules) if len(x) >= 5)
+    return f"(^|_)({whole}){_TAIL}(_|$)|({inner}){_TAIL}(_|$)"
+
+
+# Searched in the tokens joined by "_" (ARE- and re-compatible; the SQL twins use it verbatim).
+CREDENTIAL_PATTERN = _credential_pattern(_CREDENTIALS)
+_CREDENTIAL = re.compile(CREDENTIAL_PATTERN)
+
+
+def _segments(value: str) -> tuple[str, ...]:
+    for pattern, replacement in _SPLITS:
+        value = re.sub(pattern, replacement, value)
+    return tuple(x.lower() for x in re.split(r"[.\s_-]+", value) if x)
+
+
+def tokens_sql(expression: str) -> str:
+    """SQL text whose value, searched with a token pattern, matches like ``_segments``.
+
+    It yields the tokens joined by "_" (possibly with empty tokens, which every token pattern's
+    ``(^|_)`` and ``(_|$)`` boundaries absorb).
+    """
+    for pattern, replacement in _SPLITS:
+        expression = f"regexp_replace({expression}, '{pattern}', '{replacement}', 'g')"
+    return f"regexp_replace(lower({expression}), '[._[:space:]-]+', '_', 'g')"
+
+
+def _matches(parts: tuple[str, ...], rules: tuple[tuple[str, ...], ...]) -> bool:
+    return any(parts[i : i + len(rule)] == rule for rule in rules for i in range(len(parts)))
+
+
+def credential(value: str) -> bool:
+    """Match the shared credential tier on column or dotted JSON path segments."""
+    return bool(_CREDENTIAL.search("_".join(_segments(value))))
+
+
+def private_predicate(value: str) -> bool:
+    parts = _segments(value)
+    return value in {"contact_phone", "contact_email", "birthday", "lives_in", "nickname"} or (
+        bool(
+            set(parts) & {"phone", "email", "address", "handle", "website", "birthday", "passport"}
+        )
+        or _matches(parts, (("identity", "document"),))
+        or credential(value)
+    )
+
+
+def _strings(value: object, label: str, *, nonempty: bool = True) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
+        raise ManifestError(f"{label}: expected string array")
+    if len(value) != len(set(value)) or (nonempty and not value):
+        raise ManifestError(f"{label}: empty or duplicate values")
+    return tuple(value)
+
+
+def literal(value: str | bool) -> str:
+    return (
+        ("true" if value else "false")
+        if type(value) is bool
+        else "'" + value.replace("'", "''") + "'"
+    )
+
+
+@dataclass(frozen=True)
+class Table:
+    source: str
+    domain: str
+    columns: tuple[str, ...]
+    types: tuple[tuple[str, str], ...]
+    key: tuple[str, ...]
+    identity: tuple[str, ...]
+    time_column: str | None
+    filters: tuple[tuple[str, tuple[str | bool, ...]], ...]
+    identifiers: tuple[str, ...] = ()
+    json_identifiers: tuple[str, ...] = ()
+    derived: str | None = None
+    uri: str = ""
+    tools: tuple[str, ...] = ()
+    # Declarative metadata only: not part of the canonical digest or table equality.
+    classes: tuple[tuple[str, str], ...] = dc_field(default=(), compare=False)
+
+    def filter_sql(self) -> str:
+        return " AND ".join(
+            f"{quote(column)} IN ({', '.join(literal(v) for v in values)})"
+            for column, values in self.filters
+        )
+
+    def publication_sql(self) -> str:
+        sql = f"TABLE {qualified(self.source)} ({', '.join(quote(c) for c in self.columns)})"
+        return sql + (f" WHERE ({self.filter_sql()})" if self.filters else "")
+
+
+@dataclass(frozen=True)
+class Manifest:
+    tables: tuple[Table, ...]
+
+    @property
+    def canonical(self) -> str:
+        # Retain column/key order: those declarations also determine subscriber shapes.
+        return json.dumps(
+            {
+                "version": 1,
+                "tables": [
+                    {
+                        "source": t.source,
+                        "domain": t.domain,
+                        "columns": t.columns,
+                        "types": t.types,
+                        "key": t.key,
+                        "identity": t.identity,
+                        "time_column": t.time_column,
+                        "uri": t.uri,
+                        "tools": t.tools,
+                        "filters": t.filters,
+                        "identifiers": t.identifiers,
+                        "json_identifiers": t.json_identifiers,
+                    }
+                    for t in self.tables
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(self.canonical.encode()).hexdigest()
+
+
+def load_manifest(data: bytes | None = None) -> Manifest:
+    """Load the packaged allowlist, or explicit bytes for validation/testing."""
+    try:
+        raw = tomllib.loads(
+            (
+                data
+                if data is not None
+                else files(__package__).joinpath("projection.toml").read_bytes()
+            ).decode()
+        )
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ManifestError("manifest: invalid TOML/encoding") from exc
+    return _parse_manifest(raw, require_classes=True)
+
+
+def _parse_manifest(raw: object, *, require_classes: bool = False) -> Manifest:
+    """One semantic validator for packaged TOML and already-applied JSON."""
+    if not isinstance(raw, dict):
+        raise ManifestError("manifest: expected object")
+    if set(raw) != {"version", "table"} or type(raw["version"]) is not int or raw["version"] != 1:
+        raise ManifestError("manifest: expected version1 and table array")
+    if not isinstance(raw["table"], list) or not raw["table"]:
+        raise ManifestError("manifest: empty table array")
+    tables = []
+    fields = {
+        "source",
+        "domain",
+        "columns",
+        "types",
+        "key",
+        "time_column",
+        "row_filter",
+        "identifiers",
+        "json_identifiers",
+        "derived",
+        "replica_identity",
+        "uri",
+        "tools",
+        "classes",
+    }
+    for item in raw["table"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) - fields
+            or not {"source", "domain", "columns", "types", "key"} <= set(item)
+        ):
+            raise ManifestError("table: invalid fields")
+        source = item["source"]
+        if not isinstance(source, str) or len(source.split(".")) != 2:
+            raise ManifestError("table: expected qualified source")
+        schema, name = (identifier(x) for x in source.split("."))
+        domain = item["domain"]
+        if (
+            not isinstance(domain, str)
+            or domain not in _DOMAINS
+            or (domain == "") != (schema == "mcp_surface")
+        ):
+            raise ManifestError(f"{source}: invalid domain")
+        schema_domains = {
+            "general": "knowledge",
+            "lifestyle": "knowledge",
+            "education": "knowledge",
+            "travel": "travel",
+            "relationship": "relationship",
+            "public": "relationship",
+            "chronicler": "time",
+            "finance": "finance",
+            "health": "health",
+            "mcp_surface": "",
+        }
+        expected_domain = (
+            "proposals"
+            if source == "relationship.external_fact_proposals"
+            else schema_domains.get(schema)
+        )
+        if expected_domain != domain:
+            raise ManifestError(f"{source}: excluded schema/domain")
+        expected_derived = {
+            "public.entity_graph_edges": "edges",
+            "public.entity_graph_withheld_counts": "counts",
+        }
+        if source in expected_derived and item.get("derived") != expected_derived[source]:
+            raise ManifestError(f"{source}: derived graph filter required")
+        if name in _PRIVATE_TABLES or name.startswith("oauth_") or name.endswith("_tokens"):
+            raise ManifestError(f"{source}: private source")
+        cols = _strings(item["columns"], source)
+        for column in cols:
+            identifier(column)
+            if (
+                credential(column)
+                or "embedding" in _segments(column)
+                or (domain not in {"finance", "health"} and _matches(_segments(column), _BREADTH))
+            ):
+                raise ManifestError(f"{source}.{column}: forbidden column")
+        types = item["types"]
+        if (
+            not isinstance(types, dict)
+            or set(types) != set(cols)
+            or any(not isinstance(t, str) or not _TYPE.fullmatch(t) for t in types.values())
+        ):
+            raise ManifestError(f"{source}: unsafe/missing column types (JSON/vector forbidden)")
+        key = _strings(item["key"], source + " key")
+        if not set(key) <= set(cols):
+            raise ManifestError(f"{source}: key omitted from columns")
+        if domain == "proposals" and (
+            cols != ("proposal_id", "state", "decided_at")
+            or types
+            != {"proposal_id": "uuid", "state": "text", "decided_at": "timestamp with time zone"}
+            or key != ("proposal_id",)
+            or item.get("replica_identity") != ["proposal_id"]
+            or item.get("row_filter")
+            or item.get("identifiers")
+            or item.get("json_identifiers")
+        ):
+            raise ManifestError(f"{source}: proposals expose only canonical status columns")
+        if domain in {"finance", "health"} and len(key) != 1:
+            raise ManifestError(f"{source}: finance/health key must be single column")
+        identity = _strings(item.get("replica_identity"), source + " identity")
+        if not set(key) <= set(identity) or not set(identity) <= set(cols):
+            missing = sorted((set(key) - set(identity)) | (set(identity) - set(cols)))
+            raise ManifestError(f"{source}: incomplete identity columns {missing}")
+        uri = item.get("uri", "")
+        tools = _strings(item.get("tools", []), source + " tools", nonempty=False)
+        if not isinstance(uri, str) or (uri and not uri.startswith("butlers://")):
+            raise ManifestError(f"{source}: invalid URI")
+        if any(not _IDENTIFIER.fullmatch(tool) for tool in tools):
+            raise ManifestError(f"{source}: invalid tool source")
+        time_column = item.get("time_column")
+        if time_column is not None and time_column not in cols:
+            raise ManifestError(f"{source}: time column omitted")
+        filters = item.get("row_filter", {})
+        if not isinstance(filters, dict) or not set(filters) <= set(cols):
+            raise ManifestError(
+                f"{source}: filter column omitted {sorted(set(filters) - set(cols))}"
+            )
+        if not set(filters) <= set(identity):
+            raise ManifestError(
+                f"{source}: filter omitted from identity {sorted(set(filters) - set(identity))}"
+            )
+        normalized = []
+        for column, values in sorted(filters.items()):
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(type(v) not in (str, bool) for v in values)
+            ):
+                raise ManifestError(f"{source}.{column}: expected nonempty literal filter")
+            if (
+                len({(type(v), v) for v in values}) != len(values)
+                or len({type(v) for v in values}) != 1
+            ):
+                raise ManifestError(f"{source}.{column}: duplicate/mixed filter literals")
+            if types[column] not in {"text", "boolean"} or any(
+                type(v) is not (bool if types[column] == "boolean" else str) for v in values
+            ):
+                raise ManifestError(f"{source}.{column}: filter literal type differs from column")
+            normalized.append((column, tuple(sorted(values))))
+        if name == "facts":
+            if domain in {"finance", "health"}:
+                if filters != {"validity": ["active"]}:
+                    raise ManifestError(f"{source}: finance/health facts require active only")
+            elif (
+                set(filters) != {"sensitivity", "validity", "predicate"}
+                or filters["sensitivity"] != ["normal"]
+                or set(filters["validity"]) != {"active", "fading"}
+                or any(private_predicate(x) for x in filters["predicate"])
+            ):
+                raise ManifestError(f"{source}: invalid memory fact filters")
+        if name == "entity_facts" and (
+            filters.get("validity") != ["active"] or not filters.get("predicate")
+        ):
+            raise ManifestError(f"{source}: relationship predicate allowlist required")
+        if source == "public.entities" and filters != {
+            "deleted": [False],
+            "unidentified": [False],
+            "placeholder_name": [False],
+        }:
+            raise ManifestError(f"{source}: entity privacy flags required")
+        if source == "chronicler.episodes_public" and filters != {
+            "effective_privacy": ["normal", "sensitive"],
+            "tombstoned": [False],
+        }:
+            raise ManifestError(f"{source}: corrected episode privacy filters required")
+        identifiers = _strings(item.get("identifiers", []), source, nonempty=False)
+        paths = _strings(item.get("json_identifiers", []), source, nonempty=False)
+        if not set(identifiers) <= set(cols) or any(credential(x) for x in (*identifiers, *paths)):
+            raise ManifestError(f"{source}: unsafe identifier mark")
+        if (identifiers or paths) and (
+            domain not in {"finance", "health"} or name == "json_fields_public"
+        ):
+            raise ManifestError(f"{source}: identifier marks not permitted")
+        if any(not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*(?:\.[a-zA-Z_0-9-]+)+", x) for x in paths):
+            raise ManifestError(f"{source}: malformed JSON identifier path")
+        derived = item.get("derived")
+        if derived is not None and (
+            not isinstance(derived, str) or derived not in {"edges", "counts"}
+        ):
+            raise ManifestError(f"{source}: invalid derived filter")
+        classes = item.get("classes")
+        if classes is None and not require_classes:
+            classes = {}
+        elif not isinstance(classes, dict) or (require_classes and set(classes) != set(cols)):
+            raise ManifestError(f"{source}: every column needs exactly one class")
+        for column, klass in classes.items():
+            if not isinstance(klass, str) or klass not in COLUMN_CLASSES:
+                raise ManifestError(f"{source}.{column}: unknown class {klass!r}")
+            if klass in _REFUSED_CLASSES:
+                raise ManifestError(f"{source}.{column}: class {klass} is never publishable")
+        if not set(classes) <= set(cols):
+            raise ManifestError(f"{source}: class for unpublished column")
+        tables.append(
+            Table(
+                source,
+                domain,
+                cols,
+                tuple((c, types[c]) for c in cols),
+                key,
+                identity,
+                time_column,
+                tuple(normalized),
+                identifiers,
+                paths,
+                derived,
+                uri,
+                tools,
+                tuple((c, classes[c]) for c in cols if c in classes),
+            )
+        )
+    if len({t.source for t in tables}) != len(tables):
+        raise ManifestError("duplicate sources")
+    facts = [
+        t
+        for t in tables
+        if t.source.endswith((".facts", ".entity_facts")) and t.domain not in {"finance", "health"}
+    ]
+    keys = tuple(
+        sorted(
+            f"{t.source}:{predicate}"
+            for t in facts
+            for col, values in t.filters
+            if col == "predicate"
+            for predicate in values
+        )
+    )
+    sources = tuple(sorted(t.source for t in facts))
+    for i, table in enumerate(tables):
+        if table.derived:
+            expected_source = (
+                "public.entity_graph_edges"
+                if table.derived == "edges"
+                else "public.entity_graph_withheld_counts"
+            )
+            if table.source != expected_source or table.filters:
+                raise ManifestError(f"{table.source}: derived graph filters cannot be hand edited")
+            filters = (
+                (("publish_key", keys), ("sensitivity", ("normal",)))
+                if table.derived == "edges"
+                else (("source_key", sources),)
+            )
+            if not keys or not all(column in table.identity for column, _ in filters):
+                raise ManifestError(f"{table.source}: incomplete graph identity/filter columns")
+            tables[i] = replace(table, filters=filters)
+    return Manifest(tuple(sorted(tables, key=lambda t: t.source)))
+
+
+_CANONICAL_FIELDS = frozenset(
+    {
+        "source",
+        "domain",
+        "columns",
+        "types",
+        "key",
+        "identity",
+        "time_column",
+        "uri",
+        "tools",
+        "filters",
+        "identifiers",
+        "json_identifiers",
+    }
+)
+
+
+def decode_applied_manifest(data: str) -> Manifest:
+    """Decode the actual stored canonical JSON; never interpret it as TOML.
+
+    No unknown fields, duplicate object keys, noncanonical normalizations or
+    semantic exposure shortcuts are accepted. Digest bytes remain version1.
+    """
+    try:
+        if not isinstance(data, str) or len(data.encode()) > 1048576:
+            raise ManifestError("applied manifest: invalid/oversized text")
+    except UnicodeError as exc:
+        raise ManifestError("applied manifest: invalid encoding") from exc
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ManifestError("applied manifest: duplicate JSON field")
+            result[key] = value
+        return result
+
+    try:
+        raw = json.loads(data, object_pairs_hook=unique)
+    except (TypeError, ValueError) as exc:
+        raise ManifestError("applied manifest: invalid JSON") from exc
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"version", "tables"}
+        or type(raw["version"]) is not int
+        or raw["version"] != 1
+        or not isinstance(raw["tables"], list)
+        or not raw["tables"]
+    ):
+        raise ManifestError("applied manifest: expected version1 tables")
+    entries = []
+    for row in raw["tables"]:
+        if not isinstance(row, dict) or set(row) != _CANONICAL_FIELDS:
+            raise ManifestError("applied manifest: invalid table fields")
+        item = dict(row)
+        if not isinstance(item["source"], str):
+            raise ManifestError("applied manifest: invalid source")
+        for field in ("types", "filters"):
+            pairs = item.pop(field)
+            if (
+                not isinstance(pairs, list)
+                or any(
+                    not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str)
+                    for pair in pairs
+                )
+                or len({pair[0] for pair in pairs}) != len(pairs)
+            ):
+                raise ManifestError("applied manifest: invalid normalized pairs")
+            item["types" if field == "types" else "row_filter"] = dict(pairs)
+        item["replica_identity"] = item.pop("identity")
+        if item["source"] in {"public.entity_graph_edges", "public.entity_graph_withheld_counts"}:
+            item["derived"] = "edges" if item["source"] == "public.entity_graph_edges" else "counts"
+            # The common validator derives the exact graph lists from fact entries.
+            item["row_filter"] = {}
+        entries.append(item)
+    result = _parse_manifest({"version": 1, "table": entries})
+    if result.canonical != data:
+        raise ManifestError("applied manifest: noncanonical or inconsistent declarations")
+    return result
+
+
+@dataclass(frozen=True)
+class ManifestTransition:
+    """A changed old entry needs rebuild, even when its change only widens."""
+
+    rebuild: bool
+    narrowing: bool
+
+    @property
+    def direction(self) -> str:
+        return "narrowing" if self.narrowing else "widening"
+
+
+def manifest_transition(applied: Manifest | None, target: Manifest) -> ManifestTransition:
+    """Shared owner/recovery and future request-side pending classification."""
+    if applied is None:
+        return ManifestTransition(True, False)
+    desired = {table.source: table for table in target.tables}
+    rebuild = False
+    narrowing = False
+    for old in applied.tables:
+        new = desired.get(old.source)
+        if old != new:
+            rebuild = True
+        if new is None or not set(old.columns) <= set(new.columns):
+            narrowing = True
+        if new is not None:
+            previous_filters = dict(old.filters)
+            for column, values in new.filters:
+                if column not in previous_filters or not set(previous_filters[column]) <= set(
+                    values
+                ):
+                    narrowing = True
+    return ManifestTransition(rebuild, narrowing)

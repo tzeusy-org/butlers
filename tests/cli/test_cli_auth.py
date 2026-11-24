@@ -36,7 +36,8 @@ def test_providers_for_runtime_returns_matching_providers_only():
     for a resolved model-catalog runtime_type without hardcoding provider
     names."""
     codex_providers = providers_for_runtime("codex")
-    assert [p.name for p in codex_providers] == ["codex"]
+    # The store-only OpenAI API key authenticates the same Codex runtime.
+    assert [p.name for p in codex_providers] == ["codex", "openai"]
 
     # "opencode" has two registered providers (device-code + api_key) sharing
     # the same on-disk auth.json.
@@ -517,6 +518,48 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
     with patch("butlers.cli_auth.registry.shutil.which", return_value=None):
         result2 = await probe_provider(provider, credential_store=None)
     assert result2.state == AuthHealthState.unavailable
+
+
+async def test_openai_health_probe_reads_only_the_credential_store():
+    """The Codex adapter has no env fallback, so neither does the probe."""
+    import os
+
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["openai"]
+    store = MagicMock()
+    store.load = AsyncMock(return_value="sk-proj-test-key")
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"):
+        result = await probe_provider(provider, credential_store=store)
+    assert result.state == AuthHealthState.authenticated
+    store.load.assert_awaited_once_with("cli-auth/openai")
+
+    empty = MagicMock()
+    empty.load = AsyncMock(return_value=None)
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch.dict(os.environ, {"CODEX_API_KEY": "sk-env", "OPENAI_API_KEY": "sk-env"}),
+    ):
+        result2 = await probe_provider(provider, credential_store=empty)
+    assert result2.state == AuthHealthState.not_authenticated
+
+
+async def test_save_api_key_persists_openai_key_to_credential_store():
+    """The OpenAI key takes the same store-only save path as Claude."""
+    from butlers.api.models.cli_auth import CLIAuthApiKeyRequest
+    from butlers.api.routers.cli_auth import save_api_key
+
+    persist = AsyncMock()
+    with patch("butlers.api.routers.cli_auth.persist_store_only_api_key", persist):
+        resp = await save_api_key(
+            "openai",
+            CLIAuthApiKeyRequest(api_key="sk-proj-test-key"),
+            db_manager=_make_persisting_db_manager()[0],
+        )
+
+    provider_def, _store, api_key = persist.await_args.args
+    assert (provider_def.name, api_key) == ("openai", "sk-proj-test-key")
+    assert resp.stored is True
 
 
 @pytest.mark.parametrize(
@@ -1067,6 +1110,114 @@ async def test_test_endpoint_device_code_not_authenticated_reports_failure():
 
     assert resp.success is False
     assert "re-login required" in resp.detail
+
+
+async def test_test_endpoint_probes_store_only_api_key_provider():
+    """Claude has no test command or auth file, so /test runs its health probe."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    healthy = AuthHealthResult(
+        provider="claude",
+        state=AuthHealthState.authenticated,
+        detail="Anthropic API key configured.",
+    )
+    probe = AsyncMock(return_value=healthy)
+    with patch("butlers.api.routers.cli_auth.probe_provider", probe):
+        resp = await test_api_key("claude", db_manager=None)
+
+    probe.assert_awaited_once()
+    assert resp.success is True
+    assert resp.detail == "Anthropic API key configured."
+
+
+# ---------------------------------------------------------------------------
+# PUT /{provider}/api-key: store-only providers persist to the credential store
+# ---------------------------------------------------------------------------
+
+
+async def test_save_api_key_persists_store_only_provider_to_credential_store():
+    """A Claude key reaches cli-auth/claude instead of being silently dropped."""
+    from butlers.api.models.cli_auth import CLIAuthApiKeyRequest
+    from butlers.api.routers.cli_auth import save_api_key
+
+    persist = AsyncMock()
+    with patch("butlers.api.routers.cli_auth.persist_store_only_api_key", persist):
+        resp = await save_api_key(
+            "claude",
+            CLIAuthApiKeyRequest(api_key="sk-ant-test-key"),
+            db_manager=_make_persisting_db_manager()[0],
+        )
+
+    persist.assert_awaited_once()
+    provider_def, _store, api_key = persist.await_args.args
+    assert provider_def.name == "claude"
+    assert api_key == "sk-ant-test-key"
+    assert resp.stored is True
+
+
+async def test_save_api_key_store_only_provider_without_db_is_unavailable():
+    """Without a credential store nothing is persisted, so never claim stored."""
+    from fastapi import HTTPException
+
+    from butlers.api.models.cli_auth import CLIAuthApiKeyRequest
+    from butlers.api.routers.cli_auth import save_api_key
+
+    with pytest.raises(HTTPException) as exc_info:
+        await save_api_key(
+            "claude",
+            CLIAuthApiKeyRequest(api_key="sk-ant-test-key"),
+            db_manager=None,
+        )
+
+    assert exc_info.value.status_code == 503
+
+
+async def test_save_api_key_store_failure_never_logs_the_key(caplog):
+    """A failed write surfaces as 500 without the key reaching logs."""
+    from fastapi import HTTPException
+
+    from butlers.api.models.cli_auth import CLIAuthApiKeyRequest
+    from butlers.api.routers.cli_auth import save_api_key
+
+    persist = AsyncMock(side_effect=RuntimeError("bind sk-ant-secret-value"))
+    with (
+        patch("butlers.api.routers.cli_auth.persist_store_only_api_key", persist),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await save_api_key(
+            "claude",
+            CLIAuthApiKeyRequest(api_key="sk-ant-secret-value"),
+            db_manager=_make_persisting_db_manager()[0],
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "sk-ant-secret-value" not in caplog.text
+
+
+async def test_persist_store_only_api_key_writes_cli_auth_row():
+    """The key lands under cli-auth/<name>, the key ClaudeCodeAdapter loads."""
+    from butlers.cli_auth.persistence import persist_store_only_api_key
+
+    store = MagicMock()
+    store.store = AsyncMock()
+    await persist_store_only_api_key(PROVIDERS["claude"], store, "sk-ant-test-key")
+
+    store.store.assert_awaited_once()
+    assert store.store.await_args.args == ("cli-auth/claude", "sk-ant-test-key")
+    assert store.store.await_args.kwargs["category"] == "cli-auth"
+    assert store.store.await_args.kwargs["is_sensitive"] is True
+
+
+async def test_persist_store_only_api_key_rejects_file_backed_provider():
+    """opencode-go keeps its key in auth.json; this path must not bypass that."""
+    from butlers.cli_auth.persistence import persist_store_only_api_key
+
+    store = MagicMock()
+    store.store = AsyncMock()
+    with pytest.raises(ValueError):
+        await persist_store_only_api_key(PROVIDERS["opencode-go"], store, "key")
+    store.store.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -235,3 +235,57 @@ The historical source population is complete for this cohort, but those gaps
 prevent full current-baseline acceptance and any claim of meeting either hard
 target. Obtain the missing current observations through the existing owners and
 natural hosted runs; do not manufacture them from a single untraced run.
+
+
+## Landed Runtime-attention setup adoption (2026-11-04)
+
+PR #5498 landed shared migrated-template setup for seven existing cases. The
+matched official integration-4 JUnit observations below compare run 41813713643
+attempt 1 (checkout `bed03a745db99cdb92a1120745261d283a28f221`) with
+run 41820995723 attempt 1 (checkout
+`5999fbba06ac3be8f36e6c2fa4f1093aacbe4bb2`). The latter's entire tree equals
+candidate `429314c75d1e26d7133bf7a7b1857ebd3b8566d6`; that setup change landed
+as `3e9b972e849571609330718aeb1771b17a861dd0`. These observations precede the
+follow-up two-database month-clock isolation check; they do not time that check.
+
+| Existing case | Before (s) | After (s) |
+| --- | ---: | ---: |
+| ACL repair | 5.008 | 7.108 |
+| Renamed debounce planter | 6.066 | 0.702 |
+| Debounce audit vocabulary | 5.473 | 0.700 |
+| Fleet-halt month clock | 5.047 | 0.816 |
+| Condition producer retention | 5.763 | 0.704 |
+| Condition replay/rollback | 5.426 | 1.535 |
+| Public-decoy definers | 5.445 | 1.993 |
+| **Seven-case sum** | **38.228** | **13.558** |
+
+The seven-case sum saved 24.670 seconds (64.5%). The first case became slower;
+its cold-template cost and subsequent warm reuse were not independently timed.
+JUnit supplies per-case durations, not separate fixture, call and teardown clocks.
+All 31 case identities remained unchanged and passed without skips. Their full-file
+sum rose from 162.096 to 170.186 seconds (+8.090 seconds).
+
+| Integration shard whole-job wall | Before (s) | After (s) |
+| --- | ---: | ---: |
+| 1 | 460 | 406 |
+| 2 | 512 | 506 |
+| 3 | 482 | 558 |
+| 4 | 426 | 528 |
+| 5 | 531 | 527 |
+| 6 | 556 | 705 |
+| Mean | 494.500 | 538.333 |
+| Maximum | 556 | 705 |
+
+This single pair has different events, runners and concurrent workloads. Whole-job
+walls include setup, collection and upload. It establishes the observed seven-case
+saving, with no full-file, lane, critical-path or p95 improvement claim and no causal
+attribution of the slower whole-job observations.
+
+The before official integration-4 artifact is 13313268447 (archive SHA-256
+`6ee80bc6e50d771fab0e2ed37183d364bff15ed662726af8809aaee5e882ed03`);
+the after artifact is 13316568332 (archive SHA-256
+`684ab18e28ff92350475fbfa113a21a7eaa7c35c4f6b88787dea3e0221a11d29`).
+The retained source bindings, exact-case reconciliation and six-shard table are in
+`/home/orca/.tmp/bu-gvut07-hosted-timing-20261104/manifest.json`
+(SHA-256 `c16d583342651470fb82e0b0f3026e7992187d53f2445eeb6447b1dde154cca9`).
+Private retained artifacts are evidence references, not portable repository inputs.

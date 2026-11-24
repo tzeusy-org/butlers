@@ -69,14 +69,48 @@ the adopted separate-device custody remains an owner operational obligation.
 This source interface does not enroll a device, provision credentials, deploy
 or expose an instance, or activate future goal-runtime consumers.
 
-Future Vouch, Contain and mode-loosening owners can reuse the neutral
-`DashboardStepUpProof` projection, the restricted service's binding ceremony,
-and the real synthetic `authority`/`signed_binding_proof` fixtures in
-`tests/integration/test_dashboard_stepup.py`. Their own source must derive its
-exact binding and enlist consumption in its owning transaction. The currently
-closed SQL consumer catalog admits only the four approvals kinds above;
-fixture reuse does not register another consumer, grant permission, or replace
-those owners' contract, migration, race and rollback proofs.
+The closed SQL consumer catalog admits seven kinds: the four approvals kinds
+above, `contain` and `policy_loosen` (bu-dhloi1.29), and `mode_loosen`
+(bu-dhloi1.21). Each derives its exact
+binding in its own source and enlists consumption in its owning transaction
+through `butlers.core.dashboard_stepup.consume_stepup`:
+
+- `contain` (`core.source_containment.contain_binding`) binds the partition
+  digest and its current containment state; its retained result is the
+  containment id. It has no dashboard route yet and stays dark.
+- `policy_loosen` (`core.owner_policy.loosen_binding`) binds the owner action,
+  term, expected version, resulting constraint and expiry, the term row as it is
+  now and the policy generation. Its target is the resulting
+  `term_id:version:term:expiry_us` state, which sw_060's term trigger requires a
+  step-up consumed in the same transaction to match. The browser requests
+  `/api/owner-policy/step-up/options` (`{"required": false}` for a change that
+  does not loosen), finishes as above, and sends the nonce with
+  `/api/owner-policy/terms/{id}/loosen`.
+- `mode_loosen` (`perception.mode_overlay.overlay_binding`) binds the owner
+  action, the edit, the expected version and the mode's current profile. Its
+  target is `mode:version:digest16` over the resulting overlay state, which
+  sw_076's overlay trigger requires a step-up consumed in the same transaction
+  to match; its retained result's `rule_id` must be `mode:version`, the same
+  overlay row. An exit or early end (`perception.mode_entries.entry_binding`)
+  binds the same way, with its target over the resulting entry state
+  (`entry|...`, re-derived by sw_077's entries trigger). The `entry|` prefix
+  keeps the two target families apart, so a step-up confirmed for an overlay
+  edit never admits an entry change, nor the reverse. Neither has a dashboard
+  route yet; both stay dark.
+
+A future Vouch owner can reuse the neutral
+`DashboardStepUpProof`/`StepUpBinding` projection, the restricted service's
+binding ceremony, and the real synthetic `authority`/`signed_binding_proof`
+fixtures in `tests/integration/test_dashboard_stepup.py`. Fixture reuse does
+not register another consumer, grant permission, or replace those owners'
+contract, migration, race and rollback proofs: a new kind is a privileged
+bootstrap change to `scripts/init-db.sql`.
+
+Re-running `scripts/init-db.sql` as the privileged bootstrap upgrades an
+existing installation in place (`dashboard_stepup.upgrade_interface()`): it
+replaces the kind CHECK and the two consumer routines, keeps every binding and
+receipt row, then re-asserts ownership, provenance and grants. Ordinary
+migrations never change the catalog.
 
 ## How trust is established
 
@@ -285,6 +319,28 @@ host-authorized replacement registration; configured-key mode keeps its
 exclusive header path and permits a fresh key-backed session at the new origin. An existing credential cannot be moved to a new
 RP by editing a stored hostname. Never delete auth rows to reopen enrollment.
 
+## Ambient projection grants
+
+A wall display, e-ink panel or Home Assistant sensor reads its glance with a
+projection grant, never the owner key. The owner mints one per surface with
+`POST /api/projections` (owner session only); the response carries the token
+once, and `public.ambient_projections` keeps only its SHA-256 digest. The token
+unlocks exactly `GET /api/projections/{id}/glance` for that projection, sent as
+`X-Projection-Token` (preferred) or `?token=`, which can reach proxy access
+logs. Every other route treats it as no credential; a non-GET request is 405 and
+an unknown or revoked grant is 404. Rotate the token in one step with
+`POST /api/projections/{id}/rotate` (the old token stops working at once and the
+new one is returned once); revoke with `DELETE /api/projections/{id}`; revoking
+every grant is the rollback. The same verbs, with each grant's last fetch, live
+in the dashboard at Settings > Projections (`/settings/projections`), which is
+also where the lapsed-surface attention item links. A surface that misses two expected fetch
+intervals shows up as one low-severity "last fetched ... ago" item in the
+briefing's attention model until it fetches again; the item is derived on read,
+so nothing is written or scheduled. `?format=text` and `?format=png` render the
+same glance for dumb panels; wiring and a Home Assistant package live in
+[Ambient Projections](../operations/ambient-projections-home-assistant.md).
+Contract: `ambient-projections` (REQ-ambient-projections-001 to -005).
+
 ## Failure, restore and rollback
 
 | Condition | Operator response |
@@ -334,8 +390,10 @@ removes authentication data nor authorizes an old image or live rollback.
 
 The chart passes `dashboardAuth.trustedProxyPeers` to the API as
 `DASHBOARD_AUTH_TRUSTED_PROXY_PEERS`. The checked-in `values.dev.yaml` sets
-`10.42.0.1`, matching the single-node k3s host ingress source described by
-`hostIngress.nodeSourceCidr` (`10.42.0.1/32` in shared values). This is the
+`10.42.0.1,10.42.0.0`, matching the host ingress sources described by
+`hostIngress.nodeSourceCidr` (`10.42.0.1/32`, the `cni0` address for pods on the
+host's node) and `hostIngress.extraSourceCidrs` (`10.42.0.0/32`, the `flannel.1`
+address for pods on another node) in shared values. This is the
 configured source of the host Tailscale Serve hop to `dashboard-api-host`,
 whose NodePort is `32200` on dev and uses `externalTrafficPolicy: Local`.
 The `butlers-host-ingress` NetworkPolicy admits that source and namespace pods.
@@ -384,6 +442,104 @@ Ambiguous measurements and final-readiness failures leave authentication closed
 and fail the launcher without an alternate trust value or a success report.
 This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
 The canonical origin, RP ID, and forwarded-header checks remain required.
+
+## Ordinary owner attention authoring
+
+The narrow pre-switch creation ticket and owner break-through clauses use the
+existing verified owner cookie, canonical origin and CSRF service boundary.
+They do not accept the internal audit actor fallback, a model boolean or a
+separate device-factor claim. Standing-permission step-up remains D13's distinct
+purpose and existing fixed kinds.
+
+`POST /api/butlers/attention/break-through-clauses` and the matching
+`DELETE .../{id}` are HTTP-only backend primitives. A clause has at least one
+fixed matcher (`entity_id`, canonical `sender_domain`, `channel`, or
+`security_kind`), a scope (`always` or `quiet_hours_only`) and optional expiry.
+Matchers compose conjunctively; current expiry and revocation are re-read by
+both delivery consumers. Domain matching uses authenticated accepted email
+provenance; a security label alone never authenticates a sender. These routes
+are the single shared `.8` backend store; they do not deliver its later editor,
+Telegram authoring, shadow-event activation or decay workflow.
+
+`GET /api/butlers/attention/break-through-clauses` lists the unrevoked clauses (newest
+first, at most 200) for the owner editor. It is a cookie-only session read through the same
+`dashboard_attention.api` function (`clause_list`): it needs the verified session but not the CSRF
+proof, because it mutates nothing, and it returns matcher ids, scope and dates, never message
+content. The function is rewritten in place on an installed database by the
+`ATTENTION_API_REFRESH` block of `scripts/init-db.sql`.
+
+The owner's Telegram channel may list and revoke clauses, never grant them (RFC 0038 D4). The
+connector parses an exact `/reach` from the primary owner, calls `POST /api/attention/reach/telegram`
+with its callback credential (admitted in `owner_auth/http.py`, no owner principal or session), and
+the route re-verifies that both the sender and the chat are the primary owner channel before it
+calls `OwnerAuthService.owner_channel_clauses` or `owner_channel_revoke`. Those run two
+`dashboard_attention` functions that only the API runtime role may execute:
+`owner_channel_list()` reads the ten newest unrevoked clauses, and `owner_channel_revoke(uuid)`
+sets `revoked_at` on one still-live clause and does nothing else. `dashboard_attention.api` is
+unchanged: `clause_create` and `issue` still require the cookie session and CSRF proof. Revoke
+buttons carry `rch1:<clause uuid>:<16 hex>` tokens (`core/reach_tokens.py`) bound to the chat they
+were listed in. The two functions are created in the privileged bootstrap ahead of the grant
+block, so installed and fresh databases both end with the interface that `finalize_interface`
+checks.
+
+`/reach add <matcher>` (S3c-2) lets the owner channel *propose* a clause but never create one. The
+words are parsed at the connector (`core/reach_matchers.py`): `domain:`/a bare domain, `channel:`,
+`kind:` and `scope:`, each from the same closed sets as a stored clause, at least one of domain,
+channel or kind, and any other word refuses the whole command. Message text is never forwarded.
+The route's `propose` action calls `owner_channel_propose(jsonb)`, a third `dashboard_attention`
+definer (search_path pinned, `EXECUTE` for `dashboard_auth_api` only, revoked from `PUBLIC`) that
+validates the matchers again and writes one row of the owner-owned table
+`dashboard_attention.reach_proposals` (the only other privilege is SELECT for the migration role, so
+backups work; no runtime role can read or write it). A proposal
+expires after 24 hours; an identical live proposal is the same proposal; at most ten may be pending
+(`RATE_LIMITED` beyond that). The connector replies "Proposed; confirm on the dashboard at
+/settings/reach" and offers no Telegram confirm button.
+
+Confirmation is dashboard-only. `dashboard_attention.api` gains `proposal_list` (a read, session
+but no CSRF, like `clause_list`), `proposal_confirm` and `proposal_dismiss` (session and CSRF like
+every other grant), exposed as `GET /api/butlers/attention/break-through-proposals`,
+`POST .../{id}/confirm` and `DELETE .../{id}`. `proposal_confirm` locks the row, refuses a
+consumed, dismissed or expired proposal, inserts the clause through the same store as
+`clause_create` and marks the proposal consumed in one transaction, so a double confirm creates no
+second clause. The `/settings/reach` page lists pending proposals with Confirm (behind a
+`ConfirmDialog`, no optimistic update, refetch on settle) and Dismiss. An installed `api()` gains
+the actions from the `ATTENTION_PROPOSAL_REFRESH` block of `scripts/init-db.sql`. The connector
+credential reaches none of these routes. The interface is now thirteen functions and six tables;
+`scripts/pg_restore.sh` `owner_attention_intact` counts both, lists the new definer and the table.
+
+Decay (S4) lets the sweep ask about and quiet stale clauses without ever widening one. The hourly
+Switchboard urgent sub-cycle runs `core/break_through_decay.py`, which reads live clause ids and
+dates through `dashboard_attention.decay_clauses()` and applies `decay_apply(jsonb)` (both
+`EXECUTE` for `butler_switchboard_rw` only, revoked from `PUBLIC` and from the dashboard role). The
+definer enforces the age thresholds itself, from the clause's own age and its last keep: a clause may be
+`asked` only at 30 days and `dormant` only at 90, so a wrong caller cannot dormant a fresh clause.
+It cannot, however, verify the evidence: "no hit in 90 days" and "unopened" are asserted by the
+Switchboard, which owns the hit and engagement records. Decay is therefore a caller-asserted
+narrowing bounded by clause age; the worst a wrong caller can do is dormant or ask about a clause
+that is old enough, and the owner can keep or revive it.
+State lives in the owner-owned table `dashboard_attention.clause_decay` (`asked`, `dormant`, `kept`;
+no runtime role can read or write it, and the migration role may SELECT it for backup). Each ask
+has its own "keep?" candidate key (the ask's time), so a kept clause that goes unopened again is
+asked again; the sweep is bounded by a 5 second timeout and a timeout is a logged skip. `evaluate` skips a dormant clause; an installed
+`evaluate` and `api` are rewritten in place by the `ATTENTION_DECAY_REFRESH` block. "Opened" is the
+delivered line's `insight_engagement.engaged` flag (the broker's own proxy; engagement rows are
+kept 30 days, which is the unopened window), and "hit" is a durable row in
+`switchboard.break_through_hits`. Keep and revive are the cookie-session `clause_keep` action
+(`POST /api/butlers/attention/break-through-clauses/{id}/keep`); `decay_state` is a read (session,
+no CSRF) behind `GET /api/butlers/attention/break-through-decay`. There is deliberately no Telegram
+keep or revive: re-arming a clause is grant-adjacent, so it stays on the dashboard. The interface
+is now fifteen functions and seven tables, counted by `finalize_interface` and by `scripts/pg_restore.sh`
+`owner_attention_intact`.
+
+Privileged bootstrap stages the separate `dashboard_attention` fixed interface
+before the untouched D13 block. Ordinary `core_278` invokes its checked installer
+or finalizer. Runtime roles have no direct ticket/stamp/clause write access;
+only the owner-auth API role can author through the closed current-session
+function. The ordinary managed dump retains all five durable populations,
+including final-occurrence witnesses and revoked tombstones;
+privileged restore refuses missing modern schema/data or untrusted ownership
+and ACLs. Rollback revokes admission and clauses while preserving committed
+receipts and effects, rather than restoring model-selected urgency.
 
 ## Implementation Notes
 

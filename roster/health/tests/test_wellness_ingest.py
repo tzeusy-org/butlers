@@ -1202,8 +1202,12 @@ async def _call_translate_ha(
     *,
     owner_entity_id: str | None = None,
     store_fact_return=None,
+    baseline: tuple[int, float | None] | None = None,
 ):
     """Call translate_wellness_envelope for a home_assistant envelope.
+
+    ``baseline`` is the ``(reading_count, median_kg)`` the rolling-baseline query returns;
+    ``None`` means the owner has no prior weight facts.
 
     The HA arm does NOT consult ``list_health_scoped_accounts`` (design ADR-4);
     sender validation pins on provider + payload shape.  We still patch the
@@ -1223,6 +1227,9 @@ async def _call_translate_ha(
                 side_effect=lambda k: owner_entity_id if k == "id" else None
             )
             return row
+        if "percentile_cont" in query:
+            count, median = baseline if baseline is not None else (0, None)
+            return {"n": count, "median": median}
         return None
 
     pool.fetchrow.side_effect = _fetchrow
@@ -1364,6 +1371,98 @@ class TestHomeAssistantArm:
         assert meta["source_entity_id"] == "sensor.xiaomi_weighing_scale_weight"
         assert meta["unit"] == "kg"
         assert meta["value"] == 75.4
+
+
+class TestHomeAssistantWeightPlausibility:
+    """bu-swkpoo.11: a reading far from the owner's rolling baseline is held, not asserted."""
+
+    @staticmethod
+    def _weight(value: float) -> dict:
+        return _make_ha_envelope(
+            metric="weight",
+            value=value,
+            unit="kg",
+            valid_at="2026-06-20T07:15:00+00:00",
+            source_entity_id="sensor.test_scale_weight",
+            device_class="weight",
+        )
+
+    async def test_reading_far_from_baseline_is_held_as_candidate(self) -> None:
+        result, mock_store, mock_counter, _, _ = await _call_translate_ha(
+            self._weight(50.0), baseline=(5, 70.0)
+        )
+
+        assert result["status"] == "held_implausible", result
+        assert result["facts_written"] == 0
+        assert result["baseline"] == 70.0
+        assert result["held_fact_id"]
+        mock_store.assert_awaited_once()
+        kwargs = mock_store.call_args.kwargs
+        assert kwargs["validity"] == "candidate"
+        assert kwargs["metadata"]["held"]["reason"] == "implausible_weight"
+        assert kwargs["metadata"]["held"]["baseline"] == 70.0
+        mock_counter.labels.assert_called_with(
+            predicate="measurement_weight", outcome="held_implausible"
+        )
+
+    async def test_reading_near_baseline_is_asserted_active(self) -> None:
+        result, mock_store, mock_counter, _, _ = await _call_translate_ha(
+            self._weight(72.0), baseline=(5, 70.0)
+        )
+
+        assert result["status"] == "ok", result
+        assert mock_store.call_args.kwargs.get("validity", "active") == "active"
+        mock_counter.labels.assert_called_with(predicate="measurement_weight", outcome="success")
+
+    async def test_deviation_exactly_at_threshold_is_accepted(self) -> None:
+        from butlers.roster_imports import roster_module
+
+        WEIGHT_MAX_BASELINE_DEVIATION = roster_module(
+            "health", "tools/wellness_ingest"
+        ).WEIGHT_MAX_BASELINE_DEVIATION
+
+        edge = 70.0 * (1 + WEIGHT_MAX_BASELINE_DEVIATION)
+        result, _, _, _, _ = await _call_translate_ha(self._weight(edge), baseline=(5, 70.0))
+
+        assert result["status"] == "ok", result
+
+    async def test_no_baseline_accepts_any_reading(self) -> None:
+        result, mock_store, _, _, _ = await _call_translate_ha(
+            self._weight(50.0), baseline=(2, 70.0)
+        )
+
+        assert result["status"] == "ok", result
+        assert mock_store.call_args.kwargs.get("validity", "active") == "active"
+
+    async def test_empty_history_accepts_reading(self) -> None:
+        result, _, _, _, _ = await _call_translate_ha(self._weight(50.0))
+
+        assert result["status"] == "ok", result
+
+    async def test_non_weight_metric_is_never_gated(self) -> None:
+        envelope = _make_ha_envelope(metric="heart_rate", value=300, unit="bpm")
+        result, mock_store, _, _, _ = await _call_translate_ha(envelope, baseline=(5, 70.0))
+
+        assert result["status"] == "ok", result
+        assert mock_store.call_args.kwargs.get("validity", "active") == "active"
+
+    async def test_baseline_query_looks_back_from_the_reading_over_active_owner_weights(
+        self,
+    ) -> None:
+        from butlers.roster_imports import roster_module
+
+        mod = roster_module("health", "tools/wellness_ingest")
+
+        pool = AsyncMock()
+        pool.fetchrow.return_value = {"n": 0, "median": None}
+        await mod._weight_baseline(pool, "owner-id", "2026-06-20T07:15:00+00:00")
+
+        query, *args = pool.fetchrow.call_args.args
+        assert "validity = 'active'" in query
+        assert "measurement_weight" in query
+        assert args[0] == "owner-id"
+        assert args[1].isoformat() == "2026-06-20T07:15:00+00:00"
+        assert args[2] == mod.WEIGHT_BASELINE_WINDOW_DAYS
 
 
 class TestHomeAssistantIdempotency:

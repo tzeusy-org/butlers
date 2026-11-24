@@ -23,6 +23,7 @@ Episode-entities join table (bu-3zve1):
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -38,6 +39,8 @@ from butlers.chronicler.adapters.calendar import (
     CalendarCompletedAdapter,
 )
 from butlers.chronicler.models import Episode, Layer
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 4, 1, 10, 0, 0, tzinfo=UTC)
 
@@ -47,33 +50,27 @@ _NOW = datetime(2026, 4, 1, 10, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> object:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
-def _make_row(
+def _instance_row(
     *,
     metadata: dict | None = None,
     event_title: str | None = None,
     event_description: str | None = None,
     event_location: str | None = None,
+    event_metadata: dict | str | None = None,
+    account_email: str | None = None,
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
-) -> _Row:
+    event_id: UUID | None = None,
+    origin_instance_ref: str = "evt:abc:2026-04-01T09:00:00Z",
+) -> Record:
     starts_at = starts_at or (_NOW - timedelta(hours=1))
     ends_at = ends_at or _NOW
-    return _Row(
+    return Record(
         {
             "id": uuid4(),
-            "event_id": uuid4(),
+            "event_id": event_id or uuid4(),
             "source_id": uuid4(),
-            "origin_instance_ref": "evt:abc:2026-04-01T09:00:00Z",
+            "origin_instance_ref": origin_instance_ref,
             "starts_at": starts_at,
             "ends_at": ends_at,
             "status": "confirmed",
@@ -83,27 +80,18 @@ def _make_row(
             "event_title": event_title,
             "event_description": event_description,
             "event_location": event_location,
+            "event_metadata": event_metadata,
+            "account_email": account_email,
         }
     )
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-
 def _chronicler_pool() -> AsyncMock:
     conn = AsyncMock()
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -116,13 +104,13 @@ def _chronicler_pool_with_tracking() -> tuple[AsyncMock, AsyncMock]:
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.executemany = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool, conn
 
 
-async def _project_one(row: _Row) -> Episode:
+async def _project_one(row: Record) -> Episode:
     """Drive ``_project_row`` directly with a single row and capture the Episode."""
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
     captured: list[Episode] = []
@@ -142,7 +130,7 @@ async def _project_one(row: _Row) -> Episode:
 
 
 async def _project_one_tracked(
-    row: _Row,
+    row: Record,
     *,
     entity_id: UUID | None = None,
     participant_ids: list[UUID] | None = None,
@@ -199,7 +187,7 @@ async def _project_one_tracked(
 @pytest.mark.unit
 async def test_title_uses_metadata_summary_when_present() -> None:
     """When instance metadata has a summary, it wins over event-level fields."""
-    row = _make_row(
+    row = _instance_row(
         metadata={"summary": "Standup"},
         event_title="Wrong Event Title",
         event_location="Conference Room A",
@@ -211,7 +199,7 @@ async def test_title_uses_metadata_summary_when_present() -> None:
 @pytest.mark.unit
 async def test_title_falls_back_to_event_title_when_metadata_empty() -> None:
     """No summary in instance metadata → use the joined ``calendar_events.title``."""
-    row = _make_row(
+    row = _instance_row(
         metadata={},
         event_title="Sprint Planning",
         event_location="Zoom",
@@ -226,7 +214,7 @@ async def test_title_falls_back_to_truncated_description() -> None:
         "This is a fairly long description that should be truncated to keep "
         "the projected episode title manageable for downstream consumers."
     )
-    row = _make_row(
+    row = _instance_row(
         metadata={},
         event_title=None,
         event_location=None,
@@ -242,7 +230,7 @@ async def test_title_falls_back_to_truncated_description() -> None:
 @pytest.mark.unit
 async def test_title_final_fallback_when_no_richer_context() -> None:
     """All richer fields blank/whitespace → schema-qualified placeholder."""
-    row = _make_row(
+    row = _instance_row(
         metadata={},
         event_title="   ",  # whitespace-only must not win
         event_location="",
@@ -252,11 +240,147 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
     assert ep.title == "butler_test: calendar block"
 
 
+_OWNER = "owner@example.com"
+_COLLEAGUE = "colleague@example.com"
+
+
+def _attendee(email: str, *, self_: bool = False, response: str = "accepted", **extra) -> dict:
+    return {"email": email, "self": self_, "response_status": response, **extra}
+
+
+def _invite(*attendees: dict, organizer: str = "host@example.com", calendar: str = _OWNER):
+    return {"attendees": list(attendees), "organizer": organizer, "calendar_id": calendar}
+
+
+_OWN_EVENT = _invite(organizer=_OWNER)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"metadata": {"summary": "Standup"}, "event_location": "Zoom"}, "summary"),
+        ({"metadata": {}, "event_title": "Standup", "event_location": "Zoom"}, "summary"),
+        ({"metadata": {}, "event_title": " ", "event_location": "12 Secret Rd"}, "fallback"),
+        ({"metadata": {}, "event_title": None, "event_description": "Agenda"}, "fallback"),
+        ({"metadata": {}, "event_title": None}, "fallback"),
+    ],
+)
+async def test_payload_says_where_the_title_came_from(fields, expected) -> None:
+    """The public projection withholds a title built from the inviter's free text."""
+    row = _instance_row(event_metadata=_OWN_EVENT, account_email=_OWNER, **fields)
+    ep = await _project_one(row)
+    assert ep.payload["title_source"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_metadata", "account_email", "expected"),
+    [
+        pytest.param(_OWN_EVENT, _OWNER, "summary", id="own-event-no-attendees"),
+        pytest.param(
+            _invite(
+                _attendee(_OWNER, self_=True, organizer=True),
+                _attendee("a@example.com"),
+                organizer=_OWNER,
+            ),
+            _OWNER,
+            "summary",
+            id="organizer",
+        ),
+        pytest.param(
+            _invite(organizer=" Owner@Example.com "), _OWNER, "summary", id="organizer-casing"
+        ),
+        *[
+            pytest.param(
+                _invite(
+                    _attendee("host@example.com", organizer=True),
+                    _attendee(_OWNER.upper(), self_=True, response=response),
+                ),
+                _OWNER,
+                "summary",
+                id=f"invitee-{response}",
+            )
+            for response in ("accepted", "declined", "tentative", "needsAction")
+        ],
+        pytest.param(
+            _invite(_attendee("host@example.com", organizer=True), _attendee("b@example.com")),
+            _OWNER,
+            "unattended",
+            id="shared-calendar-non-attendee",
+        ),
+        # Google marks the entry of the calendar the event appears on as ``self``: on a
+        # subscribed colleague's calendar that is the colleague, not the owner.
+        pytest.param(
+            _invite(
+                _attendee("host@example.com", organizer=True),
+                _attendee(_COLLEAGUE, self_=True),
+                calendar=_COLLEAGUE,
+            ),
+            _OWNER,
+            "unattended",
+            id="colleague-calendar-self-attendee",
+        ),
+        pytest.param(
+            _invite(organizer=_COLLEAGUE, calendar=_COLLEAGUE),
+            _OWNER,
+            "unattended",
+            id="colleague-calendar-solo-event",
+        ),
+        pytest.param(_OWN_EVENT, None, "unattended", id="account-unknown"),
+        pytest.param(_OWN_EVENT, " ", "unattended", id="account-blank"),
+        pytest.param(
+            _invite(organizer="team@group.calendar.google.com", calendar="butlers")
+            | {"butler_generated": True},
+            _OWNER,
+            "summary",
+            id="butler-written",
+        ),
+        pytest.param(json.dumps(_OWN_EVENT), _OWNER, "summary", id="json-text"),
+        pytest.param({"attendees": "owner@example.com"}, _OWNER, "unattended", id="no-list"),
+        pytest.param(None, _OWNER, "unattended", id="no-metadata"),
+        pytest.param("not json", _OWNER, "unattended", id="unreadable"),
+    ],
+)
+async def test_a_summary_is_publishable_only_when_the_owner_attends(
+    event_metadata, account_email, expected
+) -> None:
+    """bu-y66o00.20: owner decision 2026-11-08, publish another person's summary only to an
+    event the owner organised or was invited to, whatever the response."""
+    row = _instance_row(
+        metadata={},
+        event_title="Offsite",
+        event_metadata=event_metadata,
+        account_email=account_email,
+    )
+    ep = await _project_one(row)
+    assert ep.payload["title_source"] == expected
+    assert ep.title == "Offsite"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_metadata", "expected"),
+    [
+        (
+            {"butler_generated": True, "butler_name": "travel"},
+            {"butler_generated": True, "butler_name": "travel"},
+        ),
+        ('{"butler_generated": false, "butler_name": "travel"}', {"butler_generated": False}),
+    ],
+)
+async def test_payload_carries_butler_provenance(event_metadata, expected) -> None:
+    """bu-2tsgqb.7: butler-written plans keep the calendar module's producer marker."""
+    ep = await _project_one(_instance_row(event_title="Trip", event_metadata=event_metadata))
+    provenance = {k: v for k, v in ep.payload.items() if k.startswith("butler_")}
+    assert provenance == expected
+
+
 @pytest.mark.unit
 async def test_episode_basic_fields() -> None:
     starts = _NOW - timedelta(hours=1)
     ends = _NOW
-    row = _make_row(
+    row = _instance_row(
         starts_at=starts,
         ends_at=ends,
         event_title="Lunch with Jordan",
@@ -277,7 +401,7 @@ async def test_freshly_projected_calendar_block_is_intent() -> None:
     relying on the conservative ``evidence`` column default would silently
     misclassify every freshly-projected calendar block.
     """
-    row = _make_row(event_title="Sprint planning")
+    row = _instance_row(event_title="Sprint planning")
     ep = await _project_one(row)
     assert ep.layer == Layer.INTENT
 
@@ -295,7 +419,7 @@ def test_butler_managed_source_kinds_includes_scheduler_and_reminders() -> None:
 
 
 def _make_pool_with_rows(
-    rows: list[_Row] | None,
+    rows: list[Record] | None,
     *,
     visible_tables: set[str] | None = None,
 ) -> AsyncMock:
@@ -308,7 +432,7 @@ def _make_pool_with_rows(
     conn.fetchval = AsyncMock(side_effect=_missing_tables)
     conn.fetch = AsyncMock(return_value=rows if rows is not None else [])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -321,7 +445,7 @@ async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
     now = datetime.now(UTC)
     await adapter._fetch_instances(pool, "test_schema", None, now)
 
-    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
+    fetch_args = pool.acquire().value.fetch.call_args[0]
     sql = fetch_args[0] if fetch_args else ""
     assert "cs.lane != 'butler'" in sql, (
         "Exclusion guard 'cs.lane != \\'butler\\'' must appear in the no-since SQL query"
@@ -359,7 +483,7 @@ async def test_fetch_instances_skips_incomplete_calendar_read_surface(
     rows = await adapter._fetch_instances(pool, "test_schema", None, datetime.now(UTC))
 
     assert rows is None
-    conn = pool.acquire.return_value._obj
+    conn = pool.acquire().value
     availability_call = conn.fetchval.call_args
     availability_sql = availability_call.args[0]
     assert "unnest($2::text[])" in availability_sql
@@ -392,7 +516,7 @@ async def test_mixed_unavailable_schema_does_not_advance_or_persist_checkpoint()
     """A partial fan-out must replay the unavailable schema after recovery."""
     since = _NOW - timedelta(days=1)
     checkpoint = MagicMock(watermark=since, watermark_id=17)
-    row = _make_row(ends_at=_NOW)
+    row = _instance_row(ends_at=_NOW)
     adapter = CalendarCompletedAdapter(butler_schemas=("readable", "unreadable"))
     chronicler_pool = MagicMock()
 
@@ -479,7 +603,7 @@ async def test_run_marks_source_inactive_when_calendar_surface_is_unavailable() 
 @pytest.mark.unit
 async def test_project_user_lane_rows_are_still_projected() -> None:
     """User-lane calendar events continue to be projected after the fix."""
-    user_row = _make_row(event_title="Dentist appointment")
+    user_row = _instance_row(event_title="Dentist appointment")
 
     adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
     captured: list[Episode] = []
@@ -527,13 +651,9 @@ async def test_project_collapses_same_origin_instance_across_schemas() -> None:
     """
     shared_origin_ref = "evt:labour_day:2026-05-01T00:00:00Z"
     rows_by_schema = {
-        "schema_a": [_make_row(event_title="Labour Day")],
-        "schema_b": [_make_row(event_title="Labour Day")],
-        "schema_c": [_make_row(event_title="Labour Day")],
+        schema: [_instance_row(event_title="Labour Day", origin_instance_ref=shared_origin_ref)]
+        for schema in ("schema_a", "schema_b", "schema_c")
     }
-    for rows in rows_by_schema.values():
-        for row in rows:
-            row["origin_instance_ref"] = shared_origin_ref
 
     adapter = CalendarCompletedAdapter(
         butler_schemas=tuple(rows_by_schema.keys()),
@@ -544,7 +664,7 @@ async def test_project_collapses_same_origin_instance_across_schemas() -> None:
         captured.append(episode)
         return episode
 
-    async def _fake_fetch(_pool: object, schema: str, _since: object, _now: object) -> list[_Row]:
+    async def _fake_fetch(_pool: object, schema: str, _since: object, _now: object) -> list[Record]:
         return rows_by_schema[schema]
 
     with (
@@ -575,12 +695,12 @@ async def test_project_collapses_same_origin_under_multiple_event_ids_in_one_sch
     Chronicler must still emit one episode.
     """
     shared_origin_ref = "evt:dup_event_ids:2026-05-01T07:00:00Z"
-    row1 = _make_row(event_title="Daily standup")
-    row2 = _make_row(event_title="Daily standup")
-    row1["origin_instance_ref"] = shared_origin_ref
-    row2["origin_instance_ref"] = shared_origin_ref
-    row1["event_id"] = uuid4()
-    row2["event_id"] = uuid4()
+    row1 = _instance_row(
+        event_title="Daily standup", origin_instance_ref=shared_origin_ref, event_id=uuid4()
+    )
+    row2 = _instance_row(
+        event_title="Daily standup", origin_instance_ref=shared_origin_ref, event_id=uuid4()
+    )
 
     adapter = CalendarCompletedAdapter(butler_schemas=("schema_only",))
     captured: list[Episode] = []
@@ -625,7 +745,7 @@ async def test_episode_entities_owner_only_when_table_absent() -> None:
     only the owner entity to episode_entities.
     """
     owner_id = uuid4()
-    row = _make_row(event_title="Team sync")
+    row = _instance_row(event_title="Team sync")
 
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
     episode_id = uuid4()
@@ -691,7 +811,7 @@ async def test_project_skips_schema_on_transient_fetch_event_entities_error() ->
     NOT proceed to project rows and must NOT delete existing episode_entities.
     A warning is appended to the result instead.
     """
-    row = _make_row(event_title="Weekly planning")
+    row = _instance_row(event_title="Weekly planning")
 
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
     captured_upserts: list[Episode] = []
@@ -737,7 +857,7 @@ async def test_episode_entities_owner_and_participants_when_table_present() -> N
     owner_id = uuid4()
     participant_a = uuid4()
     participant_b = uuid4()
-    row = _make_row(event_title="All-hands")
+    row = _instance_row(event_title="All-hands")
 
     _, conn = await _project_one_tracked(
         row,
@@ -774,7 +894,7 @@ async def test_episode_entities_delete_then_insert_replaces_stale_attendees() ->
     owner_id = uuid4()
     participant_old = uuid4()
     participant_new = uuid4()
-    row = _make_row(event_title="Planning meeting")
+    row = _instance_row(event_title="Planning meeting")
     episode_id = uuid4()
 
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
@@ -833,7 +953,7 @@ async def test_episode_entities_idempotent_replay_no_duplicates() -> None:
     """
     owner_id = uuid4()
     participant_id = uuid4()
-    row = _make_row(event_title="Weekly 1:1")
+    row = _instance_row(event_title="Weekly 1:1")
     episode_id = uuid4()
 
     adapter = CalendarCompletedAdapter(butler_schemas=("butler_test",))
@@ -882,7 +1002,7 @@ async def test_owner_written_to_episode_entities_join_table() -> None:
     """
     owner_id = uuid4()
     participant_id = uuid4()
-    row = _make_row(event_title="Kickoff")
+    row = _instance_row(event_title="Kickoff")
 
     _, conn = await _project_one_tracked(
         row,
@@ -911,7 +1031,7 @@ async def test_episode_entities_role_precedence_collapse_owner_beats_participant
     other_participant = uuid4()
 
     # owner_id appears in both the owner slot AND the participant_ids list.
-    row = _make_row(event_title="Review session")
+    row = _instance_row(event_title="Review session")
     episode, conn = await _project_one_tracked(
         row,
         entity_id=owner_id,
@@ -952,14 +1072,11 @@ async def test_calendar_adapter_never_increments_episodes_closed() -> None:
 
     rows_projected is the only counter that should increase.
     """
-    rows = [
-        _make_row(event_title="Morning standup"),
-        _make_row(event_title="Dr Ng heart followup"),
-        _make_row(event_title="Team retro"),
-    ]
     # Give each row a unique origin_instance_ref so they aren't deduped.
-    for i, row in enumerate(rows):
-        row["origin_instance_ref"] = f"evt:test:{i}"
+    rows = [
+        _instance_row(event_title=title, origin_instance_ref=f"evt:test:{i}")
+        for i, title in enumerate(["Morning standup", "Dr Ng heart followup", "Team retro"])
+    ]
 
     adapter = CalendarCompletedAdapter(butler_schemas=("schema_a",))
 

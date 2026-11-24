@@ -96,7 +96,13 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    KeyCols,
+    ProjectionAdapter,
+    cursor_key,
+    keyset_page,
+)
 from butlers.chronicler.confidence import (
     EvidenceKind,
     derive_confidence,
@@ -198,6 +204,8 @@ class _ResolvedParticipant:
 class CommsSocialAdapter(ProjectionAdapter):
     """Project comms message bursts into ``social_episode`` activity candidates."""
 
+    keyset_cols: KeyCols = (("id", "uuid"),)
+
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
@@ -209,17 +217,19 @@ class CommsSocialAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
         """Fetch new comms ingestion events; emit one social_episode per burst.
 
         ``since_id`` is ignored: ``public.ingestion_events.id`` is a UUID7,
         while ``projection_checkpoints.watermark_id`` is an integer field for
-        serial-id sources (same rationale as ``OwnTracksPointAdapter``).
+        serial-id sources. The ``(received_at, id)`` tiebreaker travels as
+        ``since_key`` / ``watermark_key`` instead.
         """
         del since_id
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_events(pool, since)
+        rows = await self._fetch_events(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -261,6 +271,7 @@ class CommsSocialAdapter(ProjectionAdapter):
                 result.episodes_closed += 1
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     # ── Fetch ────────────────────────────────────────────────────────────
@@ -269,8 +280,9 @@ class CommsSocialAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch comms ingestion events since the watermark.
+        """Fetch the next page of comms ingestion events after ``(since, since_key)``.
 
         Only ``status = 'ingested'`` rows are read — filtered/failed/
         replay-pending events never represent lived message activity.
@@ -291,36 +303,21 @@ class CommsSocialAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                if since is None:
-                    rows = await conn.fetch(
-                        """
-                        SELECT id, received_at, source_channel, source_sender_identity
-                        FROM public.ingestion_events
-                        WHERE source_channel = ANY($1::text[])
-                          AND status = 'ingested'
-                          AND source_sender_identity IS NOT NULL
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        list(_COMMS_CHANNELS),
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        """
-                        SELECT id, received_at, source_channel, source_sender_identity
-                        FROM public.ingestion_events
-                        WHERE source_channel = ANY($1::text[])
-                          AND status = 'ingested'
-                          AND source_sender_identity IS NOT NULL
-                          AND received_at > $2
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $3
-                        """,
-                        list(_COMMS_CHANNELS),
-                        since,
-                        self.batch_limit,
-                    )
+                sql, args = keyset_page(
+                    columns="id, received_at, source_channel, source_sender_identity",
+                    table="public.ingestion_events",
+                    ts_col="received_at",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
+                    where=(
+                        "source_channel = ANY($1::text[]) AND status = 'ingested' "
+                        "AND source_sender_identity IS NOT NULL"
+                    ),
+                    where_args=[list(_COMMS_CHANNELS)],
+                )
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s for comms projection", _EVIDENCE_TABLE)
             return None

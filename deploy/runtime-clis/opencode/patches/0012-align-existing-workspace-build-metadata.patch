@@ -1,0 +1,75 @@
+--- a/bun.lock
++++ b/bun.lock
+@@ -608 +607,0 @@
+-        "@opencode-ai/script": "workspace:*",
+--- a/package.json
++++ b/package.json
+@@ -127 +126,0 @@
+-    "node-pty",
+@@ -129 +127,0 @@
+-    "tree-sitter",
+@@ -143 +140,0 @@
+-    "@ff-labs/fff-bun@0.9.3": "patches/@ff-labs%2Ffff-bun@0.9.3.patch",
+--- a/packages/opencode/package.json
++++ b/packages/opencode/package.json
+@@ -36 +35,0 @@
+-    "@opencode-ai/script": "workspace:*",
+--- /dev/null
++++ b/script/workspace-metadata.test.ts
+@@ -0,0 +1,56 @@
++import { expect, test } from "bun:test"
++import { readFileSync } from "node:fs"
++import { resolve } from "node:path"
++import { fileURLToPath } from "node:url"
++
++const root = fileURLToPath(new URL("../", import.meta.url))
++const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"))
++const lock = Bun.JSONC.parse(readFileSync(resolve(root, "bun.lock"), "utf8"))
++const app = JSON.parse(readFileSync(resolve(root, "packages/opencode/package.json"), "utf8"))
++const identities = Object.values(lock.packages).map((entry: any) => entry[0]) as string[]
++const packageNames = new Set(identities.map((entry) => entry.slice(0, entry.lastIndexOf("@"))))
++
++function canonical(value: any): any {
++  if (Array.isArray(value)) return value.map(canonical)
++  if (value !== null && typeof value === "object") {
++    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
++  }
++  return value
++}
++
++test("all locked package records and workspace production edges remain complete", () => {
++  expect(Object.keys(lock.packages)).toHaveLength(3124)
++  expect(Object.keys(lock.workspaces)).toHaveLength(30)
++  const expected = { sha256: "06be761b44dcd43d3a534909f405bb67ce944dbf355c8c675d34e854e7a139e8" }
++  expect(new Bun.CryptoHasher("sha256").update(JSON.stringify(canonical(lock.packages))).digest("hex"))
++    .toBe(expected.sha256)
++  expect(app.dependencies["@opencode-ai/script"]).toBe("workspace:*")
++  expect(lock.workspaces["packages/opencode"].dependencies["@opencode-ai/script"]).toBe("workspace:*")
++})
++
++test("workspace script has one production declaration available in development too", () => {
++  expect(app.devDependencies["@opencode-ai/script"]).toBeUndefined()
++  expect(lock.workspaces["packages/opencode"].devDependencies["@opencode-ai/script"]).toBeUndefined()
++  expect(app.dependencies["@opencode-ai/script"]).toBe("workspace:*")
++})
++
++test("root lifecycle trust authorizes the same present locked identities", () => {
++  expect(manifest.trustedDependencies.toSorted()).toEqual(lock.trustedDependencies.toSorted())
++  for (const name of manifest.trustedDependencies) expect(packageNames.has(name)).toBe(true)
++  expect(packageNames.has("@lydell/node-pty")).toBe(true)
++  expect(packageNames.has("node-pty")).toBe(false)
++  expect(packageNames.has("tree-sitter")).toBe(false)
++  expect(manifest.scripts.postinstall).toBe("bun run --cwd packages/core fix-node-pty")
++  expect(manifest.scripts.prepare).toBe("husky")
++})
++
++test("every declared dependency patch targets an actual unchanged locked version", () => {
++  expect(manifest.patchedDependencies).toEqual(lock.patchedDependencies)
++  for (const [identity, path] of Object.entries(manifest.patchedDependencies)) {
++    expect(identities.some((entry) => entry === identity)).toBe(true)
++    expect(readFileSync(resolve(root, path as string)).length).toBeGreaterThan(0)
++  }
++  expect(identities).toContain("@ff-labs/fff-bun@0.9.4")
++  expect(identities).not.toContain("@ff-labs/fff-bun@0.9.3")
++  expect(readFileSync(resolve(root, "patches/@ff-labs%2Ffff-bun@0.9.3.patch")).length).toBeGreaterThan(0)
++})

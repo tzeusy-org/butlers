@@ -36,8 +36,10 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   stops new admission, and QA reports each one as a separate reason. QA never
   falls back to route eligibility or a cached answer. A separately
   supervised control-plane observer records overdue patrols and fleet-wide
-  expiry even when QA cannot run. Genuine completed `suppressed` patrols with all enabled discovery sources
-  successful count as healthy discovery; dashboard-created synthetic
+  expiry even when QA cannot run. Genuine completed `suppressed` or `halted` patrols with all enabled discovery sources
+  successful count as healthy discovery (`halted` means remediation stopped behind a halting
+  gate and carries its `halt_reason`; an open breaker or a full cap queue their findings, while
+  a missing model leaves them for a later patrol to rediscover); dashboard-created synthetic
   `suppressed` placeholders and legacy rows without source provenance do not.
 - **Triage:** Deduplicate findings against active investigations, dismissals,
   and cooldown windows before dispatching.
@@ -45,7 +47,7 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   isolated investigation agents, and monitor their outcomes via watchdog tasks.
 - **PR pipeline:** Produce anonymized PRs with `self-healing` and `automated`
   labels. Humans remain in the merge seat.
-- **Relay reception:** Accept findings from butler self-healing modules via
+- **Relay reception:** Accept findings from every butler's core QA relay via
   Switchboard `route()` → `report_finding` tool. This is direct
   butler-to-staffer tool routing, not user-message classification.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.
@@ -72,6 +74,9 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - QA Staffer does **not** surface raw log lines beyond the private operator
   dashboard. Any content bound for GitHub (PR titles, PR bodies, commit
   messages) passes through `anonymize()` + `validate_anonymized()`.
+  The anonymizer keeps code identity (dotted module paths that resolve in this repository, the
+  stdlib or an installed package, and class names on them) so a title stays checkable against its
+  evidence; internal hosts, including `.ts.net` names, are always redacted.
 
 ## Retention Policy
 
@@ -147,7 +152,9 @@ Investigation agents receive `PATH` and build-tool variables, never GitHub publi
 ## PR Creation Standards
 
 - Labels: `["self-healing", "automated"]`
-- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` by the trusted dispatcher only (PR-status polling); agents never receive it, and automated PR creation is currently unavailable
+- GitHub token: the daemon resolves only a read-only token, `CredentialStore.resolve("BUTLERS_QA_GH_READ_TOKEN")`, for PR-status polling; agents never receive it. The write-scoped `BUTLERS_QA_GH_TOKEN` is never resolved: a leftover key is refused and reported as an action-needed condition.
+- **Investigator containment: not enforced (same pod, root).** Investigators share the daemon pod and process namespace, so anything the daemon can read they can read. This is why the daemon holds no write credential; real containment arrives with the per-attempt pod boundary (`bu-ejow5p.11`).
+- Publication: only the trusted deterministic publisher publishes, and only a sealed export. Every commit, path, added line, commit message and author identity newly reachable from the QA branch is validated before the first push, and the validated bytes are frozen. The publisher never runs agent git hooks, config or helpers. The transport has a fixed origin, never forces, and reaches only the bound `qa/` branch and the bound PR's create, update and fixed labels. An ambiguous outcome is held for read-only reconciliation, never retried or deleted. The publisher stays disabled in production until process isolation is proven (bu-mc01y5.7).
 - Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
@@ -191,8 +198,9 @@ access.
 | DB pool exhaustion | Patrol hangs or fails | Daemon restart; stale `running` patrol rows recovered on startup |
 | GitHub API rate limiting | PR creation fails; attempt transitions to `failed` | Next patrol cycle for the same fingerprint will retry after cooldown |
 | Worktree creation failure | Investigation not dispatched; attempt marked `failed` | Next patrol cycle retries if fingerprint recurs |
-| Publication unavailable (always, until the isolated publisher lands) | Investigation completes but transitions to `failed` with `"publication_unavailable"`; nothing is pushed and no PR is opened. A follow-up on an open PR records the same reason and leaves the PR untouched | Wait for the isolated publisher (bu-mc01y5.5-.7) |
-| Circuit breaker tripped | All dispatch halted after N consecutive failures | Investigate and fix underlying cause; circuit breaker resets on next success |
+| Publication unavailable (production default: no publisher configured) | A committed investigation is sealed and retained as an unpublished proposal (the dossier reads `unpublished`); the attempt keeps `"publication_unavailable"` but counts as an execution success for the breaker, and Gate 5.6 `publication_paused` holds its fingerprint for 7 days. Nothing is pushed and no PR is opened; a follow-up on an open PR records the same reason and leaves the PR untouched. A validator refusal or an unretainable export is still a failure | Owner reviews the retained proposal; the publisher takes it over after isolation (bu-mc01y5.7) |
+| Publication refused or ambiguous | Attempt `failed` with `publication_refused`, `publication_failed` or `publication_ambiguous` and a content-free category; an ambiguous operation holds the fingerprint lineage | Reconcile the bound branch/PR read-only, then record the reconciliation (`docs/operations/qa-publication-boundary.md`) |
+| Circuit breaker tripped | All dispatch halted after N consecutive execution failures; a retained unpublished proposal is not a failure | Investigate and fix underlying cause; reset from the dashboard (the breaker sees only launched executions, so it cannot recover on its own while tripped) |
 | Repeated anonymization failures | PR pipeline halted | Manual review required; operator clears via dashboard |
 
 ---
@@ -204,7 +212,7 @@ access.
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
 - **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
-- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; PR creation is unavailable until the isolated publisher lands
+- **GitHub API (`BUTLERS_QA_GH_READ_TOKEN`):** read-only PR-status polling by the dispatcher and the dashboard PR panel; publication runs only through the trusted publisher, which is disabled until isolation is proven
 
 ### Depends On QA Staffer
 
@@ -243,7 +251,20 @@ OTel spans per patrol cycle:
 
 Circuit breaker trips (N consecutive failures):
 - Log WARNING
-- Dashboard alert via `qa_investigations_active` gauge and patrol status
+- The dashboard shows the breaker and `staffer_status` (`circuit_breaker_tripped`); no metric
+  alert is claimed (the `qa_investigations_active` gauge is not scraped for this)
+- A breaker open longer than 6 hours is a durable `breaker_open_too_long` condition
+- A manual reset must name the cause it addresses (`<cause_code>:<reference>`); while the failure
+  streak's dominant cause is structural (for example `publisher_unconfigured`), the reset must
+  name that cause, and a reference whose claim was already disproved is refused
+
+QA remediation-loop liveness (the independent control plane records these; QA does not
+investigate itself):
+- Capability below target, with its cause (for example `publisher_unconfigured`)
+- A retained proposal unadopted for 7 days
+- No merged fix in 14 days despite at least 3 investigations that reached publication
+  (unmeasurable, never "absent", when there is no opportunity to measure against)
+- While any is active, `staffer_status` reads `degraded`, never `healthy`
 
 Repeated anonymization failures:
 - PR pipeline halted

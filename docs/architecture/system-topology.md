@@ -13,6 +13,12 @@ PostgreSQL database, each confined to its own schema plus `public`, so cross-but
 only through MCP tool calls. Each butler is configured by its git-backed
 `roster/<butler>/butler.toml`.
 
+The dashboard, reached over Tailscale Serve, is the owner's entry point today. The accepted
+public MCP read surface ([RFC 0039](../../about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md),
+not yet built) adds a second one: a deterministic server in its own default-deny namespace,
+reached only through the owner's Cloudflare gateway, reading only a one-way logical-replication
+projection database.
+
 The authoritative topology lives in `about/lay-and-land/`:
 
 - [Components](../../about/lay-and-land/components.md) — every runtime piece and what it owns

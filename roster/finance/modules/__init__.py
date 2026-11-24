@@ -33,8 +33,8 @@ class FinanceModuleConfig(ToolGroupMixin, BaseModel):
     facts : list_transaction_facts, track_account_fact,
             track_subscription_fact, spending_summary_facts
     bulk : bulk_record_transactions, bulk_update_transactions,
-           bulk_recategorize, import_transactions, import_transactions_from_file,
-           merge_duplicates, split_transaction
+           bulk_recategorize, import_transactions, merge_duplicates,
+           split_transaction
     subscriptions : track_subscription, subscription_audit, detect_recurring,
                     detect_price_changes
     bills : track_bill, upcoming_bills, predict_bills
@@ -56,6 +56,9 @@ class FinanceModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
         self.blob_store: Any = None
+        # Hosting butler's name from the daemon; scopes which blob prefix
+        # import_transactions may read (RFC 0016). Never caller-supplied.
+        self.butler_name: str = ""
         # Optional async callable for progress notifications during large imports.
         # Signature matches the butler's notify() MCP tool:
         #   notify_fn(channel, message, intent) -> Any
@@ -104,6 +107,7 @@ class FinanceModule(Module):
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all finance MCP tools."""
         self._db = db
+        self.butler_name = butler_name
 
         from .tools import register_tools
 

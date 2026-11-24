@@ -1,4 +1,4 @@
-"""Infra core tools: status, trigger, tick, correct."""
+"""Infra core tools: status, trigger, tick, correct, skill_read."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from butlers.core.corrections import (
     handle_memory_deletion,
     handle_misroute,
 )
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
+from butlers.core.skills import SkillDefinition, SkillReadFailure, read_skill_definition
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
@@ -100,7 +101,7 @@ async def _get_target_pool(ctx: ToolContext, target_butler: str | None) -> Any |
 
 
 def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
-    """Register infra group tools: status, trigger, tick, correct."""
+    """Register infra group tools: status, trigger, tick, correct, skill_read."""
     daemon = ctx.daemon
     pool = ctx.pool
     spawner = ctx.spawner
@@ -157,6 +158,15 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
                 ),
             },
         }
+
+    @_core_tool("infra")
+    async def skill_read(name: str) -> SkillDefinition | SkillReadFailure:
+        """Read a roster skill by its kebab-case name and return its Markdown and SHA-256 digest.
+
+        Use an available skill name from your instructions, such as `butler-notifications`.
+        A missing or unavailable skill returns a stable error code.
+        """
+        return read_skill_definition(daemon.config_dir, name)
 
     @_core_tool("infra")
     async def trigger(

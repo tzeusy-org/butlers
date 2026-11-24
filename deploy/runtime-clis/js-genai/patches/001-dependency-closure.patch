@@ -1,0 +1,30 @@
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -13 +13,2 @@
+-        "ws": "^8.18.0"
++        "ws": "^8.18.0",
++        "butlers-egress-undici": "npm:undici@7.24.5"
+@@ -10135,0 +10137,10 @@
++    },
++    "node_modules/butlers-egress-undici": {
++      "version": "7.24.5",
++      "resolved": "https://registry.npmjs.org/undici/-/undici-7.24.5.tgz",
++      "integrity": "sha512-3IWdCpjgxp15CbJnsi/Y9TCDE7HWVN19j1hmzVhoAkY/+CJx449tVxT5wZc1Gwg8J+P0LWvzlBzxYRnHJ+1i7Q==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=20.18.1"
++      },
++      "name": "undici"
+--- a/package.json
++++ b/package.json
+@@ -118 +118,2 @@
+-    "ws": "^8.18.0"
++    "ws": "^8.18.0",
++    "butlers-egress-undici": "npm:undici@7.24.5"
+--- a/rollup.config.mjs
++++ b/rollup.config.mjs
+@@ -21,0 +22,4 @@
++  'butlers-egress-undici/lib/dispatcher/agent.js',
++  'butlers-egress-undici/lib/api/api-request.js',
++  'node:net',
++  'node:zlib',

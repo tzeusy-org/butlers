@@ -37,6 +37,7 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
 from butlers.tools.switchboard.transport import (
     CONFIRMED,
     RECIPIENT_UNAVAILABLE,
+    TRANSPORT_CONNECTION_LOST,
     TRANSPORT_TIMEOUT,
     TransportOutcome,
     TransportResult,
@@ -288,16 +289,15 @@ def _episode_message(episode: OutboxEpisode, *, dashboard_base_url: str | None =
     write time — so nothing user-supplied can reach a message body here.
 
     The door is a dashboard-relative path, which a chat client cannot open;
-    ``dashboard_base_url`` (operator config, not payload) anchors it.
+    ``dashboard_base_url`` (operator config, not payload) anchors it. With no
+    configured origin the message carries no link rather than a dead one.
     """
     payload = _episode_payload(episode)
     classification = str(payload.get("classification", episode.source))
     door = payload.get("door")
     text = _CLASSIFICATION_COPY.get(classification, f"Runtime attention: {classification}.")
-    if isinstance(door, str) and door:
-        if dashboard_base_url:
-            door = f"{dashboard_base_url.rstrip('/')}{door}"
-        text = f"{text} Open {door} to review."
+    if isinstance(door, str) and door and dashboard_base_url:
+        text = f"{text} Open {dashboard_base_url.rstrip('/')}{door} to review."
     return text
 
 
@@ -323,25 +323,38 @@ def build_messenger_transport(
         if not recipient:
             return RECIPIENT_UNAVAILABLE
 
-        result = await deliver(
-            pool,
-            notify_request={
-                "schema_version": "notify.v1",
-                "origin_butler": "switchboard",
-                "delivery": {
-                    "intent": "send",
-                    "channel": channel,
-                    "recipient": recipient,
-                    "message": _episode_message(episode, dashboard_base_url=dashboard_base_url),
-                },
-            },
-            source_butler="switchboard",
+        from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
+
+        attempt = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard",
+                    channel=channel,
+                    recipient=recipient,
+                    message=_episode_message(episode, dashboard_base_url=dashboard_base_url),
+                ),
+            ),
+            timeout_s=None,
+            propagate_errors=True,
         )
+        result = attempt.data
         transport = transport_result_from_envelope(result)
+        terminal = attempt.outcome in {"partial_delivery", "delivery_uncertain"}
+        if terminal and (transport is None or transport.outcome is not TransportOutcome.UNCERTAIN):
+            # A partial or unknown Telegram effect cannot confirm delivery or grant replay.
+            transport = TRANSPORT_CONNECTION_LOST
+        if not attempt.delivered and transport is CONFIRMED:
+            transport = TRANSPORT_CONNECTION_LOST
         if transport is None:
-            # A pre-vocabulary envelope (a validation refusal, say) never
-            # reached the wire, so it is safely not-attempted.
-            transport = CONFIRMED if result.get("status") == "sent" else RECIPIENT_UNAVAILABLE
+            if attempt.delivered:
+                transport = CONFIRMED
+            elif attempt.notification_ref is None and result.get("status") == "failed":
+                # A legacy pre-dispatch refusal has no delivery row or transport fragment.
+                transport = RECIPIENT_UNAVAILABLE
+            else:
+                transport = TRANSPORT_CONNECTION_LOST
 
         # deliver() always logs a notification row (best-effort) and returns
         # its id at the top level, separate from the "transport" envelope

@@ -17,85 +17,18 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
 # Helpers: mock asyncpg pool builder (same pattern as test_mind_maps.py)
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-
-def _make_row(data: dict[str, Any]) -> _MockRecord:
-    return _MockRecord(data)
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (FIFO consumption)."""
-    pool = AsyncMock()
-    acquisition = MagicMock()
-    acquisition.__aenter__ = AsyncMock(return_value=pool)
-    acquisition.__aexit__ = AsyncMock(return_value=False)
-    pool.acquire = MagicMock(return_value=acquisition)
-    pool.transaction = MagicMock(return_value=acquisition)
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns) + list(fetchrow_returns[:1]))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=True)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
 
 
 def _node(
@@ -431,16 +364,17 @@ def _make_generate_pool(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     execute_count: int = 20,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_generate with pre-loaded graph."""
     map_row = _make_row({"id": map_id, "status": map_status})
     node_rows = [_make_row(n) for n in nodes]
     edge_rows = [_make_row(e) for e in edges]
 
-    pool = _make_pool(
-        fetchrow_returns=[map_row],
-        fetch_returns=[node_rows, edge_rows],
-        execute_returns=["UPDATE 1"] * execute_count,
+    pool = fake_pool(
+        fetchrow=AsyncMock(side_effect=[map_row, map_row]),
+        fetch=AsyncMock(side_effect=[node_rows, edge_rows]),
+        execute=AsyncMock(side_effect=["UPDATE 1"] * execute_count),
+        fetchval=True,
     )
     return pool
 
@@ -472,7 +406,7 @@ class TestCurriculumGenerate:
     async def test_map_not_found_raises(self) -> None:
         from butlers.tools.education import curriculum_generate
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         with pytest.raises(ValueError, match="Mind map not found"):
             await curriculum_generate(pool, str(uuid.uuid4()))
 
@@ -481,9 +415,9 @@ class TestCurriculumGenerate:
 
         map_id = str(uuid.uuid4())
         map_row = _make_row({"id": map_id, "status": "active"})
-        pool = _make_pool(
-            fetchrow_returns=[map_row],
-            fetch_returns=[[], []],  # no nodes, no edges
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[map_row]),
+            fetch=AsyncMock(side_effect=[[], []]),  # no nodes, no edges
         )
         with pytest.raises(ValueError, match="no nodes"):
             await curriculum_generate(pool, map_id)
@@ -492,7 +426,9 @@ class TestCurriculumGenerate:
         from butlers.tools.education import curriculum_generate
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": map_id, "status": "completed"})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "completed"})])
+        )
         with pytest.raises(ValueError, match="completed"):
             await curriculum_generate(pool, map_id)
 
@@ -500,7 +436,9 @@ class TestCurriculumGenerate:
         from butlers.tools.education import curriculum_generate
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": map_id, "status": "abandoned"})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "abandoned"})])
+        )
         with pytest.raises(ValueError, match="abandoned"):
             await curriculum_generate(pool, map_id)
 
@@ -628,7 +566,7 @@ class TestCurriculumGenerateDiagnosticSeeding:
         from butlers.tools.education.curriculum import _apply_diagnostic_seeding
 
         node = _node(label="Test", mastery_status="unseen")
-        pool = _make_pool(execute_returns=["UPDATE 1"] * 5)
+        pool = fake_pool(execute=AsyncMock(side_effect=["UPDATE 1"] * 5))
         updated = await _apply_diagnostic_seeding(pool, [node], {"Test": 5})
         mastery_score = updated[0]["mastery_score"]
         assert mastery_score <= 0.9
@@ -639,7 +577,7 @@ class TestCurriculumGenerateDiagnosticSeeding:
         from butlers.tools.education.curriculum import _apply_diagnostic_seeding
 
         node = _node(label="Test", mastery_status="unseen")
-        pool = _make_pool(execute_returns=["UPDATE 1"] * 5)
+        pool = fake_pool(execute=AsyncMock(side_effect=["UPDATE 1"] * 5))
         updated = await _apply_diagnostic_seeding(pool, [node], {"Test": 3})
         mastery_score = updated[0]["mastery_score"]
         assert 0.3 <= mastery_score <= 0.9
@@ -649,7 +587,7 @@ class TestCurriculumGenerateDiagnosticSeeding:
         from butlers.tools.education.curriculum import _apply_diagnostic_seeding
 
         node = _node(label="Known", mastery_status="unseen")
-        pool = _make_pool(execute_returns=["UPDATE 1"] * 5)
+        pool = fake_pool(execute=AsyncMock(side_effect=["UPDATE 1"] * 5))
         updated = await _apply_diagnostic_seeding(pool, [node], {"UnknownLabel": 5})
         # No DB update should have been called
         pool.execute.assert_not_called()
@@ -678,15 +616,15 @@ def _make_replan_pool(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     execute_count: int = 20,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_replan."""
     map_row = _make_row({"id": map_id, "status": map_status})
     node_rows = [_make_row(n) for n in nodes]
     edge_rows = [_make_row(e) for e in edges]
-    pool = _make_pool(
-        fetchrow_returns=[map_row],
-        fetch_returns=[node_rows, edge_rows],
-        execute_returns=["UPDATE 1"] * execute_count,
+    pool = fake_pool(
+        fetchrow=AsyncMock(side_effect=[map_row]),
+        fetch=AsyncMock(side_effect=[node_rows, edge_rows]),
+        execute=AsyncMock(side_effect=["UPDATE 1"] * execute_count),
     )
     return pool
 
@@ -708,7 +646,7 @@ class TestCurriculumReplan:
     async def test_map_not_found_raises(self) -> None:
         from butlers.tools.education import curriculum_replan
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         with pytest.raises(ValueError, match="Mind map not found"):
             await curriculum_replan(pool, str(uuid.uuid4()))
 
@@ -716,7 +654,9 @@ class TestCurriculumReplan:
         from butlers.tools.education import curriculum_replan
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": map_id, "status": "abandoned"})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "abandoned"})])
+        )
         with pytest.raises(ValueError, match="abandoned"):
             await curriculum_replan(pool, map_id)
 
@@ -724,7 +664,9 @@ class TestCurriculumReplan:
         from butlers.tools.education import curriculum_replan
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": map_id, "status": "completed"})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "completed"})])
+        )
         with pytest.raises(ValueError, match="completed"):
             await curriculum_replan(pool, map_id)
 
@@ -837,14 +779,16 @@ def _make_next_node_pool(
     *,
     map_status: str = "active",
     node_row: dict[str, Any] | None = None,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_next_node."""
     map_row = _make_row({"status": map_status})
-    pool = _make_pool(
-        fetchrow_returns=[
-            map_row,
-            _make_row(node_row) if node_row is not None else None,
-        ]
+    pool = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[
+                map_row,
+                _make_row(node_row) if node_row is not None else None,
+            ]
+        )
     )
     return pool
 
@@ -895,7 +839,7 @@ class TestCurriculumNextNode:
         from butlers.tools.education import curriculum_next_node
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         result = await curriculum_next_node(pool, map_id)
         assert result is None
 
@@ -1107,7 +1051,7 @@ class TestClassifyConceptType:
 # ---------------------------------------------------------------------------
 
 
-def _metadata_patch_call(pool: AsyncMock) -> Any | None:
+def _metadata_patch_call(pool: FakePool) -> Any | None:
     """Return the batched node-metadata patch execute() call, if it was issued."""
     for call in pool.execute.call_args_list:
         sql = str(call.args[0]) if call.args else ""
@@ -1116,7 +1060,7 @@ def _metadata_patch_call(pool: AsyncMock) -> Any | None:
     return None
 
 
-def _metadata_patches(pool: AsyncMock) -> dict[str, dict[str, Any]]:
+def _metadata_patches(pool: FakePool) -> dict[str, dict[str, Any]]:
     """Return {node_id: patch_dict} from the batched metadata patch call."""
     import json
 
@@ -1211,11 +1155,13 @@ class TestCurriculumGenerateSourceRefs:
         map_id: str,
         nodes: list[dict[str, Any]],
         registered: tuple[str, ...],
-    ) -> AsyncMock:
-        return _make_pool(
-            fetchrow_returns=[_make_row({"id": map_id, "status": "active"})],
-            fetch_returns=[[_make_row(n) for n in nodes], [], _source_rows(*registered)],
-            execute_returns=["UPDATE 1"] * 20,
+    ) -> FakePool:
+        return fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "active"})]),
+            fetch=AsyncMock(
+                side_effect=[[_make_row(n) for n in nodes], [], _source_rows(*registered)]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"] * 20),
         )
 
     async def test_registered_source_ref_is_written(self) -> None:

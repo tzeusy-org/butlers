@@ -10,24 +10,42 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import Db
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.deps import Db, OptionalDb
+from butlers.api.models import (
+    ApiResponse,
+    ErrorDetail,
+    ErrorResponse,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.owner_control import require_dashboard_owner_control
-from butlers.connectors.home_assistant_statistics import (
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
+from butlers.core.audit import append as append_audit
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.state import decode_jsonb, state_set
+from butlers.credential_store import upsert_owner_entity_info
+from butlers.db import register_jsonb_codec
+from butlers.home_assistant_client import (
     HAStatisticsClient,
     HAStatisticsError,
     parse_statistics_change_series,
 )
-from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
+from butlers.perception import PerceptionStore
 from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
@@ -56,6 +74,25 @@ AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
 AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
 SafetyWatchEntry = _models.SafetyWatchEntry
 SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
+DepartureWatchEntry = _models.DepartureWatchEntry
+DepartureWatchUpsertRequest = _models.DepartureWatchUpsertRequest
+DepartureFixEntry = _models.DepartureFixEntry
+DepartureFixUpsertRequest = _models.DepartureFixUpsertRequest
+CriticalEntityEntry = _models.CriticalEntityEntry
+CriticalEntityUpsertRequest = _models.CriticalEntityUpsertRequest
+OwnerPlaceInput = _models.OwnerPlaceInput
+OwnerPlaceUpdate = _models.OwnerPlaceUpdate
+OwnerPlaceResponse = _models.OwnerPlaceResponse
+PresenceOwnerEntitiesUpdate = _models.PresenceOwnerEntitiesUpdate
+PresenceOwnerEntitiesResponse = _models.PresenceOwnerEntitiesResponse
+PresenceTransition = _models.PresenceTransition
+TemperatureWatchEntry = _models.TemperatureWatchEntry
+TemperatureWatchUpsertRequest = _models.TemperatureWatchUpsertRequest
+AwayAlertRequest = _models.AwayAlertRequest
+BlindSettingsRequest = _models.BlindSettingsRequest
+AwayDoorEntry = _models.AwayDoorEntry
+AwaySafetyStatus = _models.AwaySafetyStatus
+AwaySafetyConfig = _models.AwaySafetyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1528,3 +1565,1565 @@ async def delete_safety_watch(
         request=request,
     )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/departure-watch — what the departure card checks (bu-jv1moa.8)
+# ---------------------------------------------------------------------------
+
+
+def _departure_watch_entry(row: Any) -> DepartureWatchEntry:
+    updated_at = row["updated_at"]
+    return DepartureWatchEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        secure_states=list(row["secure_states"]),
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+@router.get("/departure-watch", response_model=list[DepartureWatchEntry])
+async def list_departure_watch(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> list[DepartureWatchEntry]:
+    """The entities the departure card checks, as the owner declared them."""
+    rows = await _pool(db).fetch(
+        "SELECT entity_id, owner_label, secure_states, updated_at FROM departure_watch "
+        "ORDER BY entity_id"
+    )
+    return [_departure_watch_entry(row) for row in rows]
+
+
+@router.put("/departure-watch", response_model=DepartureWatchEntry)
+async def upsert_departure_watch(
+    request: Request,
+    body: DepartureWatchUpsertRequest,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> DepartureWatchEntry:
+    """Declare an entity for the departure card, or change its label or secure states.
+
+    The label is the owner's own wording and is the only name a card uses; Home Assistant's
+    ``friendly_name`` is never read.  A state outside ``secure_states`` is listed on the card.
+    """
+    row = await _pool(db).fetchrow(
+        "INSERT INTO departure_watch (entity_id, owner_label, secure_states) VALUES ($1, $2, $3) "
+        "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label, "
+        "secure_states = EXCLUDED.secure_states, updated_at = now() "
+        "RETURNING entity_id, owner_label, secure_states, updated_at",
+        body.entity_id,
+        body.owner_label,
+        body.secure_states,
+    )
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="departure_watch_upsert",
+        method="PUT",
+        path="/api/home/departure-watch",
+        body={"entity_id": body.entity_id},
+        response_status=200,
+        request=request,
+    )
+    return _departure_watch_entry(row)
+
+
+@router.delete("/departure-watch/{entity_id}", status_code=204)
+async def delete_departure_watch(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> Response:
+    """Stop checking an entity on departure."""
+    status = await _pool(db).execute("DELETE FROM departure_watch WHERE entity_id = $1", entity_id)
+    if status == "DELETE 0":
+        raise HTTPException(status_code=404, detail="No such departure watch")
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="departure_watch_delete",
+        method="DELETE",
+        path="/api/home/departure-watch",
+        body={"entity_id": entity_id},
+        response_status=204,
+        request=request,
+    )
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/departure-fixes: the one exact fix per watched item (bu-jv1moa.115)
+# ---------------------------------------------------------------------------
+#
+# Owner-only (decided D7: never by conversation or tool) and content-blind: the handlers read
+# their own bodies and every refusal is one fixed code, audited by outcome only.  Storing a
+# declaration parks nothing and calls nothing; the departure job parks it as a prepared action
+# only when the card queues, and it always waits for an owner approval.
+
+_FIX_MAX_BODY_BYTES = 2_048
+_FIX_INVALID = (422, "INVALID_REQUEST", "Departure-fix request is invalid.")
+_FIX_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 2 KiB.")
+_FIX_NOT_FOUND = (404, "NOT_FOUND", "No such departure fix.")
+_FIX_UNAVAILABLE = (503, "DEPARTURE_FIX_UNAVAILABLE", "Departure fixes are unavailable.")
+_FIX_REFUSALS = {
+    "not_watched": (422, "NOT_WATCHED", "Only a watched departure item can have a fix."),
+    "not_explicit_entity": (422, "NOT_EXPLICIT_ENTITY", "A fix targets one explicit entity."),
+    "unclassified": (422, "UNCLASSIFIED_CALL", "That service is not an allowed fix."),
+    "data_not_allowed": (422, "DATA_NOT_ALLOWED", "That data is not allowed for this service."),
+}
+
+
+def _fix_entry(row: Any) -> DepartureFixEntry:
+    from butlers.jobs.home_departure_fixes import Declaration, risk_class
+
+    data = row["data"]
+    if isinstance(data, str):
+        data = json.loads(data)
+    declaration = Declaration(
+        row["entity_id"], row["domain"], row["service"], row["target_entity_id"], dict(data)
+    )
+    updated_at = row["updated_at"]
+    return DepartureFixEntry(
+        entity_id=declaration.entity_id,
+        domain=declaration.domain,
+        service=declaration.service,
+        target_entity_id=declaration.target_entity_id,
+        data=declaration.data,
+        risk=risk_class(declaration),
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+async def _fix_write(db: Any, request: Request, operation: str, write: Any) -> Any:
+    """Run one write; map every refusal or storage failure to a fixed, audited code."""
+
+    async def audit(outcome: str, status_code: int) -> None:
+        await emit_dashboard_audit(
+            db,
+            butler="home",
+            operation=f"departure_fix_{operation}",
+            method=request.method,
+            path="/api/home/departure-fixes",
+            body={"outcome": outcome},
+            response_status=status_code,
+            result="success" if status_code < 400 else "refused",
+            request=request,
+        )
+
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_FIX_UNAVAILABLE)
+        result = await write(db.pool(BUTLER_DB))
+    except _PlaceRefusal as refusal:
+        await audit(refusal.code.lower(), refusal.status_code)
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("departure-fix write failed: database unavailable")
+        await audit("unavailable", 503)
+        return _place_error(_FIX_UNAVAILABLE)
+    status_code = 200 if result is not None else 204
+    await audit("applied", status_code)
+    return result if result is not None else Response(status_code=204)
+
+
+@router.get(
+    "/departure-fixes",
+    response_model=list[DepartureFixEntry],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_departure_fixes(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The fixes the owner declared, each with the RFC 0028 class its call would have."""
+    if db is None:
+        return _place_error(_FIX_UNAVAILABLE)
+    try:
+        rows = await db.pool(BUTLER_DB).fetch(
+            "SELECT entity_id, domain, service, target_entity_id, data, updated_at "
+            "FROM departure_fixes ORDER BY entity_id"
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("departure-fix read failed: database unavailable")
+        return _place_error(_FIX_UNAVAILABLE)
+    return [_fix_entry(row) for row in rows]
+
+
+@router.put("/departure-fixes", responses={422: {"model": ErrorResponse}})
+async def put_departure_fix(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Declare (or replace) the one exact fix for a watched item; nothing is parked or run."""
+    from butlers.jobs.home_departure_fixes import refusal
+
+    async def write(pool: Any) -> DepartureFixEntry:
+        body = await _read_private_body(
+            request,
+            DepartureFixUpsertRequest,
+            max_bytes=_FIX_MAX_BODY_BYTES,
+            invalid=_FIX_INVALID,
+            too_large=_FIX_TOO_LARGE,
+        )
+        watched = bool(
+            await pool.fetchval(
+                "SELECT 1 FROM departure_watch WHERE entity_id = $1", body.entity_id
+            )
+        )
+        try:
+            why = refusal(
+                body.domain, body.service, body.target_entity_id, body.data, watched=watched
+            )
+        except ValueError as exc:
+            raise _PlaceRefusal(*_FIX_INVALID) from exc
+        if why is not None:
+            raise _PlaceRefusal(*_FIX_REFUSALS[why])
+        row = await pool.fetchrow(
+            "INSERT INTO departure_fixes (entity_id, domain, service, target_entity_id, data) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (entity_id) DO UPDATE SET domain = EXCLUDED.domain, "
+            "service = EXCLUDED.service, target_entity_id = EXCLUDED.target_entity_id, "
+            "data = EXCLUDED.data, updated_at = now() "
+            "RETURNING entity_id, domain, service, target_entity_id, data, updated_at",
+            body.entity_id,
+            body.domain,
+            body.service,
+            body.target_entity_id,
+            body.data,
+        )
+        return _fix_entry(row)
+
+    return await _fix_write(db, request, "upsert", write)
+
+
+@router.delete("/departure-fixes/{entity_id}", status_code=204, response_model=None)
+async def delete_departure_fix(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Remove a declared fix; its still-pending approval is withdrawn on the next job run."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "DELETE FROM departure_fixes WHERE entity_id = $1", _away_entity(entity_id)
+        )
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_FIX_NOT_FOUND)
+
+    return await _fix_write(db, request, "delete", write)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/critical-entities: the owner's critical-entity registry (bu-jv1moa.122)
+# ---------------------------------------------------------------------------
+#
+# REQ-module-home-assistant-001 (RFC 0028 Amendment 1).  Owner-only (decided D7: never by a tool,
+# session, goal, rule or job) and content-blind: the handlers read their own bodies, the generic
+# audit middleware skips this subtree, and every refusal is one fixed code.  Each add, relabel and
+# remove writes one audit row, in the write's own transaction, naming the entity id and the
+# authenticated actor and never the owner label.  Marking an entity critical parks and calls
+# nothing by itself; the Home module reads this table on every ha_call_service evaluation.
+
+_CRITICAL_MAX_BODY_BYTES = 1_024
+_CRITICAL_INVALID = (422, "INVALID_REQUEST", "Critical-entity request is invalid.")
+_CRITICAL_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 1 KiB.")
+_CRITICAL_NOT_FOUND = (404, "NOT_FOUND", "No such critical entity.")
+_CRITICAL_UNAVAILABLE = (
+    503,
+    "CRITICAL_ENTITIES_UNAVAILABLE",
+    "The critical-entity registry is unavailable.",
+)
+_CRITICAL_ENTITY = re.compile(r"\A[a-z0-9_]+\.[a-z0-9_]+\Z", re.ASCII)
+_CRITICAL_COLUMNS = "entity_id, owner_label, added_by, added_at"
+
+
+def _critical_entry(row: Any) -> CriticalEntityEntry:
+    added_at = row["added_at"]
+    return CriticalEntityEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        added_by=row["added_by"],
+        added_at=added_at.isoformat() if added_at else None,
+    )
+
+
+async def _audit_critical(connection: Any, operation: str, entity_id: str) -> None:
+    """One allowlisted audit row: operation, entity id and the actor; never the owner label."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        f"home_critical_entity_{operation}",
+        target=entity_id,
+        metadata={"operation": operation, "entity_id": entity_id, "outcome": "applied"},
+        result="success",
+    )
+
+
+async def _audit_critical_refusal(
+    db: Any, request: Request, operation: str, outcome: str, status_code: int
+) -> None:
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation=f"critical_entity_{operation}",
+        method=request.method,
+        path="/api/home/critical-entities",
+        body={"outcome": outcome},
+        response_status=status_code,
+        result="refused",
+        request=request,
+    )
+
+
+async def _critical_write(
+    db: Any, request: Request, operation: str, prepare: Any, write: Any
+) -> Any:
+    """Parse, then write and audit in one transaction; map every refusal to a fixed code."""
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_CRITICAL_UNAVAILABLE)
+        subject = await prepare()
+        pool = db.pool(BUTLER_DB)
+        async with pool.acquire() as connection, audit_transaction(connection):
+            return await write(connection, subject)
+    except _PlaceRefusal as refusal:
+        await _audit_critical_refusal(
+            db, request, operation, refusal.code.lower(), refusal.status_code
+        )
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("critical-entity write failed: database unavailable")
+        await _audit_critical_refusal(db, request, operation, "unavailable", 503)
+        return _place_error(_CRITICAL_UNAVAILABLE)
+
+
+@router.get(
+    "/critical-entities",
+    response_model=list[CriticalEntityEntry],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_critical_entities(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The entities the owner marked critical, by id."""
+    if db is None:
+        return _place_error(_CRITICAL_UNAVAILABLE)
+    try:
+        rows = await db.pool(BUTLER_DB).fetch(
+            f"SELECT {_CRITICAL_COLUMNS} FROM critical_entities ORDER BY entity_id"
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("critical-entity read failed: database unavailable")
+        return _place_error(_CRITICAL_UNAVAILABLE)
+    return JSONResponse(
+        content=[_critical_entry(row).model_dump(mode="json") for row in rows],
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/critical-entities",
+    response_model=CriticalEntityEntry,
+    responses={422: {"model": ErrorResponse}},
+)
+async def put_critical_entity(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Mark one explicit entity critical (or relabel it); nothing is parked or run."""
+
+    async def prepare() -> Any:
+        return await _read_private_body(
+            request,
+            CriticalEntityUpsertRequest,
+            max_bytes=_CRITICAL_MAX_BODY_BYTES,
+            invalid=_CRITICAL_INVALID,
+            too_large=_CRITICAL_TOO_LARGE,
+        )
+
+    async def write(connection: Any, body: Any) -> JSONResponse:
+        row = await connection.fetchrow(
+            "INSERT INTO critical_entities (entity_id, owner_label, added_by) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label "
+            f"RETURNING {_CRITICAL_COLUMNS}, (xmax = 0) AS inserted",
+            body.entity_id,
+            body.owner_label,
+            authenticated_principal(),
+        )
+        await _audit_critical(connection, "add" if row["inserted"] else "relabel", body.entity_id)
+        return JSONResponse(
+            content=_critical_entry(row).model_dump(mode="json"),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return await _critical_write(db, request, "put", prepare, write)
+
+
+@router.delete("/critical-entities/{entity_id}", status_code=204, response_model=None)
+async def delete_critical_entity(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Unmark an entity.  An approval already parked as critical keeps its park."""
+
+    async def prepare() -> str:
+        if not _CRITICAL_ENTITY.match(entity_id) or len(entity_id) > 255:
+            raise _PlaceRefusal(*_CRITICAL_NOT_FOUND)
+        return entity_id
+
+    async def write(connection: Any, entity: str) -> Response:
+        removed = await connection.fetchrow(
+            "DELETE FROM critical_entities WHERE entity_id = $1 RETURNING entity_id", entity
+        )
+        if removed is None:
+            raise _PlaceRefusal(*_CRITICAL_NOT_FOUND)
+        await _audit_critical(connection, "remove", entity)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+    return await _critical_write(db, request, "delete", prepare, write)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/away-safety — freezers, away-door durations and the blind dwell (bu-jv1moa.87)
+# ---------------------------------------------------------------------------
+#
+# Owner-only and content-blind, like the place registry: the handlers read their own bodies,
+# DashboardAuditMiddleware skips this subtree by path, and every refusal is one fixed code
+# audited by outcome only.  No route here creates, registers or changes the installation
+# sensing group; that is the privileged activation act (REQ-home-deterministic-jobs-003).
+
+_AWAY_MAX_BODY_BYTES = 4_096
+_AWAY_MAX_FREEZERS = 8
+_AWAY_INVALID = (422, "INVALID_REQUEST", "Away-safety request is invalid.")
+_AWAY_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 4 KiB.")
+_AWAY_NOT_FOUND = (404, "NOT_FOUND", "No such away-safety declaration.")
+_AWAY_LIMIT = (409, "FREEZER_LIMIT", "At most 8 freezers can be declared.")
+_AWAY_UNAVAILABLE = (503, "AWAY_SAFETY_UNAVAILABLE", "Away-safety settings are unavailable.")
+_AWAY_ENTITY = re.compile(r"\A[a-z_]+\.[a-z0-9_]+\Z", re.ASCII)
+_FREEZER_COLUMNS = (
+    "entity_id, owner_label, unit, max_c, hysteresis_c, dwell_minutes, "
+    "max_reading_age_minutes, updated_at"
+)
+
+
+def _freezer_entry(row: Any) -> TemperatureWatchEntry:
+    updated_at = row["updated_at"]
+    return TemperatureWatchEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        unit=row["unit"],
+        max_c=float(row["max_c"]),
+        hysteresis_c=float(row["hysteresis_c"]),
+        dwell_minutes=row["dwell_minutes"],
+        max_reading_age_minutes=row["max_reading_age_minutes"],
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+def _away_entity(entity_id: str) -> str:
+    if not _AWAY_ENTITY.match(entity_id) or len(entity_id) > 255:
+        raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+    return entity_id
+
+
+async def _audit_away(
+    db: Any, request: Request, operation: str, outcome: str, status_code: int
+) -> None:
+    """One allowlisted audit row: the operation and its outcome, never a submitted value."""
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation=f"away_safety_{operation}",
+        method=request.method,
+        path="/api/home/away-safety",
+        body={"outcome": outcome},
+        response_status=status_code,
+        result="success" if status_code < 400 else "refused",
+        request=request,
+    )
+
+
+async def _away_write(db: Any, request: Request, operation: str, write: Any) -> Any:
+    """Run one write; map every refusal or storage failure to a fixed, audited code."""
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_AWAY_UNAVAILABLE)
+        result = await write(db.pool(BUTLER_DB))
+    except _PlaceRefusal as refusal:
+        await _audit_away(db, request, operation, refusal.code.lower(), refusal.status_code)
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("away-safety write failed: database unavailable")
+        await _audit_away(db, request, operation, "unavailable", 503)
+        return _place_error(_AWAY_UNAVAILABLE)
+    status_code = 200 if result is not None else 204
+    await _audit_away(db, request, operation, "applied", status_code)
+    return result if result is not None else Response(status_code=204)
+
+
+async def _sensing_group_status() -> str:
+    """``registered`` once the activation act registered the group, read as the owner reader."""
+    from butlers.jobs.home_away_safety import SENSING_GROUP
+
+    connection = None
+    try:
+        connection = await _open_presence_reader()
+        if connection is None:
+            return "unknown"
+        slot = await PerceptionStore(connection).read(
+            "home.sensing", SENSING_GROUP, as_of=datetime.now(UTC)
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        return "unknown"
+    finally:
+        if connection is not None:
+            await connection.close()
+    state = slot.get("state") if isinstance(slot, dict) else None
+    if state == "unconfigured":
+        return "unconfigured"
+    return "registered" if state in ("known", "unknown", "unmeasurable") else "unknown"
+
+
+@router.get(
+    "/away-safety", response_model=AwaySafetyConfig, responses={503: {"model": ErrorResponse}}
+)
+async def get_away_safety(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The away-safety declarations and what each producer can do with them."""
+    try:
+        if db is None:
+            return _place_error(_AWAY_UNAVAILABLE)
+        pool = db.pool(BUTLER_DB)
+        freezers = await pool.fetch(
+            f"SELECT {_FREEZER_COLUMNS} FROM temperature_watch ORDER BY entity_id"
+        )
+        doors = await pool.fetch(
+            "SELECT entity_id, owner_label, away_alert_after_minutes FROM departure_watch "
+            "ORDER BY entity_id"
+        )
+        blind_after = await pool.fetchval("SELECT blind_after_minutes FROM away_safety_settings")
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("away-safety read failed: database unavailable")
+        return _place_error(_AWAY_UNAVAILABLE)
+    sensing = await _sensing_group_status()
+    armed = any(r["away_alert_after_minutes"] is not None for r in doors)
+    return AwaySafetyConfig(
+        freezers=[_freezer_entry(r) for r in freezers],
+        doors=[
+            AwayDoorEntry(
+                entity_id=r["entity_id"],
+                owner_label=r["owner_label"],
+                away_alert_after_minutes=r["away_alert_after_minutes"],
+            )
+            for r in doors
+        ],
+        blind_after_minutes=blind_after,
+        status=AwaySafetyStatus(
+            freezer="ok" if freezers else "unconfigured",
+            away_door="ok" if armed else "unconfigured",
+            blind="ok" if blind_after is not None and sensing == "registered" else "unconfigured",
+            sensing_group=sensing,
+        ),
+    )
+
+
+@router.put("/away-safety/freezers", responses={422: {"model": ErrorResponse}})
+async def put_away_freezer(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Declare a freezer or change its values; at most eight, all values the owner's."""
+
+    async def write(pool: Any) -> TemperatureWatchEntry:
+        body = await _read_private_body(
+            request,
+            TemperatureWatchUpsertRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute("LOCK TABLE temperature_watch IN SHARE ROW EXCLUSIVE MODE")
+            known = await connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM temperature_watch WHERE entity_id = $1)",
+                body.entity_id,
+            )
+            count = await connection.fetchval("SELECT count(*) FROM temperature_watch")
+            if not known and count >= _AWAY_MAX_FREEZERS:
+                raise _PlaceRefusal(*_AWAY_LIMIT)
+            row = await connection.fetchrow(
+                "INSERT INTO temperature_watch (entity_id, role, owner_label, unit, max_c, "
+                "hysteresis_c, dwell_minutes, max_reading_age_minutes) "
+                "VALUES ($1, 'freezer', $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label, "
+                "unit = EXCLUDED.unit, max_c = EXCLUDED.max_c, "
+                "hysteresis_c = EXCLUDED.hysteresis_c, dwell_minutes = EXCLUDED.dwell_minutes, "
+                "max_reading_age_minutes = EXCLUDED.max_reading_age_minutes, updated_at = now() "
+                f"RETURNING {_FREEZER_COLUMNS}",
+                body.entity_id,
+                body.owner_label,
+                body.unit,
+                Decimal(str(round(body.max_c, 2))),
+                Decimal(str(round(body.hysteresis_c, 2))),
+                body.dwell_minutes,
+                body.max_reading_age_minutes,
+            )
+        return _freezer_entry(row)
+
+    return await _away_write(db, request, "freezer_upsert", write)
+
+
+@router.delete("/away-safety/freezers/{entity_id}", status_code=204, response_model=None)
+async def delete_away_freezer(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Stop watching a freezer; its open condition resolves ``watch_removed`` on the next run."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "DELETE FROM temperature_watch WHERE entity_id = $1", _away_entity(entity_id)
+        )
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "freezer_delete", write)
+
+
+@router.put("/away-safety/doors/{entity_id}", responses={422: {"model": ErrorResponse}})
+async def put_away_door(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Arm a departure-watch item for the away-door condition with the owner's duration."""
+
+    async def write(pool: Any) -> AwayDoorEntry:
+        body = await _read_private_body(
+            request,
+            AwayAlertRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        row = await pool.fetchrow(
+            "UPDATE departure_watch SET away_alert_after_minutes = $2, updated_at = now() "
+            "WHERE entity_id = $1 RETURNING entity_id, owner_label, away_alert_after_minutes",
+            _away_entity(entity_id),
+            body.away_alert_after_minutes,
+        )
+        if row is None:
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+        return AwayDoorEntry(**dict(row))
+
+    return await _away_write(db, request, "door_arm", write)
+
+
+@router.delete("/away-safety/doors/{entity_id}", status_code=204, response_model=None)
+async def delete_away_door(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Disarm an item; the departure card keeps it, an open condition resolves ``watch_removed``."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute(
+            "UPDATE departure_watch SET away_alert_after_minutes = NULL, updated_at = now() "
+            "WHERE entity_id = $1 AND away_alert_after_minutes IS NOT NULL",
+            _away_entity(entity_id),
+        )
+        if status == "UPDATE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "door_disarm", write)
+
+
+@router.put("/away-safety/blind", responses={422: {"model": ErrorResponse}})
+async def put_away_blind(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Set the blind dwell.  This never creates or changes the sensing group."""
+
+    async def write(pool: Any) -> dict[str, int]:
+        body = await _read_private_body(
+            request,
+            BlindSettingsRequest,
+            max_bytes=_AWAY_MAX_BODY_BYTES,
+            invalid=_AWAY_INVALID,
+            too_large=_AWAY_TOO_LARGE,
+        )
+        await pool.execute(
+            "INSERT INTO away_safety_settings (singleton, blind_after_minutes) VALUES (true, $1) "
+            "ON CONFLICT (singleton) DO UPDATE SET "
+            "blind_after_minutes = EXCLUDED.blind_after_minutes, updated_at = now()",
+            body.blind_after_minutes,
+        )
+        return {"blind_after_minutes": body.blind_after_minutes}
+
+    return await _away_write(db, request, "blind_set", write)
+
+
+@router.delete("/away-safety/blind", status_code=204, response_model=None)
+async def delete_away_blind(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Clear the blind dwell: the blind check becomes ``unconfigured`` and resolves."""
+
+    async def write(pool: Any) -> None:
+        status = await pool.execute("DELETE FROM away_safety_settings")
+        if status == "DELETE 0":
+            raise _PlaceRefusal(*_AWAY_NOT_FOUND)
+
+    return await _away_write(db, request, "blind_clear", write)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/places — the owner place registry editor (public.owner_places; bu-jv1moa.7)
+# ---------------------------------------------------------------------------
+#
+# Owner-only and content-blind.  Owner control is a dependency, and the handlers read the
+# body themselves, so a denied request is refused before any body octet, decode or pool
+# access.  DashboardAuditMiddleware skips this prefix by path before reading the body; each
+# write records one explicit allowlisted audit row inside its own transaction instead.  No
+# response, log line or audit row echoes a coordinate, SSID, alias, label or zone id.
+
+_PLACES_LOCK = "butlers:home:owner-places:v1"
+_PLACES_MAX_BODY_BYTES = 16_384
+_PLACE_COLUMNS = (
+    "id, label, kind, lat, lon, radius_m, aliases, ssids, ha_zone, paused, version, updated_at"
+)
+
+
+class _PlaceRefusal(Exception):
+    """A fixed, content-blind refusal for the owner place routes."""
+
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+
+
+_INVALID_PLACE = (422, "INVALID_REQUEST", "Place request is invalid.")
+_PLACES_UNAVAILABLE = (503, "PLACES_UNAVAILABLE", "Place registry is unavailable.")
+_PLACE_NOT_FOUND = (404, "PLACE_NOT_FOUND", "Place not found.")
+_PLACE_VERSION_CONFLICT = (
+    409,
+    "VERSION_CONFLICT",
+    "This place changed since it was loaded. Reload and try again.",
+)
+_PLACE_CONFLICT = (
+    409,
+    "PLACE_CONFLICT",
+    "Another place already uses this name or network, or is already home.",
+)
+_PLACE_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 16 KiB.")
+
+
+def _place_error(refusal: tuple[int, str, str]) -> JSONResponse:
+    status_code, code, message = refusal
+    body = ErrorResponse(error=ErrorDetail(code=code, message=message))
+    return JSONResponse(
+        status_code=status_code,
+        content=body.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _places_pool(db: DatabaseManager | None):
+    if db is None:
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE)
+    try:
+        return db.pool(BUTLER_DB)
+    except Exception as exc:
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE) from exc
+
+
+async def _read_private_body[T: BaseModel](
+    request: Request,
+    model: type[T],
+    *,
+    max_bytes: int,
+    invalid: tuple[int, str, str],
+    too_large: tuple[int, str, str],
+) -> T:
+    """Read at most ``max_bytes`` received octets and validate them without echoing input."""
+    if request.url.query:
+        raise _PlaceRefusal(*invalid)
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk[: max_bytes + 1 - len(raw)])
+        if len(raw) > max_bytes:
+            raise _PlaceRefusal(*too_large)
+    try:
+        return model.model_validate(json.loads(bytes(raw).decode("utf-8")))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        # ValidationError and JSONDecodeError are both ValueError subclasses.
+        raise _PlaceRefusal(*invalid) from exc
+
+
+async def _read_place_body[T: BaseModel](request: Request, model: type[T]) -> T:
+    return await _read_private_body(
+        request,
+        model,
+        max_bytes=_PLACES_MAX_BODY_BYTES,
+        invalid=_INVALID_PLACE,
+        too_large=_PLACE_TOO_LARGE,
+    )
+
+
+def _parse_place_id(place_id: str) -> UUID:
+    try:
+        parsed = UUID(place_id)
+    except ValueError as exc:
+        raise _PlaceRefusal(*_PLACE_NOT_FOUND) from exc
+    if str(parsed) != place_id:
+        raise _PlaceRefusal(*_PLACE_NOT_FOUND)
+    return parsed
+
+
+def _place_response(row: Any) -> OwnerPlaceResponse:
+    return OwnerPlaceResponse(
+        id=row["id"],
+        label=row["label"],
+        kind=row["kind"],
+        lat=float(row["lat"]),
+        lon=float(row["lon"]),
+        radius_m=row["radius_m"],
+        aliases=list(row["aliases"] or []),
+        ssids=list(row["ssids"] or []),
+        ha_zone=row["ha_zone"],
+        paused=row["paused"],
+        version=row["version"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _same_place(row: Any, body: Any) -> bool:
+    return (
+        row["label"] == body.label
+        and row["kind"] == body.kind
+        and float(row["lat"]) == body.lat
+        and float(row["lon"]) == body.lon
+        and row["radius_m"] == body.radius_m
+        and list(row["aliases"] or []) == body.aliases
+        and list(row["ssids"] or []) == body.ssids
+        and row["ha_zone"] == body.ha_zone
+        and row["paused"] == body.paused
+    )
+
+
+def _place_args(body: Any) -> tuple[Any, ...]:
+    return (
+        body.label,
+        body.kind,
+        Decimal(repr(body.lat)),
+        Decimal(repr(body.lon)),
+        body.radius_m,
+        body.aliases,
+        body.ssids,
+        body.ha_zone,
+        body.paused,
+    )
+
+
+async def _conflicts(connection: Any, body: Any, place_id: UUID | None) -> bool:
+    """True when another live place shares the label, an SSID, or the single home slot."""
+    return await connection.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM public.owner_places "
+        "WHERE deleted_at IS NULL AND id IS DISTINCT FROM $1 "
+        "AND (lower(label) = lower($2) OR ssids && $3::text[] "
+        "OR ($4::text = 'home' AND kind = 'home')))",
+        place_id,
+        body.label,
+        body.ssids,
+        body.kind,
+    )
+
+
+async def _audit_place(
+    connection: Any,
+    operation: str,
+    outcome: str,
+    *,
+    prior_version: int | None,
+    new_version: int | None,
+) -> None:
+    """One allowlisted audit row: operation, outcome and versions, never place content."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        f"home_owner_place_{operation}",
+        metadata={
+            "operation": operation,
+            "outcome": outcome,
+            "prior_version": prior_version,
+            "new_version": new_version,
+        },
+        result="success"
+        if outcome in {"created", "updated", "unchanged", "deleted"}
+        else "refused",
+    )
+    logger.info("owner place %s outcome=%s", operation, outcome)
+
+
+async def _place_transaction(pool: Any, decide: Any) -> Any:
+    """Run ``decide`` under the registry lock in one transaction; map failures blind."""
+    try:
+        async with pool.acquire() as connection, audit_transaction(connection):
+            await connection.execute(
+                "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+                _PLACES_LOCK,
+            )
+            return await decide(connection)
+    except _PlaceRefusal:
+        raise
+    except asyncpg.UniqueViolationError as exc:
+        raise _PlaceRefusal(*_PLACE_CONFLICT) from exc
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
+        logger.error("owner place write failed: database unavailable")
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE) from exc
+
+
+@router.get(
+    "/places",
+    response_model=ApiResponse[list[OwnerPlaceResponse]],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_owner_places(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Every place the owner has not deleted, paused ones included, by label."""
+    try:
+        rows = await _places_pool(db).fetch(
+            f"SELECT {_PLACE_COLUMNS} FROM public.owner_places "
+            "WHERE deleted_at IS NULL ORDER BY lower(label), id"
+        )
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner place list failed: database unavailable")
+        return _place_error(_PLACES_UNAVAILABLE)
+    payload = ApiResponse[list[OwnerPlaceResponse]](data=[_place_response(row) for row in rows])
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post(
+    "/places",
+    status_code=201,
+    response_model=ApiResponse[OwnerPlaceResponse],
+    responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def create_owner_place(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Add a place; it takes part in resolution immediately unless created paused."""
+    try:
+        body = await _read_place_body(request, OwnerPlaceInput)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            if await _conflicts(connection, body, None):
+                await _audit_place(
+                    connection, "create", "conflict", prior_version=None, new_version=None
+                )
+                return _PLACE_CONFLICT
+            row = await connection.fetchrow(
+                "INSERT INTO public.owner_places "
+                "(label, kind, lat, lon, radius_m, aliases, ssids, ha_zone, paused) "
+                "VALUES ($1, $2, $3, $4, $5, $6::text[], $7::text[], $8, $9) "
+                f"RETURNING {_PLACE_COLUMNS}",
+                *_place_args(body),
+            )
+            await _audit_place(connection, "create", "created", prior_version=None, new_version=1)
+            return row
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
+    payload = ApiResponse[OwnerPlaceResponse](data=_place_response(result))
+    return JSONResponse(
+        status_code=201,
+        content=payload.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/places/{place_id}",
+    response_model=ApiResponse[OwnerPlaceResponse],
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def update_owner_place(
+    request: Request,
+    place_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Replace a place under compare-and-swap; pausing is an edit of ``paused``.
+
+    An edit identical to the stored place is a no-op success even from a stale version;
+    a changed edit from a stale version is ``409 VERSION_CONFLICT`` and writes nothing.
+    """
+    try:
+        target = _parse_place_id(place_id)
+        body = await _read_place_body(request, OwnerPlaceUpdate)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            row = await connection.fetchrow(
+                f"SELECT {_PLACE_COLUMNS} FROM public.owner_places "
+                "WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                target,
+            )
+            if row is None:
+                await _audit_place(
+                    connection, "update", "not_found", prior_version=None, new_version=None
+                )
+                return _PLACE_NOT_FOUND
+            current = row["version"]
+            if _same_place(row, body):
+                await _audit_place(
+                    connection, "update", "unchanged", prior_version=current, new_version=current
+                )
+                return row
+            if body.expected_version != current:
+                await _audit_place(
+                    connection,
+                    "update",
+                    "version_conflict",
+                    prior_version=current,
+                    new_version=None,
+                )
+                return _PLACE_VERSION_CONFLICT
+            if await _conflicts(connection, body, target):
+                await _audit_place(
+                    connection, "update", "conflict", prior_version=current, new_version=None
+                )
+                return _PLACE_CONFLICT
+            updated = await connection.fetchrow(
+                "UPDATE public.owner_places SET label = $2, kind = $3, lat = $4, lon = $5, "
+                "radius_m = $6, aliases = $7::text[], ssids = $8::text[], ha_zone = $9, "
+                "paused = $10, version = version + 1, updated_at = now() "
+                f"WHERE id = $1 RETURNING {_PLACE_COLUMNS}",
+                target,
+                *_place_args(body),
+            )
+            await _audit_place(
+                connection, "update", "updated", prior_version=current, new_version=current + 1
+            )
+            return updated
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
+    payload = ApiResponse[OwnerPlaceResponse](data=_place_response(result))
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.delete(
+    "/places/{place_id}",
+    status_code=204,
+    response_model=None,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def delete_owner_place(
+    place_id: str,
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Response:
+    """Soft-delete a place at ``?expected_version=N``; its identity is never reused."""
+    try:
+        target = _parse_place_id(place_id)
+        raw_version = request.query_params.get("expected_version", "")
+        if (
+            list(request.query_params) != ["expected_version"]
+            or not raw_version.isascii()
+            or not raw_version.isdigit()
+            or int(raw_version) < 1
+        ):
+            raise _PlaceRefusal(*_INVALID_PLACE)
+        expected = int(raw_version)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            current = await connection.fetchval(
+                "SELECT version FROM public.owner_places "
+                "WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                target,
+            )
+            if current is None:
+                await _audit_place(
+                    connection, "delete", "not_found", prior_version=None, new_version=None
+                )
+                return _PLACE_NOT_FOUND
+            if current != expected:
+                await _audit_place(
+                    connection,
+                    "delete",
+                    "version_conflict",
+                    prior_version=current,
+                    new_version=None,
+                )
+                return _PLACE_VERSION_CONFLICT
+            await connection.execute(
+                "UPDATE public.owner_places SET deleted_at = now(), "
+                "version = version + 1, updated_at = now() WHERE id = $1",
+                target,
+            )
+            await _audit_place(
+                connection, "delete", "deleted", prior_version=current, new_version=current + 1
+            )
+            return None
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/settings/presence/owner-entities — owner presence entity settings
+# (home:presence:owner_entities; REQ-home-presence-configuration-001..003; bu-jv1moa.7)
+# ---------------------------------------------------------------------------
+#
+# Exactly one GET and one PUT, owner-only and content-blind like the place editor above.
+# Writes serialize on a fixed advisory lock and compare-and-swap the existing state row's
+# version.  The generic state API and the state_* MCP tools still read and overwrite this
+# key without this validation or lock; this route's guarantees hold only among its own
+# callers.  A PUT is a configuration receipt: the next scheduled presence producer run is
+# the only thing that reads the new list.
+
+_PRESENCE_KEY = "home:presence:owner_entities"
+_PRESENCE_LOCK = "butlers:home:presence-owner-entities:v1"
+_PRESENCE_MAX_BODY_BYTES = 32_768
+_PRESENCE_AUDIT_ACTION = "home_presence_owner_entities_put"
+
+_INVALID_PRESENCE = (422, "INVALID_REQUEST", "Presence settings request is invalid.")
+_PRESENCE_UNAVAILABLE = (
+    503,
+    "PRESENCE_CONFIG_UNAVAILABLE",
+    "Presence settings are unavailable.",
+)
+_PRESENCE_VERSION_CONFLICT = (
+    409,
+    "VERSION_CONFLICT",
+    "Presence settings changed since they were loaded. Reload and try again.",
+)
+_PRESENCE_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 32 KiB.")
+
+
+def _presence_pool(db: DatabaseManager | None):
+    if db is None:
+        raise _PlaceRefusal(*_PRESENCE_UNAVAILABLE)
+    try:
+        return db.pool(BUTLER_DB)
+    except Exception as exc:
+        raise _PlaceRefusal(*_PRESENCE_UNAVAILABLE) from exc
+
+
+def _stored_presence(row: Any) -> tuple[list[str], int] | None:
+    """The stored list (ASCII-sorted) and row version; ``None`` when the value is malformed."""
+    if row is None:
+        return [], 0
+    value = decode_jsonb(row["value"])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return sorted(value), row["version"]
+
+
+def _presence_ok(entities: list[str], version: int) -> JSONResponse:
+    payload = ApiResponse[PresenceOwnerEntitiesResponse](
+        data=PresenceOwnerEntitiesResponse(
+            configured=bool(entities), owner_entities=entities, version=version
+        )
+    )
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+def _invalid_reference(count: int) -> JSONResponse:
+    body = ErrorResponse(
+        error=ErrorDetail(
+            code="INVALID_REFERENCE",
+            message="One or more entities have not been seen in Home Assistant.",
+            details={"invalid_reference_count": count},
+        )
+    )
+    return JSONResponse(
+        status_code=422,
+        content=body.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _audit_presence(
+    connection: Any,
+    outcome: str,
+    *,
+    entities: list[str] | None,
+    prior_version: int | None,
+    new_version: int | None,
+) -> None:
+    """The one allowlisted audit event: counts, versions and outcome, never an entity id."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        _PRESENCE_AUDIT_ACTION,
+        metadata={
+            "operation": "put",
+            "configured": None if entities is None else bool(entities),
+            "entity_count": None if entities is None else len(entities),
+            "prior_version": prior_version,
+            "new_version": new_version,
+            "outcome": outcome,
+        },
+        result="success" if outcome in {"updated", "unchanged"} else "refused",
+    )
+    logger.info("owner presence entities put outcome=%s", outcome)
+
+
+async def _audit_presence_best_effort(db: DatabaseManager | None, outcome: str) -> None:
+    """Audit a refusal reached outside the write transaction; a failure here stays blind."""
+    try:
+        await _audit_presence(
+            _presence_pool(db), outcome, entities=None, prior_version=None, new_version=None
+        )
+    except Exception:
+        logger.warning("owner presence entities put outcome=%s audit unavailable", outcome)
+
+
+@router.get(
+    "/settings/presence/owner-entities",
+    response_model=ApiResponse[PresenceOwnerEntitiesResponse],
+    responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_presence_owner_entities(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The literal stored owner presence entity list, its row version and ``configured``."""
+    try:
+        if request.url.query:
+            raise _PlaceRefusal(*_INVALID_PRESENCE)
+        row = await _presence_pool(db).fetchrow(
+            "SELECT value, version FROM state WHERE key = $1", _PRESENCE_KEY
+        )
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner presence entities read failed: database unavailable")
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    stored = _stored_presence(row)
+    if stored is None:
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    return _presence_ok(*stored)
+
+
+@router.put(
+    "/settings/presence/owner-entities",
+    response_model=ApiResponse[PresenceOwnerEntitiesResponse],
+    responses={
+        409: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def put_presence_owner_entities(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Replace the owner presence entity list under version compare-and-swap.
+
+    An identical list is a no-op success at any ``expected_version``; a changed list from a
+    stale version is ``409 VERSION_CONFLICT``.  Every id must already be a row in this
+    butler's ``ha_entity_snapshot``; Home Assistant itself is never asked.
+    """
+    try:
+        body = await _read_private_body(
+            request,
+            PresenceOwnerEntitiesUpdate,
+            max_bytes=_PRESENCE_MAX_BODY_BYTES,
+            invalid=_INVALID_PRESENCE,
+            too_large=_PRESENCE_TOO_LARGE,
+        )
+    except _PlaceRefusal as refusal:
+        # Malformed and oversized bodies are both terminal ``invalid_request`` outcomes.
+        await _audit_presence_best_effort(db, "invalid_request")
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+
+    submitted = sorted(body.owner_entities)
+
+    async def decide(connection: Any) -> Any:
+        row = await connection.fetchrow(
+            "SELECT value, version FROM state WHERE key = $1", _PRESENCE_KEY
+        )
+        stored = _stored_presence(row)
+        if stored is None:
+            await _audit_presence(
+                connection,
+                "unavailable",
+                entities=submitted,
+                prior_version=row["version"],
+                new_version=None,
+            )
+            return _PRESENCE_UNAVAILABLE
+        current, version = stored
+        observed = await connection.fetchval(
+            "SELECT count(*) FROM ha_entity_snapshot WHERE entity_id = ANY($1::text[])",
+            submitted,
+        )
+        if observed != len(submitted):
+            await _audit_presence(
+                connection,
+                "invalid_reference",
+                entities=submitted,
+                prior_version=version,
+                new_version=None,
+            )
+            return len(submitted) - observed
+        if submitted == current:
+            await _audit_presence(
+                connection,
+                "unchanged",
+                entities=submitted,
+                prior_version=version,
+                new_version=version,
+            )
+            return current, version
+        if body.expected_version != version:
+            await _audit_presence(
+                connection,
+                "version_conflict",
+                entities=submitted,
+                prior_version=version,
+                new_version=None,
+            )
+            return _PRESENCE_VERSION_CONFLICT
+        new_version = await state_set(connection, _PRESENCE_KEY, submitted)
+        await _audit_presence(
+            connection,
+            "updated",
+            entities=submitted,
+            prior_version=version,
+            new_version=new_version,
+        )
+        return submitted, new_version
+
+    try:
+        pool = _presence_pool(db)
+        async with pool.acquire() as connection, audit_transaction(connection):
+            await connection.execute(
+                "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+                _PRESENCE_LOCK,
+            )
+            result = await decide(connection)
+    except _PlaceRefusal as refusal:
+        await _audit_presence_best_effort(db, "unavailable")
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner presence entities write failed: database unavailable")
+        await _audit_presence_best_effort(db, "unavailable")
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    if isinstance(result, int):
+        return _invalid_reference(result)
+    if len(result) == 3:
+        return _place_error(result)
+    return _presence_ok(*result)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/presence/transitions — owner-only, read-only presence timeline
+# (owner.place leave/enter projection over perception_timeline; bu-jv1moa.17)
+# ---------------------------------------------------------------------------
+#
+# Reads the canonical perception timeline as the private owner reader and keeps only
+# confirmed leave/enter edges. Heartbeats, establishing rows and retraction records are
+# not edges. Late and retracted edges are returned flagged, never hidden, so history is
+# complete; consumers skip them. Output is coordinate-free: the place is an opaque reference.
+# The reader login is the owner-authorized activation; without it the route answers 503.
+
+_PERCEPTION_READER_DSN_ENV = "BUTLERS_PERCEPTION_READER_DSN"
+_TRANSITIONS_UNAVAILABLE = (
+    503,
+    "PRESENCE_TIMELINE_UNAVAILABLE",
+    "The presence timeline is unavailable.",
+)
+_TRANSITIONS_WINDOW = timedelta(days=7)
+_TRANSITIONS_CURSOR_SCOPE = "home-presence-transitions"
+_TRANSITIONS_SCAN_PAGE = 100  # the timeline's largest page
+_TRANSITIONS_MAX_SCANS = 20  # bounds one request to 2000 timeline rows
+
+
+async def _open_presence_reader() -> Any | None:
+    """A connection logged in as the private perception reader, or ``None`` when not activated."""
+    dsn = (os.environ.get(_PERCEPTION_READER_DSN_ENV) or "").strip()
+    if not dsn:
+        return None
+    connection = await asyncpg.connect(dsn, command_timeout=15)
+    await register_jsonb_codec(connection)
+    return connection
+
+
+def _edge(item: dict[str, Any]) -> PresenceTransition | None:
+    if item.get("operation") != "assert" or item.get("class") != "transition":
+        return None
+    before, after = item.get("from_value"), item.get("to_value")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    if before.get("presence") == after.get("presence"):
+        return None
+    direction = "leave" if after.get("presence") == "outside" else "enter"
+    return PresenceTransition(
+        id=UUID(str(item["id"])),
+        direction=direction,
+        place_ref=UUID(after["place_ref"]) if after.get("place_ref") else None,
+        at=datetime.fromisoformat(item["at"]),
+        confirmed_at=datetime.fromisoformat(item["confirmed_at"]),
+        late=bool(item["late"]),
+        retracted=bool(item["retracted"]),
+        retraction_event_id=(
+            UUID(str(item["retraction_event_id"])) if item.get("retraction_event_id") else None
+        ),
+    )
+
+
+@router.get(
+    "/presence/transitions",
+    response_model=Page[PresenceTransition],
+    responses={
+        400: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def get_presence_transitions(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the previous page's next_cursor."
+    ),
+) -> Any:
+    """Newest-first confirmed owner leave/enter edges for the last seven days."""
+    before: UUID | None = None
+    if cursor is not None:
+        (decoded,) = decode_cursor(cursor, (UUID,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        before = decoded  # type: ignore[assignment]
+    connection = None
+    try:
+        connection = await _open_presence_reader()
+        if connection is None:
+            return _place_error(_TRANSITIONS_UNAVAILABLE)
+        now = datetime.now(UTC)
+        store = PerceptionStore(connection)
+        edges: list[PresenceTransition] = []
+        scan_cursor = before
+        more = False
+        # The timeline holds heartbeats, resets and retractions too, so `limit` counts edges:
+        # scan pages until enough edges are found, the week is exhausted or the scan cap is hit.
+        for _ in range(_TRANSITIONS_MAX_SCANS):
+            rows = await store.timeline(
+                since=now - _TRANSITIONS_WINDOW,
+                until=now,
+                kind="owner.place",
+                before=scan_cursor,
+                limit=_TRANSITIONS_SCAN_PAGE,
+            )
+            for row in rows:
+                scan_cursor = UUID(str(row["id"]))
+                edge = _edge(row)
+                if edge is not None:
+                    edges.append(edge)
+                    if len(edges) == limit:
+                        more = True
+                        break
+            if len(edges) == limit:
+                break
+            if len(rows) < _TRANSITIONS_SCAN_PAGE:
+                break
+        else:
+            more = True
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("presence timeline read failed: database unavailable")
+        return _place_error(_TRANSITIONS_UNAVAILABLE)
+    finally:
+        if connection is not None:
+            await connection.close()
+    # An empty page with a cursor is real: the scan cap was hit before any edge was found.
+    next_cursor = (
+        encode_cursor((scan_cursor,), scope=_TRANSITIONS_CURSOR_SCOPE)
+        if more and scan_cursor is not None
+        else None
+    )
+    page = Page[PresenceTransition](items=edges, next_cursor=next_cursor, limit=limit)
+    return JSONResponse(
+        content=page.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )

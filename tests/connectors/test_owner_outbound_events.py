@@ -2,7 +2,7 @@
 
 Covers (bu-whhll.8):
 - Insert path: correct SQL target, params, ON CONFLICT dedup handling.
-- Idempotency key is a one-way hash — the raw dedup_material never appears
+- Idempotency key is a keyed one-way hash — the raw dedup_material never appears
   in the key, and the same (provider, dedup_material) always hashes the same.
 - Different providers with the same dedup_material never collide.
 - Fail-soft behavior: None pool and DB errors both return False, never raise.
@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.connectors import owner_outbound_events
 from butlers.connectors.owner_outbound_events import (
     _hash_dedup_material,
     record_owner_outbound_point,
@@ -23,6 +24,12 @@ from butlers.connectors.owner_outbound_events import (
 pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _dedup_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise the keyed path; the missing-key path is in test_owner_outbound_dedup_hmac."""
+    monkeypatch.setattr(owner_outbound_events, "_dedup_key", b"test-dedup-key")
 
 
 def test_hash_dedup_material_is_deterministic() -> None:

@@ -607,7 +607,12 @@ def _recovery_envelope() -> dict[str, Any]:
             "recipient": "owner-synthetic",
             "message": "Synthetic approval.",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
         "recovery": {
             "operation": "handoff",
             "subject_kind": "action",
@@ -1136,6 +1141,69 @@ class TestDeliverPostSendBookkeeping:
         assert result["transport"]["outcome"] == "rejected"
         assert result["transport"]["retryable"] is False
 
+    @staticmethod
+    async def _deliver_route_error(error: dict[str, Any]) -> dict[str, Any]:
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": error,
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ),
+        ):
+            return await deliver(
+                _mock_pool(), notify_request=_notify_envelope(), source_butler="health"
+            )
+
+    async def test_messenger_auth_unavailable_is_not_attempted_and_retryable(self) -> None:
+        """Messenger could not verify the delivery token now (RFC 0038 D7)."""
+        result = await self._deliver_route_error(
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": True,
+            }
+        )
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is True
+        assert result["transport"]["outcome"] == "not_attempted"
+        assert result["transport"]["retryable"] is True
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            {
+                "class": "validation_error",
+                "message": "messenger_delivery_caller_refused",
+                "retryable": False,
+            },
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": False,
+            },
+            {"class": "target_unavailable", "message": "other", "retryable": True},
+        ],
+        ids=["caller-refused", "auth-unavailable-not-retryable", "other-retryable-route-error"],
+    )
+    async def test_other_messenger_route_errors_stay_terminal(self, error: dict[str, Any]) -> None:
+        result = await self._deliver_route_error(error)
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] != "not_attempted"
+
 
 class TestCallButlerToolExceptionTypes:
     """The MCP hop must raise types the classifier can tell apart."""
@@ -1202,6 +1270,41 @@ class TestCallButlerToolExceptionTypes:
         assert not isinstance(excinfo.value, TransportNotAttempted)
 
 
+class TestServerUnresponsiveIsNeverResent:
+    """bu-dhloi1.147: cancelling the client does not stop the server's handler, so a target that
+    stalled and then recovers would run ``route.execute`` twice if route reconnected and resent."""
+
+    async def test_a_stalled_target_gets_one_send_not_a_reconnect_and_resend(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        route_mod = sys.modules["butlers.tools.switchboard.routing.route"]
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=ServerUnresponsive("missed 3 pings"))
+        get_client = AsyncMock(return_value=client)
+
+        with patch.object(route_mod, "_get_cached_router_client", new=get_client):
+            with pytest.raises(ServerUnresponsive):
+                await route_mod._call_tool_with_router_client("http://x/mcp/", "route.execute", {})
+
+        assert client.call_tool.await_count == 1
+        assert get_client.await_count == 1  # no reconnect either
+
+    async def test_the_route_envelope_is_not_retryable_and_the_outcome_is_uncertain(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        pool = _mock_pool()
+
+        async def call_fn(_url: str, _tool: str, _args: dict[str, Any]) -> Any:
+            raise ServerUnresponsive("missed 3 pings")
+
+        with _resolves_target():
+            result = await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["retryable"] is False
+
+
 class TestNoEventLoopStarvation:
     """Guard against a bookkeeping shield that silently swallows cancellation."""
 
@@ -1214,3 +1317,83 @@ class TestNoEventLoopStarvation:
         with _resolves_target():
             with pytest.raises(asyncio.CancelledError):
                 await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+
+def test_public_notify_refuses_link_claims_and_raw_urls():
+    from copy import deepcopy
+
+    from pydantic import ValidationError
+
+    from butlers.tools.switchboard.contracts import parse_notify_request
+
+    base = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Review",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
+    }
+    for field, value in (
+        ("dashboard_url", "https://attacker.example.test"),
+        ("url", "https://attacker.example.test"),
+        ("host", "dashboard.example.test"),
+        ("provenance", "dashboard"),
+        ("server_built", True),
+    ):
+        forged = deepcopy(base)
+        forged["actions"][0][field] = value
+        with pytest.raises(ValidationError):
+            parse_notify_request(forged)
+    forged = deepcopy(base)
+    forged["actions"][0] = {
+        "verb": "open_link",
+        "reference": base["actions"][0]["reference"],
+        "label": "Open dashboard",
+        "url": "https://dashboard.example.test/approvals",
+        "host": "dashboard.example.test",
+        "provenance": "dashboard",
+    }
+    with pytest.raises(ValidationError, match="server delivery output"):
+        parse_notify_request(forged)
+
+
+async def test_telegram_effect_reconnect_requires_pre_transport_proof():
+    from importlib import import_module
+
+    mod = import_module("butlers.tools.switchboard.routing.route")
+    for tool, args, error, expected in [
+        (
+            "telegram_send_message",
+            {"chat_id": "123", "text": "long"},
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        (
+            "route.execute",
+            {
+                "input": {
+                    "context": {
+                        "notify_request": {"delivery": {"channel": "telegram", "intent": "send"}}
+                    }
+                }
+            },
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        ("telegram_send_message", {}, OSError(errno.ECONNREFUSED, "controlled refusal"), 2),
+        ("state_get", {}, OSError(errno.ECONNRESET, "controlled reset"), 2),
+    ]:
+        client = MagicMock(call_tool=AsyncMock(side_effect=error))
+        with patch.object(mod, "_get_cached_router_client", AsyncMock(return_value=client)):
+            with pytest.raises((ConnectionError, OSError)):
+                await mod._call_tool_with_router_client("http://localhost:9999/mcp/", tool, args)
+        assert client.call_tool.await_count == expected

@@ -8,7 +8,8 @@ build`` + ``docker compose up -d``) by hand — with one idempotent verb:
 Pipeline: build the ``butlers-app`` image stamped with the current git SHA →
 force-rerun the one-shot ``migrations`` service → recreate services under an
 explicit, hotreload/dev-profile-free
-compose invocation → poll ``/health`` → record the outcome to
+compose invocation → poll ``/health`` → wait for sustained semantic
+readiness (``butlers.core.deploy_readiness``; REQ-dashboard-api-064) → record the outcome to
 ``public.deployments`` (success **or** failed — a failed deploy is recorded
 too, so it is visible in the ledger rather than silent; see
 ``butlers.core.deployments``).
@@ -60,6 +61,7 @@ from pathlib import Path
 import asyncpg
 import httpx
 
+from butlers.core.deploy_readiness import SustainedReadinessTarget, await_sustained_readiness
 from butlers.core.deployments import record_deployment, resolve_core_migration_head
 from butlers.db import db_params_from_env
 
@@ -123,7 +125,7 @@ class DeployError(RuntimeError):
     """Raised when a deploy pipeline phase fails; carries the phase name.
 
     ``phase`` is one of ``"build"``, ``"migrate"``, ``"recreate"``,
-    ``"health-check"`` — used verbatim in the failed ledger row's log line
+    ``"health-check"``, ``"semantic-readiness"`` — used verbatim in the failed ledger row's log line
     and in the CLI's error message so a failure is immediately actionable.
     """
 
@@ -215,6 +217,11 @@ class DeployConfig:
     project_name: str = DEFAULT_PROJECT_NAME
     env_file: str = DEFAULT_ENV_FILE
     image_tag: str = DEFAULT_IMAGE_TAG
+    #: Explicit immutable build inputs. The Dockerfile validates the complete
+    #: Python context before installation; no local/floating base is inferred.
+    base_image: str | None = None
+    python_artifacts: Path | None = None
+    go_artifacts: Path | None = None
     health_url: str = DEFAULT_HEALTH_URL
     health_timeout_s: float = DEFAULT_HEALTH_TIMEOUT_S
     health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S
@@ -224,6 +231,10 @@ class DeployConfig:
     #: See :func:`preflight_check`. Off by default: the canonical prod deploy
     #: must fail closed if it is pointed at a frozen worktree or divergent HEAD.
     allow_dirty_root: bool = False
+    #: Roster-derived sustained-readiness wait (REQ-dashboard-api-064). ``None``
+    #: fails the semantic-readiness phase closed: process ``/health`` alone
+    #: never completes a deploy.
+    readiness: SustainedReadinessTarget | None = None
 
     def __post_init__(self) -> None:
         forbidden = _FORBIDDEN_PROFILES & set(self.profiles)
@@ -615,9 +626,43 @@ def _run_subprocess(
 
 def build_image(config: DeployConfig, git_sha: str) -> None:
     """Build the ``butlers-app`` image, tagged and stamped with *git_sha*."""
+    if config.base_image is None or not re.fullmatch(
+        r"[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._/-][a-z0-9]+)*"
+        r"@sha256:[0-9a-f]{64}",
+        config.base_image,
+    ):
+        raise DeployError("build", "an explicit registry/repository@sha256 base image is required")
+    artifacts = config.python_artifacts
+    if artifacts is None:
+        raise DeployError("build", "an explicit closed Python artifacts directory is required")
+    if not artifacts.is_absolute():
+        artifacts = config.repo_root / artifacts
+    if artifacts.is_symlink() or not artifacts.is_dir():
+        raise DeployError("build", "Python artifacts must name a real directory")
+    provenance = artifacts / "provenance.json"
+    if provenance.is_symlink() or not provenance.is_file():
+        raise DeployError("build", "Python artifact provenance is required")
+    go_artifacts = config.go_artifacts
+    if go_artifacts is None:
+        raise DeployError("build", "an explicit closed Go artifacts directory is required")
+    if not go_artifacts.is_absolute():
+        go_artifacts = config.repo_root / go_artifacts
+    if go_artifacts.is_symlink() or not go_artifacts.is_dir():
+        raise DeployError("build", "Go artifacts must name a real directory")
+    go_provenance = go_artifacts / "provenance.json"
+    if go_provenance.is_symlink() or not go_provenance.is_file():
+        raise DeployError("build", "Go artifact provenance is required")
     cmd = [
         "docker",
         "build",
+        "--target",
+        "production",
+        "--build-context",
+        f"python-artifacts={artifacts.resolve()}",
+        "--build-context",
+        f"go-artifacts={go_artifacts.resolve()}",
+        "--build-arg",
+        f"BUTLERS_BASE_IMAGE={config.base_image}",
         "--build-arg",
         f"GIT_SHA={git_sha}",
         "-t",
@@ -779,6 +824,21 @@ async def wait_for_health(config: DeployConfig) -> None:
     raise DeployError("health-check", f"timed out after {config.health_timeout_s}s: {last_error}")
 
 
+async def wait_for_semantic_readiness(config: DeployConfig, pool: asyncpg.Pool) -> str:
+    """Hold completion until readiness is sustained; return the content-blind receipt.
+
+    Raises ``DeployError("semantic-readiness", <receipt>)`` on timeout, a false
+    final sample, or a missing readiness configuration, so a short green
+    ``/health`` window can never record a successful deploy.
+    """
+    if config.readiness is None:
+        raise DeployError("semantic-readiness", "no sustained-readiness configuration")
+    receipt = await await_sustained_readiness(config.readiness, pool)
+    if not receipt.passed:
+        raise DeployError("semantic-readiness", receipt.to_json())
+    return receipt.to_json()
+
+
 async def _make_pool() -> asyncpg.Pool:
     params = db_params_from_env()
     database = os.environ.get("POSTGRES_DB", "butlers")
@@ -808,6 +868,8 @@ class DeployResult:
     #: Preflight guard reasons that were downgraded to warnings via
     #: ``allow_dirty_root`` (empty for a clean canonical-checkout deploy).
     overrides: tuple[str, ...] = ()
+    #: Content-blind sustained-readiness receipt (JSON) for a successful deploy.
+    readiness_receipt: str | None = None
 
 
 async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) -> DeployResult:
@@ -846,6 +908,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             capability = prepare_restore_drill_executor(config, endpoint)
             recreate_services(config, endpoint, capability)
             await wait_for_health(config)
+            readiness_receipt = await wait_for_semantic_readiness(config, pool)
         except DeployError as exc:
             migration_head = await _best_effort_migration_head(pool)
             await record_deployment(
@@ -875,6 +938,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             migration_head=migration_head,
             result="success",
             overrides=overrides,
+            readiness_receipt=readiness_receipt,
         )
     finally:
         if owns_pool:

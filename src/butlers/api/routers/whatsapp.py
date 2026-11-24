@@ -46,9 +46,10 @@ from butlers.api.models.whatsapp import (
     WhatsAppState,
     WhatsAppStatusResponse,
 )
-from butlers.connectors.bridge_manager import (
+from butlers.whatsapp_bridge_client import (
     DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
     DEFAULT_SHARED_BRIDGE_SOCKET,
+    BridgeClient,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
 
 def _make_bridge_transport(socket_path: str) -> httpx.AsyncHTTPTransport:
     """Create an httpx transport for Unix socket communication."""
-    return httpx.AsyncHTTPTransport(uds=socket_path)
+    return BridgeClient.make_transport(socket_path)
 
 
 async def _bridge_get(socket_path: str, path: str) -> dict | None:
@@ -113,15 +114,11 @@ async def _bridge_get(socket_path: str, path: str) -> dict | None:
     unreachable (connection error, timeout).
     """
     try:
-        transport = _make_bridge_transport(socket_path)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://bridge",
+        return await BridgeClient(
+            socket_path,
             timeout=_BRIDGE_TIMEOUT,
-        ) as client:
-            response = await client.get(path)
-            response.raise_for_status()
-            return response.json()
+            transport_factory=_make_bridge_transport,
+        ).request_json("GET", path, check_status=True)
     except (httpx.ConnectError, httpx.TimeoutException, OSError):
         logger.debug("Bridge unreachable at %s (GET %s)", socket_path, path)
         return None
@@ -137,15 +134,11 @@ async def _bridge_post(socket_path: str, path: str, body: dict | None = None) ->
     unreachable (connection error, timeout).
     """
     try:
-        transport = _make_bridge_transport(socket_path)
-        async with httpx.AsyncClient(
-            transport=transport,
-            base_url="http://bridge",
+        return await BridgeClient(
+            socket_path,
             timeout=_BRIDGE_TIMEOUT,
-        ) as client:
-            response = await client.post(path, json=body or {})
-            response.raise_for_status()
-            return response.json()
+            transport_factory=_make_bridge_transport,
+        ).request_json("POST", path, body or {}, check_status=True)
     except (httpx.ConnectError, httpx.TimeoutException, OSError):
         logger.debug("Bridge unreachable at %s (POST %s)", socket_path, path)
         return None

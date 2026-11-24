@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors.filtered_event_buffer import REPLAY_UNAVAILABLE_KEY  # noqa: E402
+from butlers.connectors.ingest_retry import IngestRetryBudget  # noqa: E402
 from butlers.connectors.whatsapp_user_client import (
     _SSE_PAIRING_WAIT_TIMEOUT_S,
     ChatBuffer,
@@ -32,6 +34,7 @@ from butlers.connectors.whatsapp_user_client import (
     _derive_wa_chat_type,
     _extract_wa_participant_count,
 )
+from tests.connectors.filtered_event_fakes import FilteredEventsPool  # noqa: E402
 
 _ENDPOINT = "whatsapp:+12025551234"
 
@@ -45,6 +48,14 @@ def connector() -> WhatsAppUserClientConnector:
         endpoint_identity=_ENDPOINT,
     )
     return WhatsAppUserClientConnector(config, cursor_pool=MagicMock())
+
+
+@pytest.fixture
+def journal_commits(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """The evidence-journal write (its own tests cover it) so a submit test reaches the ingest."""
+    commit = AsyncMock(return_value=True)
+    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.commit_envelope", commit)
+    return commit
 
 
 def test_single_event_envelope_contract(connector: WhatsAppUserClientConnector) -> None:
@@ -156,16 +167,17 @@ async def test_flush_failure_records_only_failure_class(
     connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
     connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
     connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError(sentinel))  # type: ignore[method-assign]
-    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
 
     with caplog.at_level(logging.DEBUG):
-        await connector._flush_chat_buffer(chat_jid)
+        await connector._flush_chat_buffer(chat_jid, final=True)
 
     assert sentinel not in caplog.text
     assert chat_jid not in caplog.text
     assert "222222222222222@lid" not in caplog.text
-    assert connector._record_batch_filtered_event.call_args.kwargs["error_detail"] == "RuntimeError"
+    (row,) = pool.written
+    assert row[10] == "RuntimeError"
 
 
 @pytest.mark.parametrize("result_shape", ["valid", "short", "extra"])
@@ -510,18 +522,9 @@ async def test_backfill_start_log_is_endpoint_blind(
         ),
         cursor_pool=MagicMock(),
     )
-    reader = MagicMock()
-    writer = MagicMock(
-        write=MagicMock(),
-        drain=AsyncMock(),
-        close=MagicMock(),
-        wait_closed=AsyncMock(),
-    )
-
     with (
-        patch("asyncio.open_unix_connection", new=AsyncMock(return_value=(reader, writer))),
         patch(
-            "butlers.connectors.whatsapp_user_client._read_backfill_acknowledgement",
+            "butlers.connectors.whatsapp_user_client.BridgeClient.request_backfill",
             new=AsyncMock(return_value=7),
         ),
         caplog.at_level(logging.INFO),
@@ -555,7 +558,10 @@ async def test_backfill_failure_log_uses_failure_class_only(
     )
 
     with (
-        patch("asyncio.open_unix_connection", new=AsyncMock(side_effect=RuntimeError(sentinel))),
+        patch(
+            "butlers.connectors.whatsapp_user_client.BridgeClient.request_backfill",
+            new=AsyncMock(side_effect=RuntimeError(sentinel)),
+        ),
         caplog.at_level(logging.WARNING),
     ):
         await connector._request_backfill()
@@ -572,6 +578,7 @@ async def test_backfill_failure_log_uses_failure_class_only(
 
 
 async def test_submit_to_ingest_success_log_is_content_blind(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -596,6 +603,7 @@ async def test_submit_to_ingest_success_log_is_content_blind(
 
 
 async def test_submit_to_ingest_error_result_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -613,6 +621,7 @@ async def test_submit_to_ingest_error_result_raises_content_blind_failure(
 
 
 async def test_submit_to_ingest_exception_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1420,6 +1429,47 @@ async def test_send_invalidated_session_alert_never_raises_on_failure() -> None:
     await connector._send_invalidated_session_alert()  # must not raise
 
 
+async def test_lost_alert_reply_never_replays_the_send_and_ingest_can_reconnect(
+    connector: WhatsAppUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector._db_pool = MagicMock()
+    private_detail = "sentinel-private-alert-transport-payload"
+    old_session = MagicMock()
+    old_session.__aenter__.return_value = SimpleNamespace(
+        call_tool=AsyncMock(side_effect=RuntimeError(private_detail))
+    )
+    old_session.__aexit__.side_effect = RuntimeError(private_detail)
+    new_session = MagicMock()
+    new_session.__aenter__.return_value = SimpleNamespace(
+        call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={"status": "ok"}))
+    )
+    connect = MagicMock(side_effect=[old_session, new_session])
+    record = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.mcp_client.MCPClient", connect)
+    monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", record)
+
+    with caplog.at_level(logging.DEBUG, logger="butlers.connectors.mcp_client"):
+        await connector._send_invalidated_session_alert()
+
+    old_send = old_session.__aenter__.return_value.call_tool
+    old_send.assert_awaited_once()
+    assert old_send.await_args.args[0] == "deliver"
+    connect.assert_called_once()
+    old_session.__aexit__.assert_awaited_once()
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["outcome"] == "failed"
+    assert record.await_args.kwargs["reason"] == "delivery_error:ConnectionError"
+    assert "RuntimeError" in caplog.text
+    assert private_detail not in caplog.text
+
+    assert await connector._mcp_client.call_tool("ingest", {}) == {"status": "ok"}
+    assert connect.call_count == 2
+    new_session.__aenter__.return_value.call_tool.assert_awaited_once_with("ingest", {})
+    await connector._mcp_client.aclose()
+
+
 async def test_send_invalidated_session_alert_records_attention_ledger_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1699,8 +1749,8 @@ async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing
     instead of tearing down the bridge or polling on a fixed sleep."""
     connector = _connector_with_mocks()
 
-    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
-        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
+    async def _wait_until_connected(*, timeout_s: float) -> None:
+        assert timeout_s == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
         connector._running = False
 
@@ -1722,7 +1772,7 @@ async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing
 
     await connector._sse_event_loop()  # must return without raising or hanging
 
-    wait_until_connected.assert_awaited_once_with(timeout=_SSE_PAIRING_WAIT_TIMEOUT_S)
+    wait_until_connected.assert_awaited_once_with(timeout_s=_SSE_PAIRING_WAIT_TIMEOUT_S)
     sleep.assert_not_awaited()
 
 
@@ -1835,8 +1885,8 @@ async def test_sse_event_loop_retries_pending_identity_resolution_on_each_pass(
         get_status=AsyncMock(return_value={"state": "connected", "phone": "12025551234"}),
     )
 
-    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
-        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
+    async def _wait_until_connected(*, timeout_s: float) -> None:
+        assert timeout_s == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
 
     bridge_manager.wait_until_connected = AsyncMock(side_effect=_wait_until_connected)
@@ -1977,8 +2027,13 @@ async def test_batch_marks_only_the_forwarded_message_text(
     from unittest.mock import patch
 
     chat = "group123@g.us"
+    # A failed batch is held, then parked per message once its attempts are spent
+    # (bu-dhloi1.277); park on the first failure here.
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     for stage in ("connector", "global", "discretion", "submission", "build"):
         connector._filtered_event_buffer._rows.clear()
+        pool.written.clear()
         connector._chat_buffers[chat] = _wa_chat_buffer(chat, events)
         allow = SimpleNamespace(allowed=True, action="pass_through")
         block = SimpleNamespace(
@@ -2013,14 +2068,24 @@ async def test_batch_marks_only_the_forwarded_message_text(
             patch.object(connector, "_flush_and_drain", AsyncMock()),
         ):
             await connector._flush_chat_buffer(chat)
-        row = connector._filtered_event_buffer._rows[-1]
+        row = [*pool.written, *connector._filtered_event_buffer._rows][-1]
         assert row[8] == ("error" if stage in ("submission", "build") else "filtered")
         stored = row[9]
-        assert stored["payload"]["raw"] == {}
-        assert "normalized_text" not in stored["payload"]
-        assert stored["payload"]["untrusted_spans"] == [
-            {"kind": "forwarded", "start": 0, "end": len("[no text]")}
-        ]
+        if stage == "submission":
+            # A parked message replays as a batch of one: its envelope is retained.
+            assert stored["payload"]["raw"]
+            assert stored["control"]["idempotency_key"]
+            assert stored["payload"]["untrusted_spans"][0]["kind"] == "forwarded"
+        elif stage == "build":
+            # The envelope could not be built: the bridge event is kept, replay refuses it.
+            assert REPLAY_UNAVAILABLE_KEY in stored
+            assert stored["payload"]["raw"] == events[-1]
+        else:
+            assert stored["payload"]["raw"] == {}
+            assert "normalized_text" not in stored["payload"]
+            assert stored["payload"]["untrusted_spans"] == [
+                {"kind": "forwarded", "start": 0, "end": len("[no text]")}
+            ]
 
 
 def test_unforwarded_events_carry_no_spans(connector: WhatsAppUserClientConnector) -> None:
@@ -2059,3 +2124,372 @@ def test_unforwarded_events_carry_no_spans(connector: WhatsAppUserClientConnecto
         {"kind": "quoted", "start": 0, "end": len("[no text]")}
     ]
     assert batch["payload"]["raw"]["conversation_history"][0]["reply_to"] == "q-9"
+
+
+def test_history_entries_carry_authorship_and_forward_facts(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Spec: REQ-connector-base-spec-013 (owner, counterparty, forward, reply, missing facts)."""
+    owner = {
+        "message_id": "m-owner",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "I'll send it tomorrow"},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    counterparty = {
+        "message_id": "m-them",
+        "chat_jid": "chat-1",
+        "sender_jid": "them@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "Can you send the deck?"},
+        "raw": {"is_from_me": False, "is_group": False},
+    }
+    forwarded = {
+        "message_id": "m-fwd",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "I will pay you back", "is_forwarded": True},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    reply = {
+        "message_id": "m-reply",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "yes, that one", "quoted_message_id": "m-them"},
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+    no_raw = {
+        "message_id": "m-noraw",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": {"text": "no provider flag"},
+    }
+    odd_flag = {
+        "message_id": "m-odd",
+        "chat_jid": "chat-1",
+        "sender_jid": "owner@s.whatsapp.net",
+        "type": "text",
+        "content": None,
+        "raw": {"is_from_me": "true", "is_group": False},
+    }
+
+    envelope = connector._build_batch_envelope(
+        "chat-1", [owner, counterparty, forwarded, reply, no_raw, odd_flag], "batch-facts"
+    )
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert (history["m-owner"]["is_from_me"], history["m-owner"]["forwarded"]) == (True, False)
+    assert (history["m-them"]["is_from_me"], history["m-them"]["forwarded"]) == (False, False)
+    assert (history["m-fwd"]["is_from_me"], history["m-fwd"]["forwarded"]) == (True, True)
+    assert history["m-reply"]["text"] == "yes, that one"
+    assert history["m-reply"]["reply_to"] == "m-them"
+    assert "Can you send the deck?" not in history["m-reply"]["text"]
+    # A missing or non-boolean provider flag is omitted, never guessed.
+    assert "is_from_me" not in history["m-noraw"]
+    assert history["m-noraw"]["forwarded"] is False
+    assert "is_from_me" not in history["m-odd"]
+    assert "forwarded" not in history["m-odd"]
+
+
+def test_batch_history_carries_the_bridge_history_marker(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """raw.from_history: the bridge marks history-sync replays; older bridges omit it."""
+
+    def _event(message_id: str, raw: dict[str, object]) -> dict[str, object]:
+        return {
+            "message_id": message_id,
+            "chat_jid": "chat-1",
+            "sender_jid": "owner@s.whatsapp.net",
+            "type": "text",
+            "content": {"text": "I'll send it tomorrow"},
+            "raw": raw,
+        }
+
+    events = [
+        _event("m-live", {"is_from_me": True, "from_history": False}),
+        _event("m-history", {"is_from_me": True, "from_history": True}),
+        _event("m-old-bridge", {"is_from_me": True}),
+        _event("m-odd", {"is_from_me": True, "from_history": "false"}),
+    ]
+    envelope = connector._build_batch_envelope("chat-1", events, "batch-history")
+    history = {e["message_id"]: e for e in envelope["payload"]["raw"]["conversation_history"]}
+
+    assert history["m-live"]["from_history"] is False
+    assert history["m-history"]["from_history"] is True
+    assert "from_history" not in history["m-old-bridge"]
+    assert "from_history" not in history["m-odd"]
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import whatsapp_user_client as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.WhatsAppUserClientConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("whatsapp_user_client", "whatsapp")
+    assert config.max_inflight == 17
+
+
+# --- A failed batch keeps a replayable copy (bu-dhloi1.277) ---
+
+
+def _wa_event(message_id: str, chat_jid: str = "g1@g.us") -> dict[str, Any]:
+    return {
+        "message_id": message_id,
+        "chat_jid": chat_jid,
+        "sender_jid": "111@s.whatsapp.net",
+        "timestamp": 1711447200,
+        "type": "text",
+        "text": f"text {message_id}",
+    }
+
+
+async def _flush_failing_wa(
+    connector: WhatsAppUserClientConnector,
+    chat_jid: str,
+    *,
+    final: bool = False,
+    retry: bool = False,
+    submit_error: Exception | None = RuntimeError("down"),  # noqa: B008
+    block: str | None = None,
+) -> None:
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    if block == "connector":
+        connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(allowed=False, reason="blocked")
+        )
+    elif block == "global":
+        connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+            return_value=MagicMock(allowed=False, reason="skip", action="skip")
+        )
+    connector._submit_to_ingest = AsyncMock(side_effect=submit_error)  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    if retry:
+        await connector._retry_held_batches(final=final)
+    else:
+        await connector._flush_chat_buffer(chat_jid, final=final)
+
+
+async def test_failed_batch_is_held_not_buffered(connector: WhatsAppUserClientConnector) -> None:
+    events = [_wa_event("m1"), _wa_event("m2")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+
+    await _flush_failing_wa(connector, "g1@g.us")
+
+    assert not connector._chat_buffers["g1@g.us"].messages
+    held = connector._held_batches["g1@g.us"]
+    assert [h.events for h in held] == [events]
+    assert not pool.written
+
+
+async def test_held_batch_keeps_its_key_and_parks_when_spent(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    events = [_wa_event("m1"), _wa_event("m2")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._batch_retry = IngestRetryBudget(2)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+
+    await _flush_failing_wa(connector, "g1@g.us")
+    key = connector._held_batches["g1@g.us"][0].key
+    assert not pool.written
+    await _flush_failing_wa(connector, "g1@g.us", retry=True)
+
+    ids = [row[9]["event"]["external_event_id"] for row in pool.written]
+    assert key == "batch:g1@g.us:m1-m2"
+    assert ids == ["batch:g1@g.us:m1-m1", "batch:g1@g.us:m2-m2"]
+    assert all(row[8] == "error" and row[9]["payload"]["raw"] for row in pool.written)
+    assert "g1@g.us" not in connector._held_batches
+
+
+async def test_unwritable_park_keeps_the_batch_held(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    events = [_wa_event("m1")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+
+    await _flush_failing_wa(connector, "g1@g.us")
+    assert connector._held_batches["g1@g.us"][0].events == events
+
+    pool.fail_writes = False
+    await _flush_failing_wa(connector, "g1@g.us", retry=True)
+    assert len(pool.written) == 1
+    assert "g1@g.us" not in connector._held_batches
+
+
+async def test_final_flush_parks_a_failed_batch_at_once(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+
+    await _flush_failing_wa(connector, "g1@g.us", final=True)
+
+    assert len(pool.written) == 1
+    assert "g1@g.us" not in connector._held_batches
+
+
+async def test_a_batch_without_its_journal_row_is_never_parked_or_released(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Evidence before acknowledgement: held through every retry and the final flush."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    events = [_wa_event("m1")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    failure = EvidenceNotCommitted("insert_failed")
+
+    await _flush_failing_wa(connector, "g1@g.us", submit_error=failure)
+    for final in (False, True):
+        await _flush_failing_wa(connector, "g1@g.us", retry=True, final=final, submit_error=failure)
+
+    assert not pool.written  # nothing parked
+    assert [h.events for h in connector._held_batches["g1@g.us"]] == [events]
+    assert connector._last_event_id != "m1"  # the checkpoint did not move
+
+
+@pytest.mark.parametrize("block", ["connector", "global"])
+async def test_held_then_dropped_releases_hold_and_budget(
+    connector: WhatsAppUserClientConnector, block: str
+) -> None:
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    await _flush_failing_wa(connector, "g1@g.us")
+    key = connector._held_batches["g1@g.us"][0].key
+    assert connector._batch_retry.attempts(key) == 1
+
+    await _flush_failing_wa(connector, "g1@g.us", retry=True, block=block)
+
+    assert "g1@g.us" not in connector._held_batches
+    assert connector._batch_retry.attempts(key) == 0
+
+
+async def test_same_chat_release_keeps_another_batchs_hold(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m1")])
+    await _flush_failing_wa(connector, "g1@g.us")
+    # A second hold, as when two flushes of the chat were in flight together.
+    connector._hold_batch("g1@g.us", None, "batch:g1@g.us:m2-m2", [_wa_event("m2")])
+    first, second = connector._held_batches["g1@g.us"]
+    assert first.key != second.key
+
+    connector._release_batch("g1@g.us", first, first.key)
+
+    assert connector._held_batches["g1@g.us"] == [second]
+
+
+async def test_held_chat_is_not_force_flushed_and_sheds_past_ceiling(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    cap = connector._config.buffer_max_messages
+    connector._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("h1")])
+    await _flush_failing_wa(connector, "g1@g.us")
+    connector._flush_chat_buffer = AsyncMock()  # type: ignore[method-assign]
+
+    for i in range(cap * 4 + 5):
+        await connector._buffer_event(_wa_event(f"n{i}"), "g1@g.us")
+
+    connector._flush_chat_buffer.assert_not_awaited()
+    assert len(connector._chat_buffers["g1@g.us"].messages) == cap * 4
+
+
+async def test_both_stores_down_holds_one_batch_per_chat(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", [_wa_event("m0")])
+    await _flush_failing_wa(connector, "g1@g.us")
+
+    ticks = 30
+    for i in range(ticks):
+        connector._chat_buffers["g1@g.us"].messages.append(_wa_event(f"n{i}"))
+        await _flush_failing_wa(connector, "g1@g.us")  # the scanner's buffer flush: waits
+        await _flush_failing_wa(connector, "g1@g.us", retry=True)  # the retry timer
+
+    assert len(connector._held_batches["g1@g.us"]) == 1
+    assert len(connector._chat_buffers["g1@g.us"].messages) == ticks
+
+
+def _owner_only_event() -> dict[str, Any]:
+    return {
+        "message_id": "m-owner",
+        "sender_jid": "15550000@s.whatsapp.net",
+        "timestamp": 1711447200,
+        "type": "text",
+        "text": "I'll send it tomorrow",
+        "raw": {"is_from_me": True},
+    }
+
+
+def test_private_chat_batch_carries_the_normalized_peer_identity(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """An owner-only private flush still names the counterparty (REQ-connector-base-spec-013)."""
+    env = connector._build_batch_envelope(
+        "15551234:7@s.whatsapp.net", [_owner_only_event()], "batch-peer"
+    )
+    assert env["payload"]["raw"]["peer_identity"] == "15551234@s.whatsapp.net"
+
+
+def test_private_chat_peer_translates_a_mapped_lid(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    connector._lid_to_phone["999"] = "15557777"
+    env = connector._build_batch_envelope("999@lid", [_owner_only_event()], "batch-lid")
+    assert env["payload"]["raw"]["peer_identity"] == "15557777@s.whatsapp.net"
+
+
+def test_group_chat_batch_carries_no_peer_identity(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    env = connector._build_batch_envelope("1234-5678@g.us", [_owner_only_event()], "batch-grp")
+    assert "peer_identity" not in env["payload"]["raw"]
+
+
+@pytest.mark.parametrize("chat_jid", ["", "chat-1", "@s.whatsapp.net", "15551234@"])
+def test_malformed_private_chat_jid_omits_the_peer_identity(
+    connector: WhatsAppUserClientConnector, chat_jid: str
+) -> None:
+    env = connector._build_batch_envelope(chat_jid, [_owner_only_event()], "batch-bad")
+    assert "peer_identity" not in env["payload"]["raw"]
+
+
+def test_self_chat_batch_carries_no_peer_identity(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Messaging yourself must not make the owner their own counterparty."""
+    event = {**_owner_only_event(), "sender_jid": "15550000@s.whatsapp.net"}
+    env = connector._build_batch_envelope("15550000@s.whatsapp.net", [event], "batch-self")
+    assert env["sender"]["owner_sender_id"] == "15550000@s.whatsapp.net"
+    assert "peer_identity" not in env["payload"]["raw"]
+
+
+@pytest.mark.parametrize(
+    "chat_jid",
+    ["123@newsletter", "status@broadcast", "123@bot", "123@hosted", "123@c.us", "1@call"],
+)
+def test_non_person_chats_carry_no_peer_identity(
+    connector: WhatsAppUserClientConnector, chat_jid: str
+) -> None:
+    env = connector._build_batch_envelope(chat_jid, [_owner_only_event()], "batch-other")
+    assert "peer_identity" not in env["payload"]["raw"]

@@ -1,0 +1,35 @@
+--- a/postinstall.js
++++ b/postinstall.js
+@@ -66,13 +66,19 @@
+-        const writer = fs.createWriteStream(archivePath);
+-        const response = await axios({
+-            url: downloadUrl,
+-            method: 'GET',
+-            responseType: 'stream',
+-            timeout: 60000 // 1 minute timeout
+-        });
+-        response.data.pipe(writer);
+-        await new Promise((resolve, reject) => {
+-            writer.on('finish', resolve);
+-            writer.on('error', (err) => reject(new Error(`Failed to write archive to disk: ${err.message}`)));
+-            response.data.on('error', (err) => reject(new Error(`Failed during download stream: ${err.message}`)));
+-        });
++        if (process.env.BUTLERS_TEST_SERVER_ARCHIVE) {
++            const cachedArchive = path.resolve(process.env.BUTLERS_TEST_SERVER_ARCHIVE);
++            fs.copyFileSync(cachedArchive, archivePath, fs.constants.COPYFILE_EXCL);
++            console.log('Using explicitly pinned build-cache archive.');
++        } else {
++            const writer = fs.createWriteStream(archivePath);
++            const response = await axios({
++                url: downloadUrl,
++                method: 'GET',
++                responseType: 'stream',
++                timeout: 60000 // 1 minute timeout
++            });
++            response.data.pipe(writer);
++            await new Promise((resolve, reject) => {
++                writer.on('finish', resolve);
++                writer.on('error', (err) => reject(new Error(`Failed to write archive to disk: ${err.message}`)));
++                response.data.on('error', (err) => reject(new Error(`Failed during download stream: ${err.message}`)));
++            });
++        }

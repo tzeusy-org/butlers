@@ -18,7 +18,8 @@ runtime adapter. Columns come from `core_001_foundation` plus later core migrati
 authoritative field list. Invariants:
 
 - **`trigger_source`** must be one of `TRIGGER_SOURCES` in `sessions.py`, or
-  `schedule:<task-name>` / `deadline:<task-name>`.
+  `schedule:<task-name>` / `deadline:<task-name>`, or the Chronicler manual refresh
+  `api:day_close_refresh:<YYYY-MM-DD>` (a real calendar date; no other `api:` source is accepted).
 - **`request_id`** is required: the ingestion UUIDv7 for connector traffic, freshly generated
   otherwise.
 - **`purpose_lane`** is a closed `standard` / `private_content` value taken from trusted routing or
@@ -39,9 +40,34 @@ calls, duration, success/error, cost, and token counts, and sets `completed_at`.
 stripped from text fields first, because PostgreSQL text columns reject them. An unknown
 `session_id` raises `ValueError`.
 
+### Stage timings
+
+`session_complete()` also writes `sessions.stage_timings` (JSONB, nullable, `core_321`), a
+content-free breakdown of where the time went. `src/butlers/core/session_timing.py` keeps one
+in-process clock per session, started at the spawner's origin, and records millisecond offsets
+from it. Counts and sizes only, never prompts, messages, tool arguments or results.
+
+| Key | Meaning |
+| --- | --- |
+| `prompt_context_ms`, `memory_context_ms`, `blind_spot_ms` | end of each pre-row composition step, in order: system prompt plus situational, timezone and routing context; memory recall; blind-spot preamble. The gaps between them are the step costs. |
+| `row_created_ms` | session row inserted (before it: prompt and context composition) |
+| `invoke_start_ms` | runtime adapter about to be invoked (setup done) |
+| `first_mcp_request_ms` | the spawned CLI's first request to the butler MCP endpoint (spawn plus CLI startup, as seen by the daemon) |
+| `first_tool_done_ms`, `last_tool_done_ms` | daemon-side completion of the first and last MCP tool call |
+| `invoke_end_ms` | adapter returned or raised (the last attempt, after any failover) |
+| `total_ms` | taken when the row is completed |
+| `adapter` | whitelisted integers the adapter measured itself (`spawn_latency_ms`, `attempt_count`, `mcp_server_count`) |
+| `tool_surface` | `tool_count`, `schema_bytes` and `schema_tokens_est` (bytes / 4) of the butler MCP `tools/list` |
+
+A stage the process did not observe is absent, and the column is NULL when the clock never ran
+(for example a session completed by another process). First-model-token time is not observable
+from the daemon and is not recorded. `duration_ms` is measured from the spawner's origin, which
+precedes the row insert, so `completed_at - started_at` is shorter than `duration_ms` by about
+`row_created_ms`.
+
 ## Healing Fingerprint
 
-After a session fails and the self-healing module computes an error fingerprint, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
+When an error is fingerprinted for centralized QA tracking, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
 
 ## Active Sessions
 
@@ -119,3 +145,8 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 - [Tool Call Capture](tool-call-capture.md) --- how tool call records are collected for the `tool_calls` field
 - [Model Routing](model-routing.md) --- how the `model`, `complexity`, and `resolution_source` fields are populated
 - [Scheduler Execution](scheduler-execution.md) --- how `schedule:<name>` trigger sources originate
+
+
+## Served identity evidence
+
+Dossier detail shows Requested and ordered serving attempts separately. Authoritative response identity earns Served; CLI usage metadata with unproven/fallback provenance says CLI-reported usage models and actual serving unknown. Historical absence says No served identity recorded; query failure says Serving evidence unavailable. A multiple-model task is not duplicated into successful quality credit for every helper model. Reported and expected CLI versions compare only when both are valid, with drift diagnostic and no deployed-fleet inference. Existing prompts/results/tools are separate established session content, never copied into serving records.

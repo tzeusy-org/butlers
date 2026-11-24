@@ -353,6 +353,8 @@ async def list_subscriptions(
         f"SELECT id, service, amount, currency, frequency, next_renewal, status,"
         f" auto_renew, payment_method, account_id, source_message_id,"
         f" cancellation_url, notice_period_days, cancel_by, metadata,"
+        f" renewal_source, price_source, service_source, date_epoch, price_epoch,"
+        f" value_revision, field_claims,"
         f" created_at, updated_at"
         f" FROM finance.subscriptions{where}"
         f" ORDER BY next_renewal ASC"
@@ -370,6 +372,13 @@ async def list_subscriptions(
             currency=r["currency"],
             frequency=r["frequency"],
             next_renewal=str(r["next_renewal"]),
+            renewal_source=r.get("renewal_source", "extracted"),
+            price_source=r.get("price_source", "extracted"),
+            service_source=r.get("service_source", "extracted"),
+            date_epoch=r.get("date_epoch", 0),
+            price_epoch=r.get("price_epoch", 0),
+            value_revision=r.get("value_revision", 0),
+            field_claims=r.get("field_claims", []),
             status=r["status"],
             auto_renew=r["auto_renew"],
             payment_method=r["payment_method"],
@@ -944,9 +953,10 @@ async def bulk_ingest_transactions(
 ) -> BulkTransactionResponse:
     """Bulk-ingest normalized transaction objects.
 
-    Accepts 1–500 items per request. Returns per-row counts for imported,
-    skipped (dedup), and errored rows. Embeddings are skipped for performance;
-    tsvector (full-text search) is still computed.
+    Accepts 1–500 items per request. Rows are recorded in finance.transactions
+    (the store GET /transactions reads) through record_transaction, so dedupe is
+    shared with the MCP tool. Returns exact counts: imported (fresh inserts),
+    skipped (duplicates), and errors.
 
     error_details entries include an index and reason:
     - "duplicate" — already exists (composite or source_message_id dedup)
@@ -960,12 +970,10 @@ async def bulk_ingest_transactions(
         )
 
     pool = _pool(db)
-    _facts_mod = _load_facts_tools()
-
     txn_dicts = [item.model_dump() for item in request.transactions]
 
     try:
-        result = await _facts_mod.bulk_record_transactions(
+        result = await _load_transactions_tools().bulk_record_transactions(
             pool,
             transactions=txn_dicts,
             account_id=request.account_id,
@@ -1007,6 +1015,13 @@ async def bulk_ingest_transactions(
 # ---------------------------------------------------------------------------
 # GET /merchants/distinct — distinct merchants with aggregate stats
 # ---------------------------------------------------------------------------
+
+
+def _load_transactions_tools():
+    """Return the finance.transactions tool module (call-time patch seam)."""
+    import importlib
+
+    return importlib.import_module("butlers.tools.finance.transactions")
 
 
 def _load_facts_tools():

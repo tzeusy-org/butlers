@@ -23,7 +23,14 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.connector_catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
+from butlers.core.custody_ingress import (
+    UNREAD,
+    CustodyUnread,
+    mark_owner_custody,
+    source_endpoint_record,
+)
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
@@ -104,26 +111,9 @@ class HistoryConfig:
 
 
 # Channel strategy mapping
-HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
-    # Real-time messaging channels
-    "telegram_bot": "realtime",
-    "telegram_user_client": "realtime",
-    "whatsapp": "realtime",
-    "whatsapp_user_client": "realtime",
-    "slack": "realtime",
-    "discord": "realtime",
-    # Email
-    "email": "email",
-    # Google Calendar connector
-    "google_calendar": "realtime",
-    # Spotify connector
-    "spotify_user_client": "realtime",
-    # OwnTracks connector
-    "owntracks": "realtime",
-    # No history for other channels
-    "api": "none",
-    "mcp": "none",
-}
+HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = (
+    conversation_history_strategies()
+)
 
 
 async def _load_realtime_history(
@@ -1221,6 +1211,15 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _identity_cause_class(exc: BaseException) -> str | None:
+    """Return the content-blind inner class of an identity query failure only."""
+    from butlers.identity import IdentityResolutionQueryError
+
+    if isinstance(exc, IdentityResolutionQueryError):
+        return exc.failure_class
+    return None
+
+
 class MessagePipeline:
     """Connects input modules to the switchboard classification and routing.
 
@@ -1277,6 +1276,7 @@ class MessagePipeline:
         enable_ingress_dedupe: bool = False,
         enable_identity_resolution: bool = False,
         notify_owner_fn: Callable[..., Coroutine] | None = None,
+        unknown_sender_card_fn: Callable[..., Coroutine] | None = None,
         classification_timeout_s: int | None = None,
         local_tool_server_provider: Callable[[], Any] | None = None,
         credential_store: Any | None = None,
@@ -1289,6 +1289,7 @@ class MessagePipeline:
         self._enable_ingress_dedupe = enable_ingress_dedupe
         self._enable_identity_resolution = enable_identity_resolution
         self._notify_owner_fn = notify_owner_fn
+        self._unknown_sender_card_fn = unknown_sender_card_fn
         self._classification_timeout_s = classification_timeout_s
         self._local_tool_server_provider = local_tool_server_provider
         self._credential_store = credential_store
@@ -1302,6 +1303,8 @@ class MessagePipeline:
         identity_preamble: str | None = None,
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
+        source_custody: str | None = None,
+        source_endpoint: dict[str, str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         dashboard_context: dict[str, Any] | None = None,
     ) -> None:
@@ -1321,18 +1324,24 @@ class MessagePipeline:
         the dashboard confirm-loop works regardless of what the classification
         LLM chose to write into its own ``prompt``/``context`` arguments.
         """
-        _routing_ctx_var.set(
-            {
-                "source_metadata": source_metadata,
-                "request_context": request_context,
-                "request_id": request_id,
-                "identity_preamble": identity_preamble,
-                "source_contact_id": source_contact_id,
-                "source_entity_id": source_entity_id,
-                "attachments": attachments,
-                "dashboard_context": dashboard_context,
-            }
-        )
+        context: dict[str, Any] = {
+            "source_metadata": source_metadata,
+            "request_context": request_context,
+            "request_id": request_id,
+            "identity_preamble": identity_preamble,
+            "source_contact_id": source_contact_id,
+            "source_entity_id": source_entity_id,
+            # Server-side custody read only (REQ-endpoint-custody-holds-005).
+            "source_custody": source_custody,
+            "attachments": attachments,
+            "dashboard_context": dashboard_context,
+        }
+        if source_entity_id and source_endpoint is not None:
+            # The write-time custody recheck names this sender's endpoint (slice 3b).
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY
+
+            context[SOURCE_ENDPOINT_KEY] = source_endpoint
+        _routing_ctx_var.set(context)
 
     def _clear_routing_context(self) -> None:
         """Clear the per-task routing context via ContextVar after runtime spawn."""
@@ -1447,6 +1456,7 @@ class MessagePipeline:
             source_channel,
             channel_values,
             notify_owner_fn=self._notify_owner_fn,
+            unknown_sender_card_fn=self._unknown_sender_card_fn,
             **(
                 {"resolver": issuer.resolve_identity, "bulk_resolver": issuer.resolve_identities}
                 if issuer is not None
@@ -3098,12 +3108,20 @@ class MessagePipeline:
                     identity_preamble: str | None = None
                     source_contact_id: str | None = None
                     source_entity_id: str | None = None
+                    source_custody: str | None = None
                     if self._enable_identity_resolution:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.identity_resolution"
                         ):
                             try:
                                 identity_result: IdentityResolutionResult | None = None
+                                # Reuse the accepted-source capture's custody read, so the
+                                # frozen report and the route envelope cannot disagree.
+                                captured_custody = (
+                                    issuer.captured_custody(UUID(str(message_inbox_id)))
+                                    if issuer is not None and message_inbox_id is not None
+                                    else UNREAD
+                                )
                                 if _decomp_messages is not None:
                                     (
                                         _decomp_messages,
@@ -3115,7 +3133,21 @@ class MessagePipeline:
                                     primary_sender = self._string_or_none(args.get("source_id"))
                                     if primary_sender is not None:
                                         identity_result = batch_resolutions.get(primary_sender)
+                                    if (
+                                        identity_result is not None
+                                        and identity_result.is_owner
+                                        and not isinstance(captured_custody, CustodyUnread)
+                                    ):
+                                        # Keep the stricter verdict: held if either read
+                                        # (capture's or the batch's own) says held.
+                                        mark_owner_custody(
+                                            identity_result,
+                                            captured_custody or identity_result.custody_reason,
+                                        )
                                 else:
+                                    from butlers.core.account_security_events import (
+                                        subject_from_normalized_text,
+                                    )
                                     from butlers.tools.switchboard.identity.inject import (
                                         resolve_and_inject_identity,
                                     )
@@ -3130,6 +3162,15 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            unknown_sender_card_fn=self._unknown_sender_card_fn,
+                                            # Only an email's subject line, never the
+                                            # body, reaches the unknown-sender notice.
+                                            subject=(
+                                                subject_from_normalized_text(message_text) or None
+                                                if source == "email"
+                                                else None
+                                            ),
+                                            owner_custody=captured_custody,
                                             **(
                                                 {"resolver": issuer.resolve_identity}
                                                 if issuer is not None
@@ -3143,6 +3184,7 @@ class MessagePipeline:
                                         source_contact_id = str(identity_result.contact_id)
                                     if identity_result.entity_id is not None:
                                         source_entity_id = str(identity_result.entity_id)
+                                    source_custody = identity_result.custody_reason
 
                                     # entity-v3 (bu-hvrt1): for an unresolved/temp
                                     # sender, deterministically assert the channel
@@ -3176,12 +3218,17 @@ class MessagePipeline:
                                         extra={
                                             "source_channel": source,
                                             "failure_class": type(exc).__name__,
+                                            "cause_class": _identity_cause_class(exc),
                                         },
                                     )
                                 else:
                                     logger.warning(
                                         "pipeline.identity_resolution_failed",
-                                        extra={"failure_class": type(exc).__name__},
+                                        extra={
+                                            "failure_class": type(exc).__name__,
+                                            # Content-blind inner class (bu-n7zmbp.20).
+                                            "cause_class": _identity_cause_class(exc),
+                                        },
                                     )
 
                     if _decomp_messages is not None:
@@ -3256,6 +3303,11 @@ class MessagePipeline:
                         identity_preamble=identity_preamble,
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
+                        source_custody=source_custody,
+                        source_endpoint=source_endpoint_record(
+                            source,
+                            source_metadata.get("source_id") or source_metadata.get("identity"),
+                        ),
                         attachments=attachments,
                         dashboard_context=dashboard_context,
                     )

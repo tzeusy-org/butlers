@@ -136,6 +136,10 @@ class _Spy:
         return self._results[index]
 
 
+# An absolute origin: without one a runtime-attention message carries no link (bu-z0b0ah.3).
+_DASHBOARD = "https://dashboard.example"
+
+
 def _worker(
     repository: RuntimeAttentionOutbox,
     transport: Any,
@@ -547,13 +551,15 @@ async def test_manual_reissue_waits_for_recovery_then_returns_one_successor(
         ) as deliver_mock:
             cycle = await _worker(
                 delivery_repo,
-                build_messenger_transport(pool, resolve_recipient=_recipient),
+                build_messenger_transport(
+                    pool, resolve_recipient=_recipient, dashboard_base_url=_DASHBOARD
+                ),
             ).run_once()
 
         assert cycle.delivered == 1
         notify_request = deliver_mock.await_args.kwargs["notify_request"]
         assert notify_request["delivery"]["message"] == (
-            "Runtime attention: model_breaker_open. Open "
+            f"Runtime attention: model_breaker_open. Open {_DASHBOARD}"
             f"/settings/models?highlight={original['source_snapshot']['catalog_entry_id']} "
             "to review."
         )
@@ -798,7 +804,7 @@ async def test_condition_episodes_deliver_fixed_copy_once(migrated_core_postgres
         messages: list[str] = []
 
         async def transport(episode: OutboxEpisode) -> TransportResult:
-            messages.append(_episode_message(episode))
+            messages.append(_episode_message(episode, dashboard_base_url=_DASHBOARD))
             return CONFIRMED
 
         repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
@@ -806,9 +812,9 @@ async def test_condition_episodes_deliver_fixed_copy_once(migrated_core_postgres
         assert cycle.delivered == 2
         assert sorted(messages) == [
             "Runtime attention: butler fleet control is unhealthy; expected daemons are not "
-            "receiver-ready. Open /system to review.",
+            f"receiver-ready. Open {_DASHBOARD}/system to review.",
             "Runtime attention: no qualifying QA patrol has completed within its expected "
-            "window. Open /system to review.",
+            f"window. Open {_DASHBOARD}/system to review.",
         ]
         for leaked in ("general", "127.0.0.1", "refused"):
             assert not any(leaked in message for message in messages)

@@ -1,6 +1,10 @@
+## 0. Goal-runtime reconciliation (bu-6a9xxw.8)
+
+- [x] 0.1 Classify every QA operation under RFC 0038 D18, map all 25 requirements to retained or amended clauses with owner and verification seam, resolve the staffer-qa Patrol Loop Lifecycle collision, and refresh the child packets ([goal-runtime-reconciliation.md](goal-runtime-reconciliation.md)).
+
 ## 1. QA runtime ownership and lineage (A)
 
-- [ ] 1.1 Adopt the exact gated changeset and consume shared-runtime/publisher predecessors; install QA-bound lifecycle-fenced launch capability for initial and follow-up paths.
+- [ ] 1.1 Adopt the exact gated changeset and consume shared-runtime/publisher predecessors; install QA-bound lifecycle-fenced launch capability for initial and follow-up paths as D18 engineering executors outside the goal runtime.
 - [ ] 1.2 Persist launch/session/phase identity before execution and verify both startup orders, interrupted launches, pinned model resolution, QA accounting and empty MCP.
 
 ## 2. Trustworthy evidence and outcomes (B)

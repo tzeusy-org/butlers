@@ -29,8 +29,9 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
   `UNKNOWN`, never a pass; only exit 0 passes. Launch long runs detached.
 - **Removing or weakening a test** needs a `Tests: +a ~m -d` PR line and a named survivor
   (`Survivor: <old> -> <new>`) for protected checks; review is the only deletion gate.
-- **Test budget:** a PR that pushes a lane over `scripts/test-budget-baseline.json` condenses tests in
-  the same PR or states the net delta and why. `make check-guards` runs the hosted `guards` steps
+- **No test-count cap:** owner decision 2026-11-03 removed the per-lane test budget; test growth is
+  governed by CI duration targets (see testing doctrine, Five-Minute Routine-Lane Target).
+  `make check-guards` runs the hosted `guards` steps
   locally before you push, except hosted-only `knip`, `build`, and node `--test` tooling checks.
 
 <!-- bv-agent-instructions-v1 -->
@@ -182,8 +183,8 @@ check you write or read:
   commit range stays the triggering source head. Enforced by `make check-session-links`.
 - All changes go through a PR; never push to `main`. The `main-merge-queue` ruleset
   (`scripts/setup_main_ruleset.sh`, id 22281319) is the sole merge route: `gh pr merge <n> --squash
-  --auto` queues a `merge_group` that runs `check`, `guards` and `frontend` on the exact tree about
-  to land. Do not reintroduce a manual merge route or a between-merges health poll. Source bead
+  --auto` queues a `merge_group` that runs the complete pipeline, gated by the one required
+  `alls-green` check, on the exact tree about to land. Do not reintroduce a manual merge route or a between-merges health poll. Source bead
   closure keys off the completed squash merge.
 - Required checks are non-strict: rebase only for a real conflict or on reviewer request. Probe
   mergeability without moving HEAD with `git merge-tree --write-tree --name-only origin/main
@@ -197,8 +198,9 @@ check you write or read:
   when their tree SHAs differ.
 - During `git merge --no-commit`, check generated-artefact drift with `git diff`, not
   `git status --porcelain`: merged files are already staged. A change to a generator invalidates
-  every queued PR carrying its output (e.g. `frontend/COPY_INVENTORY.md`): resolve by re-running the
-  current generator, not by taking a side.
+  every queued PR carrying its tracked output: resolve by re-running the current generator,
+  not by taking a side. Frontend copy extraction is on demand, emits stdout, and has no
+  committed output or freshness gate.
 - A pre-merge union gate must prove the merge applied: hard-fail on fetch failure or on a merge
   that changes nothing, and print the SHAs merged.
 - Reading PR state:
@@ -210,11 +212,10 @@ check you write or read:
     report done early.
   - A CONFLICTING PR runs no CI, so its rollup stays frozen green. Never treat a non-`MERGEABLE`
     PR as settled.
-  - The job set varies by design (`route` explicitly skips shards or frontend jobs as neutral).
-    Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
-- CI topology (fan-out, the fail-closed `check` fan-in, `always()` rules) and the narrower-than-named
-  guard predicates (`check-no-em-dashes.py`, `spec-overwrite-guard`, `requirement-trace`,
-  `cited-requirements-guard`, `duplicate-name-guard`) are in
+  - Every event runs the same job set; judge completeness by the required `alls-green` check.
+- CI topology (fan-out, the fail-closed `alls-green` fan-in, `always()` rules) and the narrower-than-named
+  guard predicates (`check-no-em-dashes.py`, `requirement-trace`, `requirement-citations`,
+  `duplicate-name-guard`) are in
   [CI and test scope](docs/testing/ci.md#ci-fan-out-and-guard-predicates). About eight concurrent CI
   runs saturate the runners: sequence PRs that append to the same file.
 

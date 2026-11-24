@@ -12,6 +12,7 @@
 import type { QaSummary } from "@/api/types";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { formatRelativeCompact } from "@/components/ui/time";
+import { breakerCauseLabel, breakerProbeIsDue, haltReasonLabel } from "@/lib/qa-breaker-cause";
 import type { useQaSummary } from "@/hooks/use-qa";
 
 // Mirrors qa.py's _CIRCUIT_BREAKER_THRESHOLD default (5), used only as a
@@ -27,9 +28,21 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
   if (summary.circuit_breaker.tripped) {
+    const cause = breakerCauseLabel(summary.circuit_breaker.dominant_cause);
+    const probeAt = summary.circuit_breaker.next_probe_at;
+    const probe =
+      probeAt && !Number.isNaN(new Date(probeAt).getTime())
+        ? `, ${
+            breakerProbeIsDue(probeAt)
+              ? "probe due"
+              : `next probe ${formatRelativeCompact(new Date(probeAt))}`
+          }`
+        : "";
     clauses.push({
       key: "breaker-tripped",
-      text: `circuit breaker tripped after ${summary.circuit_breaker.consecutive_failures} consecutive failures`,
+      text: cause
+        ? `circuit breaker open: ${cause}${probe}`
+        : `circuit breaker tripped after ${summary.circuit_breaker.consecutive_failures} consecutive failures`,
     });
   } else {
     // A pre-trip streak is worth naming BEFORE the breaker actually opens --
@@ -41,6 +54,17 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
       clauses.push({
         key: "pre-trip-failure-streak",
         text: `${n} consecutive failure${n === 1 ? "" : "s"}, breaker opens at ${threshold}`,
+      });
+    }
+    const haltLabel =
+      summary.last_patrol?.status === "halted"
+        ? haltReasonLabel(summary.last_patrol.halt_reason)
+        : null;
+    if (summary.last_patrol?.status === "halted") {
+      clauses.push({
+        key: "last-patrol-halted",
+        text: `last patrol halted${haltLabel ? `: ${haltLabel}` : ""}`,
+        href: `/qa/patrols/${summary.last_patrol.id}`,
       });
     }
     if (summary.staffer_status === "unknown_patrol_status") {
@@ -55,9 +79,27 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
         text: "last patrol failed",
         href: summary.last_patrol ? `/qa/patrols/${summary.last_patrol.id}` : undefined,
       });
-    } else if (summary.staffer_status === "unknown") {
-      clauses.push({ key: "no-patrol-history", text: "no patrol history yet" });
+    } else if (summary.staffer_status === "unknown" && !summary.last_patrol) {
+      // With an unreadable condition ledger, "unknown" is the ledger's doing and the patrol
+      // history may be fine: the ledger clause below says so instead of this one.
+      if (summary.loop_conditions_known !== false) {
+        clauses.push({ key: "no-patrol-history", text: "no patrol history yet" });
+      }
     }
+  }
+
+  if (summary.loop_conditions_known === false) {
+    clauses.push({
+      key: "loop-ledger-unreadable",
+      text: "can't read the QA condition ledger right now",
+    });
+  }
+  for (const [index, condition] of (summary.loop_conditions ?? []).entries()) {
+    clauses.push({
+      // One source (capability) can carry several causes; the cause keeps keys unique.
+      key: `loop-${condition.source}-${condition.cause ?? index}`,
+      text: condition.summary ?? `remediation loop degraded (${condition.cause ?? condition.source})`,
+    });
   }
 
   const overdueClause = buildOverduePatrolClause(summary);

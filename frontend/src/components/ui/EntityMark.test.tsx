@@ -107,6 +107,7 @@ describe("EntityMark: non-person type glyphs", () => {
   const GLYPH_CASES = [
     { type: "organization", glyph: "O" },
     { type: "place", glyph: "L" },
+    { type: "animal", glyph: "A" },
     { type: "product", glyph: "X" },
     { type: "account", glyph: "@" },
     { type: "event", glyph: "E" },

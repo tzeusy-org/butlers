@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from fastmcp import FastMCP
 
+from butlers.core import catalog_publication
 from butlers.core.catalog_publication import (
     CatalogPublisher,
     authorization_digest,
@@ -26,6 +27,7 @@ from butlers.core.catalog_reader import DOMAINS, EXCLUSIONS, PublishedCatalogPro
 from butlers.core.goal_admission import Evidence, EvidenceRefused, GoalAdmission, derive_admission
 from butlers.core.tool_catalog import RecipientParameters, build_tool_catalog
 from butlers.modules.base import ToolMeta
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.contract
 
@@ -81,10 +83,11 @@ async def registered_catalog(
                 resource_params=(),
                 selection_bound={},
                 safety_args=(),
-                approval_policy={"enabled": approval_enabled},
+                approval_policy={"mode": "default", "enabled": approval_enabled},
                 idempotency="none",
                 owner_authority=False,
                 recipient_params=RecipientParameters(),
+                categories=(),
             ),
         },
     )
@@ -225,9 +228,8 @@ class Pool:
     async def fetchval(self, sql, *args):
         return await self.connection.fetchval(sql, *args)
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 async def test_publisher_accepts_maintenance_posture_and_refuses_runtime_bypass():
@@ -606,6 +608,65 @@ async def test_phased_startup_publishes_final_catalog_using_its_database_state(m
     assert store.current["health"]["live"] is False
 
 
+async def test_a_stray_cancel_from_a_renewal_fails_the_publication_visibly(monkeypatch):
+    """Otherwise renewal stops with the flag clear, and it reads as healthy until the lease ends."""
+    store = Store()
+    _, catalog = await registered_catalog()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        tool_catalog=catalog,
+        _module_statuses={},
+        _tool_registration_failures=[],
+    )
+
+    async def stray_renewal(self):
+        future = asyncio.get_running_loop().create_future()
+        future.cancel()
+        await future
+
+    monkeypatch.setattr(catalog_publication, "RENEW_SECONDS", 0)
+    monkeypatch.setattr(catalog_publication.CatalogPublisher, "renew", stray_renewal)
+    await start_catalog_publication(daemon, Pool(store, "health"))
+    try:
+        async with asyncio.timeout(2):
+            await asyncio.wait({daemon._catalog_publication_task})
+        assert daemon._catalog_publication_failed is True
+        assert store.current["health"]["live"] is False
+    finally:
+        await close_catalog_publication(daemon)
+
+
+async def test_a_real_cancel_during_a_renewal_is_shutdown_not_a_failure(monkeypatch):
+    store = Store()
+    _, catalog = await registered_catalog()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        tool_catalog=catalog,
+        _module_statuses={},
+        _tool_registration_failures=[],
+    )
+    entered = asyncio.Event()
+
+    async def held_renewal(self):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(catalog_publication, "RENEW_SECONDS", 0)
+    monkeypatch.setattr(catalog_publication.CatalogPublisher, "renew", held_renewal)
+    await start_catalog_publication(daemon, Pool(store, "health"))
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+        worker = daemon._catalog_publication_task
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+        assert daemon._catalog_publication_failed is False
+        assert store.current["health"]["live"] is True
+    finally:
+        await close_catalog_publication(daemon)
+
+
 async def test_startup_off_no_publication_and_enabled_failed_registry_refuses(monkeypatch):
     store = Store()
     store.enabled = False
@@ -812,7 +873,7 @@ async def test_actual_shutdown_continues_after_catalog_retirement_outcome(
     module = SimpleNamespace(name="native", on_shutdown=module_close)
     daemon._modules = [module]
 
-    async def db_close():
+    async def db_close(timeout: float = 10.0):  # noqa: ASYNC109
         events.append("db")
 
     daemon.db = SimpleNamespace(pool=pool, close=db_close)
@@ -875,7 +936,7 @@ async def test_repeated_shutdown_joins_retained_owner_after_retirement(tmp_path)
         entered.set()
         await release.wait()
 
-    async def db_close():
+    async def db_close(timeout: float = 10.0):  # noqa: ASYNC109
         calls.append("db")
 
     daemon._modules = [SimpleNamespace(name="native", on_shutdown=module_close)]

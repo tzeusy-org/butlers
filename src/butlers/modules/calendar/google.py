@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import httpx
 
+from butlers.egress.http_transport import external_async_client
+from butlers.google_credentials import GoogleOAuthClient, _mark_account_revoked
 from butlers.modules.calendar_response import (
     CalendarResponseError,
     CalendarResponseUncertainError,
@@ -26,10 +28,12 @@ from .constants import (
     RATE_LIMIT_RETRY_STATUS_CODES,
     logger,
 )
+from .custody import require_calendar_mail_custody_clear, sends_mail
 from .errors import (
     CalendarAuthError,
     CalendarRequestError,
     CalendarSyncTokenExpiredError,
+    CalendarTokenRefreshError,
     _safe_google_error_message,
 )
 from .google_mapping import (
@@ -49,7 +53,7 @@ from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
 )
-from .oauth import _GoogleOAuthClient, _GoogleOAuthCredentials
+from .oauth import _GoogleOAuthCredentials
 from .provider import CalendarProvider
 
 
@@ -66,7 +70,7 @@ class _GoogleProvider(CalendarProvider):
         self._config = config
         self._pool = pool
         self._owns_http_client = http_client is None
-        self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
+        self._http_client = http_client or external_async_client(timeout=30.0)
 
         # Wire post-refresh callbacks so account health follows observed OAuth
         # outcomes from this module, not only dashboard-originated changes.
@@ -140,23 +144,12 @@ class _GoogleProvider(CalendarProvider):
                             "(account was re-authorized; restart to pick up the new token)."
                         )
                         return
-                    if _email:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE email = $1
-                            """,
-                            _email,
-                        )
-                    else:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE is_primary = true
-                            """
-                        )
+                    await _mark_account_revoked(
+                        _pool,
+                        email=_email or None,
+                        primary=not bool(_email),
+                        expected_refresh_token=_module_refresh_token,
+                    )
                 except Exception:
                     logger.debug(
                         "CalendarModule: failed to mark Google account revoked",
@@ -166,11 +159,13 @@ class _GoogleProvider(CalendarProvider):
             on_token_refreshed = _update_last_token_refresh_at
             on_token_revoked = _mark_token_revoked
 
-        self._oauth = _GoogleOAuthClient(
+        self._oauth = GoogleOAuthClient(
             credentials,
             self._http_client,
             on_token_refreshed,
             on_token_revoked,
+            error_type=CalendarTokenRefreshError,
+            account=account_email,
         )
 
     @property
@@ -185,6 +180,7 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        rate_limit_retry: bool = True,
     ) -> dict[str, Any]:
         response = await self._request_with_bearer(
             method=method,
@@ -192,6 +188,7 @@ class _GoogleProvider(CalendarProvider):
             params=params,
             json_body=json_body,
             extra_headers=extra_headers,
+            rate_limit_retry=rate_limit_retry,
         )
 
         if response.status_code < 200 or response.status_code >= 300:
@@ -222,6 +219,7 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        rate_limit_retry: bool = True,
     ) -> httpx.Response:
         normalized_path = path if path.startswith("/") else f"/{path}"
         url = f"{GOOGLE_CALENDAR_API_BASE_URL}{normalized_path}"
@@ -246,10 +244,13 @@ class _GoogleProvider(CalendarProvider):
             )
 
         # Rate-limit retry: honour Retry-After header on 429, exponential backoff on 503
-        # (spec section 14.2).
+        # (spec section 14.2). A single-attempt caller gets the first answer: a 503 may
+        # follow a committed write, and a retry would misreport it.
         retry = 0
         while (
-            response.status_code in RATE_LIMIT_RETRY_STATUS_CODES and retry < RATE_LIMIT_MAX_RETRIES
+            rate_limit_retry
+            and response.status_code in RATE_LIMIT_RETRY_STATUS_CODES
+            and retry < RATE_LIMIT_MAX_RETRIES
         ):
             backoff = RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**retry)
             # For 429 responses, respect the Retry-After header when present.
@@ -598,6 +599,7 @@ class _GoogleProvider(CalendarProvider):
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             json_body=body,
             extra_headers=extra_headers,
+            rate_limit_retry=not patch.single_attempt,
         )
 
         fallback_tz = patch.timezone or self._config.timezone
@@ -612,19 +614,66 @@ class _GoogleProvider(CalendarProvider):
             )
         return event
 
+    async def _require_existing_guests_unheld(
+        self, *, calendar_id: str, event_id: str, send_updates: str | None
+    ) -> None:
+        """Fence a mail-sending write on an event's current organizer and guests.
+
+        Reads the event only when the write would make Google send mail. A missing event sends
+        no mail, so it passes.
+        """
+        if not sends_mail(send_updates):
+            return
+        existing = await self.get_event(calendar_id=calendar_id, event_id=event_id)
+        if existing is None:
+            return
+        await self._require_mail_unheld(send_updates, _event_mail_recipients(existing))
+
+    async def _sender_account_email(self) -> str | None:
+        """The configured OAuth account's email, the account Google sends the mail from.
+
+        REQ-endpoint-custody-holds-007 derives the outgoing account from configuration, never
+        from the event: a secondary or group calendar's organizer is its
+        ``@group.calendar.google.com`` id, not the owner's address. ``None`` when the registry
+        cannot name it, which the fence reads as unknown.
+        """
+        from butlers.google_account_registry import get_google_account
+
+        if self._pool is None:
+            return None
+        try:
+            account = await get_google_account(self._pool, self._config.account)
+        except Exception:
+            logger.warning("Calendar mail custody: the sending Google account is unresolved")
+            return None
+        return account.email or None
+
+    async def _require_mail_unheld(self, send_updates: str | None, recipients: list[str]) -> None:
+        """Fence a mail-sending write on its recipients plus the sending account.
+
+        A write that names no recipient mails no one, so it asks nothing.
+        """
+        if not sends_mail(send_updates) or not recipients:
+            return
+        await require_calendar_mail_custody_clear(
+            self._pool, send_updates, [await self._sender_account_email(), *recipients]
+        )
+
     async def delete_event(
         self,
         *,
         calendar_id: str,
         event_id: str,
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> None:
         """Delete a Google Calendar event.
 
         Sends a DELETE request to the Google Calendar API.  A 404 response is
         treated as success (the event was already deleted).  For events with
         attendees, pass ``send_updates="all"`` to send cancellation
-        notifications; the default (``None`` / ``"none"``) suppresses emails.
+        notifications. ``"none"`` explicitly suppresses notifications; ``None``
+        omits the provider flag and is not evidence of silence.
 
         For recurring events, v1 always operates on the full series: the
         ``event_id`` must be the base recurring-event ID, not an instance ID.
@@ -641,11 +690,15 @@ class _GoogleProvider(CalendarProvider):
             normalized_send_updates = send_updates.strip()
             if normalized_send_updates:
                 params = {"sendUpdates": normalized_send_updates}
+        await self._require_existing_guests_unheld(
+            calendar_id=calendar_id, event_id=normalized_event_id, send_updates=send_updates
+        )
 
         response = await self._request_with_bearer(
             method="DELETE",
             path=f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
 
         # 404 means the event was already deleted — treat as success.
@@ -684,6 +737,7 @@ class _GoogleProvider(CalendarProvider):
         event_id: str,
         recurrence: list[str],
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> CalendarEvent:
         normalized_event_id = event_id.strip()
         if not normalized_event_id:
@@ -693,11 +747,15 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None
         if send_updates is not None and send_updates.strip():
             params = {"sendUpdates": send_updates.strip()}
+        await self._require_existing_guests_unheld(
+            calendar_id=calendar_id, event_id=normalized_event_id, send_updates=send_updates
+        )
         response_payload = await self._request_google_json(
             "PATCH",
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
             json_body={"recurrence": list(recurrence)},
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
         event = _google_event_to_calendar_event(
             response_payload,
@@ -752,6 +810,11 @@ class _GoogleProvider(CalendarProvider):
                 )
                 existing_emails_lower.add(email.lower())
 
+        # Google mails the organizer and every guest, the new ones included.
+        await self._require_mail_unheld(
+            send_updates,
+            [*_event_mail_recipients(existing), *(a.email for a in merged_attendees)],
+        )
         google_attendees = _attendee_info_list_to_google(merged_attendees)
         normalized_calendar_id = quote(calendar_id, safe="")
         encoded_event_id = quote(normalized_event_id, safe="")
@@ -804,6 +867,8 @@ class _GoogleProvider(CalendarProvider):
             a for a in existing.attendees if a.email.lower() not in emails_to_remove_lower
         ]
 
+        # Google mails the removed guests a cancellation and the rest an update.
+        await self._require_mail_unheld(send_updates, _event_mail_recipients(existing))
         google_attendees = _attendee_info_list_to_google(remaining_attendees)
         normalized_calendar_id = quote(calendar_id, safe="")
         encoded_event_id = quote(normalized_event_id, safe="")
@@ -1043,3 +1108,10 @@ class _GoogleProvider(CalendarProvider):
     async def shutdown(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
+
+
+def _event_mail_recipients(event: CalendarEvent) -> list[str]:
+    """The organizer and guest addresses Google may mail about *event*."""
+    recipients = [event.organizer] if event.organizer else []
+    recipients.extend(attendee.email for attendee in event.attendees)
+    return recipients

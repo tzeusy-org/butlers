@@ -9,22 +9,18 @@ column and backfilled by mem_008) may be cleared.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.modules.memory import storage
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import row as _Row
 
 pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(UTC)
-
-
-class _Row(dict):
-    def __getitem__(self, key):
-        return super().__getitem__(key)
 
 
 class _Connection:
@@ -48,18 +44,16 @@ class _Connection:
     async def execute(self, sql, *args):
         self.updates.append((sql, args))
 
-    @asynccontextmanager
-    async def transaction(self):
-        yield
+    def transaction(self):
+        return AsyncCtx(None)
 
 
 class _Pool:
     def __init__(self, connection):
         self._connection = connection
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._connection
+    def acquire(self):
+        return AsyncCtx(self._connection)
 
 
 def _fact(*, confidence, validity="active", metadata):
@@ -129,3 +123,14 @@ async def test_a_healthy_active_fact_with_a_domain_status_is_not_rewritten(monke
     )
 
     assert connection.updates == []
+
+
+async def test_expiry_uses_same_operation_time_for_canonical_and_projection(monkeypatch):
+    cascade = AsyncMock()
+    monkeypatch.setattr(storage, "_cascade_catalog_disownment", cascade)
+    connection = _Connection([_fact(confidence=0.001, metadata={"status": "resolved"})])
+    await storage.run_decay_sweep(_Pool(connection))
+    sql, args = next((q, a) for q, a in connection.updates if "validity = 'expired'" in q)
+    assert "THEN dropped_at ELSE $3 END" in sql
+    assert args[2] == cascade.await_args.kwargs["invalid_at"]
+    assert args[0]["status"] == "resolved"

@@ -1,0 +1,43 @@
+name: single-butler
+version: 1
+description: Eligible single-butler workflow - proposal → tasks; design optional
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Motivation, scope and single-butler eligibility
+    template: proposal.md
+    instruction: |
+      Read about/heart-and-soul/development.md before using this workflow. It is only for a
+      single-butler change that alters no cross-butler contract, schema shared across butlers, or
+      security boundary. Record evidence for all three exclusions in Workflow Eligibility. If any
+      applies to new standalone work, use living-specs and include design.md without local deltas.
+      New multi-PR programs may use spec-driven deltas. Preserve all existing legacy programs
+      under their resolved schemas with metadata, content and deltas unchanged.
+
+      This schema has no change-local specs artifact. Keep .openspec.yaml's generated schema and
+      created fields and add skip_specs: true. Do not create an empty specs/ directory. Verify this
+      metadata before continuing; if a new no-delta change is missing the marker or generated
+      schema/created fields, stop and correct it. The canonical spec is the living contract: update its
+      affected requirements directly in the same change when required behavior changes. For work with
+      no behavior change, state that explicitly.
+    requires: []
+  - id: tasks
+    generates: tasks.md
+    description: Countable implementation and verification checklist
+    template: tasks.md
+    instruction: |
+      Read the proposal, any existing or voluntarily added design, and the affected canonical specs.
+      Include the actual implementation, canonical-spec update if required, tests, review and delivery
+      evidence. Do not add change-local specs to satisfy a workflow checklist. Recheck that the actual
+      scope remains eligible; if a shared boundary changes, use a design and preserve all approval,
+      review and verification gates.
+    requires: [proposal]
+apply:
+  requires: [proposal, tasks]
+  tracks: tasks.md
+  instruction: |
+    Recheck eligibility and read proposal, tasks, any design, and affected canonical specs. A new
+    change using this schema has skip_specs: true because it intentionally has no local delta specs.
+    If that marker or generated schema/created metadata is missing, stop before applying work.
+    Update canonical requirements in the same source change when required behavior changes. The marker
+    is not approval, and does not waive implementation review or verification.

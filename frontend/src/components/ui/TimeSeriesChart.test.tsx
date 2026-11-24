@@ -14,7 +14,10 @@ vi.mock("recharts", () => {
     CartesianGrid: () => null,
     Tooltip: () => null,
     YAxis: () => null,
-    ReferenceArea: () => createElement("i", { "data-testid": "stale-tail-area" }),
+    ReferenceArea: (p: { y1?: number; y2?: number }) => createElement("i", {
+      "data-testid": p.y1 === undefined ? "stale-tail-area" : "baseline-band",
+      "data-low": p.y1, "data-high": p.y2,
+    }),
     XAxis: (p: { type?: string; scale?: string; domain?: number[] }) =>
       createElement("i", {
         "data-testid": "x-axis",
@@ -22,11 +25,11 @@ vi.mock("recharts", () => {
         "data-scale": p.scale,
         "data-domain": JSON.stringify(p.domain),
       }),
-    Line: (p: { type?: string; dot?: boolean; connectNulls?: boolean }) =>
+    Line: (p: { type?: string; dot?: unknown; connectNulls?: boolean }) =>
       createElement("i", {
         "data-testid": "line",
         "data-join": p.type,
-        "data-dot": String(p.dot),
+        "data-dot": String(Boolean(p.dot)),
         "data-connect": String(p.connectNulls),
       }),
     Area: (p: { fill?: string }) => createElement("i", { "data-testid": "area", "data-fill": p.fill }),
@@ -85,5 +88,17 @@ describe("TimeSeriesChart", () => {
     const gradient = container.querySelector(`linearGradient[id="${fills[0].slice(5, -1)}"]`);
     const stops = [...gradient!.querySelectorAll("stop")].map((s) => s.getAttribute("stop-opacity"));
     expect(stops).toEqual(["0.3", "0"]);
+  });
+});
+
+
+describe("usual range", () => {
+  afterEach(cleanup);
+  it("draws only an explicitly supplied vertical range and preserves the default", () => {
+    const { rerender } = render(<TimeSeriesChart series={seriesOf([0])} lines={lines} height={80} band={{ low: 40, high: 60 }} />);
+    expect(screen.getByTestId("baseline-band").dataset.low).toBe("40");
+    expect(screen.getByTestId("baseline-band").dataset.high).toBe("60");
+    rerender(<TimeSeriesChart series={seriesOf([0])} lines={lines} height={80} />);
+    expect(screen.queryByTestId("baseline-band")).toBeNull();
   });
 });

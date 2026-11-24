@@ -196,7 +196,7 @@ async def test_concierge_outbound_scope_preserves_only_qa_error_relay():
     config = load_config(_REPO_ROOT / "roster" / "concierge")
     assert config.type is ButlerType.STAFFER
     assert config.permissions.cross_butler_access == ["qa"]
-    assert set(config.modules) == {"dashboard_read", "self_healing"}
+    assert set(config.modules) == {"dashboard_read"}
 
 
 class TestRosterIntegration:

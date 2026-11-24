@@ -6,12 +6,66 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from butlers import daemon as daemon_mod
 from butlers import lifecycle
 from butlers.config import ButlerConfig
 from butlers.core.spawner import Spawner
+from butlers.daemon import ButlerDaemon
+from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("butler_name", "cutover", "gates"),
+    [
+        ("general", True, True),
+        ("general", False, False),
+        ("switchboard", True, True),
+        ("switchboard", False, True),
+    ],
+)
+async def test_audit_and_eligibility_pools_stay_on_the_butler_role(
+    butler_name: str, cutover: bool, gates: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Audit writes and the eligibility gate both use the butler's own role-verified
+    pool. Under the receiver cutover every butler gates on its own policy (sw_053);
+    the legacy resolver reads switchboard tables, so only the switchboard gates."""
+
+    def role_less_pool(*_args, **_kwargs):
+        raise AssertionError("audit logging must not open a role-less pool")
+
+    monkeypatch.setattr(Database, "from_env", role_less_pool)
+    if cutover:
+        monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    else:
+        monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    own_pool = object()
+    daemon = SimpleNamespace(
+        config=ButlerConfig(name=butler_name, port=41100),
+        db=SimpleNamespace(pool=own_pool),
+        spawner=object(),
+        switchboard_client=None,
+        _dispatch_scheduled_task=AsyncMock(),
+        _audit_pool=own_pool,
+    )
+
+    assert await ButlerDaemon._create_audit_pool(daemon, own_pool) is own_pool
+
+    loop_kwargs: dict = {}
+
+    async def capture_loop(**kwargs) -> None:
+        loop_kwargs.update(kwargs)
+
+    daemon._build_scheduler_runtime_context = AsyncMock(
+        return_value=SimpleNamespace(default_timezone="UTC", prompt_hooks={}, completion_hooks={})
+    )
+    monkeypatch.setattr(daemon_mod._background, "scheduler_loop", capture_loop)
+    await ButlerDaemon._scheduler_loop(daemon)
+
+    expected = own_pool if gates else None
+    assert loop_kwargs["get_eligibility_pool"]() is expected
 
 
 async def test_startup_constructs_real_spawner_without_module_credentials(

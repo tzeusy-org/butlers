@@ -1,0 +1,31 @@
+{{- if and .Values.connectorMetrics.enabled .Values.connectorMetrics.podMonitor.enabled }}
+# Scrapes the metrics-proxy sidecar of every connector with a healthPort.
+# Job and connector labels match the local Compose scrape jobs
+# (observability/prometheus/prometheus.yml), so dashboards and alert rules
+# read the same series in either deployment.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Release.Name }}-connectors
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+    {{- with .Values.connectorMetrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      butlers.io/connector-metrics: "true"
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.connectorMetrics.podMonitor.interval }}
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+          targetLabel: job
+        - sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+          regex: connector-(.+)
+          replacement: $1
+          targetLabel: connector
+{{- end }}

@@ -52,8 +52,6 @@ from butlers.core_tools._domain_events import (
     publish_domain_event,
     run_domain_event_reconciliation_sweep,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -120,18 +118,10 @@ def permissive_contracts():
     set_contract_registry(None)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    yield p
-    await p.close()
+async def bus_pool(db) -> asyncpg.Pool:
+    """Room for the concurrent sweeps and fan-outs below."""
+    return await db("core", max_size=5)
 
 
 class _ReceivingClient:
@@ -320,48 +310,48 @@ class _BlockingRetryableFailureClient:
 # ---------------------------------------------------------------------------
 
 
-async def test_domain_event_tables_exist(pool: asyncpg.Pool) -> None:
+async def test_domain_event_tables_exist(bus_pool: asyncpg.Pool) -> None:
     for table in ("domain_events", "butler_subscriptions", "domain_event_deliveries"):
-        exists = await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
+        exists = await bus_pool.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{table}")
         assert exists, f"public.{table} should exist"
 
 
-async def test_delivery_status_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
-    event_id = await pool.fetchval(
+async def test_delivery_status_check_constraint_rejects_bogus_value(bus_pool: asyncpg.Pool) -> None:
+    event_id = await bus_pool.fetchval(
         "INSERT INTO public.domain_events (event_type, source_butler, payload) "
         "VALUES ('travel.trip_booked', 'travel', '{}'::jsonb) RETURNING id"
     )
-    await pool.execute(
+    await bus_pool.execute(
         "INSERT INTO public.domain_event_deliveries (event_id, subscriber_butler, status) "
         "VALUES ($1, 'finance', 'pending')",
         event_id,
     )
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await bus_pool.execute(
             "UPDATE public.domain_event_deliveries SET status = 'bogus' WHERE event_id = $1",
             event_id,
         )
 
 
-async def test_migration_seeds_finance_trip_booked_subscription(pool: asyncpg.Pool) -> None:
-    subscribers = await get_active_subscribers(pool, "travel.trip_booked")
+async def test_migration_seeds_finance_trip_booked_subscription(bus_pool: asyncpg.Pool) -> None:
+    subscribers = await get_active_subscribers(bus_pool, "travel.trip_booked")
     assert "finance" in subscribers
 
     rows = await list_subscriptions(
-        pool, subscriber_butler="finance", event_type="travel.trip_booked"
+        bus_pool, subscriber_butler="finance", event_type="travel.trip_booked"
     )
     assert len(rows) == 1
     assert rows[0]["active"] is True
 
 
-async def test_migration_seeds_health_trip_active_subscription(pool: asyncpg.Pool) -> None:
+async def test_migration_seeds_health_trip_active_subscription(bus_pool: asyncpg.Pool) -> None:
     """bu-317s5 slice 2 (core_189): Health standing-subscribes to Travel's
     trip-active transition so it can front-load medication prep."""
-    subscribers = await get_active_subscribers(pool, "travel.trip_active")
+    subscribers = await get_active_subscribers(bus_pool, "travel.trip_active")
     assert "health" in subscribers
 
     rows = await list_subscriptions(
-        pool, subscriber_butler="health", event_type="travel.trip_active"
+        bus_pool, subscriber_butler="health", event_type="travel.trip_active"
     )
     assert len(rows) == 1
     assert rows[0]["active"] is True
@@ -372,11 +362,11 @@ async def test_migration_seeds_health_trip_active_subscription(pool: asyncpg.Poo
 # ---------------------------------------------------------------------------
 
 
-async def test_publish_fans_out_to_seeded_finance_subscription(pool: asyncpg.Pool) -> None:
-    client = _ReceivingClient(pool)
+async def test_publish_fans_out_to_seeded_finance_subscription(bus_pool: asyncpg.Pool) -> None:
+    client = _ReceivingClient(bus_pool)
 
     result = await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -387,14 +377,14 @@ async def test_publish_fans_out_to_seeded_finance_subscription(pool: asyncpg.Poo
     event_id = result["event_id"]
     assert result["deliveries"] == [{"subscriber_butler": "finance", "status": "delivered"}]
 
-    event_row = await pool.fetchrow(
+    event_row = await bus_pool.fetchrow(
         "SELECT event_type, source_butler, payload FROM public.domain_events WHERE id = $1",
         event_id,
     )
     assert event_row["event_type"] == "travel.trip_booked"
     assert event_row["source_butler"] == "travel"
 
-    delivery_row = await pool.fetchrow(
+    delivery_row = await bus_pool.fetchrow(
         "SELECT status, task_id, task_name FROM public.domain_event_deliveries "
         "WHERE event_id = $1 AND subscriber_butler = 'finance'",
         event_id,
@@ -402,7 +392,7 @@ async def test_publish_fans_out_to_seeded_finance_subscription(pool: asyncpg.Poo
     assert delivery_row["status"] == "delivered"
     assert delivery_row["task_name"] == task_name_for(event_id, "finance")
 
-    task_rows = await pool.fetch(
+    task_rows = await bus_pool.fetch(
         "SELECT id, prompt FROM scheduled_tasks WHERE name = $1",
         task_name_for(event_id, "finance"),
     )
@@ -412,11 +402,11 @@ async def test_publish_fans_out_to_seeded_finance_subscription(pool: asyncpg.Poo
     assert "travel.trip_booked" in task_rows[0]["prompt"]
 
 
-async def test_no_active_subscribers_publishes_with_zero_deliveries(pool: asyncpg.Pool) -> None:
-    client = _ReceivingClient(pool)
+async def test_no_active_subscribers_publishes_with_zero_deliveries(bus_pool: asyncpg.Pool) -> None:
+    client = _ReceivingClient(bus_pool)
 
     result = await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.document_expiring",
         source_butler="travel",
@@ -426,16 +416,18 @@ async def test_no_active_subscribers_publishes_with_zero_deliveries(pool: asyncp
     assert result["status"] == "ok"
     assert result["deliveries"] == []
 
-    event_row = await pool.fetchrow(
+    event_row = await bus_pool.fetchrow(
         "SELECT event_type FROM public.domain_events WHERE id = $1", result["event_id"]
     )
     assert event_row["event_type"] == "travel.document_expiring"
 
 
-async def test_incomplete_target_success_is_recorded_failed_permanent(pool: asyncpg.Pool) -> None:
+async def test_incomplete_target_success_is_recorded_failed_permanent(
+    bus_pool: asyncpg.Pool,
+) -> None:
     """A malformed target success cannot be selected for later retry reconciliation."""
     result = await publish_domain_event(
-        pool,
+        bus_pool,
         _IncompleteSuccessClient(),
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -445,7 +437,7 @@ async def test_incomplete_target_success_is_recorded_failed_permanent(pool: asyn
     assert result["deliveries"][0]["subscriber_butler"] == "finance"
     assert result["deliveries"][0]["status"] == "failed_permanent"
     assert "incomplete success payload" in result["deliveries"][0]["error"]
-    delivery = await pool.fetchrow(
+    delivery = await bus_pool.fetchrow(
         "SELECT status, attempt_count, error_message FROM public.domain_event_deliveries "
         "WHERE event_id = $1 AND subscriber_butler = 'finance'",
         result["event_id"],
@@ -455,14 +447,14 @@ async def test_incomplete_target_success_is_recorded_failed_permanent(pool: asyn
     assert "incomplete success payload" in delivery["error_message"]
 
 
-async def test_publisher_is_never_its_own_fanout_target(pool: asyncpg.Pool) -> None:
+async def test_publisher_is_never_its_own_fanout_target(bus_pool: asyncpg.Pool) -> None:
     from butlers.core.domain_events import upsert_subscription
 
-    await upsert_subscription(pool, subscriber_butler="travel", event_type="travel.self_test")
-    client = _ReceivingClient(pool)
+    await upsert_subscription(bus_pool, subscriber_butler="travel", event_type="travel.self_test")
+    client = _ReceivingClient(bus_pool)
 
     result = await publish_domain_event(
-        pool, client, event_type="travel.self_test", source_butler="travel", payload={}
+        bus_pool, client, event_type="travel.self_test", source_butler="travel", payload={}
     )
 
     assert result["deliveries"] == []
@@ -474,11 +466,11 @@ async def test_publisher_is_never_its_own_fanout_target(pool: asyncpg.Pool) -> N
 
 
 async def test_retried_fanout_of_already_delivered_event_does_not_redispatch(
-    pool: asyncpg.Pool,
+    bus_pool: asyncpg.Pool,
 ) -> None:
-    client = _ReceivingClient(pool)
+    client = _ReceivingClient(bus_pool)
     first = await publish_domain_event(
-        pool, client, event_type="travel.trip_booked", source_butler="travel", payload={"n": 1}
+        bus_pool, client, event_type="travel.trip_booked", source_butler="travel", payload={"n": 1}
     )
     event_id = first["event_id"]
 
@@ -486,7 +478,7 @@ async def test_retried_fanout_of_already_delivered_event_does_not_redispatch(
     # or a periodic reconciliation sweep) must observe the already-delivered
     # row and skip re-dispatch entirely.
     second = await fan_out_event(
-        pool,
+        bus_pool,
         client,
         event_id=event_id,
         event_type="travel.trip_booked",
@@ -495,31 +487,31 @@ async def test_retried_fanout_of_already_delivered_event_does_not_redispatch(
     )
     assert second["deliveries"] == [{"subscriber_butler": "finance", "status": "delivered"}]
 
-    count = await pool.fetchval(
+    count = await bus_pool.fetchval(
         "SELECT count(*) FROM scheduled_tasks WHERE name = $1",
         task_name_for(event_id, "finance"),
     )
     assert count == 1
 
-    delivery_count = await pool.fetchval(
+    delivery_count = await bus_pool.fetchval(
         "SELECT count(*) FROM public.domain_event_deliveries WHERE event_id = $1", event_id
     )
     assert delivery_count == 1  # UNIQUE(event_id, subscriber_butler) — no duplicate row
 
 
-async def test_claim_delivery_is_atomic_per_event_subscriber_pair(pool: asyncpg.Pool) -> None:
-    event_id = await pool.fetchval(
+async def test_claim_delivery_is_atomic_per_event_subscriber_pair(bus_pool: asyncpg.Pool) -> None:
+    event_id = await bus_pool.fetchval(
         "INSERT INTO public.domain_events (event_type, source_butler, payload) "
         "VALUES ('travel.trip_booked', 'travel', '{}'::jsonb) RETURNING id"
     )
 
-    first = await claim_delivery(pool, event_id=event_id, subscriber_butler="finance")
-    second = await claim_delivery(pool, event_id=event_id, subscriber_butler="finance")
+    first = await claim_delivery(bus_pool, event_id=event_id, subscriber_butler="finance")
+    second = await claim_delivery(bus_pool, event_id=event_id, subscriber_butler="finance")
 
     assert first["id"] == second["id"]
     assert first["status"] == "pending"
 
-    count = await pool.fetchval(
+    count = await bus_pool.fetchval(
         "SELECT count(*) FROM public.domain_event_deliveries "
         "WHERE event_id = $1 AND subscriber_butler = 'finance'",
         event_id,
@@ -528,15 +520,15 @@ async def test_claim_delivery_is_atomic_per_event_subscriber_pair(pool: asyncpg.
 
 
 async def test_handle_receive_domain_event_duplicate_delivery_returns_same_task(
-    pool: asyncpg.Pool,
+    bus_pool: asyncpg.Pool,
 ) -> None:
-    event_id = await pool.fetchval(
+    event_id = await bus_pool.fetchval(
         "INSERT INTO public.domain_events (event_type, source_butler, payload) "
         "VALUES ('travel.trip_booked', 'travel', '{}'::jsonb) RETURNING id"
     )
 
     first = await handle_receive_domain_event(
-        pool,
+        bus_pool,
         event_id=event_id,
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -544,7 +536,7 @@ async def test_handle_receive_domain_event_duplicate_delivery_returns_same_task(
         subscriber_butler="finance",
     )
     second = await handle_receive_domain_event(
-        pool,
+        bus_pool,
         event_id=event_id,
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -556,19 +548,19 @@ async def test_handle_receive_domain_event_duplicate_delivery_returns_same_task(
     assert second["task_id"] == first["task_id"]
     assert second.get("reconciled") is True
 
-    count = await pool.fetchval(
+    count = await bus_pool.fetchval(
         "SELECT count(*) FROM scheduled_tasks WHERE name = $1", task_name_for(event_id, "finance")
     )
     assert count == 1
 
 
-async def test_conflicting_deterministic_name_fails_closed(pool: asyncpg.Pool) -> None:
-    event_id = await pool.fetchval(
+async def test_conflicting_deterministic_name_fails_closed(bus_pool: asyncpg.Pool) -> None:
+    event_id = await bus_pool.fetchval(
         "INSERT INTO public.domain_events (event_type, source_butler, payload) "
         "VALUES ('travel.trip_booked', 'travel', '{}'::jsonb) RETURNING id"
     )
     task_name = task_name_for(event_id, "finance")
-    unrelated_task_id = await pool.fetchval(
+    unrelated_task_id = await bus_pool.fetchval(
         """
         INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, source, enabled)
         VALUES ($1, '* * * * *', 'prompt', 'an unrelated hand-crafted task', 'db', true)
@@ -578,7 +570,7 @@ async def test_conflicting_deterministic_name_fails_closed(pool: asyncpg.Pool) -
     )
 
     result = await handle_receive_domain_event(
-        pool,
+        bus_pool,
         event_id=event_id,
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -588,28 +580,28 @@ async def test_conflicting_deterministic_name_fails_closed(pool: asyncpg.Pool) -
 
     assert result["status"] == "conflict"
 
-    task_rows = await pool.fetch("SELECT id FROM scheduled_tasks WHERE name = $1", task_name)
+    task_rows = await bus_pool.fetch("SELECT id FROM scheduled_tasks WHERE name = $1", task_name)
     assert len(task_rows) == 1
     assert task_rows[0]["id"] == unrelated_task_id
 
 
-async def test_fanout_records_conflict_on_delivery_ledger(pool: asyncpg.Pool) -> None:
-    event_id = await pool.fetchval(
+async def test_fanout_records_conflict_on_delivery_ledger(bus_pool: asyncpg.Pool) -> None:
+    event_id = await bus_pool.fetchval(
         "INSERT INTO public.domain_events (event_type, source_butler, payload) "
         "VALUES ('travel.trip_booked', 'travel', '{}'::jsonb) RETURNING id"
     )
     task_name = task_name_for(event_id, "finance")
-    await pool.execute(
+    await bus_pool.execute(
         """
         INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, source, enabled)
         VALUES ($1, '* * * * *', 'prompt', 'an unrelated hand-crafted task', 'db', true)
         """,
         task_name,
     )
-    client = _ReceivingClient(pool)
+    client = _ReceivingClient(bus_pool)
 
     result = await fan_out_event(
-        pool,
+        bus_pool,
         client,
         event_id=event_id,
         event_type="travel.trip_booked",
@@ -619,7 +611,7 @@ async def test_fanout_records_conflict_on_delivery_ledger(pool: asyncpg.Pool) ->
 
     assert result["deliveries"] == [{"subscriber_butler": "finance", "status": "conflict"}]
 
-    delivery_row = await pool.fetchrow(
+    delivery_row = await bus_pool.fetchrow(
         "SELECT status FROM public.domain_event_deliveries "
         "WHERE event_id = $1 AND subscriber_butler = 'finance'",
         event_id,
@@ -633,12 +625,12 @@ async def test_fanout_records_conflict_on_delivery_ledger(pool: asyncpg.Pool) ->
 
 
 async def test_list_recent_deliveries_filters_by_subscriber_and_status(
-    pool: asyncpg.Pool,
+    bus_pool: asyncpg.Pool,
 ) -> None:
-    client = _ReceivingClient(pool)
+    client = _ReceivingClient(bus_pool)
 
     await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.trip_booked",
         source_butler="travel",
@@ -647,14 +639,14 @@ async def test_list_recent_deliveries_filters_by_subscriber_and_status(
     # A second event of a type nobody subscribes to -- no delivery row at all,
     # so it must never appear in a subscriber-filtered read.
     await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.trip_unsubscribed_event",
         source_butler="travel",
         payload={},
     )
 
-    total, rows = await list_recent_deliveries(pool, subscriber_butler="finance")
+    total, rows = await list_recent_deliveries(bus_pool, subscriber_butler="finance")
     assert total >= 1
     assert all(row["subscriber_butler"] == "finance" for row in rows)
     assert any(
@@ -663,13 +655,13 @@ async def test_list_recent_deliveries_filters_by_subscriber_and_status(
     )
 
     total_delivered, rows_delivered = await list_recent_deliveries(
-        pool, subscriber_butler="finance", status="delivered"
+        bus_pool, subscriber_butler="finance", status="delivered"
     )
     assert total_delivered >= 1
     assert all(row["status"] == "delivered" for row in rows_delivered)
 
     total_none, rows_none = await list_recent_deliveries(
-        pool, subscriber_butler="a-butler-with-no-deliveries"
+        bus_pool, subscriber_butler="a-butler-with-no-deliveries"
     )
     assert total_none == 0
     assert rows_none == []
@@ -791,12 +783,12 @@ async def _delivery_status(pool: asyncpg.Pool, delivery_id: Any) -> tuple[str, i
 
 
 async def test_fanout_replay_does_not_dispatch_a_real_failed_permanent_delivery(
-    pool: asyncpg.Pool,
+    bus_pool: asyncpg.Pool,
 ) -> None:
     """A durable terminal ledger row is re-observed, never sent to route() again."""
     event_type = f"terminal_replay.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -804,7 +796,7 @@ async def test_fanout_replay_does_not_dispatch_a_real_failed_permanent_delivery(
         updated_at_ago=timedelta(seconds=0),
     )
     transition = await mark_delivery_failed(
-        pool,
+        bus_pool,
         delivery_id,
         "RuntimeError: subscriber intentionally terminal",
         retryable=False,
@@ -814,7 +806,7 @@ async def test_fanout_replay_does_not_dispatch_a_real_failed_permanent_delivery(
 
     client = _UnexpectedRouteClient()
     result = await fan_out_event(
-        pool,
+        bus_pool,
         client,
         event_id=str(event_id),
         event_type=event_type,
@@ -827,14 +819,14 @@ async def test_fanout_replay_does_not_dispatch_a_real_failed_permanent_delivery(
         "deliveries": [{"subscriber_butler": "finance", "status": "failed_permanent"}],
     }
     assert client.calls == 0
-    assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 1)
+    assert await _delivery_status(bus_pool, delivery_id) == ("failed_permanent", 1)
 
 
-async def test_terminal_fence_wins_over_a_concurrent_route_success(pool: asyncpg.Pool) -> None:
+async def test_terminal_fence_wins_over_a_concurrent_route_success(bus_pool: asyncpg.Pool) -> None:
     """A stale route success cannot overwrite or misreport a permanent terminal state."""
     event_type = f"terminal_fence.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -844,7 +836,7 @@ async def test_terminal_fence_wins_over_a_concurrent_route_success(pool: asyncpg
     client = _BlockingSuccessClient()
     fanout = asyncio.create_task(
         fan_out_event(
-            pool,
+            bus_pool,
             client,
             event_id=str(event_id),
             event_type=event_type,
@@ -856,7 +848,7 @@ async def test_terminal_fence_wins_over_a_concurrent_route_success(pool: asyncpg
     await asyncio.wait_for(client.started.wait(), timeout=5)
     try:
         transition = await mark_delivery_failed(
-            pool,
+            bus_pool,
             delivery_id,
             "RuntimeError: permanent terminal fence",
             retryable=False,
@@ -873,17 +865,17 @@ async def test_terminal_fence_wins_over_a_concurrent_route_success(pool: asyncpg
         "deliveries": [{"subscriber_butler": "finance", "status": "failed_permanent"}],
     }
     assert client.calls == 1
-    assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 1)
+    assert await _delivery_status(bus_pool, delivery_id) == ("failed_permanent", 1)
 
 
 @pytest.mark.parametrize("winning_status", ["delivered", "failed_permanent"])
 async def test_terminal_fence_wins_over_a_concurrent_incomplete_success(
-    pool: asyncpg.Pool, winning_status: str
+    bus_pool: asyncpg.Pool, winning_status: str
 ) -> None:
     """An incomplete target result reports the terminal row that won the real-PG race."""
     event_type = f"terminal_incomplete_fence.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -893,7 +885,7 @@ async def test_terminal_fence_wins_over_a_concurrent_incomplete_success(
     incomplete_client = _BlockingIncompleteSuccessClient()
     stale_fanout = asyncio.create_task(
         fan_out_event(
-            pool,
+            bus_pool,
             incomplete_client,
             event_id=str(event_id),
             event_type=event_type,
@@ -906,14 +898,14 @@ async def test_terminal_fence_wins_over_a_concurrent_incomplete_success(
     try:
         if winning_status == "delivered":
             winner = await mark_delivery_delivered(
-                pool,
+                bus_pool,
                 delivery_id,
                 task_id=str(uuid.uuid4()),
                 task_name="domain-event-incomplete-success-race",
             )
         else:
             winner = await mark_delivery_failed(
-                pool,
+                bus_pool,
                 delivery_id,
                 "RuntimeError: permanent terminal fence",
                 retryable=False,
@@ -931,25 +923,25 @@ async def test_terminal_fence_wins_over_a_concurrent_incomplete_success(
     )
     assert incomplete_client.calls == 1
     expected_attempt_count = 0 if winning_status == "delivered" else 1
-    assert await _delivery_status(pool, delivery_id) == (winning_status, expected_attempt_count)
+    assert await _delivery_status(bus_pool, delivery_id) == (winning_status, expected_attempt_count)
 
 
 async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_replay(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A stale task conflict cannot demote a terminal failure or re-enable fan-out."""
     from butlers.core_tools import _domain_events
 
     event_type = f"terminal_conflict_fence.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
         status="pending",
         updated_at_ago=timedelta(seconds=0),
     )
-    await pool.execute(
+    await bus_pool.execute(
         """
         INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, source, enabled)
         VALUES ($1, '* * * * *', 'prompt', 'an unrelated hand-crafted task', 'db', true)
@@ -963,11 +955,11 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
         "record_domain_event_delivery_failed_permanent",
         lambda **kwargs: metric_calls.append(kwargs),
     )
-    conflict_client = _BlockingConflictClient(pool)
+    conflict_client = _BlockingConflictClient(bus_pool)
     permanent_client = _PermanentFailureClient()
     conflict_fanout = asyncio.create_task(
         fan_out_event(
-            pool,
+            bus_pool,
             conflict_client,
             event_id=str(event_id),
             event_type=event_type,
@@ -980,7 +972,7 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
     try:
         terminal_result = await asyncio.wait_for(
             fan_out_event(
-                pool,
+                bus_pool,
                 permanent_client,
                 event_id=str(event_id),
                 event_type=event_type,
@@ -1006,10 +998,10 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
         "deliveries": [{"subscriber_butler": "finance", "status": "failed_permanent"}],
     }
     assert conflict_client.calls == 1
-    assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 1)
+    assert await _delivery_status(bus_pool, delivery_id) == ("failed_permanent", 1)
 
     replay = await fan_out_event(
-        pool,
+        bus_pool,
         permanent_client,
         event_id=str(event_id),
         event_type=event_type,
@@ -1024,6 +1016,7 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
     assert permanent_client.calls == 1
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1032,14 +1025,14 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
 
 
 async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A stale retryable route failure re-observes the terminal row without a second metric."""
     from butlers.core_tools import _domain_events
 
     event_type = f"terminal_failure_fence.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1057,7 +1050,7 @@ async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
     permanent_client = _PermanentFailureClient()
     stale_fanout = asyncio.create_task(
         fan_out_event(
-            pool,
+            bus_pool,
             stale_failure_client,
             event_id=str(event_id),
             event_type=event_type,
@@ -1070,7 +1063,7 @@ async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
     try:
         terminal_result = await asyncio.wait_for(
             fan_out_event(
-                pool,
+                bus_pool,
                 permanent_client,
                 event_id=str(event_id),
                 event_type=event_type,
@@ -1102,9 +1095,10 @@ async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
     }
     assert stale_failure_client.calls == 1
     assert permanent_client.calls == 1
-    assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 1)
+    assert await _delivery_status(bus_pool, delivery_id) == ("failed_permanent", 1)
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1112,11 +1106,11 @@ async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
     ]
 
 
-async def test_sweep_redrives_a_stale_pending_delivery(pool: asyncpg.Pool, monkeypatch) -> None:
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_ok_switchboard_route)
+async def test_sweep_redrives_a_stale_pending_delivery(bus_pool: asyncpg.Pool, monkeypatch) -> None:
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_ok_switchboard_route)
     event_type = f"sweep.stale_pending.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1125,17 +1119,17 @@ async def test_sweep_redrives_a_stale_pending_delivery(pool: asyncpg.Pool, monke
     )
 
     result = await run_domain_event_reconciliation_sweep(
-        pool, stale_pending_after=timedelta(minutes=10)
+        bus_pool, stale_pending_after=timedelta(minutes=10)
     )
 
     assert result["stale_pending_candidates"] == 1
     assert result["stale_pending_redriven"] == 1
     assert result["stale_pending_delivered"] == 1
 
-    status, _ = await _delivery_status(pool, delivery_id)
+    status, _ = await _delivery_status(bus_pool, delivery_id)
     assert status == "delivered"
 
-    count = await pool.fetchval(
+    count = await bus_pool.fetchval(
         "SELECT count(*) FROM scheduled_tasks WHERE name = $1",
         task_name_for(event_id, "finance"),
     )
@@ -1143,7 +1137,7 @@ async def test_sweep_redrives_a_stale_pending_delivery(pool: asyncpg.Pool, monke
 
 
 async def test_sweep_does_not_redrive_a_fresh_in_flight_pending_delivery(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A `pending` row claimed moments ago (still comfortably inside a normal
     dispatch's lifetime) must never be treated as stuck."""
@@ -1154,10 +1148,10 @@ async def test_sweep_does_not_redrive_a_fresh_in_flight_pending_delivery(
         dispatch_calls += 1
         return await _ok_switchboard_route(*args, **kwargs)
 
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_counting_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_counting_route)
     event_type = f"sweep.fresh_pending.{uuid.uuid4().hex}"
     _event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1166,26 +1160,26 @@ async def test_sweep_does_not_redrive_a_fresh_in_flight_pending_delivery(
     )
 
     result = await run_domain_event_reconciliation_sweep(
-        pool, stale_pending_after=timedelta(minutes=10)
+        bus_pool, stale_pending_after=timedelta(minutes=10)
     )
 
     assert result["stale_pending_candidates"] == 0
     assert dispatch_calls == 0
-    status, _ = await _delivery_status(pool, delivery_id)
+    status, _ = await _delivery_status(bus_pool, delivery_id)
     assert status == "pending"
 
 
 async def test_sweep_retries_transient_failure_up_to_bound_then_permanent(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A `failed` row with a transient (retryable) error keeps retrying, with
     attempt_count climbing each sweep tick, until the retry bound is reached
     -- then it transitions to the terminal `failed_permanent`, never retried
     again."""
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_transient_failure_switchboard_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_transient_failure_switchboard_route)
     event_type = f"sweep.transient_retry.{uuid.uuid4().hex}"
     _event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1197,12 +1191,12 @@ async def test_sweep_retries_transient_failure_up_to_bound_then_permanent(
     max_attempts = 3
     for expected_attempt in range(1, max_attempts + 1):
         result = await run_domain_event_reconciliation_sweep(
-            pool,
+            bus_pool,
             failed_retry_backoff=timedelta(seconds=0),
             max_attempts=max_attempts,
         )
         assert result["failed_retried"] == 1
-        status, attempt_count = await _delivery_status(pool, delivery_id)
+        status, attempt_count = await _delivery_status(bus_pool, delivery_id)
         assert attempt_count == expected_attempt
         if expected_attempt < max_attempts:
             assert status == "failed"
@@ -1211,17 +1205,17 @@ async def test_sweep_retries_transient_failure_up_to_bound_then_permanent(
 
     # A further sweep tick must not touch the now-terminal row again.
     result = await run_domain_event_reconciliation_sweep(
-        pool,
+        bus_pool,
         failed_retry_backoff=timedelta(seconds=0),
         max_attempts=max_attempts,
     )
     assert result["failed_retry_candidates"] == 0
-    _, final_attempt_count = await _delivery_status(pool, delivery_id)
+    _, final_attempt_count = await _delivery_status(bus_pool, delivery_id)
     assert final_attempt_count == max_attempts
 
 
 async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
-    pool: asyncpg.Pool, monkeypatch, caplog
+    bus_pool: asyncpg.Pool, monkeypatch, caplog
 ) -> None:
     """A sweep loser reports the durable terminal row without a duplicate terminal signal."""
     from butlers.core_tools import _domain_events
@@ -1237,10 +1231,10 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
         await release_route.wait()
         return {"error": "TimeoutError: stale retryable route failure", "retryable": True}
 
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_blocking_transient_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_blocking_transient_route)
     event_type = f"sweep.fenced_terminal_signal.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1259,7 +1253,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     with caplog.at_level(logging.ERROR):
         sweep = asyncio.create_task(
             run_domain_event_reconciliation_sweep(
-                pool,
+                bus_pool,
                 failed_retry_backoff=timedelta(seconds=0),
                 max_attempts=5,
                 limit=1,
@@ -1269,7 +1263,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
         try:
             terminal_result = await asyncio.wait_for(
                 fan_out_event(
-                    pool,
+                    bus_pool,
                     permanent_client,
                     event_id=str(event_id),
                     event_type=event_type,
@@ -1291,9 +1285,12 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     )
     assert route_calls == 1
     assert permanent_client.calls == 1
-    assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 5)
+    assert await _delivery_status(bus_pool, delivery_id) == ("failed_permanent", 5)
+    # The concurrent fan-out wins the terminal transition, so it emits under the
+    # publisher; the losing sweep emits nothing.
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1301,7 +1298,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     ]
 
     replay = await run_domain_event_reconciliation_sweep(
-        pool,
+        bus_pool,
         failed_retry_backoff=timedelta(seconds=0),
         max_attempts=5,
         limit=1,
@@ -1310,6 +1307,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     assert replay["newly_permanently_failed"] == 0
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1318,7 +1316,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
 
 
 async def test_overlapping_sweeps_do_not_double_progress_a_failed_delivery(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A busy sweep owns retry progression until it records its outcome.
 
@@ -1341,10 +1339,10 @@ async def test_overlapping_sweeps_do_not_double_progress_a_failed_delivery(
         await release_dispatch.wait()
         return {"error": "TimeoutError: simulated transient failure", "retryable": True}
 
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_delayed_transient_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_delayed_transient_route)
     event_type = f"sweep.overlap.{uuid.uuid4().hex}"
     _event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1355,14 +1353,14 @@ async def test_overlapping_sweeps_do_not_double_progress_a_failed_delivery(
 
     first_sweep = asyncio.create_task(
         run_domain_event_reconciliation_sweep(
-            pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+            bus_pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
         )
     )
     await asyncio.wait_for(first_dispatch_started.wait(), timeout=5)
 
     second_sweep = asyncio.create_task(
         run_domain_event_reconciliation_sweep(
-            pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+            bus_pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
         )
     )
     second_dispatch_wait = asyncio.create_task(second_dispatch_started.wait())
@@ -1382,27 +1380,22 @@ async def test_overlapping_sweeps_do_not_double_progress_a_failed_delivery(
     first_result = first_sweep.result()
     assert first_result["failed_retried"] == 1
     assert dispatch_calls == 1
-    status, attempt_count = await _delivery_status(pool, delivery_id)
+    status, attempt_count = await _delivery_status(bus_pool, delivery_id)
     assert status == "failed"
     assert attempt_count == 1
-    # This module-scoped migrated database is shared with the later permanent-
-    # route-error test. Remove the intentionally retryable fixture row after
-    # proving its single-attempt result so a later zero-backoff sweep cannot
-    # select it as unrelated work.
-    await pool.execute("DELETE FROM public.domain_event_deliveries WHERE id = $1", delivery_id)
 
 
 async def test_sweep_marks_permanent_route_error_failed_permanent_immediately(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """A route error classified permanent (e.g. the subscriber lacks the
     domain_events core group) must transition straight to `failed_permanent`
     on its very next retry -- it must never wait for the attempt bound, and
     it must be visible via the dashboard-facing status filter."""
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_permanent_failure_switchboard_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_permanent_failure_switchboard_route)
     event_type = f"sweep.permanent_failure.{uuid.uuid4().hex}"
     _event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="health",
@@ -1412,24 +1405,26 @@ async def test_sweep_marks_permanent_route_error_failed_permanent_immediately(
     )
 
     result = await run_domain_event_reconciliation_sweep(
-        pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+        bus_pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
     )
 
     assert result["newly_permanently_failed"] == 1
-    status, attempt_count = await _delivery_status(pool, delivery_id)
+    status, attempt_count = await _delivery_status(bus_pool, delivery_id)
     assert status == "failed_permanent"
     assert attempt_count == 2
 
     _total, rows = await list_recent_deliveries(
-        pool, subscriber_butler="health", status="failed_permanent"
+        bus_pool, subscriber_butler="health", status="failed_permanent"
     )
     assert any(row["id"] == delivery_id for row in rows)
 
 
-async def test_failed_permanent_delivery_replay_requeues_exactly_once(pool: asyncpg.Pool) -> None:
+async def test_failed_permanent_delivery_replay_requeues_exactly_once(
+    bus_pool: asyncpg.Pool,
+) -> None:
     """Concurrent owner retries produce one queue transition, never two."""
     _event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=f"replay.permanent_failure.{uuid.uuid4().hex}",
         source_butler="travel",
         subscriber_butler="finance",
@@ -1439,12 +1434,12 @@ async def test_failed_permanent_delivery_replay_requeues_exactly_once(pool: asyn
     )
 
     outcomes = await asyncio.gather(
-        requeue_failed_delivery(pool, delivery_id),
-        requeue_failed_delivery(pool, delivery_id),
+        requeue_failed_delivery(bus_pool, delivery_id),
+        requeue_failed_delivery(bus_pool, delivery_id),
     )
 
     assert sorted(outcomes) == ["conflict", "pending"]
-    row = await pool.fetchrow(
+    row = await bus_pool.fetchrow(
         """
         SELECT status, attempt_count, error_message, task_id, task_name, delivered_at
         FROM public.domain_event_deliveries WHERE id = $1
@@ -1462,17 +1457,17 @@ async def test_failed_permanent_delivery_replay_requeues_exactly_once(pool: asyn
 
 
 async def test_sweep_is_idempotent_when_run_concurrently_with_live_fanout(
-    pool: asyncpg.Pool, monkeypatch
+    bus_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     """The sweep must be safe to run concurrently with a live in-flight
     fan-out for the same delivery: claim_delivery's idempotent claim/
     re-observe plus the subscriber's deterministic-task-name reconciliation
     must converge to exactly one delivered row and one scheduled_task, never
     a duplicate or corrupted outcome."""
-    _patch_switchboard_route(monkeypatch, pool, route_fn=_ok_switchboard_route)
+    _patch_switchboard_route(monkeypatch, bus_pool, route_fn=_ok_switchboard_route)
     event_type = f"sweep.concurrent.{uuid.uuid4().hex}"
     event_id, delivery_id = await _insert_delivery_row(
-        pool,
+        bus_pool,
         event_type=event_type,
         source_butler="travel",
         subscriber_butler="finance",
@@ -1480,12 +1475,12 @@ async def test_sweep_is_idempotent_when_run_concurrently_with_live_fanout(
         updated_at_ago=timedelta(minutes=20),
     )
 
-    client = _ReceivingClient(pool)
+    client = _ReceivingClient(bus_pool)
 
     results = await asyncio.gather(
-        run_domain_event_reconciliation_sweep(pool, stale_pending_after=timedelta(minutes=10)),
+        run_domain_event_reconciliation_sweep(bus_pool, stale_pending_after=timedelta(minutes=10)),
         fan_out_event(
-            pool,
+            bus_pool,
             client,
             event_id=str(event_id),
             event_type=event_type,
@@ -1495,40 +1490,40 @@ async def test_sweep_is_idempotent_when_run_concurrently_with_live_fanout(
     )
     assert results[0]["stale_pending_candidates"] == 1
 
-    status, _ = await _delivery_status(pool, delivery_id)
+    status, _ = await _delivery_status(bus_pool, delivery_id)
     assert status == "delivered"
 
-    delivery_count = await pool.fetchval(
+    delivery_count = await bus_pool.fetchval(
         "SELECT count(*) FROM public.domain_event_deliveries WHERE event_id = $1", event_id
     )
     assert delivery_count == 1
 
-    task_count = await pool.fetchval(
+    task_count = await bus_pool.fetchval(
         "SELECT count(*) FROM scheduled_tasks WHERE name = $1",
         task_name_for(event_id, "finance"),
     )
     assert task_count == 1
 
 
-async def test_list_recent_deliveries_orders_most_recent_first(pool: asyncpg.Pool) -> None:
-    client = _ReceivingClient(pool)
+async def test_list_recent_deliveries_orders_most_recent_first(bus_pool: asyncpg.Pool) -> None:
+    client = _ReceivingClient(bus_pool)
 
     first = await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.trip_booked",
         source_butler="travel",
         payload={"trip_id": "trip-order-1"},
     )
     second = await publish_domain_event(
-        pool,
+        bus_pool,
         client,
         event_type="travel.trip_booked",
         source_butler="travel",
         payload={"trip_id": "trip-order-2"},
     )
 
-    _total, rows = await list_recent_deliveries(pool, subscriber_butler="finance", limit=2)
+    _total, rows = await list_recent_deliveries(bus_pool, subscriber_butler="finance", limit=2)
     event_ids = [row["event_id"] for row in rows[:2]]
     assert str(event_ids[0]) == second["event_id"]
     assert str(event_ids[1]) == first["event_id"]

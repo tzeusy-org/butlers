@@ -105,6 +105,40 @@ FROM public.observe_runtime_attention_conditions();
 A `Fleet condition controller: attention append failed (category=...)` warning names only the
 exception type. `UndefinedFunction` means the database has not reached `core_251`.
 `InsufficientPrivilegeError` means the Dashboard pool cannot `SET ROLE butler_switchboard_rw`.
+## Notification delivery adapters
+
+`butlers.jobs.owner_notify` owns the shared `notify.v1` envelope and single-attempt Switchboard
+result classification. Existing caller deadlines stay at their transport boundary. The helper does not grant interrupt authority, choose a fallback,
+retry, or write an extra attention row. Caller policy and its one outcome writer remain explicit:
+
+| Caller | Existing policy and outcome owner |
+| --- | --- |
+| Relationship reminders, Home jobs, Health briefs | Resolve the owner entity; routine suppression drops; one attention row. Health persists success only after confirmed delivery. |
+| Home safety | Source-validated safety cause keeps its high-priority bypass; one attention row. |
+| Daemon `notify()` | Permission, recipient and quiet/sleep checks precede dispatch; existing defer queue and session/cause linkage remain. |
+| Secrets lifecycle | Existing quiet-window queue, dedup marker and explicit retry owner remain; failure never advances success state. |
+| Deferred scheduler | Re-read attention state; keep the existing pending row on failure; terminal Telegram effects cannot replay. |
+| Unknown-sender review | Keep the existing durable claim and record one outcome. |
+| WhatsApp session alert | Record one outcome per invalidation. A lost reply evicts the cached MCP session without replaying the alert. Later ingestion can reconnect. |
+| Insight daily/urgent broker | Existing owner/channel resolution (including its channel fallback), quiet/dedup/budget/amend policy and delivery references stay at the broker; one `source="insight"` outcome per candidate, no helper-written row. |
+| Runtime-attention outbox | Keep its fenced lease, typed transport outcome and terminal transition; no second helper-written outcome. |
+| Security question presentation | Its existing durable claim owns the only attempt. Keep typed unavailable, presented and ambiguous outcomes, and preserve terminal state without replay. |
+| Calendar reminders | Build the shared wire envelope with reminder lineage; its callback still owns delivery and raises for an unsent notification. |
+| Day Sheet, document deadlines, Goal runner failure notices | Use the owner Telegram helper. Claim, acknowledgement and retry decisions stay with each producer. |
+| Goal runner Decision Set cards | Use the checked helper. A failed call that already began remains unknown, and a confirmed provider ID still identifies the card for retraction. |
+
+`sent` and the existing MCP `ok` acknowledgement are delivery confirmations. Missing/malformed
+responses, partial delivery and uncertain Telegram effects are never success. Exception logs carry
+only the exception type; structured public delivery-error vocabulary remains unchanged. RFC 0023
+approval delivery is a separate transport and is excluded from this adapter.
+
+Dashboard manual retry/escalation is a separate, explicitly claimed stored-row replay, not a new
+unsolicited owner producer. It excludes approval-recovery rows, validates failed status (and the
+alternate owner endpoint for escalation), then atomically claims before calling `deliver()` once.
+Its original-row forward links and single manual attention outcome remain owned by those endpoints.
+Custody parking and deferred digest formatting compose persisted messages before delivery and leave
+target selection, revalidation and send outcomes to the scheduler's existing dispatch boundary.
+
 ## Definer search path
 
 Every runtime-attention `SECURITY DEFINER` function runs with
@@ -199,3 +233,44 @@ marker, so an active condition whose marker remains is never re-armed.
 Downgrading below `core_198` is not supported on any database that has reached `core_199`. The
 `core_198` downgrade fails with `core_198 downgrade requires trusted bootstrap rollback interface`
 because the retained objects are present, and nothing restores the pre-outbox schema.
+
+## Dashboard supervised background work
+
+The System page's **Background work** section reads
+`GET /api/system/background-jobs`. These are work facts for the nine existing
+API lifespan supervisors, separate from process liveness and standing-condition
+attention. It neither pages nor schedules work, and does not cover ordinary
+scheduled tasks or the connector fleet.
+
+Periodic jobs record a successful tick only after work completes; caught errors
+and partial-error summaries record failure. Last success becomes overdue after
+the configured interval plus one-quarter interval grace (at least five seconds).
+The continuous fleet-events LISTEN bridge reports connection progress, reconnecting
+after failures, and error after three consecutive failed reconnects. A new API
+instance starts without credit for an older instance's success. Missing evidence
+is unknown, disabled external-deadman configuration is disabled, and storage
+failure is explicitly unavailable. None is an all-clear.
+
+Current health and safe transitions live in `public.dashboard_job_health` and
+`public.dashboard_job_transitions`. Only fixed reason codes, counters and timestamps
+are stored; private exception text, tracebacks and URLs are excluded. Each recording
+transaction retains the newest 100 transitions per job within 30 days, including
+when health remains unchanged. No separate pruning timer is introduced. Forced
+row security preserves the configured ordinary migration/API login's ownership
+after runtime public-table regrants. The health migration resolves that login
+from the existing trusted `dashboard_attention.bootstrap_configuration`; a
+privileged migration re-upgrade does not make the bootstrap creator the API
+health owner. Nonowner runtime identities remain unable to read or write rows.
+
+The normal backup preserves both tables' schema, policies and complete rows.
+Its same-snapshot owner-only staging block restores current health before its
+transition children, requires source-owner membership, and refuses policy drift.
+No diagnostic history is excluded. Restored prior-process health/history is
+historical evidence: a new process starts as starting/unknown until its own
+tick or connection progress succeeds; restore does not manufacture success.
+
+If the section is unavailable, check dashboard database/migration availability.
+The jobs continue running when health recording fails. Apply migrations through
+the normal release procedure; do not grant runtime roles wider access to repair
+this owner-only diagnostic surface. Downgrading the health migration removes its
+two diagnostic tables and history while work continues without persisted evidence.

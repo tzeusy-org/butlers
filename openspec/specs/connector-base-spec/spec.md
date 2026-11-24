@@ -209,6 +209,13 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
+#### Scenario: Ingest refusals distinguish validation from transient failure
+- **WHEN** the Switchboard `ingest` tool cannot accept a submission
+- **THEN** an envelope validation refusal SHALL return `status` `"error"` with `retryable` `false` and a content-free `error`; resubmitting the same envelope cannot succeed
+- **AND** a transport-class persistence failure for a valid envelope (connection loss, timeout, serialization failure, deadlock, resource exhaustion, or operator shutdown; SQLSTATE classes 08, 40, 53, 57P, and 57014) SHALL return `status` `"transient_error"` with `retryable` `true` and fixed error text that quotes no driver message or envelope value, instead of raising a string-only tool error (bu-u5euwb.33)
+- **AND** any other persistence failure for a valid envelope, including deterministic SQLSTATE class 22, 23, and 42 errors, SHALL return `status` `"error"` with `retryable` `false` and fixed, content-free error text, so a connector that holds its checkpoint on a transient reply never holds it forever on a poison envelope
+- **AND** any other raised tool error is unexpected and SHALL NOT be read as either refusal kind
+
 ### Requirement: Request Context Construction
 The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
@@ -283,6 +290,7 @@ All connector-to-Switchboard communication SHALL use a lazy, reconnecting MCP cl
 - **WHEN** an MCP tool returns a result
 - **THEN** the client extracts structured data: FastMCP 2.x `.data` attribute first, then falls back to parsing JSON from text content blocks
 - **AND** error results raise `RuntimeError` with the tool name and error content
+- **AND** a tool reply with `status` `"transient_error"` raises `TransientToolError`, a `ConnectionError` subclass that is not retried by the client, so callers that ignore results stay fail-closed and callers that bound poison retries can tell it from a `RuntimeError` tool error without string matching
 
 #### Scenario: MCP tool surface for connectors
 - **WHEN** a connector interacts with Switchboard
@@ -426,6 +434,10 @@ transitions separately from the connector's stored operational health state.
 The stored `state` value (`healthy`, `degraded`, or `error`) SHALL remain
 source-health evidence and SHALL NOT override heartbeat-derived liveness.
 
+ID: REQ-connector-base-spec-016
+Source: Non-Negotiable Rule 7, RFC 0001 with RFC 0003 for connector heartbeats, and the adopted infrastructure-reliability lifecycle contract
+Scope: v1-mandatory
+
 #### Scenario: Liveness thresholds
 - **WHEN** a connector's liveness is evaluated
 - **THEN** `derive_liveness(last_heartbeat_at)` reports `online` when last
@@ -435,11 +447,13 @@ source-health evidence and SHALL NOT override heartbeat-derived liveness.
   ahead of server time is `offline`, never a false-healthy result
 
 #### Scenario: Stored health state does not override liveness
-- **WHEN** a connector has a recent heartbeat with `state = error`
-- **THEN** its liveness is `online` and its independent state remains `error`
-- **WHEN** a connector has a stale or offline heartbeat with `state = healthy`
-- **THEN** its liveness remains `stale` or `offline` from heartbeat recency
-  and is not presented as live because of the stored state
+- **WHEN** a connector's heartbeat recency and stored `state` match a row below
+- **THEN** its liveness and stored health are presented as specified in that row
+
+| Heartbeat and stored state | Liveness and stored health |
+| --- | --- |
+| Recent heartbeat with `state = error` | Liveness is `online` and the independent state remains `error`. |
+| Stale or offline heartbeat with `state = healthy` | Liveness remains `stale` or `offline` from heartbeat recency, and the stored state does not make it appear live. |
 
 #### Scenario: Eligibility states
 - **WHEN** a connector's eligibility is evaluated
@@ -511,7 +525,7 @@ meaning.
 ### Requirement: Shared Discretion Layer
 Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
 
-The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
+The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.core.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
 ID: REQ-connector-base-spec-007
 Source: bu-1wwjrb; [Observed] `src/butlers/connectors/discretion.py` evaluator log sites
@@ -520,7 +534,7 @@ Scope: v1-mandatory
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
 - **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` (shared module, not connector-specific)
-- **AND** it imports `DiscretionDispatcher` from `butlers.connectors.discretion_dispatcher`
+- **AND** it imports `DiscretionDispatcher` from `butlers.core.discretion_dispatcher`
 - **AND** it creates a `DiscretionDispatcher(pool=db_pool)` and injects it into each `DiscretionEvaluator`
 
 #### Scenario: Discretion model resolution via catalog
@@ -1026,3 +1040,41 @@ OAuth-bound connectors SHALL maintain `observed_scopes` and `observed_scopes_fet
 - **AND** the dashboard API SHALL compute `auth_status = unsupported` for
   the row based on the per-connector applicability matrix in
   `connector-oauth-scope-surface/spec`
+
+### Requirement: Transcription Outcome Payload Field
+
+The `ingest.v1` envelope's `payload` SHALL support an optional `transcription` object that a
+transcription-capable connector populates to record the outcome of its own speech-to-text attempt.
+This field is independent of, and never derived from, a provider's own raw payload — it exists only
+for outcome metadata the provider itself does not report. This requirement is additive: the existing
+`ingest.v1 Envelope Schema` requirement and its scenarios (including `payload.raw`, `payload.
+normalized_text`, and `payload.attachments`) are unchanged, and `payload.transcription` is absent for
+every message no connector-side transcription attempt was made against. Switchboard validates the
+field (`IngestTranscriptionV1`) and stores it with the accepted message's payload so the responding
+session can see why a voice message carries no transcript. It is outcome metadata, never
+authorization (RFC 0038 D18).
+
+ID: REQ-connector-base-spec-012
+Source: bu-r0dsz; [Observed] `roster/switchboard/tools/contracts.py` `IngestTranscriptionV1`
+Scope: v1-mandatory
+
+#### Scenario: Field absent by default
+
+- **WHEN** an `ingest.v1` envelope is constructed for a message no connector-side transcription
+  attempt was evaluated against
+- **THEN** `payload.transcription` is absent (or `None`), and existing consumers reading only
+  `payload.raw`, `payload.normalized_text`, and `payload.attachments` are unaffected
+
+#### Scenario: Field populated for an evaluated transcription attempt
+
+- **WHEN** a connector evaluates a message for its own transcription capability (for example, the
+  `telegram-voice-transcription` capability evaluating a Telegram `voice` message)
+- **THEN** `payload.transcription` is populated with `source_media` (a string naming the media kind,
+  e.g. `"voice"`), `status` (a connector-defined outcome string), `confidence` (float in `[0, 1]` or
+  `null`), `language` (BCP-47 string or `null`), and `stt_backend` (string or `null`)
+
+#### Scenario: Field never carries audio bytes
+
+- **WHEN** `payload.transcription` is populated
+- **THEN** it contains only text/numeric/string outcome metadata — never raw or encoded audio bytes,
+  and never a reference (storage or otherwise) to the original audio

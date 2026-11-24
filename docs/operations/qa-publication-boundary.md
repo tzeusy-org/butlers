@@ -1,11 +1,237 @@
 # QA Publication Boundary
 
-QA automated publication is disabled (program bu-mc01y5, slice 1). The state described here is the
-durable ledger the future publisher will use; nothing in the repository publishes yet. The governing
-requirements are `REQ-qa-publication-authority-002` (immutable binding) and `-006` (durable ambiguous
-outcome recovery) in `openspec/changes/confine-qa-publication-authority`.
+QA automated publication is disabled in production (program bu-mc01y5). The repository holds the
+trusted deterministic publisher (slice 3, below) and the durable ledger it writes, but no production
+configuration injects a publisher, so a committed investigation is sealed and retained as an unpublished proposal (the attempt
+keeps `publication_unavailable` but the breaker counts it as a success and Gate 5.6 holds the
+fingerprint for 7 days, bu-ejow5p.2) until process isolation is proven (bu-mc01y5.7). The governing requirements are
+`REQ-qa-publication-authority-002` (immutable binding), `-003` (closed operations), `-004` (whole
+reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery) in
+`openspec/changes/confine-qa-publication-authority`.
+
+## Credentials and containment (bu-ejow5p.1)
+
+Investigator containment is **not enforced**: investigators run as root in the daemon's pod and
+process namespace, so every credential and environment value the daemon can read is reachable by
+them. The daemon therefore holds no GitHub write credential:
+
+- PR-status polling, the dashboard PR panel and the credential-status endpoint use only
+  `BUTLERS_QA_GH_READ_TOKEN` (fine-grained: Pull requests, Commit statuses and Metadata read).
+  Without it PR state stays `unknown`; it is never reported `closed`.
+- `BUTLERS_QA_GH_TOKEN` (write scope) is never resolved. If the key still exists in the secrets
+  store the QA module only checks its presence, logs and notifies once per patrol, and the
+  dashboard credential status shows `gh_write_token_present`.
+- Investigation dispatch receives no token at all.
+
+Owner steps (tracked in `bu-ejow5p.16`; no code change does them): provision the read-only token as
+`BUTLERS_QA_GH_READ_TOKEN`, delete `BUTLERS_QA_GH_TOKEN` from the secrets store and rotate that
+token. Re-adding the old key re-enables nothing, because no publisher exists.
+`scripts/qa_reconcile_publications.py` reads its token from the operator's own environment and is
+unaffected.
+
+### Containment labels and the sealed-before-isolation flag (bu-ejow5p.11)
+
+- `healing_attempts.containment` is `job` for an investigation run in a per-attempt
+  credential-free Job and `none` for one run in the daemon's own process tree. `NULL` (a row from
+  before the label existed) reads as `none`.
+- `qa_publication_exports.sealed_before_isolation` is set when the export is sealed and cannot
+  change afterwards (the retained-export guard refuses any UPDATE that alters it, for every role).
+  It is true for every export whose investigation did not run in a Job, and it defaults to true,
+  so an unlabelled export is flagged rather than trusted.
+- **Publisher precondition:** a publisher MUST require a per-pull-request owner approval record
+  for a flagged export before it pushes anything. No publisher is configured today, so nothing
+  enforces this yet; the flag exists so that the first publisher cannot forget the distinction.
+- A PR review follow-up runs the agent in the daemon and is refused while Job isolation is
+  configured (`follow_up_isolation_unavailable`).
+
+### Verifying investigator isolation (bu-ejow5p.11)
+
+`scripts/verify_qa_isolation.py` proves the per-attempt Job isolation against a dev cluster; a
+mock or a chart render proves nothing about it. It is a human-run act, not CI, and refuses any
+namespace that is not `-dev`.
+
+1. `render --namespace <ns>-dev --image <repo@sha256:...>` prints the probe Job and the five
+   inverse controls without touching a cluster; review them first.
+2. `dry-run --namespace <ns>-dev --image <repo@sha256:...> [--policies-file <helm template output>]`
+   sends the probe Job and the five inverse controls to the API server with
+   `--dry-run=server` as the launcher service account, and creates nothing. Admission, including
+   the ValidatingAdmissionPolicies, evaluates dry-run requests, so this is the server-side CEL
+   type and cost check that a chart render and the cel-python tests cannot give. With
+   `--policies-file` the policies and bindings are dry-run applied too. It passes when the probe
+   is admitted and every inverse control is refused (default `Deny` action). Both `dry-run` and
+   `run` also refuse a kube context that does not look like a dev cluster.
+3. `run` creates a synthetic canary Secret (random value, piped on stdin, never printed) and a
+   canary-publisher pod, then applies each Job as the launcher service account so the admission
+   policy is exercised. The probe is `python -I -m butlers.core.qa.isolation_probe`.
+4. Negative probes: uid is the pinned non-root user; no foreign process is visible; no
+   service-account directory; `/` and `/app` are read-only; the canary file and environment are
+   unreadable; TCP to the canary publisher and to any `--refused-tcp` target (give it `tracker=`,
+   the daemon ports 41100-41112 and Postgres) is refused. Positive controls: the workspace is
+   writable, each `--readable-path` is readable, each `--reachable-tcp` (the model route) connects.
+5. Inverse controls render the same template with exactly one hardening removed (token mounted,
+   run as root, writable root, no tracker-egress exclusion, hostPID). The named probe must go RED,
+   hostPID must be refused by the admission policy, and the restored template must PASS.
+6. The output is a content-blind receipt: check names, outcomes and digests only. Attach it to the
+   review. It is operational evidence for that cluster and revision, not provider-side least
+   privilege, and it does not close `bu-vc90le`.
+
+### The egress start-up gate (bu-ejow5p.11)
+
+A NetworkPolicy is programmed by the CNI after a pod starts, so a fresh pod can reach the network
+for a short window even though a default-deny policy existed first. The k3d verifier measured it:
+the API server was reachable when the probe started and refused about 20 seconds later. Every
+investigator container therefore starts under `butlers.core.qa.egress_gate`, which dials the
+cluster's own API server (`KUBERNETES_SERVICE_HOST`/`PORT`, always present) until it is refused
+three times in a row, within 120 seconds, and only then `exec`s the real command. It fails
+closed: with the address still reachable, or no target found, it exits 70 with a fixed token on
+stderr and the command never runs. The launcher reports exit 70 as
+`containment_not_enforced`, a containment failure and never an investigation result. The probe
+and the verifier run under the same gate, and the probe repeats its refused checks 20 seconds
+later (`...:after_settle`), so a gate that stops working shows as a first-pass failure.
+
+There is no credential-injecting model proxy yet: with no proxy URL the launcher refuses with
+`launch_refused:model_route_unavailable`, so the investigator cannot reach a model and nothing
+runs end to end. That decision is recorded with the owner question on `bu-ejow5p.11`.
+
+## Publisher architecture
+
+The package `butlers.core.qa.publication` has four parts. The dispatcher calls
+`proposal.publish_investigation` only when `QaDispatchConfig.publisher` is set.
+
+1. Sealed export (`export.py`). The dispatcher reads the QA branch head once from the ref files
+   (no git process, no symlinks) and binds it. `build_sealed_export` then parses raw loose and
+   packed objects in-process (`object_store.py`); no git process runs against the agent's object
+   store, so no agent hook, config, `core.hooksPath`, fsmonitor, filter, driver, include or
+   credential helper is ever consulted. Every object-store file is opened relative to a directory
+   descriptor with `O_NOFOLLOW | O_NONBLOCK` and must be a bounded regular file. A planted
+   `objects/info/alternates` or `http-alternates`, or a symlinked object, fan-out directory, pack or
+   object directory, or a FIFO, refuses (`object_store_unsafe`) instead of widening which files the
+   reader opens or hanging it. Delta chains (including `REF_DELTA` cycles) resolve
+   iteratively under a depth cap and one per-read byte budget, and pack offsets and delta opcodes
+   are bounds-checked, so hostile pack bytes refuse (`malformed_object`) instead of exhausting
+   memory or escaping as an uncaught error. A blob declared over 1 MiB (any object over 20 MiB)
+   refuses (`export_too_large`) from its loose header or delta target size, before its body is
+   inflated or its chain resolved, and one 512 MiB work budget across every read of the export
+   bounds total work (compressed bytes consumed included) however many hostile objects are
+   planted; no zlib stream may consume more input than a deflate bound of its declared size. Every object is re-hashed against its id, so a rewritten loose object
+   is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
+   accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
+   and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,
+   every new path and every added line of every new blob must pass `validate_anonymized()`. Git
+   bytes are content-addressed, so agent content is validated, not rewritten. A leak in an earlier
+   commit that a later commit removes is still reachable and still refuses. Base content is already
+   public and is not re-validated. The result is a frozen `SealedExport` (objects plus SHA-256
+   digest). `verify()` re-derives both before every transport call.
+2. Closed transport (`transport.py`). `ClosedTransport` is the only caller of a
+   `PublicationProvider`, a protocol with exactly four effects: a ref update, PR create, PR update
+   and set labels. There is no merge, review, approval, queue or generic call. Each request is
+   authorized against the binding before the provider is reached. A ref update must target the
+   bound `qa/` branch, which must not be the base, and must move to the bound head. It is never
+   forced, never deletes, and carries the expected old object id (`None` means the branch must not
+   exist yet). The provider's atomic compare turns a stale head into a refusal. PR create must use
+   the bound head and base. Update and labels must name the PR this attempt created, and labels
+   must be exactly the fixed sanitized set. The provider's repository is the fixed origin; the
+   binding cannot name another one.
+3. Publisher (`publisher.py`). `QaPublisher.publish` verifies the export, refuses when the
+   repository whitelist is missing or denies the repository, and anonymizes and validates the PR
+   title, body (including the raw-evidence markers) and labels. A failure there is
+   `anonymization_failed` before any egress. It then runs `branch_push`, `pr_create` and `pr_labels`.
+   Each operation is persisted at `bound`, then moved to `egress_started` by `mark_egress_started`.
+   That call locks the attempt row (`SELECT ... FOR UPDATE`) and refuses `attempt_not_active` unless
+   the attempt is still active, so a timed-out or terminal attempt cannot start egress. The publisher
+   then makes exactly one provider call and records the outcome. A lost response, or any unexpected
+   error after egress started, is recorded `ambiguous` and stops the sequence. That unexpected error
+   is logged by exception type name only, never its message or traceback. A definite provider
+   refusal (`ProviderRejected`) reports `provider_rejected_<code>`, where `<code>` is one of
+   `forbidden`, `not_found`, `conflict`, `validation_failed` or `rate_limited`; any other provider
+   code becomes `unrecognized`, so provider text never reaches a category. On `pr_create` only
+   the access refusals `forbidden` and `not_found` stay definite: a `failed` `pr_create` row is
+   the case API's proof that no PR exists, and any other refusal may front a live PR, so the
+   transport records it `ambiguous`. That covers GitHub's 422 "a pull request already exists for
+   <head>" and `rate_limited`, which a retrying client can receive after an earlier try created
+   the PR behind a lost response. A rerun for the same attempt reuses recorded successes, returns a held operation as ambiguous, and never re-egresses.
+   Nothing is ever deleted.
+4. Dispatcher (`dispatch.py`). On `published`, the attempt moves to `pr_open` with the PR number, a
+   `drafted` journal event is recorded and the local branch is kept. On `anonymization_failed`, the
+   counter `qa_anonymization_failed_total` is incremented and the attempt moves to
+   `anonymization_failed` with an `escalated` event that carries only the content-free category. On
+   refused, failed or ambiguous, the attempt fails with `publication_<status>: <category>` and is
+   escalated.
+
+Review follow-ups still record `publication_unavailable`. The ledger allows one operation per attempt
+and kind, so pushing a follow-up to an existing PR needs its own operation identity (follow-up bead).
+No concrete credentialed provider ships yet. Activation needs bu-mc01y5.7 (isolation) and the
+operational gates bu-nh37dt/bu-vc90le.
+
+Before its first egress the publisher retains the sealed export's exact bytes in
+`public.qa_publication_exports` (migration `core_294`, `butlers.core.qa.publication.retention`): one
+immutable row per attempt with base, head, commit list, framed objects and digest. The agent worktree,
+its branch and its objects are deleted at teardown, so a push or PR creation that fails or ends
+ambiguous still leaves the proposal recoverable for read-only reconciliation, next to the persisted
+diff snapshot, investigation notes and ledger stage. Retaining the same export again is a no-op; a
+different export for the same attempt refuses (`export_changed`), and a store failure refuses
+(`export_unretained`) with nothing sent. `load_retained_export` re-derives every object id and the
+digest, so altered stored bytes refuse with `export_tampered`.
+
+Only `butler_qa_rw` inserts (forced row security, as for the ledger); every runtime role reads, since
+the bytes already passed `validate_anonymized()` and are what a successful publication makes public.
+No role can delete a row (there is no DELETE policy), and the only rewrite is a prune. The BEFORE
+UPDATE trigger (`qa_publication_exports_immutable`) refuses every other rewrite, from a privileged login
+too. Only the last schema to leave `core_294` drops the table, and only while no export row exists,
+pruned or not. The table is excluded from `deploy/backup/pg_dump.sh` for the same reason as the ledger.
+
+Retention (migration `core_301`, bu-mc01y5.25). A retained export's object bytes are kept until its
+attempt has been terminal (`pr_merged`, `failed`, `unfixable`, `anonymization_failed`, `timeout`) for
+30 days after `closed_at`, by database time, and none of its operations holds the lineage
+(`egress_started` or `ambiguous`). Past that point `retention.prune_retained_exports` empties
+`objects` and the guard stamps `pruned_at`. The row stays as a tombstone: base, head, commits and
+digest keep binding the proposal, so the case API's `export_retained` proof and the sweep's binding
+rebuild (`head_sha`) are unchanged. The guard enforces the same eligibility for every role and makes a
+pruned row final. A BEFORE INSERT trigger (`qa_publication_exports_unpruned_insert`) refuses a row
+inserted with `pruned_at` set, so the guarded UPDATE is the only way to a tombstone. The window is
+measured from `healing_attempts.closed_at`, which no DML writer chooses: that table has no
+row-security fence, so core_305's `healing_attempts_closed_at_stamp` trigger (every role) stamps
+`closed_at` with database time when a row enters a terminal status, keeps it unchanged on any later
+update of a terminal row, and clears it on a non-terminal row. Backdating a close needs the table
+owner to disable the trigger. The lineage-hold check reads the fenced ledger. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
+that role alone). A pruned export refuses with `export_pruned` on load and on re-retention. The QA
+module runs the prune in the daily `qa_evidence_cleanup` job, at `retention_cleanup_hour`, 100 rows per
+run. A prune failure is logged and does not fail the evidence cleanup. Only the last schema to leave
+`core_301` removes the prune path, and only while no export is pruned, since an emptied row would
+read back as tampered.
+
+The retained bytes exist only for an attempt whose publisher reached retention. A refusal before
+retention leaves no export, so the publisher records a receipt instead (migration `core_302`,
+bu-mc01y5.28): one row per attempt in `public.qa_publication_refusals` holding the refusal's
+content-free status (`refused` or `anonymization_failed`) and snake_case category code (for example
+`repo_not_whitelisted`, `pr_labels_unsanitized`; the CHECK admits `^[a-z][a-z0-9_]{0,63}$` only). It covers every refusal
+before retention: an export that cannot be sealed or bound, a failed preflight (tampered export,
+unbound head, denied or missing whitelist), residual sensitive content in the PR text or labels, and
+an export that cannot be retained. The insert policy refuses a receipt for an attempt that already
+has a ledger operation, a retained export or a PR number, so a receipt only ever marks an attempt
+that never reached retention. The first receipt wins and a BEFORE UPDATE trigger
+(`qa_publication_refusals_immutable`) refuses rewrites from every role. The fence matches the
+exports table: only `butler_qa_rw` inserts (forced row security), every runtime role reads, there is
+no DELETE policy, the table is excluded from `deploy/backup/pg_dump.sh`, and only the last schema to
+leave `core_302` drops it, and only while it is empty. A receipt that cannot be written is logged
+and changes nothing, so the attempt reads `ambiguous`.
+
+The case API reads `proposal_state` as `unpublished` only with a publisher trace (a retained export,
+pruned or not, or a refusal receipt) and the ledger's proof that no PR egress can have landed. A
+receipt alone never proves absence: a later run that reached egress is still judged by the ledger.
+
+Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
+kept, and no remote branch or PR is deleted.
 
 ## Durable operations and holds
+
+The case dossier observes PR lifecycle read-only through the existing bounded GitHub metadata
+client and TTL cache. An adopted PR's number, URL and branch remain visible when that lifecycle is
+unavailable: the panel says `PR state unknown` and keeps Open PR. A failed, timed-out or otherwise
+terminal investigation never proves that its PR closed. Explicit provider lifecycle supersedes the
+local positive state, and only a positively merged observation supplies a merge timestamp; attempt
+closure time is not that evidence. A checks lookup failure preserves a successful PR observation.
+This display does not change attempt history, publication receipts, lineage holds or activation gates.
 
 `public.qa_publication_operations` (migration `core_266`) holds one row per `(attempt, operation
 kind)`, where the kind is one of the closed set `branch_push`, `pr_create`, `pr_update`, `pr_labels`.
@@ -19,10 +245,70 @@ The trusted dispatcher drives `butlers.core.qa.publication.state`:
    binding returns the existing row (the caller egresses only from `bound`); a changed binding or
    payload is refused with `binding_changed` or `payload_changed` and the stored row is not touched.
    A datastore failure raises `PublicationRefused("datastore_unavailable")`: publication fails closed.
-2. `mark_egress_started` is won by exactly one caller and is persisted before the provider call.
+2. `mark_egress_started` is won by exactly one caller and is persisted before the provider call. It
+   stamps `egress_started_at` with database time (core_300); `started_at` is the bind time.
 3. `record_outcome` stores `succeeded`, `failed` or `ambiguous` (for example a lost response).
 4. `record_reconciliation` releases a hold only for an exact, read-only observation: `resource_found`
-   must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists.
+   must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists. A
+   `pr_create` binds no PR number before egress, so its `resource_found` adopts the observed PR
+   number instead (core_298). The same statement names the adopted PR on its attempt: it fills
+   `healing_attempts.pr_number` and `pr_url` when the attempt names no PR yet, so the case API
+   shows the PR the dispatcher never heard back about. An `INTEGER` overflow, or a URL that is not
+   `https://github.com/.../pull/<number>`, skips that fill, never the reconciliation. It also takes
+   the stage the caller observed (`expected_stage`): an outcome recorded between the read and the
+   write moves the row off that stage, and the outcome wins.
+
+`butlers.core.qa.publication.reconcile.reconcile_operation` is the read-only reconciler. It takes the
+dispatcher-held binding (refused with `binding_mismatch` unless its digest matches the stored one) and
+a `PublicationReader`, whose protocol has only three reads: `read_ref`, `find_pull_requests` and
+`read_pull_request`. For
+`branch_push`, the bound `qa/` branch at exactly the bound head is found and a missing branch is
+absent; any other head stays held (`unexpected_head`). For `pr_create`, the adoption rule is a
+head/base match: exactly one PR, open or closed, from the bound head branch onto the bound base is
+adopted, none is absent, and more than one stays held (`multiple_candidates`). `pr_update` and
+`pr_labels` bind the bound PR's number as `expected_object_id`, and the reconciler reads that PR, which
+must still run from the bound head onto the bound base (`foreign_pr`; a PR that cannot be found stays
+held as `pr_missing`, and a row bound without a PR number as `unbound_pr`). A `pr_update` is found when
+the digest of the observed title and body equals the stored request digest, else absent. A
+`pr_labels` takes the dispatcher's labels, refused with `payload_mismatch` unless their digest equals
+the stored request digest (`labels_unbound` without them). It is found when every bound label is on
+the PR, else absent. Both effects are idempotent, so a late landing after a recorded absence
+duplicates nothing. A reader error, a foreign
+reader origin or a lost ledger write also keeps the hold. A rerun of the publisher treats a
+`resource_found` reconciliation as success: it adopts the PR and continues to the labels, while a
+`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create (likewise
+`pr_labels_reconciled` without reapplying labels). Absence
+is believed only once it has settled: a `resource_absent` observation stays held (`absence_settling`)
+until the operation's outcome (`ended_at`) or, while still in flight, its egress (`egress_started_at`)
+is at least `ABSENCE_SETTLE` (15 minutes) old, so a create or push that timed out but still lands
+cannot free the lineage and let a fresh attempt open a duplicate PR. The bind time never counts: a bind
+resumed long after it was written egresses fresh. A row with neither timestamp never settles
+(`absence_unanchored`). The reconciler's own clock is only a pre-filter; `record_reconciliation`
+enforces the settle against database `now()` inside its guarded UPDATE, so a skewed host clock cannot
+release a hold (`not_recorded`).
+
+`butlers.core.qa.publication.github_reader.GithubPublicationReader` is the concrete reader. It is
+fixed to one `owner/name` origin, sends only `GET`s, never follows a redirect, and raises
+`PublicationReadError` (closed code, no provider text) on anything it cannot prove, which keeps the
+hold. A ref 404 counts as absent only after `GET /repos/{origin}` answers with the origin's own name
+(GitHub also answers 404 for a repository the token cannot see), and every PR it lists must run from
+the bound head branch in the origin onto the bound base in the origin. A read PR must be the requested
+number with both sides in the origin; a PR 404 is absent only after the same repository check. It
+ignores environment proxy,
+netrc and CA settings (`trust_env=False`), and streams every body under a 2 MiB cap (checked against
+`Content-Length` first), raising `response_too_large` past it.
+
+`reconcile.sweep_held_operations` is the batch entry point. It visits every held operation oldest
+first and rebuilds each binding from dispatcher records: the reader's origin, the attempt's
+`branch_name`, `QA_BASE_REF`, the retained export's `head_sha` and, for `pr_update` and `pr_labels`, the
+PR number the attempt's own `pr_create` recorded (succeeded, or reconciled `resource_found`). The
+stored digest still decides, so a rebuilt binding that differs is refused (`binding_mismatch`), and a
+row whose records cannot form a binding is reported `unbound_attempt` without a read. Operators run it
+with `scripts/qa_reconcile_publications.py --repository <owner/name>`, repeating `--label` when the
+configured QA PR labels differ from the dispatch defaults: the connection string is read from stdin, the token from `BUTLERS_QA_GH_TOKEN` in the
+environment (`bws run -- ...` or a pod `secretKeyRef`), the pool assumes `butler_qa_rw`, and the report
+is identifiers and categories only (exit 2 while anything stays held). Nothing schedules the sweep yet;
+the patrol wiring lands with the production publisher, which owns the fixed origin.
 
 An operation in `egress_started` or `ambiguous` holds its fingerprint lineage. While it does, a fresh
 QA attempt is refused (`create_or_join_attempt(..., enforce_publication_hold=True)` raises
@@ -62,6 +348,12 @@ reconciled row, and any change to a frozen column: `id`, `attempt_id`, `kind`, `
 `request_digest`, `expected_object_id` and `started_at`. It fires for every role. As for `core_266`, only the last schema to leave
 `core_267` removes the shared trigger, function and constraint.
 
+Migration `core_298` replaces that CHECK under the same name, keeping every `core_267` rule, and adds
+one adoption arm: a `pr_create` that bound no expected object and recorded no new object may reconcile
+`resource_found` naming a PR number, and its `new_object_id` must equal that number. The database
+checks the shape; the reconciler supplies the head/base proof. Only the last schema to leave
+`core_298` restores the `core_267` CHECK, `NOT VALID` while an adopted row exists.
+
 Migration `core_268` extends that guard without replacing it. `new_object_id` and `result` are
 set-once: the writer may fill either (NULL to a value) or repeat the same value, but a recorded value is
 never changed or cleared, so a reconciled row keeps the outcome it was reached from. A CHECK
@@ -76,6 +368,14 @@ the hold predicate's stages (`egress_started`, `ambiguous`), including from a pr
 any other stage can still be deleted by a role that can reach them. Only the last schema to leave
 `core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
 body.
+
+Migration `core_300` adds `egress_started_at` and extends the guard again, keeping every earlier rule.
+A row leaving `bound` without the stamp gets database time (so a writer that predates the column still
+anchors the settle), and the stamp is set-once afterwards. A CHECK
+(`ck_qa_publication_operations_stage_stamp`) keeps it NULL on a `bound` row. Rows already in
+`egress_started` are backfilled with the migration's time, the latest moment their egress can have
+begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
+guard body.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and

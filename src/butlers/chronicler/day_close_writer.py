@@ -61,7 +61,7 @@ from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_clo
 from butlers.chronicler.editorial import record_coverage_witness
 from butlers.chronicler.prose_admission import INADMISSIBLE_PROSE, classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
-from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.core.tool_call_capture import tool_call_fingerprint_matches
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,7 @@ class DayCloseCacheWriteOutcome:
 
     invalid_reason: str | None = None
     quiet: bool = False
+    coverage_recorded: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,8 +102,10 @@ def _notify_signature() -> inspect.Signature | None:
 
     handlers = {}
 
-    def decorate(_group):
+    def decorate(_group, **tool_kwargs):
         def record(fn):
+            if fn.__name__ == "notify" and tool_kwargs != {"exclude_args": ["priority"]}:
+                raise ValueError("unsupported notify registration policy")
             handlers[fn.__name__] = fn
             return fn
 
@@ -129,7 +132,11 @@ def _notify_signature() -> inspect.Signature | None:
         "message",
         "recipient",
         "subject",
+        "attachments",
         "intent",
+        "options",
+        "timeout_seconds",
+        "on_timeout_value",
         "emoji",
         "request_context",
         "entity_id",
@@ -138,6 +145,7 @@ def _notify_signature() -> inspect.Signature | None:
         "_why",
         "_evidence",
         "_blast_radius",
+        "awaits_reply_seconds",
         "_reversibility",
     }
     if set(signature.parameters) != supported or any(
@@ -194,7 +202,7 @@ def _bound_notify_input(calls: list[dict[str, Any]], fingerprint: Any) -> dict[s
         except TypeError:
             continue
         candidate = dict(bound.arguments)
-        if fingerprint_tool_call_payload(candidate) == fingerprint:
+        if tool_call_fingerprint_matches(candidate, fingerprint):
             matches.append(candidate)
     return matches[0] if len(matches) == 1 else None
 
@@ -668,9 +676,11 @@ async def write_day_close_cache(
         target_timezone=tz_name,
     )
 
+    coverage_recorded = False
     if validated_capture is not None and _has_list_shaped_bundle_evidence(validated_capture):
         try:
             await record_coverage_witness(pool, day_date, tz_name)
+            coverage_recorded = True
         except Exception:
             logger.exception(
                 "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
@@ -695,7 +705,7 @@ async def write_day_close_cache(
     if not selection.invalid and (not output or not output.strip()):
         if validated_capture is not None and _is_empty_bundle_result(validated_capture):
             logger.debug("day_close_writer: validated empty bundle closed a quiet day")
-            return DayCloseCacheWriteOutcome(quiet=True)
+            return DayCloseCacheWriteOutcome(quiet=True, coverage_recorded=coverage_recorded)
         logger.debug("day_close_writer: output is empty without a valid quiet bundle")
         return
 
@@ -752,7 +762,9 @@ async def write_day_close_cache(
                             cache_key,
                             invalid_reason,
                         )
-                        return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                        return DayCloseCacheWriteOutcome(
+                            invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                        )
                     # No existing admissible row: persist the invalid candidate
                     # for audit/recovery. The reader never returns its prose.
                     await upsert_tier2_cache(
@@ -770,7 +782,9 @@ async def write_day_close_cache(
                         cache_key,
                         invalid_reason,
                     )
-                    return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                    return DayCloseCacheWriteOutcome(
+                        invalid_reason=invalid_reason, coverage_recorded=coverage_recorded
+                    )
 
                 await upsert_tier2_cache(
                     conn,
@@ -787,7 +801,7 @@ async def write_day_close_cache(
             cache_key,
             len(provenance_refs),
         )
-        return DayCloseCacheWriteOutcome()
+        return DayCloseCacheWriteOutcome(coverage_recorded=coverage_recorded)
     except Exception:
         logger.exception(
             "day_close_writer: failed to write tier2_cache[%s] — cache miss will occur",
@@ -800,7 +814,6 @@ def build_day_close_completion_hooks(
     *,
     timezone: str | ZoneInfo = "UTC",
     store_fact_fn: Callable[..., Any] | None = None,
-    propose_enrichment_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
@@ -814,8 +827,7 @@ def build_day_close_completion_hooks(
     runs the deterministic memory write-back loop after the prose is cached:
     it synthesizes derived insights + self-reminders from the chronicler's OWN
     ``daily_rollups`` and writes them into the chronicler's OWN memory schema,
-    and — when ``propose_enrichment_fn`` is also supplied — proposes recurring
-    companions to relationship over MCP. The write-back is best-effort and adds
+    The write-back is best-effort and adds
     no owner-facing message; a failure never breaks the cache write.
 
     Usage::
@@ -855,15 +867,14 @@ def build_day_close_completion_hooks(
                 day_date=day_date,
                 timezone=str(_coerce_zone(effective_timezone)),
                 store_fact_fn=store_fact_fn,
-                propose_enrichment_fn=propose_enrichment_fn,
             )
             logger.info(
-                "day_close_writer: write-back for %s (%d insights, %d self-reminders, "
-                "%d proposals, %d errors)",
+                "day_close_writer: write-back for %s status=%s (%d insights, "
+                "%d self-reminders, %d errors)",
                 day_date.isoformat(),
+                wb.status,
                 wb.insights_written,
                 wb.self_reminders_written,
-                wb.proposals_sent,
                 wb.errors,
             )
         except Exception:

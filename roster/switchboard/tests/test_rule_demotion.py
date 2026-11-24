@@ -13,10 +13,12 @@ into this module.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.tools.switchboard.routing.rule_demotion import (
     DEFAULT_AGREEMENT_THRESHOLD,
     DEFAULT_AGREEMENT_WINDOW,
@@ -104,28 +106,6 @@ class TestComputeAgreement:
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Minimal stand-in for asyncpg.Pool, mirroring
-    ``test_rule_promotion_trigger.py``'s ``_FakePool`` convention: canned
-    per-call results consumed in call order, matching the fixed query
-    sequence ``maybe_create_demotion_suggestion`` issues (rule fetch, pending
-    demotion check, recent spot-checks, optional insert)."""
-
-    def __init__(self, *, fetchrow_results=None, fetch_results=None, fetchval_results=None):
-        self._fetchrow_results = list(fetchrow_results or [])
-        self._fetch_results = list(fetch_results or [])
-        self._fetchval_results = list(fetchval_results or [])
-
-    async def fetchrow(self, *_args, **_kwargs):
-        return self._fetchrow_results.pop(0) if self._fetchrow_results else None
-
-    async def fetch(self, *_args, **_kwargs):
-        return self._fetch_results.pop(0) if self._fetch_results else []
-
-    async def fetchval(self, *_args, **_kwargs):
-        return self._fetchval_results.pop(0) if self._fetchval_results else None
-
-
 def _promoted_rule_row(*, action: str = "route_to:finance", enabled: bool = True):
     return {"id": "rule-1", "action": action, "created_by": "promotion", "enabled": enabled}
 
@@ -146,7 +126,7 @@ class TestMaybeCreateDemotionSuggestion:
         assert result.reason == "no_pool"
 
     async def test_rule_not_found_does_not_run(self):
-        pool = _FakePool(fetchrow_results=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         result = await maybe_create_demotion_suggestion(pool, rule_id="missing")
         assert result.ran is False
         assert result.reason == "rule_not_found"
@@ -159,14 +139,14 @@ class TestMaybeCreateDemotionSuggestion:
             "created_by": "dashboard",
             "enabled": True,
         }
-        pool = _FakePool(fetchrow_results=[rule])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[rule]))
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1")
         assert result.ran is False
         assert result.reason == "not_a_promoted_rule"
 
     async def test_disabled_rule_is_not_evaluated(self):
         rule = _promoted_rule_row(enabled=False)
-        pool = _FakePool(fetchrow_results=[rule])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[rule]))
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1")
         assert result.ran is False
         assert result.reason == "rule_disabled"
@@ -176,7 +156,7 @@ class TestMaybeCreateDemotionSuggestion:
         per rule' -- the app layer must not even attempt a duplicate."""
         rule = _promoted_rule_row()
         pending = {"id": uuid4()}
-        pool = _FakePool(fetchrow_results=[rule, pending])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[rule, pending]))
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1")
         assert result.ran is True
         assert result.demoted_suggestion_created is False
@@ -185,7 +165,9 @@ class TestMaybeCreateDemotionSuggestion:
     async def test_below_min_samples_does_not_score(self):
         rule = _promoted_rule_row()
         spot_checks = [_spot_check_row(minutes_ago=1, target="general")]  # 1 disagreeing sample
-        pool = _FakePool(fetchrow_results=[rule, None], fetch_results=[spot_checks])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[rule, None]), fetch=AsyncMock(side_effect=[spot_checks])
+        )
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1", min_samples=5)
         assert result.ran is True
         assert result.demoted_suggestion_created is False
@@ -195,7 +177,9 @@ class TestMaybeCreateDemotionSuggestion:
     async def test_agreement_above_threshold_does_not_demote(self):
         rule = _promoted_rule_row()
         spot_checks = [_spot_check_row(minutes_ago=i, target="finance") for i in range(5)]
-        pool = _FakePool(fetchrow_results=[rule, None], fetch_results=[spot_checks])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[rule, None]), fetch=AsyncMock(side_effect=[spot_checks])
+        )
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1", min_samples=5)
         assert result.demoted_suggestion_created is False
         assert result.reason == "agreement_above_threshold"
@@ -208,10 +192,10 @@ class TestMaybeCreateDemotionSuggestion:
         spot_checks = [_spot_check_row(minutes_ago=i, target="finance") for i in range(8)]
         spot_checks += [_spot_check_row(minutes_ago=i, target="general") for i in range(8, 10)]
         new_id = uuid4()
-        pool = _FakePool(
-            fetchrow_results=[rule, None],
-            fetch_results=[spot_checks],
-            fetchval_results=[new_id],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[rule, None]),
+            fetch=AsyncMock(side_effect=[spot_checks]),
+            fetchval=AsyncMock(side_effect=[new_id]),
         )
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1", min_samples=5)
         assert result.demoted_suggestion_created is True
@@ -225,10 +209,10 @@ class TestMaybeCreateDemotionSuggestion:
         must not raise or double-count as created."""
         rule = _promoted_rule_row()
         spot_checks = [_spot_check_row(minutes_ago=i, target="general") for i in range(5)]
-        pool = _FakePool(
-            fetchrow_results=[rule, None],
-            fetch_results=[spot_checks],
-            fetchval_results=[None],  # ON CONFLICT DO NOTHING -> no id returned
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[rule, None]),
+            fetch=AsyncMock(side_effect=[spot_checks]),
+            fetchval=AsyncMock(side_effect=[None]),  # ON CONFLICT DO NOTHING -> no id returned
         )
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1", min_samples=5)
         assert result.demoted_suggestion_created is False
@@ -254,10 +238,10 @@ class TestMaybeCreateDemotionSuggestion:
         # disagreement with the rule's 'skip'.
         spot_checks = [_spot_check_row(minutes_ago=i, target="general") for i in range(5)]
         new_id = uuid4()
-        pool = _FakePool(
-            fetchrow_results=[rule, None],
-            fetch_results=[spot_checks],
-            fetchval_results=[new_id],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[rule, None]),
+            fetch=AsyncMock(side_effect=[spot_checks]),
+            fetchval=AsyncMock(side_effect=[new_id]),
         )
         result = await maybe_create_demotion_suggestion(pool, rule_id="rule-1", min_samples=5)
         assert result.agreement_score == 0.0

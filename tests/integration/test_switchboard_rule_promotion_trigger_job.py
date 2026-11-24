@@ -23,9 +23,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.ingestion_policy import IngestionPolicyEvaluator
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.rule_promotion import run_rule_promotion_trigger
 from butlers.tools.switchboard.routing.rule_promotion_apply import apply_suggestion
 
@@ -37,39 +35,22 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + switchboard chains with switchboard tables in their
-    real ``switchboard`` schema (matching production topology) — required
-    for ``IngestionPolicyEvaluator``'s hardcoded ``switchboard.ingestion_rules``
-    query to resolve correctly.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Mirrors the production Switchboard pool's search_path
-    (``butlers.db.Database._server_settings`` -> ``schema_search_path
-    ("switchboard")`` -> ``"switchboard,public"``) so this module's unqualified
-    table references (``routing_verdict_log``, ``rule_promotion_suggestions``,
-    ``message_inbox``, ``ingestion_rules``) resolve against the ``switchboard``
-    schema, exactly as they do at runtime.
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """Core + switchboard chains with switchboard tables in their real
+    ``switchboard`` schema (matching production topology) — required for
+    ``IngestionPolicyEvaluator``'s hardcoded ``switchboard.ingestion_rules``
+    query to resolve correctly.
+
+    The pool mirrors the production Switchboard search_path
+    (``schema_search_path("switchboard")`` -> ``"switchboard,public"``) so this
+    module's unqualified table references (``routing_verdict_log``,
+    ``rule_promotion_suggestions``, ``message_inbox``, ``ingestion_rules``)
+    resolve against the ``switchboard`` schema, exactly as they do at runtime.
     """
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    yield p
-    await p.close()
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +189,14 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-async def test_eligible_pattern_creates_pending_suggestion(pool: asyncpg.Pool) -> None:
+async def test_eligible_pattern_creates_pending_suggestion(switchboard_pool: asyncpg.Pool) -> None:
     """Scenario: 'Promotion-eligible pattern creates a suggestion'."""
     sender_key = "billing@acme-eligible.com"
     base = _now() - timedelta(days=3)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
 
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -223,11 +204,11 @@ async def test_eligible_pattern_creates_pending_suggestion(pool: asyncpg.Pool) -
         verdict_target="finance",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["suggestions_created"] == 1
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT * FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert row is not None
@@ -239,12 +220,14 @@ async def test_eligible_pattern_creates_pending_suggestion(pool: asyncpg.Pool) -
     assert row["evidence_count"] == 3
 
 
-async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: asyncpg.Pool) -> None:
+async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Opaque connector identities must not be stored as email-address rules."""
     sender_key = "spotify:acct-1"
     base = _now() - timedelta(days=3)
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="music",
         timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
@@ -252,10 +235,10 @@ async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: async
         verdict_target="lifestyle",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["suggestions_created"] == 1
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT proposed_rule_type, proposed_condition, proposed_action "
         "FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
@@ -267,13 +250,13 @@ async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: async
 
 
 async def test_endpoint_with_at_sign_proposes_and_is_suppressed_as_a_source_endpoint(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Opaque endpoint identities must not be collapsed to email-shaped suffixes."""
     sender_key = "google_calendar:user:owner@example.com"
     base = _now() - timedelta(days=3)
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="calendar",
         timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
@@ -281,9 +264,9 @@ async def test_endpoint_with_at_sign_proposes_and_is_suppressed_as_a_source_endp
         verdict_target="lifestyle",
     )
 
-    created = await run_rule_promotion_trigger(pool)
+    created = await run_rule_promotion_trigger(switchboard_pool)
     assert created["suggestions_created"] == 1
-    suggestion = await pool.fetchrow(
+    suggestion = await switchboard_pool.fetchrow(
         "SELECT id, proposed_rule_type, proposed_condition "
         "FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
@@ -292,22 +275,22 @@ async def test_endpoint_with_at_sign_proposes_and_is_suppressed_as_a_source_endp
     assert suggestion["proposed_rule_type"] == "source_endpoint"
     assert suggestion["proposed_condition"] == {"endpoint_identity": sender_key}
 
-    await pool.execute(
+    await switchboard_pool.execute(
         "UPDATE rule_promotion_suggestions SET status = 'confirmed' WHERE id = $1",
         suggestion["id"],
     )
     rule_id = await _insert_enabled_rule(
-        pool,
+        switchboard_pool,
         rule_type="source_endpoint",
         condition={"endpoint_identity": sender_key},
         action="route_to:lifestyle",
         priority=10,
     )
 
-    suppressed = await run_rule_promotion_trigger(pool)
+    suppressed = await run_rule_promotion_trigger(switchboard_pool)
     assert suppressed["skipped_existing_rule"] >= 1
     assert (
-        await pool.fetchval(
+        await switchboard_pool.fetchval(
             "SELECT COUNT(*) FROM rule_promotion_suggestions "
             "WHERE sender_key = $1 AND status = 'pending_review'",
             sender_key,
@@ -315,30 +298,32 @@ async def test_endpoint_with_at_sign_proposes_and_is_suppressed_as_a_source_endp
         == 0
     )
 
-    await pool.execute("DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key)
-    await pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
+    await switchboard_pool.execute(
+        "DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key
+    )
+    await switchboard_pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
 
 
 async def test_confirmation_after_initial_rule_load_does_not_recreate_a_pending_suggestion(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The final coverage check must not use a trigger-start cache snapshot."""
     sender_key = "race-confirm@already-covered.com"
     base = _now() - timedelta(days=3)
-    await pool.execute(
+    await switchboard_pool.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ('finance', 'http://localhost:1') "
         "ON CONFLICT (name) DO NOTHING"
     )
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
     )
-    initial = await run_rule_promotion_trigger(pool)
+    initial = await run_rule_promotion_trigger(switchboard_pool)
     assert initial["suggestions_created"] == 1
-    suggestion_id = await pool.fetchval(
+    suggestion_id = await switchboard_pool.fetchval(
         "SELECT id FROM rule_promotion_suggestions "
         "WHERE sender_key = $1 AND status = 'pending_review'",
         sender_key,
@@ -351,22 +336,22 @@ async def test_confirmation_after_initial_rule_load_does_not_recreate_a_pending_
 
     async def _pause_after_trigger_start_load(self):
         await original_ensure_loaded(self)
-        if self._db_pool is pool:
+        if self._db_pool is switchboard_pool:
             initial_load_complete.set()
             await continue_trigger.wait()
 
     monkeypatch.setattr(IngestionPolicyEvaluator, "ensure_loaded", _pause_after_trigger_start_load)
-    trigger_task = asyncio.create_task(run_rule_promotion_trigger(pool))
+    trigger_task = asyncio.create_task(run_rule_promotion_trigger(switchboard_pool))
     await asyncio.wait_for(initial_load_complete.wait(), timeout=5)
 
-    await apply_suggestion(pool, suggestion_id, decided_by="owner")
+    await apply_suggestion(switchboard_pool, suggestion_id, decided_by="owner")
     continue_trigger.set()
     result = await asyncio.wait_for(trigger_task, timeout=10)
 
     assert result["suggestions_created"] == 0
     assert result["skipped_existing_rule"] >= 1
     assert (
-        await pool.fetchval(
+        await switchboard_pool.fetchval(
             "SELECT COUNT(*) FROM rule_promotion_suggestions "
             "WHERE sender_key = $1 AND status = 'pending_review'",
             sender_key,
@@ -375,11 +360,13 @@ async def test_confirmation_after_initial_rule_load_does_not_recreate_a_pending_
     )
 
 
-async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg.Pool) -> None:
+async def test_existing_source_endpoint_rule_suppresses_reproposal(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Coverage evaluates endpoint rules with the same identity used for promotion."""
     sender_key = "steam:user:76561198037633688"
     rule_id = await _insert_enabled_rule(
-        pool,
+        switchboard_pool,
         rule_type="source_endpoint",
         condition={"endpoint_identity": sender_key},
         action="route_to:lifestyle",
@@ -387,7 +374,7 @@ async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg
     )
     base = _now() - timedelta(days=3)
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="gaming",
         timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
@@ -395,7 +382,7 @@ async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg
         verdict_target="lifestyle",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     # This integration module shares a migrated DB; other independently
     # covered candidates can be reconciled in the same scan.
@@ -404,18 +391,22 @@ async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg
     # This module intentionally shares one migrated DB across scenarios. Keep
     # the proof evidence/rule from contributing a new candidate or coverage
     # count to later tests.
-    await pool.execute("DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key)
-    await pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
+    await switchboard_pool.execute(
+        "DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key
+    )
+    await switchboard_pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
 
 
-async def test_single_burst_evidence_does_not_create_suggestion(pool: asyncpg.Pool) -> None:
+async def test_single_burst_evidence_does_not_create_suggestion(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Scenario: 'Single-burst evidence does not trigger promotion'."""
     sender_key = "notifications@burst-same-day.com"
     base = _now()
     timestamps = [base, base + timedelta(minutes=4), base + timedelta(minutes=9)]
 
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -423,16 +414,18 @@ async def test_single_burst_evidence_does_not_create_suggestion(pool: asyncpg.Po
         verdict_target="general",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["suggestions_created"] == 0
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT 1 FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert row is None
 
 
-async def test_midnight_boundary_burst_does_not_create_suggestion(pool: asyncpg.Pool) -> None:
+async def test_midnight_boundary_burst_does_not_create_suggestion(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Scenario: 'Midnight-boundary burst does not trigger promotion' — the
     normative spec scenario this bead's UTC+floor gate exists to satisfy,
     verified here against a real Postgres write path (not just the pure
@@ -449,7 +442,7 @@ async def test_midnight_boundary_burst_does_not_create_suggestion(pool: asyncpg.
     ]
 
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -457,21 +450,21 @@ async def test_midnight_boundary_burst_does_not_create_suggestion(pool: asyncpg.
         verdict_target="general",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["suggestions_created"] == 0
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT 1 FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert row is None
 
 
-async def test_existing_enabled_rule_suppresses_re_proposal(pool: asyncpg.Pool) -> None:
+async def test_existing_enabled_rule_suppresses_re_proposal(switchboard_pool: asyncpg.Pool) -> None:
     """Scenario: 'Existing rule suppresses re-proposal' — exercised against
     the real IngestionPolicyEvaluator + switchboard.ingestion_rules table."""
     sender_key = "alerts@already-covered.com"
     await _insert_enabled_rule(
-        pool,
+        switchboard_pool,
         rule_type="sender_address",
         condition={"address": sender_key},
         action="skip",
@@ -481,7 +474,7 @@ async def test_existing_enabled_rule_suppresses_re_proposal(pool: asyncpg.Pool) 
     base = _now() - timedelta(days=3)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -489,17 +482,19 @@ async def test_existing_enabled_rule_suppresses_re_proposal(pool: asyncpg.Pool) 
         verdict_target="finance",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["skipped_existing_rule"] >= 1
     assert result["suggestions_created"] == 0
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT 1 FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert row is None
 
 
-async def test_is_clearly_automated_flag_set_from_local_part_prefix(pool: asyncpg.Pool) -> None:
+async def test_is_clearly_automated_flag_set_from_local_part_prefix(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Scenario: 'Automated sender flagged' — via the local-part prefix
     convention rather than headers.
 
@@ -519,7 +514,7 @@ async def test_is_clearly_automated_flag_set_from_local_part_prefix(pool: asyncp
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
 
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -527,10 +522,10 @@ async def test_is_clearly_automated_flag_set_from_local_part_prefix(pool: asyncp
         verdict_target="general",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
     assert result["suggestions_created"] == 1
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT is_clearly_automated, proposed_action FROM rule_promotion_suggestions "
         "WHERE sender_key = $1",
         sender_key,
@@ -539,13 +534,15 @@ async def test_is_clearly_automated_flag_set_from_local_part_prefix(pool: asyncp
     assert row["proposed_action"] == "route_to:general"
 
 
-async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg.Pool) -> None:
+async def test_repeated_evidence_bumps_existing_pending_suggestion(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Scenario: 'Repeated evidence bumps an existing pending suggestion'."""
     sender_key = "invoices@bump-me.com"
     base = _now() - timedelta(days=5)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -553,10 +550,10 @@ async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg
         verdict_target="finance",
     )
 
-    first = await run_rule_promotion_trigger(pool)
+    first = await run_rule_promotion_trigger(switchboard_pool)
     assert first["suggestions_created"] == 1
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT id, evidence_count FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
     )
@@ -567,11 +564,11 @@ async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg
     new_event_id = uuid.uuid4()
     new_ts = base + timedelta(days=3)
     await _insert_ingestion_event(
-        pool, event_id=new_event_id, received_at=new_ts, source_channel="email"
+        switchboard_pool, event_id=new_event_id, received_at=new_ts, source_channel="email"
     )
-    await _insert_message_inbox(pool, event_id=new_event_id, received_at=new_ts)
+    await _insert_message_inbox(switchboard_pool, event_id=new_event_id, received_at=new_ts)
     await _insert_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=new_event_id,
         sender_key=sender_key,
         source_channel="email",
@@ -580,11 +577,11 @@ async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg
         verdict_target="finance",
     )
 
-    second = await run_rule_promotion_trigger(pool)
+    second = await run_rule_promotion_trigger(switchboard_pool)
     assert second["suggestions_bumped"] == 1
     assert second["suggestions_created"] == 0
 
-    rows = await pool.fetch(
+    rows = await switchboard_pool.fetch(
         "SELECT id, evidence_count FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
     )
@@ -595,14 +592,14 @@ async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg
 
 
 async def test_pending_suggestion_is_superseded_when_a_manual_rule_now_covers_it(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A coverage recheck retires a stale pending card without minting another rule."""
     sender_key = "manual-rule@supersede-me.com"
     base = _now() - timedelta(days=3)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -610,20 +607,20 @@ async def test_pending_suggestion_is_superseded_when_a_manual_rule_now_covers_it
         verdict_target="finance",
     )
 
-    initial = await run_rule_promotion_trigger(pool)
+    initial = await run_rule_promotion_trigger(switchboard_pool)
     assert initial["suggestions_created"] == 1
 
     await _insert_enabled_rule(
-        pool,
+        switchboard_pool,
         rule_type="sender_address",
         condition={"address": sender_key},
         action="skip",
         priority=5,
     )
 
-    superseded = await run_rule_promotion_trigger(pool)
+    superseded = await run_rule_promotion_trigger(switchboard_pool)
     assert superseded["suggestions_superseded"] == 1
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT status, decided_at, decided_by, created_rule_id "
         "FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
@@ -635,26 +632,26 @@ async def test_pending_suggestion_is_superseded_when_a_manual_rule_now_covers_it
     assert row["created_rule_id"] is None
 
     # A later scan sees the active rule and leaves the terminal audit row intact.
-    repeated = await run_rule_promotion_trigger(pool)
+    repeated = await run_rule_promotion_trigger(switchboard_pool)
     assert repeated["suggestions_superseded"] == 0
     # The module-scoped migrated DB retains prior fixtures, so other covered
     # candidates can contribute too; this sender must at least be suppressed.
     assert repeated["skipped_existing_rule"] >= 1
-    rows = await pool.fetch(
+    rows = await switchboard_pool.fetch(
         "SELECT status FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert [row["status"] for row in rows] == ["superseded"]
 
 
 async def test_old_pending_suggestion_is_superseded_after_the_verdict_lookback(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Pending cards remain reconciliation candidates after their evidence ages out."""
     sender_key = "old-pending@supersede-me.com"
     base = _now() - timedelta(days=35)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -664,19 +661,19 @@ async def test_old_pending_suggestion_is_superseded_after_the_verdict_lookback(
 
     # Seed the pending card with a deliberately wider one-off scan, then use
     # the normal 30-day window for the lifecycle reconciliation below.
-    initial = await run_rule_promotion_trigger(pool, lookback=timedelta(days=40))
+    initial = await run_rule_promotion_trigger(switchboard_pool, lookback=timedelta(days=40))
     assert initial["suggestions_created"] >= 1
 
     await _insert_enabled_rule(
-        pool,
+        switchboard_pool,
         rule_type="sender_address",
         condition={"address": sender_key},
         action="skip",
         priority=5,
     )
 
-    superseded = await run_rule_promotion_trigger(pool)
-    row = await pool.fetchrow(
+    superseded = await run_rule_promotion_trigger(switchboard_pool)
+    row = await switchboard_pool.fetchrow(
         "SELECT status, decided_by FROM rule_promotion_suggestions WHERE sender_key = $1",
         sender_key,
     )
@@ -686,7 +683,9 @@ async def test_old_pending_suggestion_is_superseded_after_the_verdict_lookback(
     assert row["decided_by"] == "system:rule_promotion_trigger"
 
 
-async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: asyncpg.Pool) -> None:
+async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Dismissing a suggestion must stop the trigger re-proposing it every scan.
 
     Regression for the reported bug: the approvals Dismiss endpoint records
@@ -698,7 +697,7 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
     base = _now() - timedelta(days=3)
     timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -706,12 +705,12 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
         verdict_target="general",
     )
 
-    first = await run_rule_promotion_trigger(pool)
+    first = await run_rule_promotion_trigger(switchboard_pool)
     assert first["suggestions_created"] == 1
 
     # Owner dismisses via the approvals surface (mirror the dismiss endpoint's
     # write: terminal 'dismissed' status + a 30-day cooldown window).
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         UPDATE rule_promotion_suggestions
         SET status = 'dismissed', dismissal_reason = 'not wanted',
@@ -726,11 +725,11 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
     new_ts = base + timedelta(days=3)
     new_event_id = uuid.uuid4()
     await _insert_ingestion_event(
-        pool, event_id=new_event_id, received_at=new_ts, source_channel="email"
+        switchboard_pool, event_id=new_event_id, received_at=new_ts, source_channel="email"
     )
-    await _insert_message_inbox(pool, event_id=new_event_id, received_at=new_ts)
+    await _insert_message_inbox(switchboard_pool, event_id=new_event_id, received_at=new_ts)
     await _insert_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=new_event_id,
         sender_key=sender_key,
         source_channel="email",
@@ -739,16 +738,16 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
         verdict_target="general",
     )
 
-    second = await run_rule_promotion_trigger(pool)
+    second = await run_rule_promotion_trigger(switchboard_pool)
     assert second["skipped_dismissal_cooldown"] >= 1
     # No new pending card minted; the dismissed row stays terminal and alone.
-    rows = await pool.fetch(
+    rows = await switchboard_pool.fetch(
         "SELECT status FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert [row["status"] for row in rows] == ["dismissed"]
 
     # Once the cooldown lapses, a fresh proposal is allowed again.
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         UPDATE rule_promotion_suggestions
         SET cooldown_until = now() - interval '1 day'
@@ -757,8 +756,8 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
         sender_key,
     )
 
-    third = await run_rule_promotion_trigger(pool)
-    pending = await pool.fetch(
+    third = await run_rule_promotion_trigger(switchboard_pool)
+    pending = await switchboard_pool.fetch(
         "SELECT status FROM rule_promotion_suggestions "
         "WHERE sender_key = $1 AND status = 'pending_review'",
         sender_key,
@@ -767,12 +766,12 @@ async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: async
     assert len(pending) == 1
 
 
-async def test_insufficient_evidence_count_creates_nothing(pool: asyncpg.Pool) -> None:
+async def test_insufficient_evidence_count_creates_nothing(switchboard_pool: asyncpg.Pool) -> None:
     sender_key = "too-few@sparse-sender.com"
     base = _now() - timedelta(days=2)
     timestamps = [base, base + timedelta(days=1)]  # threshold default is 3
     await _seed_evidence(
-        pool,
+        switchboard_pool,
         sender_key=sender_key,
         source_channel="email",
         timestamps=timestamps,
@@ -780,10 +779,10 @@ async def test_insufficient_evidence_count_creates_nothing(pool: asyncpg.Pool) -
         verdict_target="finance",
     )
 
-    result = await run_rule_promotion_trigger(pool)
+    result = await run_rule_promotion_trigger(switchboard_pool)
 
     assert result["suggestions_created"] == 0
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT 1 FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
     )
     assert row is None

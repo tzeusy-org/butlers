@@ -84,3 +84,44 @@ generic automation policy.
 - Treat HA HTTP success as outcome: confuses transport with physical state.
 - Deduplicate by requested command: a prior attempt does not prove a later
   physical request occurred.
+
+## Amendment 1: Critical entities and approved safety mitigations
+
+**Status:** Adopted 2026-11-21 (owner, questionnaire item home-critical-entities-amendment). **Date:** 2026-11-15.
+
+1. The owner MAY mark explicit Home Assistant entities critical in a Home-owned registry. Only the
+   authenticated owner, through an owner-only dashboard route, adds or removes an entry. No model
+   session, tool argument, goal, capability grant, standing rule, Home Assistant label, area,
+   attribute or name adds, removes or implies an entry.
+2. The `reversible` class runs without approval only for a call whose target is an explicit list
+   of entities, none of which is critical. A call naming a critical entity is at least
+   `consequential` and parks, whatever its base class. While any entity is critical, a call also
+   counts as naming one when its target is not an explicit entity list; when it is an indirect
+   actuator (`scene.turn_on`, `script.turn_on`, any `script.<name>` service, `automation.trigger`,
+   any `homeassistant` service that is not `safe`, or any service pair this map does not list);
+   when a target is absent from Home's entity cache; or when a target is a group or helper whose
+   member list, followed through nested groups, contains a critical entity or cannot be read. No
+   standing rule, decision memory, suggestion or capability grant approves a critical call; each
+   needs its own owner approval of the stored call. `safe` services are never promoted.
+2a. This covers only calls that Butlers sends. Home Assistant automations that fire on their own
+   triggers, and changes made outside Butlers, do not pass through this gate and are not covered.
+   A helper that wraps an entity without exposing its membership is covered only when the owner
+   marks the helper itself critical.
+3. If the registry cannot be read, every call is treated as naming a critical entity.
+4. Before an approved call naming a critical entity, or an approved safety mitigation, leaves the
+   process, Home reads every target entity live from Home Assistant. If a read fails, the entity is
+   missing, `unavailable` or `unknown`, the read set differs from the stored target, or the read is
+   more than 10 seconds old at the receipt claim, no request is sent and the approval stays unrun.
+   The pre-call state is kept on the receipt.
+5. If the pre-call state already meets the call's declared post-condition, no request is sent and
+   the receipt settles `already_satisfied`. `already_satisfied` is not `succeeded` and claims no
+   effect. A service with no declared post-condition is never `already_satisfied`. It is terminal
+   for its approval: a later replay returns it without a request and raises no attention.
+6. An approved safety mitigation is an owner-declared exact call for one explicit entity, parked
+   when a deterministic safety condition opens, and replayed only while that condition is still
+   open and the owner's declaration still digests to the stored call. There is no all, area,
+   device, label, wildcard or multi-entity mitigation and no action that secures several items.
+   Mitigations never run without an owner approval.
+7. The risk map, unknown-is-protected, receipt fencing, and the rule that `unverified` is never
+   success are unchanged. The receipt now settles to exactly one of `succeeded`, `failed`,
+   `unverified` or `already_satisfied`.

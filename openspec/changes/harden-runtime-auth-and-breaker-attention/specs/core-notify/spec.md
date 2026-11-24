@@ -1,9 +1,25 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Attention Ledger Recording at the notify() Boundary
+ID: REQ-core-notify-043
+Source: openspec/specs/core-notify/spec.md#requirement-attention-ledger-recording-at-the-notify-boundary (bu-dss7he.12)
+Scope: v1-mandatory
 Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `coalesced`, `deferred`, `suppressed`, `failed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
 
 `deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`, `butlers.jobs.decision_review._deliver`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
+
+The shared owner-notify implementation SHALL classify the single Switchboard attempt consistently
+for daemon and deterministic callers, without taking over caller permission, quiet/sleep, durable
+claim, defer or retry policy. A missing or malformed delivery acknowledgement SHALL NOT be recorded
+as delivered. Telegram partial and uncertain effects SHALL remain terminal and SHALL NOT advance a
+complete-delivery marker. Failure logs SHALL contain only exception types and safe classifications,
+never exception text or owner/message/recipient payload. Structured public delivery errors retain
+their existing vocabulary and response shape. RFC 0023 approval delivery remains separate.
 
 #### Scenario: A genuine delivery failure is recorded as failed, not deferred
 - **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) cannot resolve a recipient, or the underlying `deliver()` dispatch returns `status="failed"`, or an unexpected exception occurs mid-dispatch
@@ -66,6 +82,15 @@ safe receipt even if routing-log, registry, notification-log, audit, or
 attention-ledger persistence later fails. Such later failures SHALL be caught
 and recorded as safe telemetry failures; they SHALL not turn the send into a
 retryable delivery failure.
+
+Goal-runtime notification delivery SHALL remain deterministic Switchboard /
+Messenger service-plane traffic. Model calls reach notify only through their
+granted broker capability; no origin, grant or exposure bypasses recipient
+approval. The delivery endpoint SHALL remain unavailable to model discovery
+and direct session-host access. The retained confirmed-send, not-attempted /
+uncertain, caller-selected retry/defer and best-effort ledger scenarios below
+remain unchanged; admission, broker grants and ledger rows SHALL NOT become
+idempotence authority or a new direct-delivery path.
 
 ID: REQ-core-notify-027
 Source: heart-and-soul/vision.md Rule 3; RFC 0003; RFC 0011 Amendment 1; design.md Decision 5

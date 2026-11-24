@@ -114,16 +114,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial as bind_call
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.routers import audit as audit_router
 from butlers.api.routers.secrets_v2 import (
     PROVIDER_CATALOG,
     _fetch_cli_secrets,
@@ -133,11 +132,14 @@ from butlers.api.routers.secrets_v2 import (
     _secrets_schema_absent_at_start,
     _secrets_source_schema,
 )
+from butlers.core import audit as audit_router
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.dashboard_links import dashboard_base_url
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
@@ -145,8 +147,12 @@ from butlers.core.temporal.delivery_db import (
     insert_deferred_notification,
 )
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
+_PARTIAL_TRANSITIONS = PartialDeliveryLatch()
+
 
 # States that warrant a proactive owner push. Deliberately excludes 'warn'
 # (never-probed — not yet actionable) and the frontend-only synthetic states
@@ -181,7 +187,6 @@ _STATE_DESCRIPTIONS: dict[str, str] = {
     "expired": "has expired",
 }
 
-_DASHBOARD_PORT_DEFAULT = "41200"
 
 # bu-hmdqz.3 slice 2: how long to wait before retrying a transport-failed
 # delivery via the deferred_notifications flusher. The retry envelope is
@@ -193,19 +198,6 @@ _DASHBOARD_PORT_DEFAULT = "41200"
 _RETRY_BACKOFF = timedelta(minutes=30)
 
 
-def _dashboard_url() -> str:
-    """Resolve the dashboard base URL from the environment.
-
-    Mirrors the lookup in ``butlers.startup_guard._default_dashboard_url``
-    (kept local rather than imported — that module is about a distinct
-    concern, the Google-credential startup guard).
-    """
-    return os.environ.get(
-        "DASHBOARD_URL",
-        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
-    )
-
-
 @dataclass(frozen=True)
 class CredentialSnapshot:
     """One credential's current lifecycle-relevant state, for the scan below."""
@@ -215,6 +207,9 @@ class CredentialSnapshot:
     label: str
     state: str
     provider: str | None = None  # user family only — display provider slug
+    # Where the probe log keeps this credential's attempts (``public.secret_probe_log``).
+    probe_scope: str | None = None
+    probe_key: str | None = None
 
 
 async def _collect_snapshots(
@@ -239,6 +234,7 @@ async def _collect_snapshots(
         try:
             pool = db.pool(butler_name)
         except KeyError:
+            mark_tick_incomplete()
             continue
         try:
             rows = await _fetch_system_secrets(
@@ -270,12 +266,15 @@ async def _collect_snapshots(
                     family="system",
                     label=row.key,
                     state=row.state,
+                    probe_scope="system",
+                    probe_key=row.key,
                 )
             )
 
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         return snapshots
 
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
@@ -297,6 +296,8 @@ async def _collect_snapshots(
                 family="system",
                 label=row.key,
                 state=row.state,
+                probe_scope="system",
+                probe_key=row.key,
             )
         )
 
@@ -307,6 +308,8 @@ async def _collect_snapshots(
                 family="cli",
                 label=row.key,
                 state=row.state,
+                probe_scope="cli",
+                probe_key=row.key,
             )
         )
 
@@ -323,20 +326,22 @@ async def _collect_snapshots(
                 label=provider_meta.label if provider_meta is not None else provider,
                 state=row.state,
                 provider=provider,
+                probe_scope="user",
+                probe_key=row.type,
             )
         )
 
     return snapshots
 
 
-async def _last_notified_state(pool: Any, key: str) -> str | None:
+async def _last_notified_state(pool: Any, key: str, *, required: bool = False) -> str | None:
     """Return the state we last successfully delivered a notification for.
 
     Read from ``public.audit_log`` (no new migration): the most recent
     ``lifecycle_state_notified`` row's ``note`` column IS the state string
-    that was current at delivery time. Returns None (never notified, or the
-    table/lookup is unavailable) so the caller treats that as "not yet
-    debounced" rather than silently skipping a real transition.
+    that was current at delivery time. Admission uses ``required=True``: an
+    unavailable read is UNKNOWN and must stop the send, unlike a confirmed
+    absent row. The default preserves the legacy diagnostic helper contract.
     """
     try:
         row = await pool.fetchrow(
@@ -350,6 +355,8 @@ async def _last_notified_state(pool: Any, key: str) -> str | None:
             _LIFECYCLE_NOTIFIED_ACTION,
         )
     except Exception:
+        if required:
+            raise
         logger.debug(
             "secrets_lifecycle_check: last-notified lookup failed for key=%s", key, exc_info=True
         )
@@ -389,7 +396,7 @@ def _focus_fragment(key: str) -> str:
     return f"/secrets?focus={quote(key, safe='')}"
 
 
-def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
+def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str | None) -> str:
     """Build the owner-facing notification body for one lifecycle transition.
 
     Always includes a deep link to the exact card on /secrets
@@ -404,9 +411,12 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     except a bare-root deployment. The /secrets deep link already lands on the
     card whose re-authorize button starts the same dance.
     """
-    focus_url = f"{dashboard_url}{_focus_fragment(snapshot.key)}"
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
-    lines = [f"Credential '{snapshot.label}' {description}.", focus_url]
+    lines = [f"Credential '{snapshot.label}' {description}."]
+    # The focus fragment is always its own line: retry supersession matches on it. With no
+    # configured dashboard origin it is the bare path, a marker rather than a dead localhost link.
+    origin = dashboard_url.rstrip("/") if dashboard_url else ""
+    lines.append(f"{origin}{_focus_fragment(snapshot.key)}")
 
     if snapshot.provider is not None:
         provider_meta = PROVIDER_CATALOG.get(snapshot.provider)
@@ -416,7 +426,9 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     return "\n".join(lines)
 
 
-async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
+async def _supersede_pending_retries(
+    pool: Any, dedup_marker: str, *, required: bool = False
+) -> int:
     """Cancel prior PENDING retry envelopes sharing ``dedup_marker``, best-effort.
 
     ``dedup_marker`` is a credential's state-independent ``_focus_fragment``.
@@ -430,14 +442,32 @@ async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
         return await cancel_pending_notifications_matching_line(
             pool, butler_name="switchboard", line_token=dedup_marker
         )
-    except Exception:
-        logger.warning(
-            "secrets_lifecycle_check: failed to supersede prior pending retry "
-            "envelopes for marker=%s",
-            dedup_marker,
-            exc_info=True,
-        )
+    except Exception as exc:
+        if required:
+            raise
+        logger.warning("secrets_lifecycle_check: retry supersede failed: %s", type(exc).__name__)
         return 0
+
+
+async def _settle_partial_transition(
+    db: DatabaseManager, pool: Any, *, key: str, state: str
+) -> None:
+    marker = _focus_fragment(key)
+    await _supersede_pending_retries(db.pool("switchboard"), marker, required=True)
+    await audit_router.append(
+        pool,
+        _LIFECYCLE_ACTOR,
+        _LIFECYCLE_NOTIFIED_ACTION,
+        target=key,
+        note=state,
+        result=(
+            "partial_delivery"
+            if _PARTIAL_TRANSITIONS.metadata(pool, key + ":" + state).get("partial_delivery")
+            else "delivery_uncertain"
+        ),
+        metadata=_PARTIAL_TRANSITIONS.metadata(pool, key + ":" + state),
+    )
+    _PARTIAL_TRANSITIONS.clear(pool, key + ":" + state)
 
 
 async def _enqueue_deferred_envelope(
@@ -467,7 +497,7 @@ async def _enqueue_deferred_envelope(
     transport, and — before slice 3's ``resolve_cross_container_mcp_url`` fix
     — always failed the same way), this writes a ``notify.v1`` envelope
     directly into ``switchboard.deferred_notifications``. Switchboard's own
-    scheduler tick (``butlers.core.scheduler._tick_deferred_notification_pass``)
+    scheduler tick (``butlers.core.scheduler.deferred_pass._tick_deferred_notification_pass``)
     runs inside butlers-up — the SAME container every butler daemon lives in
     — and flushes it in-process via ``switchboard.notification.deliver.deliver``
     (see ``butlers.background``'s ``_scheduler_notify_fn``), so the retry is
@@ -542,11 +572,8 @@ async def _enqueue_deferred_envelope(
             envelope=envelope,
             deliver_at=deliver_at,
         )
-    except Exception:
-        logger.warning(
-            "secrets_lifecycle_check: failed to enqueue deferred envelope",
-            exc_info=True,
-        )
+    except Exception as exc:
+        logger.warning("secrets_lifecycle_check: retry enqueue failed: %s", type(exc).__name__)
         return None
 
 
@@ -647,6 +674,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         logger.warning("secrets_lifecycle_check: no shared credential pool configured; skipping")
         return {
             "scanned": 0,
@@ -657,11 +685,28 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             "errors": 0,
         }
 
+    # Reconcile prior terminal outcomes before a credential leaves its attention
+    # state. An unavailable terminal store must not re-arm this job's sends.
+    for pending in _PARTIAL_TRANSITIONS.keys(shared_pool):
+        key, _, state = pending.rpartition(":")
+        try:
+            await _settle_partial_transition(db, shared_pool, key=key, state=state)
+        except Exception:
+            logger.warning("secrets_lifecycle_check: terminal bookkeeping remains incomplete")
+            return {
+                "scanned": 0,
+                "attention": 0,
+                "delivered": 0,
+                "deferred": 0,
+                "suppressed": 0,
+                "errors": 1,
+            }
+
     tracker = DegradedSources(logger)
     snapshots = await _collect_snapshots(db, tracker=tracker)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
 
-    dashboard_url = _dashboard_url()
+    dashboard_url = dashboard_base_url()
     delivered = deferred = suppressed = errors = 0
 
     for snapshot in attention:
@@ -678,8 +723,15 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
         recipient: str | None = None
         dedup_marker: str | None = None
         deferred_at: datetime | None = None
+        partial = _PARTIAL_TRANSITIONS.contains(shared_pool, snapshot.key + ":" + snapshot.state)
         try:
-            last_state = await _last_notified_state(shared_pool, snapshot.key)
+            if partial:
+                await _settle_partial_transition(
+                    db, shared_pool, key=snapshot.key, state=snapshot.state
+                )
+                errors += 1
+                continue
+            last_state = await _last_notified_state(shared_pool, snapshot.key, required=True)
             if last_state == snapshot.state:
                 # Already notified for this exact state — debounce.
                 continue
@@ -819,18 +871,51 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             # the only place in this module that needs the live dispatch
             # path — mirrors the same local-import pattern used by
             # butlers.scheduled_jobs._build_switchboard_insight_notify_fn.
+            from butlers.jobs.owner_notify import deliver_notification
             from butlers.tools.switchboard.notification.deliver import deliver
 
-            deliver_result = await deliver(
-                shared_pool,
-                channel="telegram",
-                message=message,
-                recipient=recipient,
-                source_butler="switchboard",
-                metadata={"origin": _LIFECYCLE_ACTOR, "credential_key": snapshot.key},
+            attempt = await deliver_notification(
+                bind_call(
+                    deliver,
+                    shared_pool,
+                    channel="telegram",
+                    message=message,
+                    recipient=recipient,
+                    source_butler="switchboard",
+                    metadata={"origin": _LIFECYCLE_ACTOR, "credential_key": snapshot.key},
+                ),
+                timeout_s=None,
+                propagate_errors=True,
             )
+            deliver_result = attempt.data
 
-            if deliver_result.get("status") == "failed":
+            if terminal := terminal_telegram_metadata(deliver_result):
+                partial = True
+                _PARTIAL_TRANSITIONS.mark(
+                    shared_pool, snapshot.key + ":" + snapshot.state, terminal
+                )
+                await _settle_partial_transition(
+                    db, shared_pool, key=snapshot.key, state=snapshot.state
+                )
+                errors += 1
+                await record_attention_event(
+                    shared_pool,
+                    origin_butler=_LIFECYCLE_ACTOR,
+                    source="notify",
+                    outcome="failed",
+                    channel="telegram",
+                    intent="send",
+                    priority="medium",
+                    reason=(
+                        "telegram_partial_delivery"
+                        if terminal.get("partial_delivery")
+                        else "telegram_delivery_uncertain"
+                    ),
+                    dedup_key=snapshot.key,
+                    metadata=terminal,
+                )
+                continue
+            if not attempt.delivered:
                 errors += 1
                 # Retryable: recipient + message are already resolved above,
                 # so (unlike no_recipient_configured) a later retry can
@@ -915,9 +1000,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     )
         except Exception as exc:
             errors += 1
-            logger.exception(
-                "secrets_lifecycle_check: unexpected error notifying for key=%s", snapshot.key
-            )
+            logger.warning("secrets_lifecycle_check: notification failed: %s", type(exc).__name__)
             # A genuine terminal failure — must be recorded, not silent, or an
             # exception deep in the dispatch path (e.g. a DB error) reads
             # identically to quiet-hours discipline in the ledger.
@@ -947,7 +1030,12 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             # confirmed direct delivery advances it, so the retry (or the next
             # scan) still fires.
             retry_ref: str | None = None
-            if message is not None and recipient is not None and dedup_marker is not None:
+            if (
+                not partial
+                and message is not None
+                and recipient is not None
+                and dedup_marker is not None
+            ):
                 retry_deliver_at = (
                     deferred_at if deferred_at is not None else datetime.now(UTC) + _RETRY_BACKOFF
                 )
@@ -975,6 +1063,11 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 reason=reason,
                 dedup_key=snapshot.key,
                 notification_ref=retry_ref,
+                metadata=_PARTIAL_TRANSITIONS.metadata(
+                    shared_pool, snapshot.key + ":" + snapshot.state
+                )
+                if partial
+                else None,
             )
 
     summary: dict[str, Any] = {
@@ -1025,8 +1118,10 @@ async def run_secrets_lifecycle_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_secrets_lifecycle_check(db)
+            await record_tick(failed=bool(summary.get("errors") or summary.get("sources_degraded")))
             logger.info("secrets_lifecycle_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("secrets_lifecycle_check: scan failed")

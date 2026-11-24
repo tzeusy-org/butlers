@@ -184,17 +184,24 @@ async def link_identity(
 
 
 async def insert_message(
-    pool: asyncpg.Pool, *, received_at: datetime, request_context: dict, direction: str
-) -> None:
+    pool: asyncpg.Pool,
+    *,
+    received_at: datetime,
+    request_context: dict,
+    direction: str,
+    raw_payload: dict | None = None,
+) -> uuid.UUID:
     # The runtime's existing Switchboard exception is READ-ONLY. Setup writes as
     # migration authority and uses the actual partition-maintenance function.
     async with database_for(pool).control("switchboard") as control:
         await control.execute("SELECT switchboard_message_inbox_ensure_partition($1)", received_at)
-        await control.execute(
+        return await control.fetchval(
             "INSERT INTO switchboard.message_inbox "
-            "(received_at, request_context, direction, normalized_text) VALUES ($1, $2, $3, $4)",
+            "(received_at, request_context, raw_payload, direction, normalized_text) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
             received_at,
             request_context,
+            raw_payload or {},
             direction,
             "synthetic interaction",
         )

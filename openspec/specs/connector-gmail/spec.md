@@ -131,6 +131,10 @@ Gmail label include/exclude policy SHALL gate ingestion before tier evaluation.
 
 ### Requirement: Tiered Email Ingestion Policy
 
+ID: REQ-connector-gmail-005
+Source: RFC 0038 D1, D5; RFC 0003 disposition
+Scope: v1-mandatory
+
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value.
 
 #### Scenario: Tier 1 — full pipeline
@@ -147,6 +151,15 @@ The connector SHALL implement a three-tier ingestion policy to process emails in
 - **THEN** the connector assigns Tier 2 with reason `bounce` or `auto_reply` on `butlers_connector_gmail_tier_assigned_total`, and the slim envelope carries `control.automated_kind` with the same value
 - **AND** a global rule resolving to `skip` still skips the message, while `route_to`, `low_priority_queue` and `pass_through` do not raise it to Tier 1
 - **AND** `Auto-Submitted: auto-generated` or `no`, `Precedence: bulk` or `list`, list mail, and missing or malformed headers are ordinary mail, so detection never drops a message
+
+#### Scenario: Automated replies and bounces carry bound, typed evidence
+- **WHEN** the connector submits an envelope with `control.automated_kind`
+- **THEN** it also carries `control.automated_evidence` with `original_sent`, `sender_was_recipient`, `sender_authenticated`, `away_until` and `failed_recipients`, and no other field
+- **AND** `original_sent` is true only when a Message-ID the message names (a bounce's attached original, `In-Reply-To` or `References`) is found by a live lookup in the owner's SENT mailbox; a lookup error or no match leaves it false
+- **AND** `sender_authenticated` reads only the topmost `Authentication-Results` header, only when its authserv-id is `mx.google.com`, and is true for a `dmarc=pass` whose own `header.from` is the From domain or a `dkim=pass` whose own `header.d` is the From domain or a parent of it, read per RFC 8601 (comments and quoted strings never carry a verdict) and never when DMARC failed or the header does not parse
+- **AND** an auto-reply's `away_until` is the one calendar date its subject or plain body states after a return cue (`until`, `back on`, `returning`…), set only when the sender was a recipient of the sent original and is authenticated, and only within 180 days after receipt; an ambiguous numeric date or two different dates yield none
+- **AND** a bounce's `failed_recipients` lists only `Final-Recipient` addresses with `Action: failed` and a `5.x.x` status that the sent original was addressed to; delays, `4.x.x` statuses and DSNs for mail the owner never sent (backscatter) list nobody
+- **AND** no subject, body or diagnostic text of the automated message leaves the connector in the evidence, and the envelope stays metadata-only
 
 #### Scenario: Tier 3 — skip
 - **WHEN** a message's triage action is `skip` or label exclusion matched
@@ -335,6 +348,11 @@ The connector SHALL implement the optional backfill polling protocol for dashboa
 - **THEN** progress is reported via `backfill.progress(...)` every `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` messages (default 50)
 - **AND** server-side cursor is persisted via the progress call
 - **AND** if `backfill.progress` returns `paused`, `cancelled`, or `cost_capped`, the connector stops backfill immediately
+
+#### Scenario: Backfill calls survive reconnect-retry
+- **WHEN** the connector's Switchboard MCP client resends a `backfill.progress` or `backfill.poll` call after a transport drop, though Switchboard already applied the first
+- **THEN** each progress report carries only the counters since the previous report plus a fresh `progress_token`, and Switchboard applies a report whose token equals the job's last applied token at most once, answering the job's current status
+- **AND** `backfill.poll` hands the connector its already-`active` job (with its cursor) before claiming another `pending` job, so a lost poll response does not orphan the claimed job
 
 #### Scenario: Backfill cost tracking
 - **WHEN** backfill messages are submitted

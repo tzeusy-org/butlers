@@ -26,14 +26,10 @@ def _check(name: str, bucket: str) -> dict[str, str]:
     return {"name": name, "bucket": bucket}
 
 
-def test_required_check_gate_accepts_passed_and_path_filtered_contexts() -> None:
+def test_required_check_gate_accepts_a_passed_fan_in() -> None:
     missing, unsatisfied = validator._classify_required_checks(
         "tzeusy-org/butlers",
-        [
-            _check("check", "pass"),
-            _check("guards", "pass"),
-            _check("frontend", "skipping"),
-        ],
+        [_check("alls-green", "pass"), _check("guards", "pass")],
     )
 
     assert missing == []
@@ -42,24 +38,20 @@ def test_required_check_gate_accepts_passed_and_path_filtered_contexts() -> None
 
 @pytest.mark.parametrize("bucket", ["fail", "pending", "cancel"])
 def test_required_check_gate_rejects_unsatisfied_contexts(bucket: str) -> None:
-    failing = _check("guards", bucket)
+    failing = _check("alls-green", bucket)
     missing, unsatisfied = validator._classify_required_checks(
         "tzeusy-org/butlers",
-        [_check("check", "pass"), failing, _check("frontend", "skipping")],
+        [failing, _check("guards", "pass")],
     )
 
     assert missing == []
     assert unsatisfied == [failing]
 
 
-@pytest.mark.parametrize("name", ["check", "guards"])
-def test_required_check_gate_rejects_skipped_unconditional_contexts(name: str) -> None:
+@pytest.mark.parametrize("name", ["alls-green", "guards"])
+def test_required_check_gate_rejects_any_skipped_check(name: str) -> None:
     skipped = _check(name, "skipping")
-    checks = [
-        _check("check", "pass"),
-        _check("guards", "pass"),
-        _check("frontend", "skipping"),
-    ]
+    checks = [_check("alls-green", "pass"), _check("guards", "pass")]
     checks[[check["name"] for check in checks].index(name)] = skipped
 
     missing, unsatisfied = validator._classify_required_checks("tzeusy-org/butlers", checks)
@@ -68,11 +60,11 @@ def test_required_check_gate_rejects_skipped_unconditional_contexts(name: str) -
     assert unsatisfied == [skipped]
 
 
-def test_required_check_gate_fails_closed_for_partial_butlers_policy() -> None:
+def test_required_check_gate_fails_closed_without_the_fan_in() -> None:
     missing, unsatisfied = validator._classify_required_checks(
         "Tzeusy/butlers",
-        [_check("check", "pass")],
+        [_check("guards", "pass")],
     )
 
-    assert missing == ["frontend", "guards"]
+    assert missing == ["alls-green"]
     assert unsatisfied == []

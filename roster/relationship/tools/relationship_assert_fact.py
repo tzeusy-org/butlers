@@ -71,6 +71,7 @@ import asyncpg
 from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
+from butlers.core.goal_lineage import taint_stamp
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
@@ -744,6 +745,8 @@ async def _resolve_approved_action(
             f"approval_action_id {action_id} has no recorded source; "
             "the write cannot be attributed."
         )
+    if stored_src.startswith(_EXTERNAL_PROPOSAL_SRC_PREFIX):
+        await _require_live_external_entities(conn, action_id, subject, object, object_kind)
 
     mode = row["temporal_request_mode"]
     temporal, temporal_wire = parked_request(stored_args, mode)
@@ -758,6 +761,42 @@ async def _resolve_approved_action(
         frozen=None if mode is None else _FrozenResolution(row["temporal_base_fact_id"]),
         fact_context=report,
     )
+
+
+# ``external_fact_proposals.EXTERNAL_FACT_SRC_PREFIX``; that module imports this one.
+_EXTERNAL_PROPOSAL_SRC_PREFIX = "external_mcp:"
+
+
+async def _require_live_external_entities(
+    conn: asyncpg.Connection,
+    action_id: uuid.UUID,
+    subject: uuid.UUID,
+    object: str,
+    object_kind: str,
+) -> None:
+    """Fail an approved external proposal whose entity is gone, merged or soft-deleted.
+
+    The importer checked both entities when it parked the action, but the owner may approve
+    days later, after a merge or the enrichment reap. The replay then refuses rather than write
+    a fact on a tombstone; the executor records ``action_execution_failed`` and the importer
+    reports ``apply_failed`` (REQ-public-mcp-proposals-006).
+    """
+    ids = {subject}
+    if object_kind == "entity":
+        ids.add(uuid.UUID(object))
+    live = await conn.fetchval(
+        """
+        SELECT count(*) FROM public.entities
+        WHERE id = ANY($1::uuid[])
+          AND metadata->>'merged_into' IS NULL AND metadata->>'deleted_at' IS NULL
+        """,
+        list(ids),
+    )
+    if live != len(ids):
+        raise ValueError(
+            f"approval_action_id {action_id} names an entity that is missing, merged or "
+            "deleted; the external proposal cannot apply."
+        )
 
 
 def _as_json_value(value: Any) -> Any:
@@ -845,6 +884,27 @@ async def _lock_fact_entities_batch(conn: asyncpg.Connection, ids: Iterable[uuid
     )
 
 
+async def _lock_fact_slots_batch(
+    conn: asyncpg.Connection, subject: uuid.UUID, facts: Iterable[tuple[str, str]]
+) -> None:
+    """Take the identity slots of several ``(predicate, object)`` writes at once.
+
+    The slot counterpart of :func:`_lock_fact_entities_batch`: one writer call takes
+    only its own slots, so several calls in ONE transaction would take them in call
+    order. Each writer call then re-takes slots this transaction already holds.
+    """
+    from .identity_slots import lock_identity_slots
+
+    await lock_identity_slots(
+        conn,
+        (
+            (predicate, object_, subject)
+            for predicate, object_ in facts
+            if predicate in IDENTITY_PREDICATES
+        ),
+    )
+
+
 async def _insert_active_fact(
     conn: asyncpg.Connection,
     *,
@@ -897,7 +957,8 @@ async def _insert_active_fact(
             src, conf, last_seen, observed_at, weight, verified, "primary",
             validity, created_at, updated_at,
             assert_origin, assert_session_id, assert_action_id,
-            {PACKET_COLUMNS}, {REPORT_COLUMNS}
+            {PACKET_COLUMNS}, {REPORT_COLUMNS},
+            taint_goal_id, taint_invocation_id
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
@@ -905,7 +966,8 @@ async def _insert_active_fact(
             $20, now(), now(),
             $12, $13, $14,
             $15, $16, $17, $18, $19,
-            $21, $22, $23, $24, $25, $26, $27, $28
+            $21, $22, $23, $24, $25, $26, $27, $28,
+            $29, $30
         )
         ON CONFLICT DO NOTHING
         RETURNING id
@@ -927,6 +989,7 @@ async def _insert_active_fact(
         *temporal.sql_args(),
         validity,
         *report_sql_args(fact_context),
+        *taint_stamp(),
     )
 
 
@@ -2223,6 +2286,66 @@ async def retract_contact_info_fact(
     if conn is not None:
         return await _retract(conn)
 
+    async with pool.acquire() as acquired_conn:
+        async with acquired_conn.transaction():
+            return await _retract(acquired_conn)
+
+
+async def retract_state_fact(
+    pool: asyncpg.Pool,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    *,
+    observed_before: datetime,
+    packet: EvidencePacket | None = None,
+    conn: asyncpg.Connection | None = None,
+) -> uuid.UUID | None:
+    """Retract the one active ``(subject, predicate, object)`` fact observed before an instant.
+
+    The ``observed_before`` guard keeps a retraction from reaching a fact re-observed after the
+    evidence that justified it. *packet* (when given) is appended to the retracted fact's evidence
+    ledger in the same transaction. Returns the retracted id, or ``None`` when no matching active
+    fact exists (a repeat is a no-op). Like :func:`retract_contact_info_fact`, more than one active
+    occurrence refuses with ``temporal_occurrence_ambiguous`` before any write.
+    """
+
+    async def _retract(c: Any) -> uuid.UUID | None:
+        matches = await c.fetch(
+            """
+            SELECT id FROM relationship.entity_facts
+            WHERE subject = $1 AND predicate = $2 AND object = $3
+              AND validity = 'active' AND observed_at < $4
+            FOR UPDATE
+            """,
+            subject,
+            predicate,
+            object,
+            observed_before,
+        )
+        if len(matches) > 1:
+            raise TemporalError(
+                OCCURRENCE_AMBIGUOUS,
+                f"{len(matches)} active effective occurrences match this fact; "
+                "retract one by fact id.",
+            )
+        if not matches:
+            return None
+        fact_id = await c.fetchval(
+            """
+            UPDATE relationship.entity_facts
+            SET validity = 'retracted', updated_at = now()
+            WHERE id = $1 AND validity = 'active'
+            RETURNING id
+            """,
+            matches[0]["id"],
+        )
+        if fact_id is not None and packet is not None:
+            await persist_evidence(c, fact_id=fact_id, packet=packet)
+        return fact_id
+
+    if conn is not None:
+        return await _retract(conn)
     async with pool.acquire() as acquired_conn:
         async with acquired_conn.transaction():
             return await _retract(acquired_conn)

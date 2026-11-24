@@ -46,6 +46,7 @@ from butlers.core.failover_classifier import (
 from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.claude_code import _parse_claude_output
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.spawner import Spawner
 
@@ -254,24 +255,37 @@ class _ToolOnlyAdapter(_OkAdapter):
         return None, [{"id": "call-1", "name": "notify", "input": {}}], None
 
 
-class _CommandOnlyAdapter(_OkAdapter):
-    """Adapter that reports shell work but no final response text."""
+class _NonMcpToolOnlyAdapter(_OkAdapter):
+    """Adapter that reports runtime-native tool work but no final response text."""
+
+    def __init__(self, tool_calls: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._tool_calls = tool_calls
 
     async def invoke(
         self, *_a: Any, **_kw: Any
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, int] | None]:
         self.invoke_calls += 1
-        return (
-            None,
-            [
-                {
-                    "id": "command-1",
-                    "name": "command_execution",
-                    "input": {"command": "true"},
-                }
-            ],
-            None,
+        return None, [dict(call) for call in self._tool_calls], None
+
+
+def _claude_native_tool_only_calls() -> list[dict[str, Any]]:
+    """Tool calls the Claude parser reports for a recorded built-in-only, text-less stream."""
+    recording = (
+        Path(__file__).parents[1] / "fixtures" / "claude_stream_json" / "subagent_tool_use.jsonl"
+    )
+    events = [json.loads(line) for line in recording.read_text().splitlines()]
+    kept = [
+        json.dumps(event)
+        for event in events
+        if event["type"] != "result"
+        and not any(
+            block["type"] == "text" for block in event.get("message", {}).get("content", [])
         )
+    ]
+    result_text, tool_calls, _usage = _parse_claude_output("\n".join(kept), "", 0)
+    assert result_text is None and tool_calls
+    return tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -657,17 +671,25 @@ class TestEligibleRuntimeFailureRetry:
         mock_capture.assert_called_once_with(str(_SESSION_ID))
         mock_next.assert_not_awaited()
 
-    async def test_command_only_empty_result_fails_without_failover(self, tmp_path: Path) -> None:
-        """Shell-work evidence makes an empty result fail closed without retry."""
+    @pytest.mark.parametrize(
+        "native_calls",
+        [
+            [{"id": "command-1", "name": "command_execution", "input": {"command": "true"}}],
+            _claude_native_tool_only_calls(),
+        ],
+        ids=["codex-command-execution", "claude-builtins-and-subagent"],
+    )
+    async def test_non_mcp_tool_only_empty_result_fails_without_failover(
+        self, tmp_path: Path, native_calls: list[dict[str, Any]]
+    ) -> None:
+        """Runtime-native tool work is not a usable result: the empty return fails closed.
+
+        The native work still counts as side-effect evidence, so there is no retry.
+        """
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         mock_pool = AsyncMock()
-        adapter = _CommandOnlyAdapter()
-        command_call = {
-            "id": "command-1",
-            "name": "command_execution",
-            "input": {"command": "true"},
-        }
+        adapter = _NonMcpToolOnlyAdapter(native_calls)
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
@@ -707,7 +729,7 @@ class TestEligibleRuntimeFailureRetry:
         assert result.output is None
         assert adapter.invoke_calls == 1
         mock_next.assert_not_awaited()
-        assert mock_complete.await_args.kwargs["tool_calls"] == [command_call]
+        assert mock_complete.await_args.kwargs["tool_calls"] == native_calls
 
     async def test_rate_limit_triggers_failover_provenance(self, tmp_path: Path) -> None:
         """Rate-limit error before any tool call: classifier eligible → retry succeeds."""

@@ -16,120 +16,81 @@ Also verifies the ensure_partition outside-transaction invariant (bu-v8ip):
 - Pre-lock duplicate detection skips ensure_partition entirely (no inserts
   needed, no partition required).
 
-These tests use a fake asyncpg pool/connection so no Docker is needed.
+The accept/duplicate column contract runs ``ingest_v1`` against the real
+core + switchboard chains and reads the rows back. The transaction-boundary,
+failure-classification and publish tests use strict ``fake_pool`` seams whose
+pool and acquired connection are separate mocks, so a statement's placement
+(auto-commit pool vs. the advisory-lock transaction) stays observable.
 """
 
 from __future__ import annotations
 
+import shutil
+import time
 import uuid
 from datetime import UTC, datetime
-from typing import Any
-from uuid import UUID
+from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
-from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse, ingest_v1
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
+from butlers.testing.records import row
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestPersistenceError,
+    IngestStoreRefusedError,
+    ingest_v1,
+)
 
 pytestmark = pytest.mark.unit
 
 
+docker_available = shutil.which("docker") is not None
+
+_PARTITION = "switchboard_message_inbox_ensure_partition"
+_EVENTS_INSERT = "INSERT INTO public.ingestion_events"
+_INBOX_INSERT = "INSERT INTO switchboard.message_inbox"
+
+
 # ---------------------------------------------------------------------------
-# Fake asyncpg infrastructure
+# Pool seams
 # ---------------------------------------------------------------------------
 
 
-class _FakeConn:
-    """Minimal fake asyncpg connection that captures execute() calls."""
+def _ingest_pool(
+    *,
+    pre_lock_existing: object = None,
+    in_lock_existing: object = None,
+    partition_error: BaseException | None = None,
+    transaction_error: BaseException | None = None,
+) -> FakePool:
+    """A pool whose auto-commit calls and locked-transaction calls are separate mocks.
 
-    def __init__(self, *, existing_row: dict | None = None) -> None:
-        # If set, inner duplicate re-check inside lock returns this row.
-        self._inner_existing: dict | None = existing_row
-        # Ordered list of (sql, args) tuples captured from execute().
-        self.execute_calls: list[tuple[str, tuple]] = []
-        # The UUID7 that will be "inserted" (set on first INSERT call).
-        self._inserted_id: UUID | None = None
-
-    def transaction(self) -> Any:
-        return _FakeTransaction()
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.execute_calls.append((sql, args))
-        return "OK"
-
-    async def fetchrow(self, sql: str, *args: Any) -> dict | None:
-        # First fetchrow inside lock = inner duplicate check.
-        # Return None (no duplicate) unless test configured one.
-        return self._inner_existing
-
-    def _executed_sqls(self) -> list[str]:
-        return [sql for sql, _ in self.execute_calls]
-
-    def ingestion_events_args(self) -> tuple | None:
-        """Return the parameter tuple from the public.ingestion_events INSERT, or None."""
-        for sql, args in self.execute_calls:
-            if "public.ingestion_events" in sql:
-                return args
-        return None
-
-    def has_message_inbox_insert(self) -> bool:
-        return any("INSERT INTO switchboard.message_inbox" in sql for sql, _ in self.execute_calls)
-
-    def has_ingestion_events_insert(self) -> bool:
-        return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
+    ``pool.execute``/``pool.fetchrow`` are the auto-commit path (partition DDL,
+    pre-lock dedupe lookups, fleet NOTIFY); ``pool.connection`` is the acquired
+    connection running the advisory-lock transaction.
+    """
+    pool = fake_pool(
+        fetchrow=pre_lock_existing,
+        execute=AsyncMock(side_effect=partition_error) if partition_error else "SELECT 1",
+    )
+    pool.connection = FakeConnection(
+        fetchrow=in_lock_existing,
+        execute=AsyncMock(side_effect=transaction_error) if transaction_error else "OK",
+    )
+    return pool
 
 
-class _FakeTransaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
+def _sqls(mock: AsyncMock) -> list[str]:
+    return [call.args[0] for call in mock.await_args_list]
 
 
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
+def _partition_calls(mock: AsyncMock) -> list[str]:
+    return [sql for sql in _sqls(mock) if _PARTITION in sql]
 
 
-class _FakePool:
-    """Fake asyncpg pool with one shared connection."""
-
-    def __init__(self, *, inner_existing: dict | None = None) -> None:
-        self.conn = _FakeConn(existing_row=inner_existing)
-        # Outer duplicate check (pre-lock) — controlled via fetchrow_result.
-        self._outer_existing: dict | None = None
-        # Track pool-level execute() calls (e.g. ensure_partition outside tx).
-        self.pool_execute_calls: list[tuple[str, tuple]] = []
-        # If set, pool.execute() raises this exception (simulates DB failure).
-        self._pool_execute_raises: Exception | None = None
-
-    def set_outer_existing(self, row: dict) -> None:
-        """Make the pre-lock duplicate check return an existing row."""
-        self._outer_existing = row
-
-    def set_pool_execute_to_raise(self, exc: Exception) -> None:
-        """Make pool.execute() raise exc (simulates ensure_partition failure)."""
-        self._pool_execute_raises = exc
-
-    def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire(self.conn)
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        """Pool-level execute — used for ensure_partition (outside transaction)."""
-        if self._pool_execute_raises is not None:
-            raise self._pool_execute_raises
-        self.pool_execute_calls.append((sql, args))
-        return "OK"
-
-    async def fetchrow(self, sql: str, *args: Any) -> dict | None:
-        """Top-level pool.fetchrow — used for the pre-lock duplicate check."""
-        return self._outer_existing
+def _has_insert(pool: FakePool, statement: str) -> bool:
+    return any(statement in sql for sql in _sqls(pool.connection.execute))
 
 
 # ---------------------------------------------------------------------------
@@ -207,311 +168,158 @@ def _email_envelope(
 
 
 # ---------------------------------------------------------------------------
-# Tests: new (non-duplicate) ingest
+# Tests: accepted ingest writes public.ingestion_events (real database)
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventsWriteOnAccept:
-    """public.ingestion_events is written atomically with message_inbox on accept."""
+@pytest.fixture
+async def switchboard_pool(db):
+    """A private clone of the real core + switchboard chains, switchboard-scoped."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
 
-    async def test_new_ingest_writes_ingestion_events(self) -> None:
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="111")
 
-        result = await ingest_v1(
-            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
-        )
+def _metadata_email_envelope() -> dict:
+    # Tier 2 envelopes require payload.raw=null per the contract validator.
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "email",
+            "provider": "gmail",
+            "endpoint_identity": "inbox@example.com",
+        },
+        "event": {
+            "external_event_id": "<meta@example.com>",
+            "external_thread_id": None,
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+        "sender": {"identity": "sender@example.com"},
+        "payload": {"raw": None, "normalized_text": "Subject: Newsletter"},
+        "control": {"ingestion_tier": "metadata", "policy_tier": "default"},
+    }
 
-        assert isinstance(result, IngestAcceptedResponse)
-        assert result.duplicate is False
-        assert pool.conn.has_message_inbox_insert()
-        assert pool.conn.has_ingestion_events_insert(), (
-            "public.ingestion_events INSERT must be executed for a new ingest"
-        )
 
-    async def test_ingestion_events_id_equals_request_id(self) -> None:
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="222")
+def _pass_through_evaluator():
+    from butlers.ingestion_policy import IngestionPolicyEvaluator
 
-        result = await ingest_v1(
-            pool, envelope, policy_evaluator=None, enable_thread_affinity=False
-        )
+    # No rules: every envelope is a pass_through with no target butler.
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._rules = []
+    evaluator._last_loaded_at = time.monotonic()
+    return evaluator
 
-        args = pool.conn.ingestion_events_args()
-        assert args is not None, "ingestion_events INSERT was not executed"
-        # $1 is the id parameter
-        inserted_id: UUID = args[0]
-        assert inserted_id == result.request_id, (
-            "public.ingestion_events.id must equal the returned request_id"
-        )
 
-    async def test_ingestion_events_source_channel(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(message_id="<ch@example.com>")
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accepted_ingests_write_one_matching_ingestion_event_each(switchboard_pool):
+    """Each accepted envelope writes one ingestion_events row mirroring it; a resubmit
+    is a duplicate that writes nothing new."""
+    full = _email_envelope(
+        message_id="<evid@example.com>",
+        mailbox="inbox@mybutler.com",
+        sender="bob@example.com",
+        thread_id="thread-xyz",
+        policy_tier="high_priority",
+    )
+    full["sender"]["display_name"] = "Bob Roe"
 
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+    async def counts() -> tuple[int, int]:
+        events = await switchboard_pool.fetchval("SELECT COUNT(*) FROM public.ingestion_events")
+        inbox = await switchboard_pool.fetchval("SELECT COUNT(*) FROM switchboard.message_inbox")
+        return events, inbox
 
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $3 = source_channel
-        assert args[2] == "email"
-
-    async def test_ingestion_events_source_provider(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(message_id="<prov@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $4 = source_provider
-        assert args[3] == "gmail"
-
-    async def test_ingestion_events_source_endpoint_identity(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(mailbox="inbox@mybutler.com", message_id="<ep@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $5 = source_endpoint_identity
-        assert args[4] == "inbox@mybutler.com"
-
-    async def test_ingestion_events_source_sender_identity(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(sender="bob@example.com", message_id="<snd@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $6 = source_sender_identity
-        assert args[5] == "bob@example.com"
-
-    async def test_ingestion_events_source_sender_display_name_populated(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(sender="bob@example.com", message_id="<dn@example.com>")
-        envelope["sender"]["display_name"] = "Bob Roe"
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $7 = source_sender_display_name (bu-vs9cr)
-        assert args[6] == "Bob Roe"
-
-    async def test_ingestion_events_source_sender_display_name_null_when_absent(self) -> None:
-        pool = _FakePool()
-        # No display_name on the sender -> NULL persisted.
-        envelope = _email_envelope(sender="bob@example.com", message_id="<nodn@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $7 = source_sender_display_name (bu-vs9cr)
-        assert args[6] is None
-
-    async def test_ingestion_events_source_thread_identity_populated(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(thread_id="thread-xyz", message_id="<thr@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $8 = source_thread_identity
-        assert args[7] == "thread-xyz"
-
-    async def test_ingestion_events_source_thread_identity_is_reply_target(self) -> None:
-        # correct_route replays this column as notify's source_thread_identity,
-        # so a split producer stores its reply target, not its conversation key.
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="113", thread_id="12345:7")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $8 = source_thread_identity
-        assert args[7] == "12345:7"
-
-    async def test_ingestion_events_source_thread_identity_null_when_absent(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(message_id="<no-thread@example.com>", thread_id=None)
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $8 = source_thread_identity
-        assert args[7] is None
-
-    async def test_ingestion_events_external_event_id(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(message_id="<evid@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $9 = external_event_id
-        assert args[8] == "<evid@example.com>"
-
-    async def test_ingestion_events_dedupe_strategy_is_connector_api(self) -> None:
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="444")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $11 = dedupe_strategy
-        assert args[10] == "connector_api"
-
-    async def test_ingestion_events_ingestion_tier(self) -> None:
-        """Tier 2 (metadata) envelopes write ingestion_tier='metadata'."""
-        pool = _FakePool()
-        # Tier 2 envelopes require payload.raw=null per the contract validator.
-        envelope = {
-            "schema_version": "ingest.v1",
-            "source": {
-                "channel": "email",
-                "provider": "gmail",
-                "endpoint_identity": "inbox@example.com",
-            },
-            "event": {
-                "external_event_id": "<meta@example.com>",
-                "external_thread_id": None,
-                "observed_at": datetime.now(UTC).isoformat(),
-            },
-            "sender": {"identity": "sender@example.com"},
-            "payload": {
-                "raw": None,
-                "normalized_text": "Subject: Newsletter",
-            },
-            "control": {
-                "ingestion_tier": "metadata",
-                "policy_tier": "default",
-            },
-        }
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $12 = ingestion_tier
-        assert args[11] == "metadata"
-
-    async def test_ingestion_events_policy_tier(self) -> None:
-        pool = _FakePool()
-        envelope = _email_envelope(policy_tier="high_priority", message_id="<hp@example.com>")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $13 = policy_tier
-        assert args[12] == "high_priority"
-
-    async def test_ingestion_events_triage_fields_null_when_no_evaluator(self) -> None:
-        """triage_decision and triage_target are None when policy_evaluator=None."""
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="555")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # $14 = triage_decision, $15 = triage_target
-        assert args[13] is None, "triage_decision must be None when no evaluator"
-        assert args[14] is None, "triage_target must be None when no evaluator"
-
-    async def test_ingestion_events_triage_decision_populated(self) -> None:
-        """triage_decision and triage_target are written from the PolicyDecision result."""
-        import time
-
-        from butlers.ingestion_policy import IngestionPolicyEvaluator
-
-        pool = _FakePool()
-        envelope = _email_envelope(message_id="<triage@example.com>")
-
-        # Create evaluator with no rules -> produces pass_through
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._rules = []
-        evaluator._last_loaded_at = time.monotonic()
-
-        await ingest_v1(
-            pool,
-            envelope,
-            policy_evaluator=evaluator,
+    before_events, before_inbox = await counts()
+    accepted = {
+        "full": await ingest_v1(
+            switchboard_pool, full, policy_evaluator=None, enable_thread_affinity=False
+        ),
+        "metadata": await ingest_v1(
+            switchboard_pool,
+            _metadata_email_envelope(),
+            policy_evaluator=None,
             enable_thread_affinity=False,
+        ),
+        "telegram": await ingest_v1(
+            switchboard_pool,
+            _telegram_envelope(update_id="113", thread_id="12345:7"),
+            policy_evaluator=None,
+            enable_thread_affinity=False,
+        ),
+        "triaged": await ingest_v1(
+            switchboard_pool,
+            _email_envelope(message_id="<triage@example.com>"),
+            policy_evaluator=_pass_through_evaluator(),
+            enable_thread_affinity=False,
+        ),
+    }
+    assert all(not result.duplicate for result in accepted.values())
+
+    rows = {
+        name: await switchboard_pool.fetchrow(
+            "SELECT * FROM public.ingestion_events WHERE id = $1", result.request_id
         )
+        for name, result in accepted.items()
+    }
+    full_row = rows["full"]
+    assert full_row is not None, "ingestion_events.id must equal the returned request_id"
+    assert full_row["source_channel"] == "email"
+    assert full_row["source_provider"] == "gmail"
+    assert full_row["source_endpoint_identity"] == "inbox@mybutler.com"
+    assert full_row["source_sender_identity"] == "bob@example.com"
+    assert full_row["source_sender_display_name"] == "Bob Roe"
+    assert full_row["source_thread_identity"] == "thread-xyz"
+    assert full_row["external_event_id"] == "<evid@example.com>"
+    assert full_row["dedupe_strategy"] == "connector_api"
+    assert full_row["ingestion_tier"] == "full"
+    assert full_row["policy_tier"] == "high_priority"
+    # No evaluator: no triage decision is recorded.
+    assert full_row["triage_decision"] is None and full_row["triage_target"] is None
 
-        args = pool.conn.ingestion_events_args()
-        assert args is not None
-        # With an empty rule set, evaluator produces pass_through; target_butler is None
-        assert args[13] == "pass_through", (
-            "triage_decision should be 'pass_through' for empty rule set"
+    metadata_row = rows["metadata"]
+    assert metadata_row["ingestion_tier"] == "metadata"
+    assert metadata_row["source_thread_identity"] is None
+    assert metadata_row["source_sender_display_name"] is None
+
+    # correct_route replays this column as notify's source_thread_identity,
+    # so a split producer stores its reply target, not its conversation key.
+    assert rows["telegram"]["source_channel"] == "telegram_bot"
+    assert rows["telegram"]["source_thread_identity"] == "12345:7"
+
+    assert rows["triaged"]["triage_decision"] == "pass_through"
+    assert rows["triaged"]["triage_target"] is None
+
+    # The inbox row and the event row share one id and one received_at.
+    for name, result in accepted.items():
+        inbox_received_at = await switchboard_pool.fetchval(
+            "SELECT received_at FROM switchboard.message_inbox WHERE id = $1", result.request_id
         )
-        assert args[14] is None, "triage_target must be None for pass_through decision"
-
-    async def test_both_inserts_share_same_received_at(self) -> None:
-        """message_inbox and public.ingestion_events receive the same received_at."""
-        pool = _FakePool()
-        envelope = _telegram_envelope(update_id="666")
-
-        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
-
-        # $2 in message_inbox INSERT and $2 in ingestion_events INSERT must match.
-        inbox_received_at = None
-        events_received_at = None
-        for sql, args in pool.conn.execute_calls:
-            if "INSERT INTO switchboard.message_inbox" in sql:
-                inbox_received_at = args[1]  # $2
-            elif "public.ingestion_events" in sql:
-                events_received_at = args[1]  # $2
-
         assert inbox_received_at is not None
-        assert events_received_at is not None
-        assert inbox_received_at == events_received_at, (
-            "Both inserts must use the same received_at timestamp"
-        )
+        assert inbox_received_at == rows[name]["received_at"]
+
+    # Resubmitting is a duplicate: the canonical id comes back and no row is added.
+    again = await ingest_v1(
+        switchboard_pool, full, policy_evaluator=None, enable_thread_affinity=False
+    )
+    assert again.duplicate is True
+    assert again.request_id == accepted["full"].request_id
+    assert await counts() == (before_events + 4, before_inbox + 4)
 
 
 # ---------------------------------------------------------------------------
-# Tests: duplicate detection — skip ingestion_events insert
+# Tests: duplicate detection inside the advisory lock
 # ---------------------------------------------------------------------------
 
 
 class TestIngestionEventsSkippedOnDuplicate:
     """public.ingestion_events is NOT written for duplicate submissions."""
 
-    async def test_pre_lock_duplicate_skips_ingestion_events(self) -> None:
-        """Pre-lock duplicate check (pool.fetchrow) exits early — no DB inserts at all."""
-        pool = _FakePool()
-        existing_id = uuid.uuid4()
-        pool.set_outer_existing({"request_id": existing_id})
-
-        result = await ingest_v1(
-            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
-        )
-
-        assert result.duplicate is True
-        assert result.request_id == existing_id
-        assert not pool.conn.has_message_inbox_insert(), (
-            "message_inbox INSERT must NOT run for pre-lock duplicate"
-        )
-        assert not pool.conn.has_ingestion_events_insert(), (
-            "public.ingestion_events INSERT must NOT run for pre-lock duplicate"
-        )
-
     async def test_inside_lock_duplicate_skips_ingestion_events(self) -> None:
         """Duplicate detected inside advisory lock returns early — no DB inserts."""
         existing_id = uuid.uuid4()
-        # inner_existing triggers the inside-lock re-check path
-        pool = _FakePool(inner_existing={"request_id": existing_id})
+        # The pre-lock lookups miss; the re-check inside the lock finds the row.
+        pool = _ingest_pool(in_lock_existing=row(request_id=existing_id))
 
         result = await ingest_v1(
             pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
@@ -519,24 +327,12 @@ class TestIngestionEventsSkippedOnDuplicate:
 
         assert result.duplicate is True
         assert result.request_id == existing_id
-        assert not pool.conn.has_message_inbox_insert(), (
+        assert not _has_insert(pool, _INBOX_INSERT), (
             "message_inbox INSERT must NOT run when inside-lock duplicate detected"
         )
-        assert not pool.conn.has_ingestion_events_insert(), (
+        assert not _has_insert(pool, _EVENTS_INSERT), (
             "public.ingestion_events INSERT must NOT run when inside-lock duplicate detected"
         )
-
-    async def test_duplicate_returns_existing_request_id(self) -> None:
-        """The request_id for a duplicate equals the pre-existing row's id."""
-        pool = _FakePool()
-        canonical_id = uuid.uuid4()
-        pool.set_outer_existing({"request_id": canonical_id})
-
-        result = await ingest_v1(
-            pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
-        )
-
-        assert result.request_id == canonical_id
 
 
 # ---------------------------------------------------------------------------
@@ -559,37 +355,28 @@ class TestEnsurePartitionOutsideTransaction:
 
     async def test_ensure_partition_called_via_pool_execute(self) -> None:
         """ensure_partition must be called on pool (auto-commit), not conn (inside tx)."""
-        pool = _FakePool()
+        pool = _ingest_pool()
         envelope = _telegram_envelope(update_id="90001")
 
         await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
-        # pool.pool_execute_calls captures calls routed through pool.execute()
-        # (outside the transaction).  At least one should be ensure_partition.
-        ensure_partition_calls = [
-            sql
-            for sql, _ in pool.pool_execute_calls
-            if "switchboard_message_inbox_ensure_partition" in sql
-        ]
-        assert len(ensure_partition_calls) == 1, (
+        # pool.execute is the auto-commit path, outside the transaction.
+        assert _has_insert(pool, _EVENTS_INSERT)
+        assert len(_partition_calls(pool.execute)) == 1, (
             "ensure_partition must be called exactly once via pool.execute() "
             "(outside the advisory-lock transaction)"
         )
 
     async def test_ensure_partition_not_in_conn_execute_calls(self) -> None:
         """ensure_partition must NOT appear in conn.execute_calls (inside-tx path)."""
-        pool = _FakePool()
+        pool = _ingest_pool()
         envelope = _telegram_envelope(update_id="90002")
 
         await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 
-        # conn.execute_calls are calls inside the advisory-lock transaction.
-        conn_ensure_partition_calls = [
-            sql
-            for sql, _ in pool.conn.execute_calls
-            if "switchboard_message_inbox_ensure_partition" in sql
-        ]
-        assert len(conn_ensure_partition_calls) == 0, (
+        # pool.connection.execute runs inside the advisory-lock transaction.
+        assert _has_insert(pool, _INBOX_INSERT)
+        assert len(_partition_calls(pool.connection.execute)) == 0, (
             "ensure_partition must NOT be called inside the advisory-lock "
             "transaction (conn.execute); a transaction rollback would drop "
             "the newly-created partition"
@@ -597,35 +384,114 @@ class TestEnsurePartitionOutsideTransaction:
 
     async def test_pre_lock_duplicate_skips_ensure_partition(self) -> None:
         """Pre-lock duplicate detection exits early — ensure_partition is not called."""
-        pool = _FakePool()
         existing_id = uuid.uuid4()
-        pool.set_outer_existing({"request_id": existing_id})
+        pool = _ingest_pool(pre_lock_existing=row(request_id=existing_id))
 
         result = await ingest_v1(
             pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
         )
 
         assert result.duplicate is True
-        ensure_partition_calls = [
-            sql
-            for sql, _ in pool.pool_execute_calls
-            if "switchboard_message_inbox_ensure_partition" in sql
-        ]
-        assert len(ensure_partition_calls) == 0, (
+        assert result.request_id == existing_id
+        pool.acquire.assert_not_called()  # no transaction, so no inserts at all
+        assert len(_partition_calls(pool.execute)) == 0, (
             "ensure_partition must NOT be called for pre-lock duplicate "
             "(no insert needed, no partition required)"
         )
 
-    async def test_ensure_partition_failure_raises_runtime_error(self) -> None:
-        """A failure during ensure_partition is caught and re-raised as RuntimeError."""
-        pool = _FakePool()
-        pool.set_pool_execute_to_raise(ValueError("DB connection failed"))
+    async def test_ensure_partition_failure_raises_persistence_error(self) -> None:
+        """A transport failure during ensure_partition is re-raised as the transient error."""
+        pool = _ingest_pool(partition_error=ConnectionResetError("DB connection failed"))
         envelope = _telegram_envelope(update_id="90003")
 
         with pytest.raises(
-            RuntimeError, match="Failed to ensure message_inbox partition: DB connection failed"
+            IngestPersistenceError,
+            match="Failed to ensure message_inbox partition: DB connection failed",
         ):
             await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+
+# ---------------------------------------------------------------------------
+# Tests: persistence failures split into transient vs deterministic (bu-u5euwb.33)
+# ---------------------------------------------------------------------------
+
+# Transport-class failures: the same envelope may persist on a later attempt.
+_TRANSIENT_FAILURES = [
+    ConnectionResetError("reset"),
+    TimeoutError("timed out"),
+    asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed"),
+    asyncpg.exceptions.ConnectionFailureError("08006"),
+    asyncpg.exceptions.SerializationError("40001"),
+    asyncpg.exceptions.DeadlockDetectedError("40P01"),
+    asyncpg.exceptions.TooManyConnectionsError("53300"),
+    asyncpg.exceptions.AdminShutdownError("57P01"),
+    asyncpg.exceptions.CannotConnectNowError("57P03"),
+    asyncpg.exceptions.QueryCanceledError("57014"),
+]
+
+# Deterministic failures: this envelope fails the same way on every attempt, so a
+# connector that held its checkpoint on it would wedge forever.
+_DETERMINISTIC_FAILURES = [
+    asyncpg.exceptions.DataError("22000"),
+    asyncpg.exceptions.StringDataRightTruncationError("22001"),
+    asyncpg.exceptions.UntranslatableCharacterError("22P05"),
+    asyncpg.exceptions.UniqueViolationError("23505"),
+    asyncpg.exceptions.NotNullViolationError("23502"),
+    asyncpg.exceptions.CheckViolationError("23514"),
+    asyncpg.exceptions.UndefinedColumnError("42703"),
+    ValueError("unexpected"),
+]
+
+
+def _ids(exc: Exception) -> str:
+    return type(exc).__name__
+
+
+class TestPersistenceFailureClassification:
+    @pytest.mark.parametrize("failure", _TRANSIENT_FAILURES, ids=_ids)
+    async def test_transient_insert_failure_is_retryable(self, failure: Exception) -> None:
+        # Any failure inside the dedup transaction (lock or INSERT) is classified.
+        pool = _ingest_pool(transaction_error=failure)
+
+        with pytest.raises(IngestPersistenceError) as raised:
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+        assert raised.value.__cause__ is failure
+
+    @pytest.mark.parametrize("failure", _DETERMINISTIC_FAILURES, ids=_ids)
+    async def test_deterministic_insert_failure_is_not_retryable(self, failure: Exception) -> None:
+        # Any failure inside the dedup transaction (lock or INSERT) is classified.
+        pool = _ingest_pool(transaction_error=failure)
+
+        with pytest.raises(IngestStoreRefusedError) as raised:
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+        assert not isinstance(raised.value, IngestPersistenceError)
+        assert raised.value.__cause__ is failure
+
+    @pytest.mark.parametrize("failure", _TRANSIENT_FAILURES, ids=_ids)
+    async def test_transient_partition_failure_is_retryable(self, failure: Exception) -> None:
+        pool = _ingest_pool(partition_error=failure)
+
+        with pytest.raises(IngestPersistenceError):
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+    @pytest.mark.parametrize("failure", _DETERMINISTIC_FAILURES, ids=_ids)
+    async def test_deterministic_partition_failure_is_not_retryable(
+        self, failure: Exception
+    ) -> None:
+        pool = _ingest_pool(partition_error=failure)
+
+        with pytest.raises(IngestStoreRefusedError):
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -639,23 +505,18 @@ class TestIngestionEventPublishesOnBus:
     # Spec: REQ-core-fleet-events-009
     @pytest.mark.parametrize("durable_write_failure", [False, True])
     async def test_new_ingest_publishes_ingestion_event_cross_process(
-        self, monkeypatch, durable_write_failure: bool
+        self, durable_write_failure: bool
     ) -> None:
         """The switchboard daemon publishes through the RFC 0022 bridge."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
-        pool = _FakePool()
+        pool = _ingest_pool(
+            transaction_error=(
+                RuntimeError("synthetic durable write failure") if durable_write_failure else None
+            )
+        )
         envelope = _telegram_envelope(update_id="70000")
         mock_publish = AsyncMock()
-        if durable_write_failure:
-            execute = pool.conn.execute
-
-            async def fail_ingestion_write(sql, *args):
-                if "INSERT INTO public.ingestion_events" in sql:
-                    raise RuntimeError("synthetic durable write failure")
-                return await execute(sql, *args)
-
-            monkeypatch.setattr(pool.conn, "execute", fail_ingestion_write)
 
         with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
             if durable_write_failure:
@@ -683,11 +544,9 @@ class TestIngestionEventPublishesOnBus:
     # Spec: REQ-core-fleet-events-009
     async def test_duplicate_ingest_does_not_publish_ingestion_event(self) -> None:
         """A duplicate submission writes no new row, so no event should publish."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
-        pool = _FakePool()
-        existing_id = uuid.uuid4()
-        pool.set_outer_existing({"request_id": existing_id})
+        pool = _ingest_pool(pre_lock_existing=row(request_id=uuid.uuid4()))
         mock_publish = AsyncMock()
 
         with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):

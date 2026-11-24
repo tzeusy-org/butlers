@@ -60,10 +60,64 @@ async def pools(url):
             yield owner, runtime
 
 
+async def reset_ledger(owner):
+    """Empty the goal ledger between tests.
+
+    sw_056's trigger refuses TRUNCATE on ``broker_refusals``, which TRUNCATE ...
+    CASCADE reaches through its goal foreign key, and sw_057's refuses it on
+    ``invocations`` and ``effects``, and sw_059's on the owner-policy terms,
+    receipts and holds (which it also empties; the generation row stays), and
+    sw_070's on ``goal_inbox_releases``, which the CASCADE reaches through its
+    goal and inbox keys (a test that ends a goal leaves release rows), and
+    sw_072's on the decision set tables, which it reaches through their goal and
+    effect keys, and sw_073's on the owner decision receipts, reached the same way, and
+    sw_075's on the completion evidence, reached through its goal and outcome keys. This
+    test-only reset, run as the owner, lifts whichever of those guards the
+    pinned revision has, for its own transaction alone.
+    """
+    async with owner.acquire() as connection, connection.transaction():
+        guards = await connection.fetch(
+            "SELECT c.relname, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'switchboard' "
+            "AND t.tgname = ANY($1::text[])",
+            [
+                "immutable_broker_refusal",
+                "durable_goal_lineage",
+                "owner_policy_durable",
+                "goal_waiting_durable",
+                "goal_inbox_releases_durable",
+                "decision_set_durable",
+                "owner_decision_durable",
+                "goal_outcome_evidence_durable",
+            ],
+        )
+        for guard in guards:
+            await connection.execute(
+                f"ALTER TABLE switchboard.{guard['relname']} DISABLE TRIGGER {guard['tgname']}"
+            )
+        policy = [
+            f"switchboard.{table}"
+            for table in ("owner_policy_holds", "owner_policy_receipts", "owner_policy_terms")
+            if any(guard["relname"] == table for guard in guards)
+        ]
+        await connection.execute(
+            "TRUNCATE " + ",".join(["switchboard." + t for t in TABLES] + policy) + " CASCADE"
+        )
+        for guard in guards:
+            await connection.execute(
+                f"ALTER TABLE switchboard.{guard['relname']} ENABLE TRIGGER {guard['tgname']}"
+            )
+        # sw_084's spend pools carry no goal foreign key, so the CASCADE above never reaches
+        # them; their rows would leak into the next test's counts.
+        for table in ("pool_reservations", "budget_pools"):
+            if await connection.fetchval("SELECT to_regclass($1)", f"switchboard.{table}"):
+                await connection.execute(f"DELETE FROM switchboard.{table}")
+
+
 @pytest.fixture
 async def ledger(ledger_url):
     async with pools(ledger_url) as (owner, runtime):
-        await owner.execute("TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE")
+        await reset_ledger(owner)
         await configure(owner, limits())
         yield owner, runtime
 
@@ -84,7 +138,16 @@ async def admit(runtime, facts=None, source=None, attempt=None):
 
 
 async def effect(
-    owner, goal_id, *, delivery=None, entity=None, channel=None, accepts=False, expiry=None
+    owner,
+    goal_id,
+    *,
+    delivery=None,
+    entity=None,
+    channel=None,
+    accepts=False,
+    expiry=None,
+    args_digest="args-digest",
+    status="committed",
 ):
     invocation, effect_id = uuid4(), uuid4()
     goal = await owner.fetchrow(
@@ -103,7 +166,7 @@ async def effect(
     await owner.execute(
         "INSERT INTO switchboard.effects (id,goal_id,invocation_id,capability,args_digest,status,delivery_ref,"
         "recipient_entity,recipient_channel,prompt_accepts_input,prompt_expires_at) "
-        "VALUES ($1,$2,$3,'messenger.notify','args-digest','committed',$4,$5,$6,$7,$8)",
+        "VALUES ($1,$2,$3,'messenger.notify',$9,$10,$4,$5,$6,$7,$8)",
         effect_id,
         goal_id,
         invocation,
@@ -112,5 +175,7 @@ async def effect(
         channel,
         accepts,
         expiry,
+        args_digest,
+        status,
     )
     return invocation, effect_id

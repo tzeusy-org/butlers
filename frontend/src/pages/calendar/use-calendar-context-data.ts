@@ -73,6 +73,16 @@ export function useCalendarContextData({
         ).values(),
       ]
     : undefined;
+  const quarantinedInvitations = invitationPages
+    ? [
+        ...new Map(
+          invitationPages
+            // eslint-disable-next-line no-restricted-syntax -- optional list inside a loaded page; availability is tracked by invitationsAvailable
+            .flatMap((page) => page.data.quarantined ?? [])
+            .map((item) => [item.entry_id, item] as const),
+        ).values(),
+      ]
+    : [];
   const hasInvitationPages = invitationPages !== undefined && invitationPages.length > 0;
   const invitationsAvailable =
     hasInvitationPages && invitationPages.every((page) => page.data.issues_available);
@@ -127,6 +137,7 @@ export function useCalendarContextData({
     overlapEntryIds,
     invitationsQuery,
     invitations,
+    quarantinedInvitations,
     invitationsAvailable,
     invitationConflictsAvailable,
     invitationSourcesDegraded,

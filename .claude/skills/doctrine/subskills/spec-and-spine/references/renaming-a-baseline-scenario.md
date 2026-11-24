@@ -5,6 +5,25 @@ machine; note the npm package is scoped, so `npx openspec@1.9.0` does not
 resolve). Every claim below was reproduced in a scratch copy of `openspec/`;
 the exact error strings are quoted from real runs.
 
+## Current repository procedure
+
+New standalone work edits the canonical requirement in the implementing PR.
+Review the exact semantic diff and confirm the intended heading is the only
+behavioral difference; native strict validation does not compare requirement
+bodies. Check overlapping active deltas before editing. Preserve all existing
+legacy programs, metadata and local deltas; their owners rebuild stale blocks
+through separately reviewed changes. A new multi-PR program may carry deltas.
+
+Completion uses `/opsx:archive` only after whole-program implementation and
+shipment are verified and delivered deltas are folded through reviewed diffs.
+It deletes the completed directory; Git preserves history. Never move it into
+an archive or remove an unfinished program or existing archive.
+
+The remaining sections document the historical native-CLI workaround and its
+limits for interpreting retained artifacts or disposable scratch investigations.
+They do not instruct current contributors to create two standalone delta changes
+or execute native `openspec archive` on live change directories.
+
 ## The rule that causes the problem
 
 `findMissingCurrentScenarios` (`dist/core/parsers/requirement-blocks.js`,
@@ -43,7 +62,7 @@ The bad heading pinned an attention-ledger write into the spec. When the
 mechanism became a durable outbox episode, the heading became a lie that no
 delta could correct.
 
-## The procedure, when a heading is already wrong
+## Historical native-CLI procedure, when a heading was already wrong
 
 Two changes, archived in order. Both may exist in the tree at the same time
 and may ship in the same commit or PR; only the **archive order** is
@@ -58,12 +77,11 @@ constrained.
 3. **Rebuild every unarchived `## MODIFIED` block** for that requirement
    against the refreshed baseline. They now omit a name the baseline carries
    and fail `openspec validate --strict` until repointed.
-4. **Repoint the frozen ratchet entries.** `scripts/spec-overwrite-baseline.json`
-   identifies a frozen loss by `(kind, scenario, digest)`, so a scenario
-   rename orphans every entry recorded under the old name and
-   `scripts/check_spec_overwrites.py` goes red. Edit the `scenario` field on
-   exactly those records. Do not run `--update-baseline`, which re-freezes the
-   whole repo and would swallow unrelated regressions.
+4. **Review the exact requirement transition.** Compare the removed and restored
+   requirement blocks and confirm that the intended scenario heading is the only
+   behavioral difference. OpenSpec strict validation checks scenario names but
+   does not prove that requirement bodies were preserved. The former local
+   body-loss ratchet is retired; do not update its removed baseline.
 
 Worked example in the archive:
 `openspec/changes/archive/2026-08-23-rename-fleet-halt-scenario-heading-step-1-retire`
@@ -88,18 +106,16 @@ and `...-step-2-restore`.
   rebuilt, which is real coordination cost when several changes are in flight
   against the same spec. This, not the mechanism, is why prevention is the
   primary advice.
-- **The body-level guard is blind to the whole procedure.**
-  `scripts/check_spec_overwrites.py` reads `## MODIFIED` sections only, so a
-  step-1 `REMOVED` that deletes an entire baseline requirement is invisible to
-  it. Nothing checks that step 2 restores what step 1 removed. That discipline
-  is yours: diff the restored block against the removed one and confirm the
-  heading is the only difference.
+- **No body-loss guard verifies the procedure.** A step-1 `REMOVED` and
+  step-2 `ADDED` pair must be reviewed directly. Diff the restored block against
+  the removed one and confirm that the intended heading change is the only
+  difference; OpenSpec strict validation does not compare the requirement bodies.
 - **If it is the last requirement in the spec**, step 1 deletes the capability's
   whole `spec.md`. Check before removing.
 
-## Do not hand-edit the baseline instead
+## Historical baseline restriction
 
-Editing `openspec/specs/**/spec.md` directly is the failure mode
-`spec-overwrite-guard` exists to catch, and it collides with any open change at
-archive time. Both steps above go through `openspec archive`, which is what
-makes the baseline edit legitimate.
+The old native-archive procedure required both reviewed delta steps to pass
+through `openspec archive`. That restriction is superseded for new standalone
+work by the current repository procedure above: edit living canonical specs in
+the implementing PR, review their semantic diff and preserve unshipped programs.

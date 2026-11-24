@@ -6,9 +6,11 @@ deduplicates against existing transactions, and processes in batches of 500.
 
 Public API:
     import_transactions(pool, blob_store, storage_ref, account_id, currency, column_map,
-                        dry_run, notify_fn)
-    import_transactions_from_file(pool, file_path, account_id, currency, column_map,
-                                  dry_run, notify_fn)
+                        dry_run, notify_fn, *, origin_butler)
+
+The CSV bytes always come from a scoped ``storage_ref``; there is deliberately no
+local-filesystem entry point, so an MCP caller can never name a path for the daemon
+to read (bu-o3bt53).
 
 Currency resolution (three-tier priority):
     1. Explicit ``currency`` argument (any non-None value the caller passes)
@@ -29,14 +31,15 @@ from __future__ import annotations
 import csv
 import io
 import logging
-import os
 import re
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
+
+from butlers.core.notify_attachments import AttachmentError, check_storage_ref
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +197,9 @@ def _detect_date_format(sample_dates: list[str]) -> str | None:
 
 
 def _parse_date(raw: str, fmt: str) -> datetime:
-    """Parse *raw* using *fmt* and return a UTC-aware datetime at midnight."""
+    """Parse *raw* using *fmt* and return a UTC-aware datetime."""
     dt = datetime.strptime(raw.strip(), fmt)
-    return dt.replace(tzinfo=UTC)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +318,7 @@ _GENERIC_DEBIT_CANDIDATES = ["debit", "debit amount", "withdrawal", "withdrawals
 _GENERIC_CREDIT_CANDIDATES = ["credit", "credit amount", "deposit", "deposits"]
 
 
-def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
+def _resolve_generic_cols(headers: list[str], *, single_amount: bool = False) -> dict[str, Any]:
     """Resolve canonical → actual column name for generic CSV.
 
     Returns a dict with keys matching canonical column names, values are the
@@ -336,7 +339,7 @@ def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
     debit_col = _first_match(_GENERIC_DEBIT_CANDIDATES)
     credit_col = _first_match(_GENERIC_CREDIT_CANDIDATES)
 
-    has_split = debit_col is not None and credit_col is not None
+    has_split = not single_amount and debit_col is not None and credit_col is not None
     return {
         _COL_DATE: date_col,
         _COL_MERCHANT: merchant_col,
@@ -345,6 +348,60 @@ def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
         "credit_col": credit_col,
         "use_split": has_split,
     }
+
+
+# Bounds on the untrusted CSV headers echoed back in an unrecognized_format response.
+_MAX_ECHOED_HEADERS = 50
+_MAX_ECHOED_HEADER_CHARS = 100
+
+
+_MAX_CSV_OUTPUT_CHARS = 160
+_MAX_ECHOED_CATEGORIES = 50
+_CSV_DELIMITERS = (",", ";", "\t", "|")
+_AMOUNT_SIGNS = ("negative_debit", "positive_debit", "split_cols")
+_SPLIT_COLUMNS = ("debit_col", "credit_col")
+
+
+def _resolve_import_columns(
+    fmt: dict[str, Any],
+    headers: list[str],
+    column_map: dict[str, str] | None,
+    amount_sign: str | None,
+) -> dict[str, Any]:
+    """Resolve the same column choices for probing, validation and parsing."""
+    single_amount = amount_sign in ("negative_debit", "positive_debit")
+    if fmt["name"] == "generic":
+        columns = _resolve_generic_cols(headers, single_amount=single_amount)
+    else:
+        columns = {
+            **fmt["col_map"],
+            "debit_col": fmt.get("debit_col"),
+            "credit_col": fmt.get("credit_col"),
+            "use_split": fmt["amount_sign"] == "split_cols",
+        }
+        if single_amount and not columns.get(_COL_AMOUNT):
+            columns[_COL_AMOUNT] = _resolve_generic_cols(headers, single_amount=True)[_COL_AMOUNT]
+    columns.update({key: value for key, value in (column_map or {}).items() if key != "use_split"})
+    if amount_sign is not None:
+        columns["use_split"] = amount_sign == "split_cols"
+    return columns
+
+
+def _unmapped_required_columns(columns: dict[str, Any], headers: list[str]) -> list[str]:
+    available = set(_normalise_headers(headers))
+    amount_columns = _SPLIT_COLUMNS if columns["use_split"] else (_COL_AMOUNT,)
+    return [
+        column
+        for column in (_COL_DATE, _COL_MERCHANT, *amount_columns)
+        if not isinstance(columns.get(column), str)
+        or columns[column].lower().strip() not in available
+    ]
+
+
+def _bounded_csv_text(value: str) -> str:
+    if len(value) <= _MAX_CSV_OUTPUT_CHARS:
+        return value
+    return value[: _MAX_CSV_OUTPUT_CHARS - 3] + "..."
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +424,7 @@ def _parse_row(
     row: dict[str, str],
     fmt: dict[str, Any],
     date_fmt: str,
-    resolved_cols: dict[str, str | None] | None,
+    columns: dict[str, Any],
     default_currency: str,
 ) -> dict[str, Any] | None:
     """Parse a single CSV row into a normalised transaction dict.
@@ -377,21 +434,12 @@ def _parse_row(
 
     Raises ValueError for rows that have data but cannot be parsed cleanly.
     """
-    # Resolve column names for generic format
-    if resolved_cols is not None:
-        date_col = resolved_cols.get(_COL_DATE)
-        merchant_col = resolved_cols.get(_COL_MERCHANT)
-        amount_col = resolved_cols.get(_COL_AMOUNT)
-        debit_col = resolved_cols.get("debit_col")
-        credit_col = resolved_cols.get("credit_col")
-        use_split = resolved_cols.get("use_split", False)
-    else:
-        date_col = fmt["col_map"].get(_COL_DATE)
-        merchant_col = fmt["col_map"].get(_COL_MERCHANT)
-        amount_col = fmt["col_map"].get(_COL_AMOUNT)
-        debit_col = fmt.get("debit_col")
-        credit_col = fmt.get("credit_col")
-        use_split = fmt.get("amount_sign") == "split_cols"
+    date_col = columns.get(_COL_DATE)
+    merchant_col = columns.get(_COL_MERCHANT)
+    amount_col = columns.get(_COL_AMOUNT)
+    debit_col = columns.get("debit_col")
+    credit_col = columns.get("credit_col")
+    use_split = columns["use_split"]
 
     # --- Date ---
     raw_date = _resolve_col(row, date_col) if date_col else None
@@ -439,12 +487,22 @@ def _parse_row(
             direction = "credit" if raw_decimal >= 0 else "debit"
             amount = abs(raw_decimal)
 
+    # Match PostgreSQL NUMERIC(14, 2) before preview, deduplication and insertion.
+    if not amount.is_finite():
+        raise ValueError("Amount must be finite")
+    try:
+        stored_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise ValueError("Amount exceeds the supported precision") from exc
+    if stored_amount != amount:
+        amount = stored_amount
+
     # --- Optional fields ---
-    category_col = fmt["col_map"].get(_COL_CATEGORY) if "col_map" in fmt else None
+    category_col = columns.get(_COL_CATEGORY)
     raw_category = (_resolve_col(row, category_col) or "").strip() if category_col else ""
     category = raw_category.lower() if raw_category else _UNCATEGORIZED
 
-    description_col = fmt["col_map"].get(_COL_DESCRIPTION) if "col_map" in fmt else None
+    description_col = columns.get(_COL_DESCRIPTION)
     raw_description = (_resolve_col(row, description_col) or "").strip() if description_col else ""
     # For formats where description == merchant col, skip storing duplicate.
     description = raw_description if raw_description != raw_merchant else None
@@ -490,6 +548,9 @@ def _parse_csv_rows(
     date_fmt: str,
     default_currency: str,
     column_map: dict[str, str] | None,
+    *,
+    delimiter: str = ",",
+    amount_sign: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Parse all rows from *content* and return (parsed, errors).
 
@@ -512,22 +573,9 @@ def _parse_csv_rows(
         Parsed transactions and parse-error records (with ``row_index``,
         ``reason`` keys).
     """
-    reader = csv.DictReader(io.StringIO(content))
-    headers = reader.fieldnames or []
-
-    # Merge caller-supplied column_map overrides into the format's own map.
-    effective_fmt = fmt
-    if column_map:
-        overridden = {**fmt.get("col_map", {}), **column_map}
-        effective_fmt = {**fmt, "col_map": overridden}
-
-    # For generic format, resolve columns dynamically from the actual headers.
-    resolved_cols: dict[str, str | None] | None = None
-    if fmt["name"] == "generic":
-        resolved_cols = _resolve_generic_cols(list(headers))
-        # Apply caller overrides on top.
-        if column_map:
-            resolved_cols.update(column_map)
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+    columns = _resolve_import_columns(fmt, list(reader.fieldnames or []), column_map, amount_sign)
+    effective_fmt = fmt if amount_sign is None else {**fmt, "amount_sign": amount_sign}
 
     parsed: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -538,20 +586,19 @@ def _parse_csv_rows(
                 row,
                 effective_fmt,
                 date_fmt,
-                resolved_cols,
+                columns,
                 default_currency,
             )
             if result is not None:
                 result["_row_index"] = row_idx
                 parsed.append(result)
         except ValueError as exc:
-            errors.append({"row_index": row_idx, "reason": str(exc), "raw": dict(row)})
+            errors.append({"row_index": row_idx, "reason": _bounded_csv_text(str(exc))})
         except Exception as exc:
             errors.append(
                 {
                     "row_index": row_idx,
-                    "reason": f"unexpected error: {exc}",
-                    "raw": dict(row),
+                    "reason": _bounded_csv_text(f"unexpected error: {exc}"),
                 }
             )
 
@@ -563,7 +610,9 @@ def _parse_csv_rows(
 # ---------------------------------------------------------------------------
 
 
-def _sample_date_values(content: str, date_col: str | None, n: int = 10) -> list[str]:
+def _sample_date_values(
+    content: str, date_col: str | None, n: int = 10, *, delimiter: str = ","
+) -> list[str]:
     """Extract up to *n* non-empty date values from the CSV content.
 
     Parameters
@@ -577,7 +626,7 @@ def _sample_date_values(content: str, date_col: str | None, n: int = 10) -> list
     """
     if not date_col:
         return []
-    reader = csv.DictReader(io.StringIO(content))
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
     samples: list[str] = []
     for row in reader:
         val = _resolve_col(row, date_col)
@@ -743,7 +792,7 @@ async def _check_duplicate(
 
 
 async def _check_duplicates_batch(
-    pool: asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     batch: list[dict[str, Any]],
     account_id: str | None,
 ) -> set[int]:
@@ -757,8 +806,8 @@ async def _check_duplicates_batch(
 
     Parameters
     ----------
-    pool:
-        asyncpg connection pool.
+    conn:
+        Acquired connection in the lock-holder transaction.
     batch:
         List of normalised transaction dicts.
     account_id:
@@ -778,29 +827,21 @@ async def _check_duplicates_batch(
     # Build a list of (posted_at, amount, merchant) tuples for all rows.
     tuples = [(txn["posted_at"], txn["amount"], txn["merchant"]) for txn in batch]
 
-    if account_id is not None:
-        # Query with account_id as part of the key.
-        rows = await pool.fetch(
-            """
-            SELECT posted_at, amount, merchant
-            FROM transactions
-            WHERE account_id = $1::uuid
-              AND (posted_at, amount, merchant) = ANY($2)
-            """,
-            account_id,
-            tuples,
-        )
-    else:
-        # Query without account_id constraint.
-        rows = await pool.fetch(
-            """
-            SELECT posted_at, amount, merchant
-            FROM transactions
-            WHERE account_id IS NULL
-              AND (posted_at, amount, merchant) = ANY($1)
-            """,
-            tuples,
-        )
+    posted_dates, amounts, merchants = zip(*tuples, strict=True)
+    rows = await conn.fetch(
+        """
+        SELECT t.posted_at, t.amount, t.merchant
+        FROM transactions AS t
+        JOIN unnest($2::timestamptz[], $3::numeric[], $4::text[])
+            AS incoming(posted_at, amount, merchant)
+            USING (posted_at, amount, merchant)
+        WHERE t.account_id IS NOT DISTINCT FROM $1::uuid
+        """,
+        account_id,
+        posted_dates,
+        amounts,
+        merchants,
+    )
 
     # Build a set of duplicate tuples using native Python types returned by
     # asyncpg, avoiding string-serialization mismatches (e.g. timezone format
@@ -823,30 +864,40 @@ async def _insert_batch(
     account_id: str | None,
     import_batch_id: str,
 ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Insert a batch of normalised transactions.
+    """Serialize CSV inserts for this account scope, including unlinked imports."""
+    try:
+        async with pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            await conn.fetchval(
+                """
+                SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+                    current_schema() || ':finance-csv-import:' || coalesce($1::uuid::text, ''), 0
+                ))
+                """,
+                account_id,
+            )
+            return await _write_csv_batch(conn, batch, account_id, import_batch_id)
+    except Exception as exc:
+        reason = _bounded_csv_text(f"db_error: {exc}")
+        return (
+            0,
+            0,
+            [{"row_index": txn.get("_row_index", -1), "reason": reason} for txn in batch],
+            [],
+        )
 
-    Performs a single batch deduplication query instead of N per-row checks,
-    reducing the database roundtrips from N+1 to 2 (one batch check query,
-    one insert transaction).
 
-    Returns (imported_count, skipped_count, error_details, imported_txns).
-    ``imported_txns`` is the list of transaction dicts that were inserted,
-    used by the caller to summarise the import (date range, categories) without
-    a second pass over the data.
-    """
-    imported = 0
+async def _write_csv_batch(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    batch: list[dict[str, Any]],
+    account_id: str | None,
+    import_batch_id: str,
+) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Check the stored keys once and retain row errors using savepoints."""
+    dup_indices = await _check_duplicates_batch(conn, batch, account_id)
+    inserted_keys: set[tuple[datetime, Decimal, str]] = set()
     skipped = 0
     errors: list[dict[str, Any]] = []
     imported_txns: list[dict[str, Any]] = []
-
-    # Single batch deduplication check (replaces per-row _check_duplicate calls).
-    try:
-        dup_indices = await _check_duplicates_batch(pool, batch, account_id)
-    except Exception as exc:
-        # If batch check fails, fall back to inserting all rows and let
-        # the ON CONFLICT handle duplicates. Record errors for failed rows.
-        logger.warning(f"batch dedup check failed: {exc}, will rely on ON CONFLICT")
-        dup_indices = set()
 
     for idx, txn in enumerate(batch):
         merchant = txn["merchant"]
@@ -854,55 +905,59 @@ async def _insert_batch(
         posted_at = txn["posted_at"]
         row_idx = txn.get("_row_index", -1)
 
-        # Check if this row was identified as a duplicate in the batch query.
-        if idx in dup_indices:
+        key = (posted_at, amount, merchant)
+        if idx in dup_indices or key in inserted_keys:
             skipped += 1
             continue
 
         try:
-            await pool.execute(
-                """
-                INSERT INTO transactions (
+            async with conn.transaction():
+                insert_status = await conn.execute(
+                    """
+                    INSERT INTO transactions (
+                        account_id,
+                        posted_at,
+                        merchant,
+                        description,
+                        amount,
+                        currency,
+                        direction,
+                        category,
+                        metadata
+                    ) VALUES (
+                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
+                    )
+                    ON CONFLICT DO NOTHING
+                    """,
                     account_id,
                     posted_at,
                     merchant,
-                    description,
+                    txn.get("description"),
                     amount,
-                    currency,
-                    direction,
-                    category,
-                    metadata
-                ) VALUES (
-                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
+                    txn["currency"],
+                    txn["direction"],
+                    txn["category"],
+                    {
+                        "import_batch_id": import_batch_id,
+                        "raw_merchant": txn.get("raw_merchant", ""),
+                    },
                 )
-                ON CONFLICT DO NOTHING
-                """,
-                account_id,
-                posted_at,
-                merchant,
-                txn.get("description"),
-                amount,
-                txn["currency"],
-                txn["direction"],
-                txn["category"],
-                {
-                    "import_batch_id": import_batch_id,
-                    "raw_merchant": txn.get("raw_merchant", ""),
-                },
-            )
-            imported += 1
-            imported_txns.append(txn)
+            if insert_status == "INSERT 0 0":
+                skipped += 1
+            else:
+                inserted_keys.add(key)
+                imported_txns.append(txn)
         except asyncpg.UniqueViolationError:
             skipped += 1
         except Exception as exc:
             errors.append(
                 {
                     "row_index": row_idx,
-                    "reason": f"db_error: {exc}",
+                    "reason": _bounded_csv_text(f"db_error: {exc}"),
                 }
             )
 
-    return imported, skipped, errors, imported_txns
+    return len(imported_txns), skipped, errors, imported_txns
 
 
 def _summarize_import(
@@ -934,16 +989,56 @@ def _summarize_import(
             if (txn.get("category") or "").strip()
         }
     )
-    return {
+    result = {
         "date_range": date_range,
-        "categories_used": categories_used,
+        "categories_used": [
+            _bounded_csv_text(name) for name in categories_used[:_MAX_ECHOED_CATEGORIES]
+        ],
         "batches_processed": batches_processed,
     }
+    if len(categories_used) > _MAX_ECHOED_CATEGORIES or any(
+        len(name) > _MAX_CSV_OUTPUT_CHARS for name in categories_used
+    ):
+        result["categories_truncated"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+
+def _validate_import_options(
+    delimiter: str,
+    date_format: str | None,
+    amount_sign: str | None,
+    column_map: dict[str, str] | None,
+) -> str | None:
+    if delimiter not in _CSV_DELIMITERS:
+        return "delimiter must be comma, semicolon, tab, or pipe"
+    if amount_sign is not None and amount_sign not in _AMOUNT_SIGNS:
+        return "amount_sign must be negative_debit, positive_debit, or split_cols"
+    if column_map is not None and (
+        not isinstance(column_map, dict)
+        or not all(isinstance(value, str) and value.strip() for value in column_map.values())
+    ):
+        return "column_map must be an object mapping fields to nonempty column names"
+    if amount_sign == "split_cols":
+        mapping = column_map or {}
+        columns = [mapping.get(key) for key in _SPLIT_COLUMNS]
+        if not all(columns) or len({name.strip().lower() for name in columns if name}) != len(
+            _SPLIT_COLUMNS
+        ):
+            return "amount_sign split_cols needs distinct debit_col and credit_col mappings"
+    if date_format is not None:
+        if not isinstance(date_format, str) or not date_format.strip():
+            return "date_format must be a nonempty strptime format"
+        sample = datetime(2026, 1, 17, 9, 30, tzinfo=UTC)
+        try:
+            datetime.strptime(sample.strftime(date_format), date_format)
+        except (ValueError, re.error):
+            return "date_format must be a valid strptime format"
+    return None
 
 
 async def import_transactions(
@@ -955,6 +1050,11 @@ async def import_transactions(
     column_map: dict[str, str] | None = None,
     dry_run: bool = False,
     notify_fn: Any = None,
+    *,
+    origin_butler: str,
+    delimiter: str = ",",
+    date_format: str | None = None,
+    amount_sign: str | None = None,
 ) -> dict[str, Any]:
     """Import transactions from a bank CSV export stored in blob storage.
 
@@ -970,7 +1070,10 @@ async def import_transactions(
     blob_store:
         BlobStore instance used to retrieve the CSV file.
     storage_ref:
-        Blob storage reference string (e.g. ``s3://bucket/path/file.csv``).
+        Blob storage reference string (e.g. ``s3://bucket/finance/file.csv``).
+        It must sit under the RFC 0016 prefix ``{bucket}/{origin_butler}/`` or
+        the connector prefix ``{bucket}/connectors/``; any other ref is refused
+        before a byte is fetched.
     account_id:
         UUID string of the account to associate all transactions with.
     currency:
@@ -990,19 +1093,52 @@ async def import_transactions(
         exceeds ``_LARGE_IMPORT_THRESHOLD`` rows.  Called at 25/50/75/100%
         completion with ``channel``, ``message``, and ``intent`` keyword args
         (matching the butler's ``notify()`` MCP tool signature).
+    delimiter, date_format, amount_sign:
+        Optional explicit CSV delimiter, strptime date format, and amount direction convention.
+        ``split_cols`` uses ``debit_col`` and ``credit_col`` entries in ``column_map``.
+    origin_butler:
+        Name of the butler running the import, taken from the daemon context and
+        never from the caller. It scopes which blob prefix ``storage_ref`` may name.
 
     Returns
     -------
     dict
         ``{total, imported, skipped, errors, import_batch_id, detected_format,
-           dry_run, categories_learned, preview (when dry_run=True),
-           currency_warning (when currency fell back to USD)}``
-
-    On a successful non-dry-run import where the rows carry category data,
-    ``learn_merchant_categories()`` is triggered to upsert merchant->category
-    mappings and the count is reported via ``categories_learned``.
+           dry_run, merchant_mappings_applied, mv_refreshed, baselines_triggered,
+           categories_learned, preview (when dry_run=True, with is_duplicate flags),
+           currency_warning (when currency fell back to USD)}``, or
+        ``{status: "refused" | "error", ...}`` when the ref is out of scope or
+        unreadable, or ``{status: "unrecognized_format", headers,
+        headers_truncated, missing_columns, error, ...}`` when the columns or date
+        format cannot be detected (retry with a ``column_map`` built from
+        ``headers``). ``headers`` holds at most the first 50 names, each cut to
+        100 chars; ``headers_truncated`` is true when either cap applied. The
+        pipeline itself lives in ``_import_csv_content``.
     """
     import_batch_id = str(uuid.uuid4())
+    option_error = _validate_import_options(delimiter, date_format, amount_sign, column_map)
+    if option_error:
+        return {
+            "status": "error",
+            "reason": "invalid_import_options",
+            "error": option_error,
+            "import_batch_id": import_batch_id,
+        }
+
+    # --- Refuse a ref outside this butler's blob prefix (RFC 0016) ---
+    try:
+        check_storage_ref(storage_ref, blob_store, origin_butler=origin_butler)
+    except AttachmentError as exc:
+        reason = (
+            "attachment_forbidden" if exc.code == "attachment_forbidden" else "invalid_storage_ref"
+        )
+        return {
+            "status": "refused",
+            "reason": reason,
+            "error": str(exc),
+            "storage_ref": storage_ref,
+            "import_batch_id": import_batch_id,
+        }
 
     # --- Load from blob storage ---
     try:
@@ -1015,176 +1151,19 @@ async def import_transactions(
             "import_batch_id": import_batch_id,
         }
 
-    # --- Resolve currency (three-tier: explicit > account > USD fallback) ---
-    resolved_currency, currency_warning = await _resolve_currency(pool, account_id, currency)
-
-    # --- Detect format ---
-    reader_probe = csv.DictReader(io.StringIO(content))
-    headers = list(reader_probe.fieldnames or [])
-    fmt = detect_format(headers)
-
-    # Apply caller-supplied column overrides for format selection if provided.
-    if column_map and fmt["name"] == "generic":
-        # Re-resolve with the caller's mapping hints.
-        pass  # column_map is forwarded to _parse_csv_rows below
-
-    # --- Detect date format ---
-    # Determine which column holds dates for this format.
-    if fmt["name"] == "generic":
-        resolved_generic = _resolve_generic_cols(headers)
-        date_col_name = resolved_generic.get(_COL_DATE)
-    else:
-        date_col_name = fmt["col_map"].get(_COL_DATE)
-    if column_map and _COL_DATE in column_map:
-        date_col_name = column_map[_COL_DATE]
-
-    sample_dates = _sample_date_values(content, date_col_name, n=10)
-    date_fmt = _detect_date_format(sample_dates)
-
-    if date_fmt is None:
-        return {
-            "status": "error",
-            "error": (
-                "Could not auto-detect date format. "
-                f"Sample values: {sample_dates[:5]}. "
-                "Provide a column_map with 'date' pointing to the correct column, "
-                "or verify the file contains a date column."
-            ),
-            "import_batch_id": import_batch_id,
-            "detected_format": fmt["name"],
-        }
-
-    # --- Parse all rows ---
-    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, resolved_currency, column_map)
-    total_rows = len(parsed) + len(parse_errors)
-
-    if dry_run:
-        preview = []
-        for txn in parsed[:10]:
-            preview.append(
-                {
-                    "posted_at": txn["posted_at"].isoformat(),
-                    "merchant": txn["merchant"],
-                    "amount": str(txn["amount"]),
-                    "currency": txn["currency"],
-                    "direction": txn["direction"],
-                    "category": txn["category"],
-                    "description": txn.get("description"),
-                }
-            )
-        result: dict[str, Any] = {
-            "dry_run": True,
-            "total": total_rows,
-            "parsed": len(parsed),
-            "parse_errors": len(parse_errors),
-            "preview": preview,
-            "import_batch_id": import_batch_id,
-            "detected_format": fmt["name"],
-            "date_format_detected": date_fmt,
-            "error_details": parse_errors[:20],
-        }
-        if currency_warning:
-            result["currency_warning"] = currency_warning
-        return result
-
-    # --- Process in batches of _BATCH_SIZE ---
-    total_imported = 0
-    total_skipped = 0
-    all_errors: list[dict[str, Any]] = list(parse_errors)
-    imported_txns: list[dict[str, Any]] = []
-    batches_processed = 0
-    is_large_import = len(parsed) > _LARGE_IMPORT_THRESHOLD
-    fired_thresholds: set[int] = set()
-
-    for batch_start in range(0, len(parsed), _BATCH_SIZE):
-        batch = parsed[batch_start : batch_start + _BATCH_SIZE]
-        batch_imported, batch_skipped, batch_errors, batch_txns = await _insert_batch(
-            pool, batch, account_id, import_batch_id
-        )
-        total_imported += batch_imported
-        total_skipped += batch_skipped
-        all_errors.extend(batch_errors)
-        imported_txns.extend(batch_txns)
-        batches_processed += 1
-
-        processed_so_far = batch_start + len(batch)
-        logger.info(
-            "import_transactions: batch %d-%d — imported=%d skipped=%d errors=%d",
-            batch_start,
-            processed_so_far - 1,
-            batch_imported,
-            batch_skipped,
-            len(batch_errors),
-        )
-
-        # Progress notifications for large imports (spec: finance-data-import
-        # "Progress reporting for large imports").
-        if is_large_import and notify_fn is not None:
-            current_pct = int(processed_so_far / len(parsed) * 100)
-            for threshold in _PROGRESS_THRESHOLDS:
-                if threshold not in fired_thresholds and current_pct >= threshold:
-                    await _emit_progress_notification(
-                        notify_fn,
-                        processed=processed_so_far,
-                        total=len(parsed),
-                        imported_so_far=total_imported,
-                        skipped_so_far=total_skipped,
-                        errors_so_far=len(all_errors),
-                    )
-                    fired_thresholds.add(threshold)
-
-    # --- Post-import merchant-category learning ---
-    # Build merchant->category mappings from the imported category data so future
-    # imports and transaction records can auto-categorise (spec: finance-data-import
-    # "Post-import merchant categorization learning").
-    categories_learned = 0
-    if total_imported > 0 and _has_category_data(parsed):
-        categories_learned = await _trigger_learn_merchant_categories(pool)
-
-    result = {
-        "total": total_rows,
-        "imported": total_imported,
-        "skipped": total_skipped,
-        "errors": len(all_errors),
-        "import_batch_id": import_batch_id,
-        "detected_format": fmt["name"],
-        "date_format_detected": date_fmt,
-        "dry_run": False,
-        "categories_learned": categories_learned,
-        **_summarize_import(imported_txns, batches_processed),
-        "error_details": all_errors[:50],  # cap to first 50 for response size
-    }
-    if currency_warning:
-        result["currency_warning"] = currency_warning
-    return result
-
-
-# ---------------------------------------------------------------------------
-# File-path based CSV loading
-# ---------------------------------------------------------------------------
-
-
-def _load_csv_from_file(file_path: str) -> str:
-    """Read CSV content from a local filesystem path.
-
-    Falls back to latin-1 when the content is not valid UTF-8 (common in
-    older bank export files).
-
-    Raises
-    ------
-    FileNotFoundError
-        When the file does not exist at *file_path*.
-    PermissionError
-        When the process lacks read access to the file.
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"CSV file not found: {file_path}")
-    try:
-        with open(file_path, encoding="utf-8-sig") as fh:
-            return fh.read()
-    except UnicodeDecodeError:
-        with open(file_path, encoding="latin-1") as fh:
-            return fh.read()
+    return await _import_csv_content(
+        pool,
+        content,
+        import_batch_id=import_batch_id,
+        account_id=account_id,
+        currency=currency,
+        column_map=column_map,
+        dry_run=dry_run,
+        notify_fn=notify_fn,
+        delimiter=delimiter,
+        date_format=date_format,
+        amount_sign=amount_sign,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1212,10 +1191,8 @@ async def _lookup_merchant_category(
 ) -> str | None:
     """Look up the best matching category for *merchant* in merchant_mappings.
 
-    Checks whether the stored merchant name is a substring of the input
-    merchant string (e.g., "Whole Foods" stored in the DB matches the bank
-    statement value "WHOLE FOODS MARKET 1234").  Returns the category with
-    the highest confidence, or None when no mapping matches.
+    Applies the stored case-insensitive merchant pattern. Returns the category
+    with the highest confidence, or None when no mapping matches.
 
     Parameters
     ----------
@@ -1234,8 +1211,8 @@ async def _lookup_merchant_category(
         SELECT category
         FROM merchant_mappings
         WHERE is_active = true
-          AND $1 ILIKE '%' || merchant || '%'
-        ORDER BY confidence DESC
+          AND lower($1) LIKE lower(raw_pattern)
+        ORDER BY confidence DESC, updated_at DESC
         LIMIT 1
         """,
         merchant,
@@ -1324,18 +1301,27 @@ async def _refresh_spending_summaries(pool: asyncpg.Pool) -> bool:
 
 
 async def _trigger_compute_baselines(pool: asyncpg.Pool) -> bool:
-    """Fire-and-forget call to compute_baselines after a large import.
+    """Refresh the stored category spend bands after a large import.
 
-    Returns True when triggered, False when the function is unavailable.
+    Runs the same producer as the ``anomaly-insight-scan`` job, with the owner's budget zone,
+    so imported history reaches the bands without waiting for the next daily scan. The name is
+    kept for the callers and tests that reference it.
+
+    Returns True when the bands were refreshed, False when the refresh failed.
     """
     try:
-        from butlers.tools.finance.anomaly_detection import compute_baselines
+        from butlers.jobs.finance_spend_baselines import refresh_category_baselines
+        from butlers.tools.finance.budgets import (  # pyright: ignore[reportMissingImports]
+            resolve_budget_zone,
+        )
 
-        await compute_baselines(pool)
-        logger.info("import: compute_baselines triggered post-import")
+        await refresh_category_baselines(
+            pool, now=datetime.now(UTC), zone=await resolve_budget_zone(pool)
+        )
+        logger.info("import: category spend bands refreshed post-import")
         return True
-    except Exception as exc:
-        logger.warning("import: compute_baselines trigger failed: %s", exc)
+    except asyncpg.PostgresError as exc:
+        logger.warning("import: category spend band refresh failed: %s", exc)
         return False
 
 
@@ -1386,26 +1372,27 @@ async def _check_duplicates_for_preview(
     Performs the same composite dedup check as ``_check_duplicate``.
     """
     result = []
+    seen_keys: set[tuple[datetime, Decimal, str]] = set()
     for txn in parsed[:10]:
-        is_dup = False
-        try:
-            is_dup = await _check_duplicate(
-                pool,
-                txn["merchant"],
-                txn["amount"],
-                txn["posted_at"],
-                account_id,
-            )
-        except Exception:
-            pass
+        posted_at, amount, merchant = txn["posted_at"], txn["amount"], txn["merchant"]
+        key = (posted_at, amount, merchant)
+        is_dup = key in seen_keys
+        if not is_dup:
+            try:
+                is_dup = await _check_duplicate(pool, merchant, amount, posted_at, account_id)
+            except Exception:
+                pass
+        seen_keys.add(key)
         entry = {
             "posted_at": txn["posted_at"].isoformat(),
-            "merchant": txn["merchant"],
-            "amount": str(txn["amount"]),
-            "currency": txn["currency"],
+            "merchant": _bounded_csv_text(txn["merchant"]),
+            "amount": _bounded_csv_text(str(txn["amount"])),
+            "currency": _bounded_csv_text(txn["currency"]),
             "direction": txn["direction"],
-            "category": txn["category"],
-            "description": txn.get("description"),
+            "category": _bounded_csv_text(txn["category"]),
+            "description": _bounded_csv_text(txn["description"])
+            if txn.get("description")
+            else None,
             "is_duplicate": is_dup,
         }
         result.append(entry)
@@ -1413,124 +1400,95 @@ async def _check_duplicates_for_preview(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point — file-path based
+# Shared import core
 # ---------------------------------------------------------------------------
 
 
-async def import_transactions_from_file(
+async def _import_csv_content(
     pool: asyncpg.Pool,
-    file_path: str,
-    account_id: str | None = None,
-    currency: str | None = None,
-    column_map: dict[str, str] | None = None,
-    dry_run: bool = False,
-    notify_fn: Any = None,
+    content: str,
+    *,
+    import_batch_id: str,
+    account_id: str | None,
+    currency: str | None,
+    column_map: dict[str, str] | None,
+    dry_run: bool,
+    notify_fn: Any,
+    delimiter: str = ",",
+    date_format: str | None = None,
+    amount_sign: str | None = None,
 ) -> dict[str, Any]:
-    """Import transactions from a bank CSV file on the local filesystem.
+    """Run the import pipeline over already-loaded CSV *content*.
 
-    Automatically detects Chase, Amex, Capital One, and generic CSV formats.
-    Normalizes dates, amounts, and merchant names.  Deduplicates against
-    existing rows using a composite key (account_id, posted_at, amount, merchant).
-    Auto-applies merchant category mappings for uncategorized rows.
-    Processes in batches of 500 rows.
+    The caller owns where the bytes come from; this core never touches a
+    filesystem path or a storage ref. It detects the format and date format,
+    parses rows, auto-applies merchant category mappings to uncategorized rows,
+    and then either returns a dry-run preview (with per-row ``is_duplicate``
+    flags) or inserts in batches of ``_BATCH_SIZE``.
 
     Post-import triggers (non-dry-run only, when 1+ rows imported):
     - Refreshes the ``spending_summaries`` materialized view (if present).
-    - Calls ``compute_baselines()`` when 50 or more rows were imported.
+    - Refreshes the stored category spend bands when 50 or more rows were imported.
     - Calls ``learn_merchant_categories()`` when imported rows carry category
-      data, upserting merchant->category mappings and reporting the count via
-      ``categories_learned``.
-
-    Parameters
-    ----------
-    pool:
-        asyncpg connection pool.
-    file_path:
-        Absolute or relative path to the CSV file on the local filesystem.
-    account_id:
-        UUID string of the account to associate all transactions with.
-    currency:
-        ISO-4217 currency code.  When ``None`` (the default), the currency is
-        inferred from the linked account's ``accounts.currency`` column; if that
-        is also unavailable the import falls back to ``"USD"`` and records a
-        ``currency_warning`` in the response.
-    column_map:
-        Optional mapping of canonical field names (``date``, ``merchant``,
-        ``amount``, ``description``, ``category``) to actual CSV column names.
-        Useful for non-standard or renamed headers.
-    dry_run:
-        When True, parses, validates, checks for duplicates against the DB,
-        and returns a preview of the first 10 transactions without inserting.
-        Preview includes an ``is_duplicate`` flag per row.
-    notify_fn:
-        Optional async callable invoked for progress updates when the import
-        exceeds ``_LARGE_IMPORT_THRESHOLD`` rows.  Called at 25/50/75/100%
-        completion with ``channel``, ``message``, and ``intent`` keyword args
-        (matching the butler's ``notify()`` MCP tool signature).
-
-    Returns
-    -------
-    dict
-        ``{total, imported, skipped, errors, import_batch_id, detected_format,
-           dry_run, merchant_mappings_applied, mv_refreshed,
-           baselines_triggered, categories_learned, preview (when dry_run=True),
-           currency_warning (when currency fell back to USD)}``
+      data, reporting the upsert count via ``categories_learned``.
     """
-    import_batch_id = str(uuid.uuid4())
-
-    # --- Load from local filesystem ---
-    try:
-        content = _load_csv_from_file(file_path)
-    except (FileNotFoundError, PermissionError, OSError) as exc:
-        return {
-            "status": "error",
-            "error": f"Failed to load CSV file: {exc}",
-            "file_path": file_path,
-            "import_batch_id": import_batch_id,
-        }
-
     # --- Resolve currency (three-tier: explicit > account > USD fallback) ---
     resolved_currency, currency_warning = await _resolve_currency(pool, account_id, currency)
 
     # --- Detect format ---
-    reader_probe = csv.DictReader(io.StringIO(content))
+    reader_probe = csv.DictReader(io.StringIO(content), delimiter=delimiter)
     headers = list(reader_probe.fieldnames or [])
     fmt = detect_format(headers)
 
-    # --- Detect date format ---
-    if fmt["name"] == "generic":
-        resolved_generic = _resolve_generic_cols(headers)
-        date_col_name = resolved_generic.get(_COL_DATE)
-    else:
-        date_col_name = fmt["col_map"].get(_COL_DATE)
-    if column_map and _COL_DATE in column_map:
-        date_col_name = column_map[_COL_DATE]
+    columns = _resolve_import_columns(fmt, headers, column_map, amount_sign)
+    sample_dates = []
+    if date_format is None:
+        sample_dates = _sample_date_values(content, columns.get(_COL_DATE), delimiter=delimiter)
+    date_fmt = date_format if date_format is not None else _detect_date_format(sample_dates)
 
-    sample_dates = _sample_date_values(content, date_col_name, n=10)
-    date_fmt = _detect_date_format(sample_dates)
-
-    if date_fmt is None:
+    # Provide bounded headers so callers can repair a mapping before importing.
+    missing_columns = _unmapped_required_columns(columns, headers)
+    if date_fmt is None or missing_columns:
+        if missing_columns:
+            reason = f"No column found for: {', '.join(missing_columns)}."
+        else:
+            samples = [_bounded_csv_text(value) for value in sample_dates[:5]]
+            reason = f"Could not auto-detect date format. Sample values: {samples}."
+        # Headers come from an untrusted file and go into model context: bound them.
+        echoed_headers = [h[:_MAX_ECHOED_HEADER_CHARS] for h in headers[:_MAX_ECHOED_HEADERS]]
+        headers_truncated = len(headers) > _MAX_ECHOED_HEADERS or any(
+            len(h) > _MAX_ECHOED_HEADER_CHARS for h in headers[:_MAX_ECHOED_HEADERS]
+        )
         return {
-            "status": "error",
+            "status": "unrecognized_format",
             "error": (
-                "Could not auto-detect date format. "
-                f"Sample values: {sample_dates[:5]}. "
-                "Provide a column_map with 'date' pointing to the correct column, "
-                "or verify the file contains a date column."
+                f"{reason} Provide a column_map naming the date, merchant, "
+                "and amount columns from the returned headers, or set an explicit date_format."
             ),
+            "headers": echoed_headers,
+            "headers_truncated": headers_truncated,
+            "missing_columns": missing_columns,
             "import_batch_id": import_batch_id,
             "detected_format": fmt["name"],
         }
 
     # --- Parse all rows ---
-    parsed, parse_errors = _parse_csv_rows(content, fmt, date_fmt, resolved_currency, column_map)
+    parsed, parse_errors = _parse_csv_rows(
+        content,
+        fmt,
+        date_fmt,
+        resolved_currency,
+        column_map,
+        delimiter=delimiter,
+        amount_sign=amount_sign,
+    )
     total_rows = len(parsed) + len(parse_errors)
 
     # --- Merchant mapping auto-apply ---
     try:
         parsed, merchant_mappings_applied = await _apply_merchant_mappings(pool, parsed)
     except Exception as exc:
-        logger.warning("import_from_file: merchant mapping lookup failed: %s", exc)
+        logger.warning("import: merchant mapping lookup failed: %s", exc)
         merchant_mappings_applied = 0
 
     if dry_run:
@@ -1574,7 +1532,7 @@ async def import_transactions_from_file(
 
         processed_so_far = batch_start + len(batch)
         logger.info(
-            "import_from_file: batch %d-%d — imported=%d skipped=%d errors=%d",
+            "import_transactions: batch %d-%d — imported=%d skipped=%d errors=%d",
             batch_start,
             processed_so_far - 1,
             batch_imported,

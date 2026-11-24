@@ -1,3 +1,11 @@
+## Amendment scope and historical task status
+
+The existing checked tasks below record pre-switch reliability delivery, not
+goal-runtime completion. Their checkboxes and evidence remain unchanged;
+3.4 and 6.3 are still open. No task here reopens or redispatches the ten closed
+implementation children, starts a provider/credential operation, authorizes a
+deployment, or closes bu-j8crr9/bu-kwyq6, .15/.16, .7/.8 or the parent.
+
 ## 1. Durable state and authorization foundations
 
 - [x] 1.1 Add a guarded core migration for `public.runtime_attention_outbox`, immutable source snapshots, triggering-edge and direct-reissue unique constraints, fenced-claim fields/indexes, non-cascading retention semantics, Switchboard claim grants, and fixed-search-path `SECURITY DEFINER` producer operations with `PUBLIC` execution revoked before role-specific grants; derive all pageable source/payload data server-side without claiming the shared-login `SET ROLE` topology is an unforgeable per-butler identity; write migration tests for upgraded, core-only, catalog-deletion, and role-enforced databases.
@@ -50,3 +58,10 @@
 and the gap register. Task 3.4 stays open on one missing clause (owner control on Test and
 Verify-all) and 6.3 stays open pending separate owner authorization for deployed-runtime
 evidence.
+
+## 7. Pending goal-runtime conformance (existing switch owners)
+
+- [ ] 7.1 Under generalist task 2.4 and RFC 0038 D3, verify the actual device-auth/synchronization control-plane service path to the session host's credential volume, lazy explicit authority resolution and per-invocation staging. Preserve no local fallback/bootstrap, CAS rotation/health fencing, crash recovery, atomic files and no running-work replay; prove no host/database/connector/domain credential access.
+- [ ] 7.2 Under RFC 0038 D3/D18, verify the actual eligible adapter configurations: goal invocations have only the broker; verification/benchmark model functions are tool-less single-turn structured-output measurements with narrow applicable provider credentials. Preserve canonical IDs/aliases/configuration, signer/peer isolation, exact shim closure, no inherited credential descriptors and complete descendant cleanup before output validation.
+- [ ] 7.3 At the existing generalist cutover gate, prove actual goal outcome ordering, one breaker/fleet episode and Switchboard claim, no ambiguous replay, idempotent owner reissue and post-send bookkeeping isolation. A measurement probe never becomes routed success. Keep independent Models/Spend facts and D19's separately governed UI successor.
+- [ ] 7.4 Before eventual archive, reconcile all 18 requirement blocks and 128 original scenario headings against the amended goal-runtime deltas and the existing owner-run evidence. Historical receipts keep their source/runtime identity; target evidence stays pending until executed. Apply generalist task 4.2 only after the collision disposition and original reconciliation/report gates are satisfied.

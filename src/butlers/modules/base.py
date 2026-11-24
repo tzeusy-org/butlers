@@ -153,9 +153,15 @@ class ToolMeta:
     idempotency: Idempotency | None = None
     owner_authority: bool | None = None
     recipient_params: RecipientParameters | None = None
+    content_params: tuple[str, ...] | None = None
+    resource_pair: tuple[str, str] | None = None
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    alias_free_params: tuple[str, ...] | None = None
+    categories: tuple[str, ...] | None = None
+    depends_on: tuple[str, ...] | None = None
+    alias_resolvers: Mapping[str, str] | None = None
 
 
 class Module(abc.ABC):

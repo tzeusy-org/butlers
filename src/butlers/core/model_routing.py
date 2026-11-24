@@ -59,10 +59,11 @@ import dataclasses
 import enum
 import json
 import logging
+import math
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -230,6 +231,10 @@ class QuotaStatus:
         Total tokens consumed in the 30-day rolling window.
     limit_30d:
         Configured 30d token budget, or ``None`` if unlimited.
+    unavailable:
+        True when the quota state could not be read. ``allowed`` is then False: an
+        unreadable quota refuses the dispatch (fail closed), distinct from an
+        exhausted window.
     """
 
     allowed: bool
@@ -237,6 +242,7 @@ class QuotaStatus:
     limit_24h: int | None
     usage_30d: int
     limit_30d: int | None
+    unavailable: bool = False
 
 
 class TierQuotaExhausted(Exception):
@@ -323,6 +329,38 @@ class SpendRoutingResult:
 # CEILING_DENIAL_REASON_PREFIX in frontend/src/hooks/use-fleet-halt.ts — keep
 # both in sync if this text ever changes.
 CEILING_DENIAL_REASON_PREFIX = "Monthly spend ceiling reached"
+# Refusal when the ceiling or the ledger cannot be read. Deliberately NOT prefixed by the
+# reached-ceiling text: it must never raise the fleet-halt banner (bu-svqpzo.3).
+CEILING_UNAVAILABLE_REASON = (
+    "Monthly spend ceiling unavailable: the ceiling state could not be read"
+)
+
+# Refusal when the spend-rule set cannot be read (bu-svqpzo.15): a rule may carry an owner-set
+# per-call cap, so an unreadable set must not be treated as "no rule". Distinct from the cap
+# and ceiling reasons, and never prefixed by the reached-ceiling text (no fleet-halt banner).
+SPEND_RULES_UNAVAILABLE_REASON = "Spend rules unavailable: the routing rules could not be read"
+
+
+# A matched rule's cap is NaN or infinite: a NaN cap never fires and an infinite one never binds,
+# so the rule cannot be applied as written (bu-svqpzo.22).
+SPEND_RULE_CAP_NOT_FINITE_REASON = (
+    "Spend rules unavailable: a matched rule's max_cost_per_call is not a finite number"
+)
+
+
+# A matched rule's cap is not a positive number (non-numeric, zero or negative): the owner meant
+# a cap that cannot be applied as written.
+SPEND_RULE_CAP_NOT_POSITIVE_REASON = (
+    "Spend rules unavailable: a matched rule's max_cost_per_call is not a positive number"
+)
+
+
+class SpendRulesUnavailable(RuntimeError):
+    """The spend rules cannot be applied as written, so the dispatch is refused (fail closed).
+
+    ``str(exc)`` is the refusal reason the callers record.
+    """
+
 
 # Recorded on a ``public.model_dispatch_attempts`` row (outcome
 # ``breaker_open_override``) when an operator spend rule routes to a model whose
@@ -361,6 +399,10 @@ class CeilingStatus:
         Invoked attempts for which the runtime yielded no parseable token usage.
         These are excluded from ``mtd_usd`` and surfaced separately so the
         measured subtotal cannot impersonate a complete total.
+    unavailable:
+        True when the ceiling or the ledger could not be read. ``allowed`` is then
+        False, and callers refuse with a reason distinct from a real breach (and
+        raise no fleet-halt), because the fleet-halt banner means a reached ceiling.
     """
 
     allowed: bool
@@ -368,6 +410,7 @@ class CeilingStatus:
     ceiling_usd: float | None
     unpriced_models: tuple[UnpricedModelUsage, ...] = ()
     unmeasurable_attempts: int = 0
+    unavailable: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1163,6 +1206,7 @@ all_candidates AS (
         mc.max_output_tokens,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        bmo.priority IS NOT NULL AS owner_pinned,
         t.ord AS tier_ord,
         COALESCE(qoc.quota_ok, true) AS quota_ok
     FROM public.model_catalog mc
@@ -1197,6 +1241,7 @@ all_candidates AS (
         mc.max_output_tokens,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
+        bmo.priority IS NOT NULL AS owner_pinned,
         t.ord AS tier_ord,
         COALESCE(qoc.quota_ok, true) AS quota_ok,
         bo.catalog_entry_id IS NOT NULL AS breaker_open,
@@ -1243,6 +1288,7 @@ candidates AS (
         ac.session_timeout_s,
         ac.effective_tier,
         ac.effective_priority,
+        ac.owner_pinned,
         ac.quota_ok,
         ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
@@ -1270,7 +1316,7 @@ evidence AS (
 )
 SELECT
     c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
-    c.effective_priority,
+    c.effective_priority, c.owner_pinned,
     c.rn, c.total,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms, e.last_attempt_at,
     c.quota_ok
@@ -1323,8 +1369,8 @@ evidence AS (
 SELECT
     ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
     ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
-    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok, ac.breaker_open,
-    ac.allowance_blocked,
+    ac.effective_tier, ac.effective_priority, ac.owner_pinned, ac.tier_ord, ac.quota_ok,
+    ac.breaker_open, ac.allowance_blocked,
     e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
     e.last_attempt_at
 FROM all_candidates ac
@@ -1655,6 +1701,25 @@ def _score_row(row: asyncpg.Record, pricing: PricingConfig | None) -> RoutingSco
     return compute_routing_score(evidence, _reference_cost_usd(pricing, row["model_id"]))
 
 
+def _row_owner_pinned(row: Any) -> bool:
+    """Whether a butler override row set this candidate's priority (absent column: no)."""
+    try:
+        return bool(row["owner_pinned"])
+    except (KeyError, IndexError):
+        return False
+
+
+def _is_owner_even_split(rows: Sequence[Any]) -> bool:
+    """True when every candidate of a multi-way tie is pinned by a butler override.
+
+    The owner set equal priorities on purpose, so the tie is a split they asked for, not an
+    accident for evidence to break. A tie that includes any catalog-default candidate is not:
+    the owner decided nothing about it. Breaker-open and unverified entries never reach here
+    (the candidate SQL drops them), so exclusion on evidence of breakage stays intact.
+    """
+    return len(rows) > 1 and all(_row_owner_pinned(row) for row in rows)
+
+
 def _select_resolved_row(
     rows: list[asyncpg.Record], rr_counter: int | None = None
 ) -> asyncpg.Record:
@@ -1680,8 +1745,9 @@ def _select_resolved_row(
     pricing = _get_cached_pricing()
     scored = [(row, _score_row(row, pricing)) for row in rows]
 
+    # An owner-pinned tie is an even split the owner chose; evidence must not collapse it.
     eligible = [(row, s) for row, s in scored if s.score is not None]
-    if len(eligible) >= 2:
+    if len(eligible) >= 2 and not _is_owner_even_split(rows):
         best_row, _ = max(eligible, key=lambda pair: pair[1].score)
         return best_row
 
@@ -2112,6 +2178,7 @@ class CandidateOutcome(enum.StrEnum):
 WINNER_REASON_SOLE_CANDIDATE = "sole_candidate"
 WINNER_REASON_EVIDENCE_SCORE = "evidence_score"
 WINNER_REASON_ROUND_ROBIN = "round_robin"
+WINNER_REASON_OWNER_EVEN_SPLIT = "owner_even_split"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2238,6 +2305,8 @@ def _describe_legacy_resolution(
     scored = {row["id"]: _score_row(row, pricing) for row in rows}
     if len(rows) == 1:
         winner_reason = WINNER_REASON_SOLE_CANDIDATE
+    elif _is_owner_even_split(rows):
+        winner_reason = WINNER_REASON_OWNER_EVEN_SPLIT
     elif sum(score.score is not None for score in scored.values()) >= 2:
         winner_reason = WINNER_REASON_EVIDENCE_SCORE
     else:
@@ -2541,6 +2610,10 @@ def _rank_candidates(
     if len(top) == 1:
         return top[0], WINNER_REASON_SOLE_CANDIDATE
 
+    if _is_owner_even_split(top):
+        assert rr_counter is not None, "_rank_candidates: rr_counter required for an even split"
+        return top[rr_counter % len(top)], WINNER_REASON_OWNER_EVEN_SPLIT
+
     scored = [(row, scores[row["id"]]) for row in top if scores.get(row["id"]) is not None]
     eligible = [(row, s) for row, s in scored if s.score is not None]
     if len(eligible) >= 2:
@@ -2619,32 +2692,38 @@ async def next_same_tier_candidate(
 def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
     """Extract and validate the ``action.max_cost_per_call`` per-call USD cap.
 
-    Returns the cap as a positive float, or ``None`` when the action sets no cap or
-    the configured value is malformed (non-numeric or non-positive).  A malformed cap
-    is ignored with a warning rather than failing the dispatch — a routing rule must
-    never wedge a spawn because of bad effect data.
+    Returns the cap as a positive finite float, or ``None`` when the action sets no cap.
+    A cap that is present but unusable raises :class:`SpendRulesUnavailable`, each with its
+    own reason: the owner meant a cap, so ignoring it would run the dispatch uncapped.
+
+    - NaN or infinite: a NaN cap never fires and an infinite one never binds.
+    - Non-numeric (including booleans), zero or negative: not a positive number.
     """
     raw = action.get("max_cost_per_call")
     if raw is None:
         return None
     try:
+        if isinstance(raw, bool):
+            raise TypeError("boolean cap")
         cap = float(raw)
     except (TypeError, ValueError):
+        cap = None
+    if cap is not None and not math.isfinite(cap):
         logger.warning(
-            "apply_spend_routing_rules: rule %s has non-numeric action.max_cost_per_call=%r; "
-            "ignoring the cap",
+            "apply_spend_routing_rules: rule %s has non-finite action.max_cost_per_call=%r; "
+            "refusing the dispatch (fail-closed)",
             rule_id,
             raw,
         )
-        return None
-    if cap <= 0:
+        raise SpendRulesUnavailable(SPEND_RULE_CAP_NOT_FINITE_REASON)
+    if cap is None or cap <= 0:
         logger.warning(
-            "apply_spend_routing_rules: rule %s has non-positive action.max_cost_per_call=%r; "
-            "ignoring the cap",
+            "apply_spend_routing_rules: rule %s has unusable action.max_cost_per_call=%r; "
+            "refusing the dispatch (fail-closed)",
             rule_id,
             raw,
         )
-        return None
+        raise SpendRulesUnavailable(SPEND_RULE_CAP_NOT_POSITIVE_REASON)
     return cap
 
 
@@ -2699,10 +2778,13 @@ async def apply_spend_routing_rules(
       rule); the tier-resolved model is kept and the cap is surfaced.  A matched rule
       with neither effect keeps the model and logs a warning.
     - This helper is purely a model-SELECTION + effect-surfacing step.  It never blocks
-      a dispatch — the authorization (permissions) and budget (quota / ceiling /
-      per-call cap) DENY gates are the caller's responsibility.
-    - Fail-open: any DB error or malformed rule data leaves ``resolved`` unchanged with
-      no cap and logs a warning, so a routing-rules failure never wedges spawns.
+      a dispatch on a rule's own account — the authorization (permissions) and budget (quota /
+      ceiling / per-call cap) DENY gates are the caller's responsibility. The one refusal it
+      makes is :class:`SpendRulesUnavailable`, when the rules cannot be read.
+    - Fail-closed on the read: a rules-read failure raises :class:`SpendRulesUnavailable`
+      (bu-svqpzo.15). A rule may carry an owner-set ``max_cost_per_call`` cap, so an
+      unreadable set must not be mistaken for "no rule"; the callers refuse the dispatch.
+      A readable empty rule set is unconstrained. A single malformed rule is skipped.
 
     Parameters
     ----------
@@ -2738,11 +2820,11 @@ async def apply_spend_routing_rules(
     except Exception:
         logger.warning(
             "apply_spend_routing_rules: failed to load spend_rules for butler=%s; "
-            "keeping tier-resolved model (fail-open)",
+            "refusing the dispatch (fail-closed)",
             butler_name,
             exc_info=True,
         )
-        return SpendRoutingResult(resolved=resolved)
+        raise SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON) from None
 
     for rule_row in rule_rows:
         condition = _coerce_rule_dict(rule_row["condition"])
@@ -2902,9 +2984,10 @@ async def check_token_quota(
     ``QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)``
     without querying the ledger.
 
-    Fail-open: if the DB query fails for any reason (timeout, missing partition,
-    connection error), returns ``allowed=True`` and logs a warning.  The quota
-    guardrail must never become a single point of failure.
+    Fail-closed: if the DB query fails for any reason (timeout, missing partition,
+    connection error), returns ``allowed=False, unavailable=True`` and logs an error.
+    An unreadable quota refuses the dispatch (RFC 0038 D10: every budget check
+    fails closed).
 
     Parameters
     ----------
@@ -2957,12 +3040,19 @@ async def check_token_quota(
         )
 
     except Exception:
-        logger.warning(
-            "check_token_quota failed for catalog_entry_id=%s; failing open (allowed=True)",
+        logger.error(
+            "check_token_quota failed for catalog_entry_id=%s; refusing (unavailable)",
             catalog_entry_id,
             exc_info=True,
         )
-        return _unlimited
+        return QuotaStatus(
+            allowed=False,
+            usage_24h=0,
+            limit_24h=None,
+            usage_30d=0,
+            limit_30d=None,
+            unavailable=True,
+        )
 
 
 def price_ledger_usage_rows(
@@ -3057,7 +3147,7 @@ async def price_mtd_from_ledger(
 
     Unlike ``check_monthly_ceiling``, this raises on any DB or pricing
     failure instead of failing open — each caller applies its own semantics
-    on top (the spawn gate fails open so a ledger outage never wedges spawns;
+    on top (the spawn gate refuses, so a ledger outage stops spawns;
     the dashboard reports a degraded envelope so a ledger outage never
     renders as a fabricated $0 MTD).
 
@@ -3089,9 +3179,10 @@ async def check_monthly_ceiling(
     Fast path: when no ceiling row exists (or it is non-positive), the spawn is
     unconditionally allowed and the ledger is not queried.
 
-    Fail-open: if any DB query or pricing computation fails, returns
-    ``allowed=True`` and logs a warning.  Like the token-quota guardrail, the
-    ceiling check must never become a single point of failure that wedges spawns.
+    Fail-closed: if any DB query or pricing computation fails, returns
+    ``allowed=False, unavailable=True`` and logs an error. A ceiling the owner set
+    that cannot be read refuses the dispatch; the reason is distinct from a reached
+    ceiling and carries no fleet-halt (bu-svqpzo.3).
 
     Parameters
     ----------
@@ -3125,11 +3216,31 @@ async def check_monthly_ceiling(
         )
 
     except Exception:
-        logger.warning(
-            "check_monthly_ceiling failed; failing open (allowed=True)",
+        logger.error(
+            "check_monthly_ceiling failed; refusing (unavailable)",
             exc_info=True,
         )
-        return _unlimited
+        return CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)
+
+
+async def ceiling_refusal_reason(pool: asyncpg.Pool) -> str | None:
+    """The refusal reason when the monthly spend ceiling blocks a call, else ``None``.
+
+    For the API fast lanes that spend outside the Spawner and ``call_model``
+    (bu-svqpzo.14). Same semantics as the Spawner's gate: a reached ceiling refuses with the
+    ``Monthly spend ceiling reached`` text; an unreadable one fails closed with
+    ``CEILING_UNAVAILABLE_REASON``, which never carries the reached-ceiling prefix (so it can
+    never raise the fleet-halt banner).
+    """
+    ceiling = await check_monthly_ceiling(pool)
+    if ceiling.allowed:
+        return None
+    if ceiling.unavailable:
+        return CEILING_UNAVAILABLE_REASON
+    return (
+        f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+        f"${ceiling.ceiling_usd:.2f}"
+    )
 
 
 async def record_token_usage(

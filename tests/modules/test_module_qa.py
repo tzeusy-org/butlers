@@ -29,11 +29,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.qa import QaConfig, QaModule, _qa_finding_from_row
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -47,19 +50,16 @@ def _make_module() -> QaModule:
     return QaModule()
 
 
-def _make_pool(
+def _qa_pool(
     patrol_id: uuid.UUID | None = None,
     skip_patrol_rows: list[dict] | None = None,
-) -> MagicMock:
-    pool = MagicMock()
-    if patrol_id is None:
-        patrol_id = uuid.uuid4()
-
-    pool.fetchval = AsyncMock(return_value=patrol_id)
-    pool.fetch = AsyncMock(return_value=skip_patrol_rows or [])
-    pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    return pool
+) -> FakePool:
+    return fake_pool(
+        fetchval=patrol_id or uuid.uuid4(),
+        fetch=skip_patrol_rows or [],
+        execute=None,
+        fetchrow=None,
+    )
 
 
 def _make_db(pool: object | None = None) -> MagicMock:
@@ -117,17 +117,9 @@ class TestModuleABCAndConfig:
 
     async def test_registers_all_tools(self):
         mod = _make_module()
-        registered_tools: list[str] = []
-
-        class FakeMCP:
-            def tool(self):
-                def decorator(fn):
-                    registered_tools.append(fn.__name__)
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(FakeMCP(), QaConfig(), _make_db(), "test-butler")
+        mcp = FastMCP("qa-registration-test-tools")
+        await mod.register_tools(mcp, QaConfig(), _make_db(), "test-butler")
+        registered_tools = await snapshot_registered_tools(mcp)
         for name in ["report_finding", "force_patrol", "get_qa_status"]:
             assert name in registered_tools
 
@@ -149,7 +141,7 @@ class TestOnStartup:
         assert mod._log_scanner_source._suppress_session_duplicate_timeouts is False
 
         mod2 = _make_module()
-        pool = _make_pool()
+        pool = _qa_pool()
         await mod2.on_startup(QaConfig(), _make_db(pool=pool))
         source_names2 = [s.name for s in mod2._sources]
         for s in ["butler_reports", "log_scanner", "session_records"]:
@@ -158,16 +150,14 @@ class TestOnStartup:
         assert mod2._log_scanner_source._suppress_session_duplicate_timeouts is True
 
         mod3 = _make_module()
-        await mod3.on_startup(
-            QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_make_pool())
-        )
+        await mod3.on_startup(QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_qa_pool()))
         names3 = [s.name for s in mod3._sources]
         assert "butler_reports" not in names3 and "log_scanner" in names3
         assert mod3._log_scanner_source is not None
         assert mod3._log_scanner_source._suppress_session_duplicate_timeouts is False
 
     async def test_recovers_stale_patrol_rows(self):
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetch = AsyncMock(return_value=[{"id": uuid.uuid4()}])
         mod = _make_module()
         with (
@@ -212,7 +202,7 @@ class TestWireRuntime:
 class TestReportFinding:
     async def test_accepted_and_rejected(self):
         mod = _make_module()
-        pool = _make_pool()
+        pool = _qa_pool()
         await mod.on_startup(QaConfig(), _make_db(pool=pool))
         result = await mod._handle_report_finding(
             fingerprint="a" * 64,
@@ -226,9 +216,7 @@ class TestReportFinding:
         assert result["accepted"] is True
 
         mod2 = _make_module()
-        await mod2.on_startup(
-            QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_make_pool())
-        )
+        await mod2.on_startup(QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_qa_pool()))
         r2 = await mod2._handle_report_finding(
             fingerprint="a" * 64,
             exception_type="ValueError",
@@ -243,7 +231,7 @@ class TestReportFinding:
     @pytest.mark.parametrize("severity,should_schedule", [(0, True), (2, False)])
     async def test_severity_mini_patrol_scheduling(self, severity, should_schedule):
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
         scheduled = False
 
         def mock_schedule(fp: str) -> None:
@@ -265,7 +253,7 @@ class TestReportFinding:
     async def test_fingerprint_canonicalization_ignores_caller_value(self):
         """Caller-supplied fingerprint is replaced by canonical computation."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         bogus_fingerprint = "b" * 64
         canonical = compute_fingerprint_from_report(
@@ -294,7 +282,7 @@ class TestReportFinding:
     async def test_stable_dedup_fingerprint_across_repeated_reports(self):
         """Same error reported twice always produces the same canonical fingerprint."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         common_args = dict(
             exception_type="asyncpg.PostgresError",
@@ -327,7 +315,7 @@ class TestReportFinding:
         import logging
 
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         with caplog.at_level(logging.WARNING):
             result = await mod._handle_report_finding(
@@ -353,7 +341,7 @@ class TestReportFinding:
     async def test_canonical_severity_drives_mini_patrol_not_caller_severity(self):
         """When canonical severity is 0 (critical), mini-patrol fires even if caller passed higher severity."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
         scheduled_fps = []
 
         def mock_schedule(fp: str) -> None:
@@ -388,14 +376,14 @@ class TestForcePatrol:
     async def test_returns_skipped(self, setup, reason):
         mod = _make_module()
         mod._config = QaConfig(enabled=setup["enabled"])
-        mod._pool = _make_pool() if setup["pool"] else None
+        mod._pool = _qa_pool() if setup["pool"] else None
         result = await mod._handle_force_patrol()
         assert result["status"] == "skipped" and result["reason"] == reason
 
     async def test_returns_skipped_when_patrol_running(self):
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         await mod._patrol_lock.acquire()
         try:
             result = await mod._handle_force_patrol()
@@ -411,7 +399,7 @@ class TestForcePatrol:
         """
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._run_patrol_body = AsyncMock(
             return_value={
                 "status": "completed",
@@ -438,7 +426,7 @@ class TestForcePatrol:
         """
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._run_patrol_body = AsyncMock(side_effect=RuntimeError("boom"))
         with pytest.raises(RuntimeError):
             await mod._handle_force_patrol()
@@ -485,13 +473,13 @@ class TestPatrolOverlapAndSkip:
         mod = _make_module()
         if setup == "disabled":
             mod._config = QaConfig(enabled=False)
-            mod._pool = _make_pool()
+            mod._pool = _qa_pool()
         elif setup == "no_pool":
             mod._config = QaConfig(enabled=True)
             mod._pool = None
         else:  # overlap
             mod._config = QaConfig(enabled=True)
-            mod._pool = _make_pool()
+            mod._pool = _qa_pool()
             await mod._patrol_lock.acquire()
 
         try:
@@ -517,7 +505,7 @@ class TestSourceFailureIsolation:
 
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._sources = [FailingSource(), GoodSource()]
 
         with (
@@ -541,7 +529,7 @@ class TestFullCycleNoFindings:
 
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._sources = [EmptySource()]
         mod._butler_reports_source = None
 
@@ -554,6 +542,150 @@ class TestFullCycleNoFindings:
             md.return_value = []
             result = await mod._run_patrol_cycle()
         assert result["status"] == "clean" and result["findings_count"] == 0
+
+
+class TestHaltedPatrol:
+    """A patrol whose dispatch a halting gate stopped says so (bu-ejow5p.3)."""
+
+    @staticmethod
+    def _triaged(count: int):
+        from butlers.core.qa.models import QaFinding
+        from butlers.core.qa.triage import TriagedFinding
+
+        now = datetime.now(UTC)
+        return [
+            TriagedFinding(
+                finding=QaFinding(
+                    fingerprint=uuid.uuid4().hex * 2,
+                    source_type="log_scanner",
+                    source_butler="general",
+                    severity=1,
+                    exception_type="ValueError",
+                    event_summary="Synthetic failure",
+                    call_site="module:1",
+                    occurrence_count=1,
+                    first_seen=now,
+                    last_seen=now,
+                    timestamp=now,
+                ),
+                dedup_reason=None,
+                finding_id=uuid.uuid4(),
+            )
+            for _ in range(count)
+        ]
+
+    async def _run(self, reasons: list[str], accepted: int = 0, gate: str | None = None):
+        import butlers.modules.qa as qa_module
+        from butlers.core.qa.dispatch import QaDispatchResult
+
+        triaged = self._triaged(len(reasons))
+        results = [
+            QaDispatchResult(
+                accepted=index < accepted,
+                fingerprint=t.finding.fingerprint,
+                reason=reason,
+                gate=gate,
+            )
+            for index, (t, reason) in enumerate(zip(triaged, reasons, strict=True))
+        ]
+        labels: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, source_type, dedup_reason):
+                labels.append(dedup_reason)
+                return self
+
+            def inc(self):
+                pass
+
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        mod._pool = _qa_pool()
+        mod._sources = []
+        original = qa_module._qa_findings_total
+        qa_module._qa_findings_total = FakeCounter()
+        try:
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
+                patch("butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock) as md,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+                patch.object(mod, "_complete_patrol_record", new_callable=AsyncMock) as complete,
+            ):
+                mt.return_value = MagicMock(
+                    all_findings=triaged, novel_findings=triaged, dedup_counts={}
+                )
+                md.return_value = results
+                result = await mod._run_patrol_cycle()
+        finally:
+            qa_module._qa_findings_total = original
+        return result, complete.await_args.kwargs, labels
+
+    async def test_breaker_hold_is_halted_with_its_reason_and_labelled_by_it(self):
+        result, written, labels = await self._run(["circuit_breaker"] * 3)
+        assert result["status"] == "halted"
+        assert written["status"] == "halted"
+        assert written["halt_reason"] == "circuit_breaker"
+        assert labels == ["circuit_breaker"] * 3
+
+    async def test_cap_leftovers_with_a_dispatch_stay_findings_dispatched(self):
+        result, written, labels = await self._run(
+            ["dispatched", "concurrency_cap", "concurrency_cap"], accepted=1
+        )
+        assert result["status"] == "findings_dispatched"
+        assert written["halt_reason"] is None
+        assert sorted(labels) == ["concurrency_cap", "concurrency_cap", "novel"]
+
+    async def test_findings_are_counted_even_when_a_pre_dispatch_step_raises(self):
+        import butlers.modules.qa as qa_module
+
+        triaged = self._triaged(2)
+        labels: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, source_type, dedup_reason):
+                labels.append(dedup_reason)
+                return self
+
+            def inc(self):
+                pass
+
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        mod._pool = _qa_pool()
+        mod._sources = []
+        original = qa_module._qa_findings_total
+        qa_module._qa_findings_total = FakeCounter()
+        try:
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
+                patch.object(
+                    mod, "_refuse_write_token", new_callable=AsyncMock, side_effect=RuntimeError
+                ),
+            ):
+                mt.return_value = MagicMock(
+                    all_findings=triaged, novel_findings=triaged, dedup_counts={}
+                )
+                result = await mod._run_patrol_cycle()
+        finally:
+            qa_module._qa_findings_total = original
+        assert result["status"] == "error"
+        assert labels == ["novel", "novel"]
+
+    async def test_a_failed_hold_keeps_halted_with_its_gate_and_is_labelled_hold_failed(self):
+        result, written, labels = await self._run(["hold_failed"] * 2, gate="circuit_breaker")
+        assert result["status"] == "halted"
+        assert written["halt_reason"] == "circuit_breaker"
+        assert labels == ["hold_failed"] * 2
+
+    async def test_a_failed_cap_hold_names_the_cap(self):
+        _, written, _ = await self._run(["hold_failed"], gate="concurrency_cap")
+        assert written["status"] == "halted"
+        assert written["halt_reason"] == "concurrency_cap"
+
+    async def test_cooldown_only_is_still_suppressed_not_halted(self):
+        result, written, _ = await self._run(["cooldown", "cooldown"])
+        assert result["status"] == "suppressed"
+        assert written["halt_reason"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +712,7 @@ class TestMetrics:
             qa_module._qa_patrol_total = FakeCounter()
             mod = _make_module()
             mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-            pool = _make_pool()
+            pool = _qa_pool()
             pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
             pool.fetch = AsyncMock(return_value=[])
             mod._pool = pool
@@ -614,7 +746,7 @@ class TestMetrics:
             def observe(self, value):
                 observed.append((self._status, value))
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(return_value=3)
         pool.fetch = AsyncMock(
             return_value=[
@@ -639,7 +771,7 @@ class TestMetrics:
     async def test_db_error_swallowed_but_cancelled_error_propagates(self):
         import butlers.modules.qa as qa_module
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(side_effect=RuntimeError("db down"))
         pool.fetch = AsyncMock(side_effect=RuntimeError("db down"))
 
@@ -653,7 +785,7 @@ class TestMetrics:
             qa_module._qa_investigations_active = orig
 
         # CancelledError must propagate
-        pool2 = _make_pool()
+        pool2 = _qa_pool()
         pool2.fetchval = AsyncMock(side_effect=asyncio.CancelledError())
         mod2 = _make_module()
         mod2._config = QaConfig()
@@ -667,7 +799,7 @@ class TestMetrics:
             fetch_calls.append({"args": args})
             return []
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(return_value=0)
         pool.fetch = capturing_fetch
 
@@ -727,7 +859,7 @@ class TestNotifyMissingGhToken:
         call = notify_calls[0]
         assert call["channel"] == "telegram"
         assert call["priority"] == "high"
-        assert "BUTLERS_QA_GH_TOKEN" in call["message"]
+        assert "BUTLERS_QA_GH_READ_TOKEN" in call["message"]
         assert "butler secrets set" in call["message"]
 
     async def test_noop_when_notify_fn_is_none(self):
@@ -796,7 +928,7 @@ class TestRunPatrolBodyNotifyOnMissingToken:
         """_run_patrol_body calls _notify_missing_gh_token when gh_token is None."""
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        pool = _make_pool()
+        pool = _qa_pool()
         mod._pool = pool
         mod._sources = []
 
@@ -831,7 +963,7 @@ class TestRunPatrolBodyNotifyOnMissingToken:
         """_run_patrol_body does NOT call notify when gh_token is resolved."""
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        pool = _make_pool()
+        pool = _qa_pool()
         mod._pool = pool
         mod._sources = []
 

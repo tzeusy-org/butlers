@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router";
 
 import * as api from "@/api/index.ts";
+import * as confirms from "@/api/confirms";
 import type { NotificationStats } from "@/api/types";
 import { CommandRegistryProvider } from "@/lib/command-registry";
 import NotificationsPage from "@/pages/NotificationsPage";
@@ -14,6 +15,10 @@ vi.mock("@/api/index.ts", async (original) => ({
   ...await original<typeof import("@/api/index.ts")>(),
   getNotifications: vi.fn(),
   getNotificationStats: vi.fn(),
+}));
+vi.mock("@/api/confirms", async (original) => ({
+  ...await original<typeof import("@/api/confirms")>(),
+  getConfirms: vi.fn(),
 }));
 // Polling transport is independent of the read/error/retry identity under test.
 vi.mock("@/hooks/use-bus-aware-poll-interval", () => ({ useBusAwarePollInterval: () => 60_000 }));
@@ -42,6 +47,8 @@ const windowCalls = () => vi.mocked(api.getNotificationStats).mock.calls.filter(
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Keep the independent confirm source healthy while exercising notification-stat failures.
+  vi.mocked(confirms.getConfirms).mockResolvedValue({ data: [], meta: { next_cursor: null } });
   allTime = () => Promise.resolve(stats());
   vi.mocked(api.getNotificationStats).mockImplementation((params) => params === undefined ? allTime() : Promise.resolve(stats({ failed: 0 })));
   vi.mocked(api.getNotifications).mockResolvedValue({ data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } });

@@ -162,6 +162,16 @@ def test_prompt_requires_structured_investigation_notes_json():
     assert "proposal language" in prompt
     assert "structured-output mode" not in prompt
 
+    # The JSON artifact remains live; the removed Markdown-to-PR loader does not.
+    for obsolete_instruction in (
+        "INVESTIGATION_NOTES.md",
+        "## Writing the PR Description",
+        "populate the PR description",
+        "substitutes its sections into the PR body",
+        "PR will be opened with placeholder text",
+    ):
+        assert obsolete_instruction not in prompt
+
 
 # ---------------------------------------------------------------------------
 # build_review_followup_prompt tests

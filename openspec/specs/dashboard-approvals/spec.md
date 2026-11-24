@@ -391,6 +391,8 @@ Scope: v1-mandatory
 - **AND** on success, one action/intent/presentation transaction extends
   `expires_at`, supersedes an unstarted current presentation, and schedules
   exactly one successor generation for that successful defer at `now + hours`
+- **AND** the new `expires_at` is that time plus the action's original decision
+  window, so the re-sent card can still decide; an action with no expiry keeps none
 - **AND** it retains the logical action key, does not enqueue a generic
   notification/deferred row, and appends
   `audit.append("approval.defer", target=action_id, note=str(hours))`
@@ -756,6 +758,13 @@ copy of an audit-event rejection reason or broaden retry behavior.
   other than `approved`
 - **THEN** the dossier does not render Retry dispatch
 - **AND** an executed failure is not made retryable by this dashboard surface.
+
+#### Scenario: A failed or provider-rejected approved send is shown with a content-free reason
+
+- **WHEN** an approved outbound send failed, or the provider rejected it
+- **THEN** the detail response carries `execution_failure` with a closed `code`, a fixed `label` and `terminal` (true only for a provider-proven rejection), and the dossier renders it under "Send failed"
+- **AND** the field never carries a message body, a recipient or provider text
+- **AND** the decision response (including a Telegram card redemption) carries the same field when the dispatch it triggered failed, so a card is not rendered as a plain success
 
 ### Requirement: Retry Reports Dispatch Failure Class Truthfully
 

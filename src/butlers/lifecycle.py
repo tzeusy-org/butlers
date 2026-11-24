@@ -18,7 +18,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,11 +35,11 @@ from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
 )
 from butlers.core.general_settings import resolve_general_timezone
-from butlers.core.logging import resolve_log_root
+from butlers.core.logging import CREDENTIAL_REDACTION, resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
-from butlers.core.scheduler import sync_schedules
+from butlers.core.scheduler.sync import sync_schedules
 from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
 from butlers.core.telemetry import init_telemetry
@@ -51,12 +51,20 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
+from butlers.migrations import (
+    check_chain_at_head,
+    get_module_migration_chains,
+    has_butler_chain,
+    run_migrations,
+)
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
 
 logger = logging.getLogger(__name__)
+
+# How long a tick has to act on its cancel once the shutdown budget has run out.
+_TICK_CANCEL_GRACE_S = 5.0
 
 
 async def _sync_toml_schedules(daemon: Any, pool: Any, credential_store: Any) -> None:
@@ -221,25 +229,56 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
         butler_logger=butler_db_logger,
         butler_name=daemon.config.name,
     )
+    daemon._db_log_handler.addFilter(CREDENTIAL_REDACTION)
     logging.getLogger().addHandler(daemon._db_log_handler)
 
 
+# "run" (default): the daemon upgrades its own chains, as before the login split.
+# "check": the migrations step (`butlers db migrate`, run by the migrator login) owns
+# upgrades; the daemon's runtime login owns nothing, so it only verifies each chain is at
+# head and refuses to start (core/butler chain) or disables the module (module chain)
+# when one is behind. The chart sets "check" with database.migratorLogin.enabled
+# (bu-dss7he.6, docs/data_and_storage/migrator-login.md).
+STARTUP_MIGRATIONS_ENV = "BUTLERS_STARTUP_MIGRATIONS"
+_STARTUP_MIGRATION_MODES = ("run", "check")
+
+
+def startup_migration_mode() -> str:
+    """Return the configured mode; an unknown value refuses to start rather than guess."""
+    mode = os.environ.get(STARTUP_MIGRATIONS_ENV, "").strip() or "run"
+    if mode not in _STARTUP_MIGRATION_MODES:
+        raise ValueError(
+            f"{STARTUP_MIGRATIONS_ENV} must be one of {', '.join(_STARTUP_MIGRATION_MODES)}, "
+            f"not {mode!r}"
+        )
+    return mode
+
+
+async def _migrate_or_check(mode: str, db_url: str, chain: str, schema: str | None) -> None:
+    if mode == "check":
+        await asyncio.to_thread(check_chain_at_head, db_url, chain, schema)
+    else:
+        await run_migrations(db_url, chain=chain, schema=schema)
+
+
 async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
-    """Set migration inputs and run the core and butler-specific chains."""
+    """Set migration inputs and run (or head-check) the core and butler-specific chains."""
+    mode = startup_migration_mode()
     # 7. Run core Alembic migrations
     state.db_url = daemon._build_db_url()
     state.migration_schema = daemon.config.db_schema or None
-    await run_migrations(state.db_url, chain="core", schema=state.migration_schema)
+    await _migrate_or_check(mode, state.db_url, "core", state.migration_schema)
 
     # 7b. Run butler-specific Alembic migrations (if chain exists)
     if has_butler_chain(daemon.config.name):
-        logger.info("Running butler-specific migrations for: %s", daemon.config.name)
-        await run_migrations(state.db_url, chain=daemon.config.name, schema=state.migration_schema)
+        logger.info("Butler-specific migrations (%s) for: %s", mode, daemon.config.name)
+        await _migrate_or_check(mode, state.db_url, daemon.config.name, state.migration_schema)
 
 
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
     """Run module migrations and cascade isolated migration failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
+    mode = startup_migration_mode()
     chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
         if mod.name in daemon._module_statuses:
@@ -259,7 +298,7 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
                 getattr(mod_cfg, "memory_schema", None) or state.migration_schema
             )
             try:
-                await run_migrations(state.db_url, chain=rev, schema=module_migration_schema)
+                await _migrate_or_check(mode, state.db_url, rev, module_migration_schema)
             except Exception as exc:
                 error_msg = str(exc)
                 daemon._module_statuses[mod.name] = ModuleStartupStatus(
@@ -413,6 +452,31 @@ async def _startup_shared_bootstrap(daemon: Any, state: StartupState) -> None:
             exc_info=True,
         )
 
+    # 8d4. Create this daemon's failed_permanent delivery series at zero so an
+    #      alert's increase() sees a route's first-ever failure (non-fatal).
+    _prime_domain_event_delivery_series(daemon)
+
+
+def _prime_domain_event_delivery_series(daemon: Any) -> None:
+    """Prime the daemon's failed_permanent route series at zero, best-effort."""
+    try:
+        from butlers.core_tools._domain_events import (
+            prime_failed_permanent_delivery_series,
+            schedules_reconciliation_sweep,
+        )
+
+        prime_failed_permanent_delivery_series(
+            daemon.config.name,
+            runs_reconciliation_sweep=schedules_reconciliation_sweep(daemon.config.schedules),
+        )
+    except Exception:
+        logger.warning(
+            "prime_failed_permanent_delivery_series failed for butler=%s "
+            "(best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
 
 async def _startup_session_recovery(daemon: Any, state: StartupState) -> None:
     """Recover orphaned sessions, best-effort."""
@@ -544,7 +608,17 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
 async def _startup_core_tools(daemon: Any, state: StartupState) -> None:
     """Create FastMCP and register core tools."""
     # 13. Create FastMCP and register core tools
+    from butlers.capability_broker.verification import (
+        DomainVerificationSwitch,
+        attach_domain_verification,
+    )
+    from butlers.core.owner_creation import OwnerCreationMiddleware
+
     daemon.mcp = FastMCP(daemon.config.name)
+    daemon.mcp.add_middleware(OwnerCreationMiddleware(daemon.config.name))
+    # RFC 0038 D7 domain verification: dark until the M6 switch release turns
+    # the default-off switch on; off, this installs nothing.
+    attach_domain_verification(daemon.mcp, DomainVerificationSwitch(), audience=daemon.config.name)
     daemon._register_core_tools()
 
 
@@ -627,6 +701,17 @@ async def _startup_background_services(daemon: Any, state: StartupState) -> None
     # 16c. Start internal scheduler loop
     daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
 
+    # 16d. RFC 0038 M6: periodic goal supervision (lease lapse, deadlines,
+    # fencing, parked-cancellation retry, settling, unlaunched admissions).
+    # Dark: only a runtime that trusted construction attached, with its switch on.
+    _start_goal_runtime(daemon)
+
+
+def _start_goal_runtime(daemon: Any) -> None:
+    runtime = getattr(daemon, "goal_runtime", None)
+    if runtime is not None and runtime.switch.enabled:
+        runtime.start()
+
 
 async def _startup_readiness(daemon: Any, state: StartupState) -> None:
     """Start legacy reporting and gate acceptance on committed boot registration."""
@@ -696,15 +781,50 @@ STARTUP_PHASES: list[Phase] = [
 ]
 
 
-async def run_startup(daemon: Any) -> None:
+# Snapshot labels from the declared functions once, never from a failing
+# callable's attributes. Replacement/unknown callables receive "unknown".
+_STARTUP_PHASE_LABELS = tuple(
+    (phase, phase.__name__.removeprefix("_startup_")) for phase in STARTUP_PHASES
+)
+_STARTUP_ERROR_CATEGORIES = (
+    (TimeoutError, "timeout"),
+    (ConnectionError, "connection"),
+    (OSError, "os"),
+    (ValueError, "validation"),
+    (TypeError, "type"),
+    (RuntimeError, "runtime"),
+)
+
+
+async def run_startup(daemon: Any, phases: Sequence[Phase] | None = None) -> None:
     """Execute the ordered startup phases with fresh per-run state.
 
     Fatal errors propagate and prevent later phases. Each module phase retains
-    its own non-fatal failure handling and dependent-module cascading.
+    its own non-fatal failure handling and dependent-module cascading. *phases*
+    defaults to ``STARTUP_PHASES``; a caller may run another sequence through the
+    same loop (its failure labelling and propagation).
     """
     state = StartupState()
-    for phase in STARTUP_PHASES:
-        await phase(daemon, state)
+    for phase in STARTUP_PHASES if phases is None else phases:
+        try:
+            await phase(daemon, state)
+        except Exception as exc:
+            try:
+                phase_label = next(
+                    (label for known, label in _STARTUP_PHASE_LABELS if phase is known), "unknown"
+                )
+                category = next(
+                    (label for known, label in _STARTUP_ERROR_CATEGORIES if type(exc) is known),
+                    "unknown",
+                )
+                logger.error(
+                    "Startup phase failed",
+                    extra={"startup_phase": phase_label, "error_category": category},
+                )
+            except Exception:
+                # Diagnostic transport failure must not mask the startup error.
+                pass
+            raise
 
 
 async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
@@ -743,7 +863,11 @@ async def run_shutdown(daemon: Any) -> None:
     """
     task = getattr(daemon, "_catalog_shutdown_task", None)
     if task is None:
-        if getattr(daemon, "_catalog_publication", None) is None:
+        if (
+            getattr(daemon, "_catalog_publication", None) is None
+            and vars(daemon).get("_chronicler_refresh_service") is None
+            and vars(daemon).get("_finance_warning_control_owner") is None
+        ):
             await _run_shutdown(daemon)
             return
         task = asyncio.create_task(_run_shutdown(daemon), name="catalog-owned-shutdown")
@@ -783,6 +907,9 @@ async def _run_shutdown(daemon: Any) -> None:
         daemon.config.name if daemon.config else "unknown",
     )
 
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
+    if finance_owner is not None:
+        finance_owner.stop_admission()
     daemon._shutting_down = True
     daemon._accepting_connections = False
     if daemon._boot_registration_task is not None:
@@ -792,6 +919,14 @@ async def _run_shutdown(daemon: Any) -> None:
         except asyncio.CancelledError:
             pass
         daemon._boot_registration_task = None
+
+    # With a share set, it runs from here, so the catalog retirement below counts against it.
+    # Otherwise the deadline is taken after it, as before (``_shutdown_resources`` does that).
+    deadline = (
+        asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
+        if vars(daemon).get("_shutdown_budget_s") is not None
+        else None
+    )
 
     # Retire only this boot's registration before stopping its real registry.
     from butlers.core.catalog_publication import close_catalog_publication
@@ -803,17 +938,145 @@ async def _run_shutdown(daemon: Any) -> None:
         retirement_error = exc
 
     try:
-        await _shutdown_resources(daemon)
+        await _shutdown_resources(daemon, deadline)
     finally:
         if retirement_error is not None:
             raise retirement_error
 
 
-async def _shutdown_resources(daemon: Any) -> None:
-    """Existing resource teardown, also reached after catalog close refusal."""
+async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
+    """Let an in-progress tick finish until ``deadline``, then cancel it.
+
+    Runs before the spawner stops accepting, so a finishing tick can still dispatch what it
+    claimed. A job still running at the deadline is abandoned: its ``next_run_at`` already
+    advanced, so that occurrence is lost, as it would be if the pod were killed. A tick that ignores
+    its cancel is left behind so it cannot hold shutdown.
+    """
+    task = daemon._scheduler_loop_task
+    if task is None:
+        return
+    daemon._scheduler_loop_task = None
+    task.cancel()
+    remaining = deadline - asyncio.get_running_loop().time()
+    done, _ = await asyncio.wait({task}, timeout=max(0, remaining))
+    if not done:
+        logger.warning("Scheduler tick still running at the shutdown deadline; cancelling it")
+        # The first cancel only told the loop to wait; this one reaches the tick.
+        task.cancel()
+        left = _share_left_s(daemon, deadline)
+        grace = _TICK_CANCEL_GRACE_S if left is None else min(_TICK_CANCEL_GRACE_S, left)
+        done, _ = await asyncio.wait({task}, timeout=grace)
+    if not done:
+        logger.error("Scheduler tick ignored cancellation; shutdown continues without it")
+    elif not task.cancelled() and task.exception() is not None:
+        logger.error("Scheduler loop failed before shutdown", exc_info=task.exception())
+
+
+def _shutdown_budget_s(daemon: Any) -> float:
+    """Seconds this daemon's shutdown may take.
+
+    ``butlers up`` sets ``daemon._shutdown_budget_s`` to the daemon's share of the process's
+    shutdown budget, so one slow daemon cannot spend the pod's whole grace period. Otherwise
+    the daemon's own configured timeout applies.
+    """
+    share = vars(daemon).get("_shutdown_budget_s")
+    if share is not None:
+        return share
+    return daemon.config.shutdown_timeout_s if daemon.config else 30.0
+
+
+#: A step bounded by the daemon's share never gets less than this, so a share that is nearly
+#: spent still lets a healthy step finish instead of being cut at once.
+_STEP_FLOOR_S = 1.0
+_POOL_CLOSE_FLOOR_S = _STEP_FLOOR_S
+
+
+def _share_left_s(daemon: Any, deadline: float | None) -> float | None:
+    """What is left of the daemon's share, never under the floor; ``None`` with no share (or no
+    deadline), where every step keeps its own bound (or none), as before."""
+    if deadline is None or vars(daemon).get("_shutdown_budget_s") is None:
+        return None
+    return max(_STEP_FLOOR_S, deadline - asyncio.get_running_loop().time())
+
+
+async def _within_share(daemon: Any, deadline: float | None, awaitable: Any, what: str) -> None:
+    """Await ``awaitable``, cut at the remaining share when one is set.
+
+    The step runs as its own task and is waited on with the share, rather than under
+    ``asyncio.timeout``, which cancels only once: a step that swallows the cancel (some do, more
+    than once) would then run on unbounded and unlogged, and the inline cancel would also cut
+    short the awaited code's own cleanup. On overrun the task is cancelled and given at most the
+    floor to unwind; either way it is logged and left, so the steps after it still run.
+
+    An abandoned step may still be running when later steps close the pools it uses, and then
+    fail with connection errors of its own; that is the cost of not waiting on it.
+    """
+    left = _share_left_s(daemon, deadline)
+    if left is None:
+        await awaitable
+        return
+    step = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({step}, timeout=left)
+        if done:
+            step.result()
+            return
+        step.cancel()
+        unwound, _ = await asyncio.wait({step}, timeout=_STEP_FLOOR_S)
+        logger.warning(
+            "Shutdown step %r overran its share (%.1fs); %s, continuing",
+            what,
+            left,
+            "cancelled it" if unwound else "it ignored the cancel and was left running",
+        )
+        if unwound and not step.cancelled():
+            step.exception()  # retrieved, so an error raised while unwinding is not unhandled
+    except asyncio.CancelledError:
+        step.cancel()
+        raise
+
+
+async def _close_pool(daemon: Any, database: Any, deadline: float | None) -> None:
+    """Close a pool owner within the daemon's share, when it has one.
+
+    With a share, the close is bounded by what is left of it, never under the floor. Without
+    one (a daemon shutting down alone, or no ``deadline``) it is the owner's plain ``close()``
+    and its own default bound, exactly as before the budget existed.
+    """
+    left = _share_left_s(daemon, deadline)
+    if left is None:
+        await database.close()
+    else:
+        await database.close(left)
+
+
+def _step_budget_s(daemon: Any, deadline: float) -> float:
+    """Seconds one drain step may take: the daemon's whole timeout when it shuts down alone,
+    and what is left of its share when ``butlers up`` set one, so steps cannot add up past it."""
+    if vars(daemon).get("_shutdown_budget_s") is None:
+        return _shutdown_budget_s(daemon)
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+async def _shutdown_resources(daemon: Any, deadline: float | None = None) -> None:
+    """Existing resource teardown, also reached after catalog close refusal.
+
+    ``deadline`` is when the daemon's share ends. ``_run_shutdown`` takes it before the catalog
+    retires when a share is set, so the retirement counts against it; otherwise it is taken here.
+    """
+
+    refresh_owner = vars(daemon).get("_chronicler_refresh_service")
+    finance_owner = vars(daemon).get("_finance_warning_control_owner")
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + _shutdown_budget_s(daemon)
+    if refresh_owner is not None:
+        refresh_owner.closed = True
 
     # 1. Stop MCP server
     if daemon._server is not None:
+        if vars(daemon).get("_shutdown_budget_s") is not None:
+            # uvicorn waits this long for open connections, fixed at start-up otherwise.
+            daemon._server.config.timeout_graceful_shutdown = _share_left_s(daemon, deadline)
         daemon._server.should_exit = True
     if daemon._server_task is not None:
         try:
@@ -831,7 +1094,7 @@ async def _shutdown_resources(daemon: Any) -> None:
 
     # 2. Stop durable buffer — drain remaining queue then cancel workers/scanner
     if daemon._buffer is not None:
-        shutdown_timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        shutdown_timeout = _step_budget_s(daemon, deadline)
         await daemon._buffer.stop(drain_timeout_s=shutdown_timeout)
         daemon._buffer = None
 
@@ -847,11 +1110,30 @@ async def _shutdown_resources(daemon: Any) -> None:
         await asyncio.gather(*daemon._route_inbox_tasks, return_exceptions=True)
         daemon._route_inbox_tasks.clear()
 
+    # 2c. Stop the scheduler loop before the spawner stops accepting, and before the client
+    # closes. A tick advances ``next_run_at`` when it claims an occurrence and dispatches after,
+    # so a spawner that refuses mid-tick fails the dispatch and loses the occurrence until the
+    # next cron (bu-dhloi1.138). A job-mode job also runs inside the tick, not in the spawner's
+    # in-flight set, so draining does not wait for it. Cancelling the loop sets the tick's
+    # ``stopping`` event, so the tick finishes what it claimed and claims nothing more. Other
+    # admitters (the startup route-inbox recovery task, QA background tasks) are still live here;
+    # they are not scheduler claims and hit the spawner's own refusal after step 3.
+    await _stop_scheduler_loop(daemon, deadline)
+
+    # 2d. Stop goal supervision and abandon in-flight launches; their leases
+    # lapse and the next runtime's sweep fences and recovers them (D14).
+    runtime = getattr(daemon, "goal_runtime", None)
+    if runtime is not None:
+        try:
+            await runtime.close()
+        except Exception:
+            logger.exception("Error while closing the goal runtime")
+
     # 3. Stop accepting new triggers and drain in-flight runtime sessions
     daemon._accepting_connections = False
     if daemon.spawner is not None:
         daemon.spawner.stop_accepting()
-        timeout = daemon.config.shutdown_timeout_s if daemon.config else 30.0
+        timeout = _step_budget_s(daemon, deadline)
         await daemon.spawner.drain(timeout=timeout)
 
     # 4. Cancel switchboard heartbeat
@@ -863,17 +1145,8 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._switchboard_heartbeat_task = None
 
-    # 5. Close Switchboard MCP client
-    await daemon._disconnect_switchboard()
-
-    # 5b. Cancel internal scheduler loop and wait for any in-progress tick() to finish
-    if daemon._scheduler_loop_task is not None:
-        daemon._scheduler_loop_task.cancel()
-        try:
-            await daemon._scheduler_loop_task
-        except asyncio.CancelledError:
-            pass
-        daemon._scheduler_loop_task = None
+    # 5b. Close Switchboard MCP client
+    await _within_share(daemon, deadline, daemon._disconnect_switchboard(), "switchboard client")
 
     # 5c. Cancel route_inbox recovery task
     if daemon._route_inbox_recovery_task is not None:
@@ -893,47 +1166,71 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._liveness_reporter_task = None
 
+    owners = [owner for owner in (refresh_owner, finance_owner) if owner is not None]
+
+    async def close_owned(owner):
+        return await owner.close(max(0, deadline - asyncio.get_running_loop().time()))
+
+    settled = await asyncio.gather(
+        *(close_owned(owner) for owner in owners), return_exceptions=True
+    )
+    if any(result is not True for result in settled):
+        # One retained tail fences ALL physical-pool owners, not two independent closers.
+        async def finish():
+            await asyncio.gather(*(owner.settle() for owner in owners))
+            await _shutdown_chronicler_dependents(daemon, deadline)
+
+        existing = vars(daemon).get("_chronicler_cleanup_task")
+        if existing is None:
+            task = asyncio.create_task(finish(), name="retained-owned-resource-release")
+            daemon._chronicler_cleanup_task = task
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        raise TimeoutError("Owned request cleanup incomplete; resources retained")
+    await _shutdown_chronicler_dependents(daemon, deadline)
+
+
+async def _shutdown_chronicler_dependents(daemon: Any, deadline: float | None = None) -> None:
+    """Original dependent teardown, reached once after owned work settles."""
     # 6. Module shutdown in reverse topological order (active modules only)
     from butlers.core.approval_delivery_worker import stop_approval_delivery_worker
 
-    await stop_approval_delivery_worker(daemon)
+    await _within_share(
+        daemon, deadline, stop_approval_delivery_worker(daemon), "approval delivery worker"
+    )
 
     active_set = {m.name for m in daemon._active_modules}
     for mod in reversed(daemon._modules):
         if mod.name not in active_set:
             continue
         try:
-            await mod.on_shutdown()
+            await _within_share(daemon, deadline, mod.on_shutdown(), f"module {mod.name}")
         except Exception:
             logger.exception("Error during shutdown of module: %s", mod.name)
 
     # 6b. Close S3 blob store
     if daemon.blob_store is not None:
-        await daemon.blob_store.close()
+        await _within_share(daemon, deadline, daemon.blob_store.close(), "blob store")
         daemon.blob_store = None
 
-    # 6c. Detach the butler DB log handler before tearing down the pool so
-    # in-flight fire-and-forget writes can finish and no new writes are
-    # scheduled against a closing pool.
+    # 6c. Detach the butler DB log handler, then wait for its in-flight
+    # fire-and-forget writes, before tearing down the pool: a write still
+    # running when the pool closes fails mid-protocol and outlives shutdown
+    # (bu-rvgzmf.7).
     if daemon._db_log_handler is not None:
+        handler, daemon._db_log_handler = daemon._db_log_handler, None
         try:
-            logging.getLogger().removeHandler(daemon._db_log_handler)
+            logging.getLogger().removeHandler(handler)
+            await handler.aclose()
         except Exception:
             logger.exception("Error while detaching DB log handler")
-        daemon._db_log_handler = None
 
-    # 7. Close audit DB pool (if separate from main DB)
-    if daemon._audit_db is not None:
-        await daemon._audit_db.close()
-        daemon._audit_db = None
-
-    # 8. Close credential-layer DB pools
+    # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
-        await daemon._shared_credentials_db.close()
+        await _close_pool(daemon, daemon._shared_credentials_db, deadline)
         daemon._shared_credentials_db = None
 
-    # 9. Close DB pool
+    # 8. Close DB pool
     if daemon.db:
-        await daemon.db.close()
+        await _close_pool(daemon, daemon.db, deadline)
 
     logger.info("Butler shutdown complete")

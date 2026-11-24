@@ -248,6 +248,15 @@ _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
 }
 
 
+# Notify's delivery channel -> the identity channel its recipient names. The
+# core-notify owner rule and the capability broker's recipient check share it.
+ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
+    "email": "email",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp_jid",
+}
+
+
 def canonical_identity_channel_type(channel_type: str) -> str:
     """Return the shared identity channel type for a transport channel."""
     return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
@@ -318,6 +327,18 @@ def _owner_channel_authorization_candidates(
         return tuple(dict.fromkeys(values))
 
     return ()
+
+
+def owner_channel_authorization_candidates(
+    channel_type: str,
+    channel_value: str,
+) -> tuple[str, ...]:
+    """The typed candidates :func:`resolve_owner_channel_via_definer` sends.
+
+    ``phone-digits:`` entries are matched by the definer's custody suffix rule;
+    every other entry is an exact (case-normalized) fact match.
+    """
+    return _owner_channel_authorization_candidates(channel_type, channel_value)
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -973,6 +994,98 @@ async def resolve_owner_channel_via_definer(
         entity_id=entity_id,
     )
     return owner_contact, bool(row["is_primary"])
+
+
+async def resolve_telegram_username_contact(
+    pool: asyncpg.Pool, username: str
+) -> ResolvedContact | None:
+    """Resolve a Telegram ``@username`` to exactly one live entity, or ``None``.
+
+    Only ``telegram:``-prefixed handles count (``telegram:<bare>`` and
+    ``telegram:@<bare>``), matched case-insensitively as one candidate set. An
+    unprefixed ``has-handle`` is another platform's handle (twitter, linkedin) and
+    must never name a Telegram recipient. More than one distinct live entity across
+    the set is ambiguous and refuses. A role that cannot read
+    ``relationship.entity_facts`` falls through to the owner-only definer, queried
+    with the same prefixed candidates.
+    """
+    bare = username.strip().lstrip("@")
+    if _TELEGRAM_USERNAME_RE.fullmatch(bare) is None:
+        return None
+    values = [f"telegram:{bare}".lower(), f"telegram:@{bare}".lower()]
+
+    try:
+        rows = await _identity_fetch(
+            pool,
+            """
+            SELECT DISTINCT ef.subject AS entity_id,
+                   e.canonical_name AS name,
+                   COALESCE(e.roles, '{}') AS roles,
+                   COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                              AS is_unidentified
+            FROM   relationship.entity_facts ef
+            JOIN   public.entities e ON e.id = ef.subject
+            WHERE  ef.predicate   = 'has-handle'
+              AND  lower(ef.object) = ANY($1::text[])
+              AND  ef.object_kind = 'literal'
+              AND  ef.validity    = 'active'
+              AND  e.metadata ->> 'merged_into' IS NULL
+              AND  e.metadata ->> 'deleted_at' IS NULL
+            """,
+            values,
+        )
+    except IdentityResolutionQueryError:
+        rows = []
+    if len(rows) > 1:
+        return None
+    if rows:
+        row = rows[0]
+        return ResolvedContact(
+            name=row["name"] or None,
+            roles=[str(r) for r in (row["roles"] or [])],
+            entity_id=row["entity_id"],
+            is_unidentified=_row_is_unidentified(row),
+        )
+
+    try:
+        owner = await pool.fetchrow(
+            "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
+            "owner-channel",
+            [f"has-handle:{value}" for value in values],
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("identity.telegram_username_owner_resolution_failed")
+        return None
+    if owner is None or owner.get("entity_id") is None:
+        return None
+    try:
+        entity_id = UUID(str(owner["entity_id"]))
+    except ValueError:
+        return None
+    return ResolvedContact(name=None, roles=["owner"], entity_id=entity_id)
+
+
+async def resolve_entity_telegram_chat_id(pool: asyncpg.Pool, entity_id: UUID) -> str | None:
+    """The entity's numeric Telegram chat id (primary first), ignoring username handles."""
+    try:
+        row = await _identity_fetchrow(
+            pool,
+            """
+            SELECT substr(ef.object, 10) AS chat_id
+            FROM   relationship.entity_facts ef
+            WHERE  ef.subject = $1
+              AND  ef.predicate = 'has-handle'
+              AND  ef.object ~ '^telegram:[0-9]+$'
+              AND  ef.object_kind = 'literal'
+              AND  ef.validity = 'active'
+            ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
+            LIMIT 1
+            """,
+            entity_id,
+        )
+    except IdentityResolutionQueryError:
+        return None
+    return row["chat_id"] if row is not None else None
 
 
 async def resolve_channel_contact_with_owner_corroboration(

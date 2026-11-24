@@ -23,18 +23,22 @@ dependencies = [
     "vobject>=0.9.9",
     "fastapi",
     "uvicorn",
+    "h11==0.16.0",
     "httpx",
+    "httpcore>=1.0.9,<1.1",
     "aiohttp>=3.9",
     "sentence-transformers",
     "torch==2.12.0",
     "structlog",
     "prometheus-client",
-    "pillow>=10.0.0",
+    "pillow>=10.1.0",
     "telethon>=1.36.0",
     "wyoming>=1.8.0",
     "aioboto3>=13.0.0",
     "cryptography>=42.0.0",
     "anthropic>=0.40.0",
+    "rfc8785==0.1.4",
+    "pypdfium2>=4.30",
 ]
 
 [tool.uv]
@@ -76,6 +80,9 @@ dev = [
     "pytest-timeout>=2.4.0",
     "import-linter>=2.15",
     "pytest-split>=0.11.0",
+    "pyright==1.1.414",
+    # Evaluates the chart's ValidatingAdmissionPolicy CEL in tests (bu-ejow5p.11).
+    "cel-python==0.5.0",
 ]
 
 [project.scripts]
@@ -85,6 +92,7 @@ google-drive-connector = "butlers.connectors.google_drive:main"
 steam-connector = "butlers.connectors.steam:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
 butlers = "butlers.cli:cli"
+butlers-public-mcp = "butlers.mcp_public.server:main"
 
 [tool.ruff]
 target-version = "py312"
@@ -131,7 +139,7 @@ testpaths = ["tests", "roster"]
 # Make the repo root importable for every invocation shape. Roster tests import
 # shared helpers from ``tests.*`` (e.g. tests.api.auth_helpers); under
 # importlib mode that package is only registered when a tests/ file happens to
-# be collected in the same run, so a roster-only scoped run (CI check-affected)
+# be collected in the same run, so a roster-only scoped run
 # failed collection with ModuleNotFoundError (bu-3fdzpf).
 pythonpath = ["."]
 # importlib mode avoids module-name collisions when multiple butler test
@@ -147,6 +155,7 @@ pythonpath = ["."]
 #   root logger and never shut down, so they cannot leak into later tests.
 addopts = "--import-mode=importlib -p tests.quarantine -p tests.log_isolation -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
+    "real_gate_state: Run the real permission, quota and ceiling gates; opts out of the readable-state autouse fixture (bu-svqpzo.3)",
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",
     "integration: Integration tests — require Docker (testcontainers)",
@@ -256,3 +265,21 @@ type = "forbidden"
 source_modules = ["butlers.modules"]
 forbidden_modules = ["butlers.core.spawner"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "modules, jobs and chronicler do not import connectors"
+type = "forbidden"
+source_modules = ["butlers.modules", "butlers.jobs", "butlers.chronicler"]
+forbidden_modules = ["butlers.connectors"]
+allow_indirect_imports = true
+
+[tool.pyright]
+# No whole-file retirement or generated-Python exclusion has been established.
+# Historical mixed RFC0038 paths and their surviving successors stay checked.
+typeCheckingMode = "basic"
+include = ["src", "roster"]
+exclude = []
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]

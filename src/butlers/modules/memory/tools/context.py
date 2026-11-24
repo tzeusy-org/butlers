@@ -27,8 +27,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.core.owner import fetch_owner_entity_id
-from butlers.modules.memory.content_authority import is_owner_class
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
+from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
+from butlers.modules.memory.embedding import embed_async
+from butlers.modules.memory.knowledge_class import NOT_EVENT_CLASS_SQL
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -70,13 +72,16 @@ async def _fetch_profile_facts(
     *,
     limit: int = 50,
     allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
+    memory_schema: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch owner-authored facts anchored to the owner entity.
 
     Only owner-class ``content_authority`` is admitted: a fact anchored to the
     owner but written from a third party's session (or a legacy row with no
     stamp) is not Profile Facts; it can still surface, attributed, as a
-    Task-Relevant Fact.
+    Task-Relevant Fact. Event-class predicates (registry ``is_temporal``, see
+    ``knowledge_class``) are likewise excluded even when owner-authored; they
+    stay recallable.
 
     Sorted by importance DESC, created_at DESC, id ASC. The read ceiling is
     applied in SQL, matching ``search_catalog``'s sensitivity filter, so an
@@ -95,6 +100,10 @@ async def _fetch_profile_facts(
         "f.content_authority IN ('owner', 'owner_device')",
     ]
     params: list[Any] = [tenant_id]
+    visibility = await local_fact_visibility_condition(pool, memory_schema=memory_schema, alias="f")
+    if visibility is not None:
+        conditions.append(visibility)
+    conditions.append(NOT_EVENT_CLASS_SQL)
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
         conditions.append(f"COALESCE(f.sensitivity, 'normal') = ANY(${len(params)})")
@@ -113,25 +122,32 @@ async def _fetch_profile_facts(
         rows = await pool.fetch(sql, *params)
         facts = [dict(r) for r in rows]
     except Exception:
+        if memory_schema == "chronicler_mem":
+            raise
         logger.debug("Profile facts query failed (likely missing public.entities)", exc_info=True)
         return [], 0
 
     if allowed_sensitivities is None:
         return facts, 0
 
-    withheld_sql = """
+    visibility_filter = visibility or "TRUE"
+    withheld_sql = f"""
         SELECT COUNT(*)
         FROM facts f
         JOIN public.entities e ON f.entity_id = e.id
-        WHERE f.tenant_id = $1
+        WHERE {visibility_filter}
+          AND f.tenant_id = $1
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
           AND f.content_authority IN ('owner', 'owner_device')
+          AND {NOT_EVENT_CLASS_SQL}
           AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($2))
     """
     try:
         withheld = await pool.fetchval(withheld_sql, tenant_id, list(allowed_sensitivities))
     except Exception:
+        if memory_schema == "chronicler_mem":
+            raise
         logger.debug("Profile facts withheld-count query failed", exc_info=True)
         withheld = 0
 
@@ -186,6 +202,7 @@ async def _fetch_fleet_knowledge(
     read_policy,
     *,
     limit: int = _FLEET_KNOWLEDGE_QUERY_LIMIT,
+    query_embedding: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch relevant cross-butler knowledge from public.memory_catalog.
 
@@ -193,24 +210,33 @@ async def _fetch_fleet_knowledge(
     excludes rows this butler owns — Task-Relevant Facts already surfaces
     the butler's own knowledge, so this section is additive, not duplicative.
 
-    Best-effort: any failure (catalog table absent, embedding failure, etc.)
-    is logged at debug and returns an empty list rather than failing context
-    assembly — matches ``_fetch_profile_facts``/``_fetch_recent_episodes``.
+    An absent public catalog table and embedding failures remain best-effort.
+    Errors from PostgreSQL visibility-filtered queries propagate instead of
+    looking like an empty result set.
     """
-    try:
-        results = await _search.search_catalog(
-            pool,
-            trigger_prompt,
-            embedding_engine,
-            tenant_id=tenant_id,
-            memory_type=None,
-            limit=limit,
-            mode="hybrid",
-            read_policy=read_policy,
-        )
-    except Exception:
-        logger.debug("Fleet knowledge catalog search failed", exc_info=True)
+    catalog_relation = await pool.fetchval("SELECT pg_catalog.to_regclass('public.memory_catalog')")
+    if catalog_relation is None:
+        logger.debug("Fleet knowledge catalog is not installed")
         return []
+
+    if query_embedding is None:
+        try:
+            query_embedding = await embed_async(embedding_engine, trigger_prompt)
+        except Exception:
+            logger.debug("Fleet knowledge embedding failed")
+            return []
+
+    results = await _search.search_catalog(
+        pool,
+        trigger_prompt,
+        embedding_engine,
+        tenant_id=tenant_id,
+        memory_type=None,
+        limit=limit,
+        mode="hybrid",
+        read_policy=read_policy,
+        _query_embedding=query_embedding,
+    )
     return [r for r in results if r.get("source_butler") != butler]
 
 
@@ -259,28 +285,26 @@ def _format_fact_line(f: dict[str, Any]) -> str:
     )
 
 
-async def _attribute_owner_anchored_facts(pool: Pool, facts: list[dict[str, Any]]) -> None:
-    """Label owner-anchored facts that the owner did not author.
+async def _attribute_non_owner_facts(pool: Pool, facts: list[dict[str, Any]]) -> None:
+    """Qualify every rendered fact the owner did not author, whatever its subject.
 
-    A fact about the owner that came from a third party's session is a report
-    by that party, not something the owner said.  Mutates ``facts`` in place,
-    adding ``_attribution`` to each such fact: ``reported by <sender>`` when the
-    sender is known, ``source unverified`` for legacy rows with no stamp.
-    ``system`` authority (deterministic server code) is not relabelled.
+    A fact from a third party's session is that party's report, whether it is
+    about the owner or about someone else (bu-dhloi1.1).  Mutates ``facts`` in
+    place, adding ``_attribution``: ``reported by <sender>`` for
+    ``third_party``, ``partly reported by <sender>`` for ``mixed`` evidence
+    and ``source unverified`` for a legacy row with no stamp.  A sender whose
+    name cannot be resolved is rendered generically (``a third party``); the
+    qualification itself never depends on the lookup.  ``source_butler`` is the
+    curating butler, never the reporter, so it plays no part.  Owner-class and
+    ``system`` (deterministic server code) facts are not relabelled.
     """
     candidates = [
         f
         for f in facts
-        if f.get("entity_id") is not None
-        and not is_owner_class(f.get("content_authority"))
-        and f.get("content_authority") != "system"
+        if not is_owner_class(f.get("content_authority")) and f.get("content_authority") != "system"
     ]
     if not candidates:
         return
-    owner_id = await fetch_owner_entity_id(pool)
-    if owner_id is None:
-        return
-    candidates = [f for f in candidates if f.get("entity_id") == owner_id]
     sender_ids = list(
         {f["authority_entity_id"] for f in candidates if f.get("authority_entity_id")}
     )
@@ -291,15 +315,17 @@ async def _attribute_owner_anchored_facts(pool: Pool, facts: list[dict[str, Any]
                 "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1::uuid[])",
                 sender_ids,
             )
-            names = {r["id"]: r["canonical_name"] for r in rows}
+            names = {r["id"]: r["canonical_name"] for r in rows if r["canonical_name"]}
         except Exception:
             logger.debug("Attribution name lookup failed", exc_info=True)
     for f in candidates:
-        if f.get("content_authority") is None:
+        authority = f.get("content_authority")
+        if authority is None:
             f["_attribution"] = "source unverified"
-        else:
-            sender = names.get(f.get("authority_entity_id")) or "a third party"
-            f["_attribution"] = f"reported by {sender}"
+            continue
+        sender = names.get(f.get("authority_entity_id")) or "a third party"
+        prefix = "partly reported by" if authority == "mixed" else "reported by"
+        f["_attribution"] = f"{prefix} {sender}"
 
 
 def _format_rule_line(r: dict[str, Any]) -> str:
@@ -316,7 +342,9 @@ def _format_rule_line(r: dict[str, Any]) -> str:
 def _format_fleet_knowledge_line(r: dict[str, Any]) -> str:
     source_butler = r.get("source_butler") or "?"
     title = r.get("title") or (r.get("summary") or "")[:80]
-    return f"- [{source_butler}] {title}\n"
+    attribution = catalog_attribution(r.get("content_authority"))
+    attributed = f" ({attribution})" if attribution else ""
+    return f"- [{source_butler}] {title}{attributed}\n"
 
 
 def _format_episode_line(ep: dict[str, Any]) -> str:
@@ -404,6 +432,7 @@ async def memory_context(
     include_fleet_knowledge: bool = False,
     catalog_read_policy=None,
     request_context: dict[str, Any] | None = None,
+    memory_schema: str | None = None,
 ) -> str:
     """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
@@ -479,14 +508,19 @@ async def memory_context(
 
     # --- 1. Fetch profile facts (owner entity) ---
     profile_facts, profile_withheld = await _fetch_profile_facts(
-        pool, tenant_id, allowed_sensitivities=allowed_sensitivities
+        pool,
+        tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        memory_schema=memory_schema,
     )
     profile_facts = [f for f in profile_facts if _is_confidence_renderable(f)]
     profile_ids: set = {r.get("id") for r in profile_facts if r.get("id") is not None}
 
     # --- 2. Fetch task-relevant facts via recall (exclude profile facts) ---
-    # recall returns facts + rules sorted by composite_score DESC; the same
-    # read_policy loaded above governs this fetch too.
+    # The prompt is embedded once, off the shared event loop, and that vector serves both
+    # recall and the fleet search. recall returns facts + rules sorted by composite_score
+    # DESC; the same read_policy loaded above governs this fetch too.
+    query_embedding = await embed_async(embedding_engine, trigger_prompt)
     recall_results = await _search.recall(
         pool,
         trigger_prompt,
@@ -495,6 +529,8 @@ async def memory_context(
         limit=30,
         tenant_id=tenant_id,
         read_policy=read_policy,
+        memory_schema=memory_schema,
+        query_embedding=query_embedding,
     )
     task_facts = [
         r
@@ -513,7 +549,7 @@ async def memory_context(
         )
     )
 
-    await _attribute_owner_anchored_facts(pool, task_facts)
+    await _attribute_non_owner_facts(pool, task_facts)
 
     # --- 3. Fetch active rules ---
     rules = [r for r in recall_results if r.get("memory_type") == "rule"]
@@ -540,7 +576,13 @@ async def memory_context(
     fleet_knowledge: list[dict[str, Any]] = []
     if include_fleet_knowledge:
         fleet_knowledge = await _fetch_fleet_knowledge(
-            pool, embedding_engine, trigger_prompt, butler, tenant_id, read_policy
+            pool,
+            embedding_engine,
+            trigger_prompt,
+            butler,
+            tenant_id,
+            read_policy,
+            query_embedding=query_embedding,
         )
 
     # --- Assemble sections ---

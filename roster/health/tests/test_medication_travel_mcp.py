@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastmcp import FastMCP
+
+from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
 
@@ -130,22 +133,35 @@ async def test_health_module_registers_provider_as_an_mcp_tool() -> None:
     from butlers.modules._roster_health import HealthModuleConfig
     from butlers.modules._roster_health.tools import register_tools
 
-    registered: dict[str, object] = {}
-
-    class _Mcp:
-        def tool(self):
-            def decorator(fn):
-                registered[fn.__name__] = fn
-                return fn
-
-            return decorator
-
+    mcp = FastMCP("health-medication-travel-test")
     pool = AsyncMock()
     pool.fetch.return_value = []
     module = SimpleNamespace(_get_pool=lambda: pool)
 
-    register_tools(_Mcp(), module, HealthModuleConfig())
+    register_tools(mcp, module, HealthModuleConfig())
 
-    provider = registered["medication_travel_snapshot"]
-    result = await provider()  # type: ignore[operator]
+    provider = await tool_fn(mcp, "medication_travel_snapshot")
+    result = await provider()
     assert result["schema_version"] == "health.medication-travel.v1"
+
+
+async def test_the_relay_twin_returns_the_same_minimized_snapshot() -> None:
+    """RFC 0038 D7: the medication.travel_snapshot relay reaches this twin only."""
+    from butlers.roster_imports import roster_module
+
+    HealthModuleConfig = roster_module("health", "modules").HealthModuleConfig
+    register_tools = roster_module("health", "modules/tools").register_tools
+
+    mcp = FastMCP("health-medication-travel-twin-test")
+    pool = AsyncMock()
+    pool.fetch.return_value = [_fact_row(name="Metformin", notes="private")]
+    module = SimpleNamespace(_get_pool=lambda: pool)
+
+    register_tools(mcp, module, HealthModuleConfig())
+
+    original = await (await tool_fn(mcp, "medication_travel_snapshot"))()
+    twin = await (await tool_fn(mcp, "medication_travel_snapshot_service"))()
+
+    assert twin == original
+    assert twin["medications"][0]["name"] == "Metformin"
+    assert "private" not in str(twin)

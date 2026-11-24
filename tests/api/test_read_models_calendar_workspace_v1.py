@@ -43,6 +43,7 @@ from butlers.api.read_models.calendar_workspace import (
     row_to_workspace,
     shallow_asdict,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -55,14 +56,6 @@ _EVENT_ID = UUID("30000000-0000-0000-0000-000000000003")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(d: dict) -> MagicMock:
-    """Wrap a dict in a MagicMock that supports subscript + ``.get`` access."""
-    m = MagicMock()
-    m.__getitem__ = lambda self, k: d[k]
-    m.get = lambda k, default=None: d.get(k, default)
-    return m
 
 
 def _source_dict(**overrides) -> dict:
@@ -193,7 +186,7 @@ def test_workspace_columns_has_source_identifiers():
 
 
 def test_row_to_source_maps_all_fields():
-    row = _make_record(_source_dict())
+    row = Record(_source_dict())
     dto = row_to_source(row, db_butler="assistant")
 
     assert isinstance(dto, CalendarSourceRow)
@@ -213,7 +206,7 @@ def test_row_to_source_maps_all_fields():
 
 def test_row_to_source_butler_name_null_falls_back_to_db_butler():
     """When row butler_name is NULL, db_butler is used as the fallback."""
-    row = _make_record(_source_dict(butler_name=None))
+    row = Record(_source_dict(butler_name=None))
     dto = row_to_source(row, db_butler="secretary")
     assert dto.butler_name == "secretary"
     assert dto.db_butler == "secretary"
@@ -221,32 +214,32 @@ def test_row_to_source_butler_name_null_falls_back_to_db_butler():
 
 def test_row_to_source_butler_name_non_null_kept():
     """When row butler_name has a value, it is kept (not overwritten by db_butler)."""
-    row = _make_record(_source_dict(butler_name="assistant"))
+    row = Record(_source_dict(butler_name="assistant"))
     dto = row_to_source(row, db_butler="secretary")
     assert dto.butler_name == "assistant"
     assert dto.db_butler == "secretary"
 
 
 def test_row_to_source_false_writable_is_false():
-    row = _make_record(_source_dict(writable=False))
+    row = Record(_source_dict(writable=False))
     dto = row_to_source(row, db_butler="assistant")
     assert dto.writable is False
 
 
 def test_row_to_source_null_writable_becomes_false():
-    row = _make_record(_source_dict(writable=None))
+    row = Record(_source_dict(writable=None))
     dto = row_to_source(row, db_butler="assistant")
     assert dto.writable is False
 
 
 def test_row_to_source_null_full_sync_required_becomes_false():
-    row = _make_record(_source_dict(full_sync_required=None))
+    row = Record(_source_dict(full_sync_required=None))
     dto = row_to_source(row, db_butler="assistant")
     assert dto.full_sync_required is False
 
 
 def test_row_to_source_none_cursor_fields():
-    row = _make_record(
+    row = Record(
         _source_dict(
             cursor_name=None,
             last_synced_at=None,
@@ -267,7 +260,7 @@ def test_row_to_source_none_cursor_fields():
 
 
 def test_row_to_workspace_maps_all_fields():
-    row = _make_record(_workspace_dict())
+    row = Record(_workspace_dict())
     dto = row_to_workspace(row, db_butler="assistant")
 
     assert isinstance(dto, CalendarWorkspaceRow)
@@ -289,13 +282,13 @@ def test_workspace_columns_has_instance_updated_at():
 
 
 def test_row_to_workspace_null_all_day_becomes_false():
-    row = _make_record(_workspace_dict(all_day=None))
+    row = Record(_workspace_dict(all_day=None))
     dto = row_to_workspace(row, db_butler="assistant")
     assert dto.all_day is False
 
 
 def test_row_to_workspace_null_optional_fields():
-    row = _make_record(
+    row = Record(
         _workspace_dict(
             location=None,
             recurrence_rule=None,
@@ -316,7 +309,7 @@ def test_row_to_workspace_null_optional_fields():
 
 
 async def test_query_calendar_sources_returns_typed_dtos():
-    db = _make_db({"assistant": [_make_record(_source_dict())]})
+    db = _make_db({"assistant": [Record(_source_dict())]})
 
     result, failed = await query_calendar_sources(db)
 
@@ -327,7 +320,7 @@ async def test_query_calendar_sources_returns_typed_dtos():
 
 
 async def test_query_calendar_sources_uses_butlers_with_module_when_no_butlers_arg():
-    db = _make_db({"assistant": [_make_record(_source_dict())]})
+    db = _make_db({"assistant": [Record(_source_dict())]})
 
     await query_calendar_sources(db)
 
@@ -337,7 +330,7 @@ async def test_query_calendar_sources_uses_butlers_with_module_when_no_butlers_a
 
 
 async def test_query_calendar_sources_uses_explicit_butlers_arg():
-    db = _make_db({"secretary": [_make_record(_source_dict())]})
+    db = _make_db({"secretary": [Record(_source_dict())]})
 
     await query_calendar_sources(db, butlers=["secretary"])
 
@@ -348,7 +341,7 @@ async def test_query_calendar_sources_uses_explicit_butlers_arg():
 
 
 async def test_query_calendar_sources_db_butler_set_on_dto():
-    db = _make_db({"secretary": [_make_record(_source_dict())]})
+    db = _make_db({"secretary": [Record(_source_dict())]})
 
     result, _failed = await query_calendar_sources(db)
 
@@ -358,8 +351,8 @@ async def test_query_calendar_sources_db_butler_set_on_dto():
 async def test_query_calendar_sources_multiple_butlers_flattened():
     db = _make_db(
         {
-            "assistant": [_make_record(_source_dict())],
-            "secretary": [_make_record(_source_dict(source_key="work"))],
+            "assistant": [Record(_source_dict())],
+            "secretary": [Record(_source_dict(source_key="work"))],
         }
     )
 
@@ -383,7 +376,7 @@ async def test_query_calendar_sources_preserves_duplicate_provider_ledger_rows_w
     db = _make_db(
         {
             "finance": [
-                _make_record(
+                Record(
                     _source_dict(
                         source_id=finance_source_id,
                         source_key="provider:google:owner@example.com",
@@ -394,7 +387,7 @@ async def test_query_calendar_sources_preserves_duplicate_provider_ledger_rows_w
                 )
             ],
             "general": [
-                _make_record(
+                Record(
                     _source_dict(
                         source_id=general_source_id,
                         source_key="provider:google:owner@example.com",
@@ -419,7 +412,7 @@ async def test_query_calendar_sources_preserves_duplicate_provider_ledger_rows_w
 async def test_query_calendar_sources_threads_failed_butlers():
     """A partial fan-out failure is threaded out so the caller can flag degraded —
     the healthy schema's rows still surface (bu-sn71y)."""
-    db = _make_db({"assistant": [_make_record(_source_dict())]}, failed=["relationship"])
+    db = _make_db({"assistant": [Record(_source_dict())]}, failed=["relationship"])
 
     result, failed = await query_calendar_sources(db)
 
@@ -444,7 +437,7 @@ async def test_query_calendar_workspace_entry_threads_failed_butlers():
 
 
 async def test_query_calendar_workspace_returns_typed_dtos():
-    db = _make_db({"assistant": [_make_record(_workspace_dict())]})
+    db = _make_db({"assistant": [Record(_workspace_dict())]})
     start = _NOW - timedelta(days=1)
     end = _NOW + timedelta(days=1)
 
@@ -457,7 +450,7 @@ async def test_query_calendar_workspace_returns_typed_dtos():
 
 
 async def test_query_calendar_workspace_uses_butlers_with_module_when_no_butlers_arg():
-    db = _make_db({"assistant": [_make_record(_workspace_dict())]})
+    db = _make_db({"assistant": [Record(_workspace_dict())]})
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
@@ -467,7 +460,7 @@ async def test_query_calendar_workspace_uses_butlers_with_module_when_no_butlers
 
 
 async def test_query_calendar_workspace_uses_explicit_butlers_arg():
-    db = _make_db({"secretary": [_make_record(_workspace_dict())]})
+    db = _make_db({"secretary": [Record(_workspace_dict())]})
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
@@ -495,7 +488,7 @@ async def test_query_calendar_workspace_sql_has_time_range_filter():
 
 
 async def test_query_calendar_workspace_db_butler_set_on_dto():
-    db = _make_db({"secretary": [_make_record(_workspace_dict())]})
+    db = _make_db({"secretary": [Record(_workspace_dict())]})
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
@@ -507,8 +500,8 @@ async def test_query_calendar_workspace_db_butler_set_on_dto():
 async def test_query_calendar_workspace_multiple_butlers_flattened():
     db = _make_db(
         {
-            "assistant": [_make_record(_workspace_dict())],
-            "secretary": [_make_record(_workspace_dict(title="1:1"))],
+            "assistant": [Record(_workspace_dict())],
+            "secretary": [Record(_workspace_dict(title="1:1"))],
         }
     )
     start = _NOW - timedelta(hours=1)
@@ -526,7 +519,7 @@ async def test_query_calendar_workspace_returns_failed_butlers():
     callers (conflicts, the workspace grid) can flag a degraded source rather
     than read a short result as an honest empty window."""
     db = _make_db(
-        {"assistant": [_make_record(_workspace_dict())], "secretary": []},
+        {"assistant": [Record(_workspace_dict())], "secretary": []},
         failed=["secretary"],
     )
     start = _NOW - timedelta(hours=1)
@@ -693,7 +686,7 @@ def _proposal_dict(**overrides) -> dict:
 
 
 async def test_query_calendar_proposals_returns_typed_dtos():
-    db = _make_db({"assistant": [_make_record(_proposal_dict())]})
+    db = _make_db({"assistant": [Record(_proposal_dict())]})
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
@@ -737,7 +730,7 @@ async def test_query_calendar_proposals_fail_open_on_fan_out_error():
 
 
 def test_row_to_proposal_maps_columns():
-    record = _make_record(_proposal_dict(butler_name=None))
+    record = Record(_proposal_dict(butler_name=None))
     dto = row_to_proposal(record, db_butler="assistant")
     # butler_name falls back to the db_butler schema name when NULL.
     assert dto.butler_name == "assistant"
@@ -833,9 +826,7 @@ def test_shallow_asdict_matches_stdlib_for_fully_populated_source_row():
     """Structural equality with dataclasses.asdict for a fully-populated
     CalendarSourceRow, including a nested metadata dict."""
     dto = row_to_source(
-        _make_record(
-            _source_dict(source_metadata={"account_email": "a@b.com", "nested": {"k": 1}})
-        ),
+        Record(_source_dict(source_metadata={"account_email": "a@b.com", "nested": {"k": 1}})),
         db_butler="assistant",
     )
     assert shallow_asdict(dto) == _stdlib_asdict(dto)
@@ -845,7 +836,7 @@ def test_shallow_asdict_matches_stdlib_for_fully_populated_workspace_row():
     """Structural equality for a fully-populated CalendarWorkspaceRow with all
     three metadata dicts populated (one nested)."""
     dto = row_to_workspace(
-        _make_record(
+        Record(
             _workspace_dict(
                 instance_metadata={"origin": "google"},
                 event_metadata={"butler_name": "assistant", "flags": {"pinned": True}},
@@ -860,11 +851,9 @@ def test_shallow_asdict_matches_stdlib_for_fully_populated_workspace_row():
 def test_shallow_asdict_matches_stdlib_for_none_and_default_fields():
     """None metadata / nullable fields and the ``db_butler`` default are handled
     identically (the equivalence must not depend on populated fields)."""
-    source_dto = row_to_source(_make_record(_source_dict(source_metadata=None)), db_butler="")
+    source_dto = row_to_source(Record(_source_dict(source_metadata=None)), db_butler="")
     workspace_dto = row_to_workspace(
-        _make_record(
-            _workspace_dict(instance_metadata=None, event_metadata=None, source_metadata=None)
-        ),
+        Record(_workspace_dict(instance_metadata=None, event_metadata=None, source_metadata=None)),
         db_butler="",
     )
     assert shallow_asdict(source_dto) == _stdlib_asdict(source_dto)
@@ -877,7 +866,7 @@ def test_shallow_asdict_shares_metadata_reference_where_stdlib_deep_copies():
     dataclasses.asdict deep-copies it. Structural equality still holds (above);
     sharing is safe because no caller mutates the nested metadata in place."""
     dto = row_to_source(
-        _make_record(_source_dict(source_metadata={"account_email": "a@b.com"})),
+        Record(_source_dict(source_metadata={"account_email": "a@b.com"})),
         db_butler="assistant",
     )
     shallow = shallow_asdict(dto)

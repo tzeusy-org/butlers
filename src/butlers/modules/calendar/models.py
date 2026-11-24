@@ -262,6 +262,9 @@ def _ensure_valid_timezone(value: str) -> None:
         raise ValueError(f"timezone must be a valid IANA timezone: {value}") from exc
 
 
+DEFAULT_EVENT_TYPE = "default"
+
+
 class EventStatus(StrEnum):
     """Event lifecycle states as tracked by the provider (spec section 5.3)."""
 
@@ -341,6 +344,13 @@ class CalendarEvent(BaseModel):
     visibility: EventVisibility | None = None
     # Google ``transparency``: "opaque" (busy) or "transparent" (free); None if unknown.
     transparency: str | None = None
+    # Google resource ``eventType`` (not a connector change kind): ``default``, ``outOfOffice``,
+    # ``focusTime``, ``workingLocation``, ``fromGmail``, ``birthday`` or a future value, kept
+    # verbatim. Read-side only: no create/update payload carries it.
+    event_type: str = DEFAULT_EVENT_TYPE
+    # Normalized ``workingLocationProperties`` of a ``workingLocation`` event:
+    # ``{"type": "homeOffice"|"officeLocation"|"customLocation", "label": str}``, else None.
+    working_location: dict[str, str] | None = None
     etag: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -427,6 +437,9 @@ class CalendarEventUpdate(BaseModel):
     entity_ids: list[uuid.UUID] | None = None
     # Etag from the existing event for optimistic concurrency (sent as If-Match header).
     etag: str | None = None
+    # One attempt, never the generic 429/503 retry: a retried etag-bound PATCH can see 412
+    # for its own committed first attempt (the conditional replan move, RFC 0038 D13).
+    single_attempt: bool = False
 
     @field_validator("timezone")
     @classmethod

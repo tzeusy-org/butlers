@@ -19,6 +19,9 @@ from typing import Any
 import asyncpg
 from croniter import CroniterBadDateError, croniter
 
+from butlers.core import session_timing
+from butlers.core.tool_call_capture import MANUAL_DAY_CLOSE_TRIGGER_PREFIX
+
 logger = logging.getLogger(__name__)
 
 # Valid trigger_source base values.
@@ -77,7 +80,7 @@ def _sanitize_json_value(value: Any) -> Any:
 
 
 # JSONB columns that need deserialization from string → Python object
-_JSONB_FIELDS = ("tool_calls", "cost", "prompt_provenance")
+_JSONB_FIELDS = ("tool_calls", "cost", "prompt_provenance", "stage_timings")
 _SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
 
 
@@ -95,9 +98,18 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     - "qa"
     - "schedule:<task-name>" where task-name is any non-empty string
     - "deadline:<task-name>" where task-name is any non-empty string
+    - "api:day_close_refresh:<YYYY-MM-DD>", the Chronicler manual day-close refresh
+      (the tool policy in ``mcp_wrappers`` keys on this exact prefix); the suffix must be
+      a real calendar date, and no other ``api:`` source is accepted
     """
     if trigger_source in TRIGGER_SOURCES:
         return True
+    if trigger_source.startswith(MANUAL_DAY_CLOSE_TRIGGER_PREFIX):
+        suffix = trigger_source[len(MANUAL_DAY_CLOSE_TRIGGER_PREFIX) :]
+        try:
+            return len(suffix) == 10 and date.fromisoformat(suffix).isoformat() == suffix
+        except ValueError:
+            return False
     if trigger_source.startswith("schedule:") and len(trigger_source) > 9:
         return True
     if trigger_source.startswith("deadline:") and len(trigger_source) > 9:
@@ -233,7 +245,8 @@ async def session_create(
         trigger_source: What caused this session. Must be one of:
             ``"tick"``, ``"classification"``, ``"external"``, ``"trigger"``,
             ``"route"``, ``"healing"``, ``"dashboard"``,
-            ``"schedule:<task-name>"``, or ``"deadline:<task-name>"``.
+            ``"schedule:<task-name>"``, ``"deadline:<task-name>"``, or
+            ``"api:day_close_refresh:<YYYY-MM-DD>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
         request_id: Required request ID for this session (UUIDv7 format).
@@ -277,7 +290,8 @@ async def session_create(
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
             f"'classification', 'external', 'trigger', 'route', 'healing', "
-            f"'dashboard', 'qa', 'schedule:<task-name>', or 'deadline:<task-name>'"
+            f"'dashboard', 'qa', 'schedule:<task-name>', 'deadline:<task-name>', "
+            f"or 'api:day_close_refresh:<YYYY-MM-DD>'"
         )
 
     receipt_values = (effective_system_prompt, prompt_digest, prompt_provenance)
@@ -390,7 +404,10 @@ async def session_complete(
         session_id: UUID of the session to complete.
         output: The textual output from the runtime instance, or None on failure.
         tool_calls: List of tool call records (serialised as JSONB).
-        duration_ms: Wall-clock duration of the runtime invocation in milliseconds.
+        duration_ms: Wall-clock milliseconds from the spawner's start. That clock starts
+            before the row exists (prompt/context composition), so ``completed_at -
+            started_at`` is shorter than ``duration_ms`` by about
+            ``stage_timings.row_created_ms``; the stage clock is the breakdown.
         success: Whether the session completed successfully.
         error: Error message if the session failed, None otherwise.
         cost: Optional cost/token usage dict (serialised as JSONB).
@@ -414,6 +431,9 @@ async def session_complete(
     safe_error = _strip_untranslatable_chars(error)
     safe_tool_calls = _sanitize_json_value(tool_calls)
     safe_cost = _sanitize_json_value(cost) if cost is not None else None
+    # Content-free stage offsets the daemon observed for this session, or None when
+    # the process never ran its clock (orphan recovery, another process): never guessed.
+    stage_timings = session_timing.finish(str(session_id))
 
     row = await pool.fetchrow(
         """
@@ -428,6 +448,7 @@ async def session_complete(
             output_tokens = $9,
             cached_input_tokens   = $10,
             cache_creation_tokens = $11,
+            stage_timings = $12,
             completed_at  = now()
         WHERE id = $1
         RETURNING id, model
@@ -443,6 +464,7 @@ async def session_complete(
         output_tokens,
         cached_input_tokens,
         cache_creation_tokens,
+        stage_timings,
     )
     if row is None:
         raise ValueError(f"Session {session_id} not found")

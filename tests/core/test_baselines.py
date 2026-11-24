@@ -302,3 +302,39 @@ def test_evidence_from_a_baseline_validates() -> None:
 )
 def test_incomplete_evidence_is_rejected(evidence) -> None:
     assert validate_baseline_evidence(evidence) is not None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "age", "state", "has_band"),
+    [
+        ({}, 0, "ready", True),
+        ({"status": "insufficient_history", "center": None}, 0, "insufficient_history", False),
+        ({"measurability": "unmeasurable"}, 5, "unmeasurable", False),
+        ({}, 3, "stale", False),
+    ],
+)
+def test_stored_read_projection_obeys_scorer_states(overrides, age, state, has_band):
+    from butlers.core.baselines import reading_from_baseline
+
+    baseline = replace(_ready(), **overrides)
+    reading = reading_from_baseline(baseline, now=_NOW + timedelta(days=age))
+    assert reading.state == state
+    assert (reading.band is not None) is has_band
+    assert (reading.n_observed, reading.n_expected, reading.coverage) == (54, 60, 0.9)
+    assert reading.stale is (age > 2)
+    assert reading.computed_at == _NOW
+
+
+async def test_read_queries_current_method_and_unknown_key_returns_none() -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.core.baselines import read_baseline
+
+    pool = AsyncMock()
+    pool.fetch.return_value = []
+    assert await read_baseline(pool, "unknown", now=_NOW) is None
+    sql, keys, version = pool.fetch.await_args.args
+    assert "FROM metric_baselines" in sql and "public.metric_baselines" not in sql
+    assert "method_version = $2" in sql and version == METHOD_VERSION
+    assert keys == ["unknown"]
+    pool.execute.assert_not_called()

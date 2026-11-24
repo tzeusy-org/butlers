@@ -522,12 +522,21 @@ describe("ButlerOverviewTab -- doors", () => {
   it("activity-stripe bars navigate to the Activity tab's Sessions section", () => {
     renderOverviewLive()
 
-    const stripe = screen.getByRole("group", { name: /24-hour activity/i })
-    fireEvent.click(within(stripe).getAllByRole("button")[0])
+    vi.useFakeTimers({ now: new Date("2026-05-13T12:40:00Z"), toFake: ["Date"] })
+    try {
+      const stripe = screen.getByRole("group", { name: /24-hour activity/i })
+      fireEvent.click(within(stripe).getAllByRole("button")[0])
+    } finally {
+      vi.useRealTimers()
+    }
 
-    expect(screen.getByTestId("location-search").textContent).toContain(
-      "tab=activity&section=sessions",
-    )
+    // Slot 0 is the UTC hour 23 hours before the current one, so the drill-in
+    // window is that bucket's own [start, start + 1h), not a now-relative slice.
+    const search = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "")
+    expect(search.get("tab")).toBe("activity")
+    expect(search.get("section")).toBe("sessions")
+    expect(search.get("since")).toBe("2026-05-12T13:00:00.000Z")
+    expect(search.get("until")).toBe("2026-05-12T14:00:00.000Z")
   })
 
   it("session_completed recent-event rows render as a button (opens the session drawer)", () => {

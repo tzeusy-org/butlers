@@ -59,67 +59,43 @@ For a final backend claim, use the CI-shaped unit and integration targets in
 head after focused evidence and use terminal hosted CI as the one broad result.
 
 That one broad result is the merge queue's `merge_group` run, which validates
-the exact tree about to land. A pull request's own CI run is narrower on
-purpose: a docs/spec-only diff skips the backend shards and frontend jobs, and
-a push to `main` skips the shards because the queue already ran them. The
-suite also has a size budget: `scripts/check_test_budget.py` fails
-`check-preflight` when a lane collects more tests than
-`scripts/test-budget-baseline.json` allows, so a change that grows the suite
-past its headroom condenses tests in the same PR or raises the budget with a
-stated net test delta and reason. Tests are production code with a run-time
-cost on every merge; more of them is not free.
+the exact tree about to land. Every pull request and every push to `main`
+runs the same complete pipeline; nothing is skipped by path, so the one
+required check, `alls-green`, means the same thing on every event. The
+suite has no hard test-count cap: the owner decided on 2026-11-03 that test
+growth is governed by CI duration targets (see the Five-Minute Routine-Lane
+Target below), not by a collected-test budget. Tests are production code with a
+run-time cost on every merge; more of them is not free.
 
-A pull request whose diff clears the docs filter uses the stdlib-only `route` job.
-It reuses the established affected-test planner with more conservative omission admission:
-only proven unchanged collection inputs may use a fresh scoped subset.
-All test, conftest, dependency/config, CI and unknown changes widen to full collection and
-execution. Merge-group always runs all five unit and six integration groups, followed by
-fresh lane collection for totals and budgets. Push to main skips backend groups and preflight
-after the merge queue has validated the tree. Docs-only skips remain explicit. The required `check`
-verifies exact event/mode pairings from prerequisite verdicts only, with no checkout, installation or report work.
+Every event runs all five unit and six integration groups beside fresh lane collection for
+totals and budgets. There is no change classifier, scoped subset or affected-test lane in CI:
+a scoped local run (`make test-plan`) remains an author's tool, never merge evidence. The
+required `alls-green` reads prerequisite verdicts only, with no checkout, installation or
+report work, and passes only when every needed job succeeded.
 
-Test support modules and package markers with unproved import ownership escalate to every
-configured pytest root, including both `tests/` and `roster/`; adjacent test files cannot prove
-that a helper has no consumers elsewhere. CI validates the selected scope independently of the
-changed-file list. Empty, unsupported, outside-root or root-wide selections, and any selected
-ancestor or descendant of `tests/e2e/`, fall back to the complete matrix. Known small API scopes,
-direct test edits and pytest-governed nested conftest scopes remain eligible.
-
-The conditional affected job accepts canonical selected Python files only, excluding E2E.
-It freshly collects the actual default-selected item identities, runs the unchanged affected
-pytest flags and independently recollects after execution. Its source/run/attempt/config/nonce
-bound receipt must prove exact item multiplicity, logical starts and all actual setup/call/teardown
-phases, including named skips. Count-only JUnit cannot authorize it. The job uploads minimized
-reference, execution and independently verified proof carriers; required check also demands
-its explicit successful verifier output. Each subprocess belongs to the same finite affected
-job envelope and cleans up only its own process group. No cached inventory or full-lane evidence
-is borrowed to certify a scoped execution.
-Affected-receipt completion/exit/count/start fields require their exact JSON boolean or integer
-representations; finite nonnegative integer or floating-point phase timers remain valid durations.
 Backend lane-group records require integer group identifiers and nonnegative integer counts;
 booleans and floating-point counts are rejected. Malformed evidence fails without coercion.
 
 The backend lanes run as pytest-split groups: five unit and six integration children, each
 selecting its slice of the lane's fresh marker selection with `duration_based_chunks` over the
 committed `.test_durations`. Durations only balance the groups; a test without one gets the
-average and still runs. Each child records how many tests it collected, and check-preflight sums
-each lane's groups and compares the sum with one fresh `--collect-only` count of the same
-selection. Missing, extra or duplicate group records and lane-total mismatches fail the run.
+average and still runs. Each child records how many tests it collected; smoke takes one
+fresh `--collect-only` count of the same selection beside the groups, and check-totals sums each
+lane's groups and compares the sum with it. Missing, extra or duplicate group records and lane-total mismatches fail the run.
 These totals are count evidence, not per-item execution receipts. The fresh lane counts feed
-both lane budgets. Lane children, affected, Vitest and the browser job (which builds its own
-bundle) start after route; every final required verdict still requires successful guards. The
-nightly covered groups measure per-test durations, and its `durations-refresh` job opens a pull
-request with the merged file instead of pushing to main (bu-29wkwj.2).
+both lane budgets. Lane children, Vitest and the browser job (which builds its own
+bundle) start immediately beside guards; `alls-green` requires every one of them to succeed. The
+required lane groups publish per-test durations, and the nightly `durations-refresh` job merges
+those of the latest successful merge group and opens a pull request with the merged file instead
+of pushing to main (bu-29wkwj.2, bu-q1hzqn.13).
 
-The scheduled weight observer is retired. The computed partition, inventory collector and
-shard observer remain only for the manual `ci-shard-watchdog-diagnostic.yml` workflow, whose
-retirement is tracked in bu-29wkwj.8. Required and nightly lanes use `scripts/ci_lanes.py` and
-do not consume that diagnostic's identity or phase receipts. Diagnostic UNKNOWN results remain
-explicit and cannot supply missing required-CI evidence or change lane membership.
+The scheduled weight observer, the computed partition and inventory collector, and the manual
+shard-watchdog diagnostic are retired (owner decision on bu-29wkwj.8, 2026-11-02). Required and
+nightly lanes use `scripts/ci_lanes.py`; every job keeps its finite `timeout-minutes` watchdog.
 
-Preflight runs the dedicated smoke command
-`uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short` in both full and scoped CI modes,
-and in nightly coverage preflight. Its release evidence records the actual command, checkout
+The `smoke` job runs the dedicated smoke command
+`uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short` (through `scripts/ci_smoke.py`)
+on every event, and nightly coverage preflight runs it too. Its release evidence records the actual command, checkout
 SHA, exit code, status, elapsed time and skipped classes. Smoke evidence is not derived from
 backend group identities.
 Coverage runs nightly, not per pull request (owner decision bu-w72da2 = A). The scheduled or
@@ -131,18 +107,16 @@ compatible tracing and executed source lines, rejecting missing, extra, unreadab
 incompatible inputs. The combined report is uploaded as an artifact. Its always-running
 preflight/report gates refuse failed or skipped prerequisites; only successful scheduled/manual
 main runs may update the badge. A coverage-pipeline change is validated by dispatching the nightly
-workflow on its branch. Reporting integrity remains separate from required check/guards/frontend
-verdicts. Protected merge-group and ordinary PR groups use `CI_COVERAGE=0` with the same lane
+workflow on its branch. Reporting integrity remains separate from the required `alls-green`
+verdict. Protected merge-group and ordinary PR groups use `CI_COVERAGE=0` with the same lane
 selection, workers, markers, timeouts and collected-count publication. Nightly groups use
 `CI_COVERAGE=1`; ordinary standalone calls retain covered defaults.
 
 Frontend lint, copy/coercion gates, knip, the one build and existing bounded Node/owner-time/CSS
 survivors run in guards. Two locked Vitest children independently prove complete disjoint
-actual test membership. Required frontend fails if guards or either child fails. The
-Playwright browser job is required through `check`: every merge group and main push runs it,
-as does every pull request the route classifies as frontend (a change under `frontend/`,
-`.github/workflows/`, `scripts/ci_` or `scripts/check_ci_`), and its failure fails `check`. Browser
-builds its own checked-out frontend after route, independently of guards, and retains the locked
+actual test membership, reconciled by `frontend-assurance`. The Playwright browser job runs on
+every event and is required through `alls-green` (owner decision bu-w72da2 = A). Browser
+builds its own checked-out frontend, independently of guards, and retains the locked
 browser version, mandatory OS dependencies on cache hits/misses (two bounded attempts with privileged
 group cleanup), then three bounded browser attempts within the 720-second installer budget.
 Dependency retries require confirmed termination and reaping of the owned process group.
@@ -163,15 +137,8 @@ merge-group samples and the complete two-week long-tail audit remain required ca
 initial caps and synthetic controls cannot substitute for those observations.
 
 For an uncalibrated lane, a named healthy whole-job observation supplies a provisional
-compatibility floor, not p95. The affected lane's run 37597511584, job 112713967258 completed
-successfully in 2,124 seconds, including 2,077 seconds of tests. Its provisional 82-minute cap
-uses twice that complete envelope plus the full 640-second UV recovery reserve; observed setup
-and evidence time are retained. This finite bound does not promise zero jobs over 60 minutes or
-replace the required current ten-run calibration and complete two-week audit.
-
-**Measured planner precision.** The scoped lane shipped after the planner escalated to `mode=full`
-for all 7 of 7 PRs with a real shard failure in a 50-PR sample; the merge queue still runs the full
-matrix on every landing tree, so the lane can only speed PRs up, never let a failure through.
+compatibility floor, not p95. Such a floor does not replace the required current ten-run
+calibration and complete two-week audit.
 
 Use `make test-qg-serial` when debugging order-dependent failures.
 
@@ -192,7 +159,9 @@ after stable measurements. Each reduction needs scoped before/after timing and
 an account of the public behavior or contract that still protects each removed
 case. Preserve architecture, wire, privacy, authorization, migration, retry,
 and idempotency coverage. Test counts, mocks, or similar-looking cases alone
-are not grounds for deletion. A missed target keeps the phase open with its
+are not grounds for deletion. As of 2026-11-03 there is no test-count cap, so
+lane duration is the only growth pressure; it is a target today, with no
+enforced duration gate beyond job `timeout-minutes`. A missed target keeps the phase open with its
 limiting domains recorded in the owning Beads task.
 
 The graduated commands and planner behavior live in
@@ -226,7 +195,7 @@ Matching names, smaller counts and deleted production paths are not survivors
 on their own; the reviewer checks what the survivor executes. A mock-call
 assertion (`assert_not_called`, `call_count`) often encodes a real contract such
 as idempotency, delivery cadence or a no-send boundary, so treat it as protected
-until shown otherwise. This rule does not change the per-lane test budget.
+until shown otherwise. Deletion stays a review decision, not a count target.
 
 ## Evidence Expectations
 

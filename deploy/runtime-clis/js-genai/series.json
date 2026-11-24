@@ -1,0 +1,80 @@
+{
+  "schema": "butlers.vendor-patch-series/v1",
+  "vendor": "js-genai",
+  "version": "1.30.0",
+  "commit": "38cac5bbf4941ec5fa760238bd423c0ecc2c6f04",
+  "archive": {
+    "url": "https://codeload.github.com/googleapis/js-genai/tar.gz/38cac5bbf4941ec5fa760238bd423c0ecc2c6f04",
+    "sha256": "e3ce684f86b945810c0b0d1d926e2d69a6e59d74b289744ff4badb6429bcdc8d",
+    "root": "js-genai-38cac5bbf4941ec5fa760238bd423c0ecc2c6f04"
+  },
+  "patches": [
+    {
+      "path": "patches/001-dependency-closure.patch",
+      "sha256": "1ff2459f4bc9c559132fe1a74cbe837089029251972c01cf59a9c791f3e72606",
+      "files": [
+        {
+          "path": "package-lock.json",
+          "before_sha256": "38fb9c726657a7dff136362a35d6ebaa5e720f70ba6cd69e8512a6f4bd17082d",
+          "after_sha256": "77d808f0a5c88b8ebbc963d22fd5dd660184675dc81afc7e576d9dd5d811b3d6"
+        },
+        {
+          "path": "package.json",
+          "before_sha256": "4729f14bd9ba2ab2fa4e51d009acd40c4eab7c3b9f8aa9cd392de42e1d1021d3",
+          "after_sha256": "3fbba035f3562c119f81b8420efce1922dade2b1543c51614e5d2b7b5abbfa2e"
+        },
+        {
+          "path": "rollup.config.mjs",
+          "before_sha256": "7861faf47f2469f56d7e8513ef207f77088f12437085b846c13fb5212170d8e6",
+          "after_sha256": "5b643d29a60b418bf7ba3b9fd7b80ee56165672987add869e321501ced364145"
+        }
+      ]
+    },
+    {
+      "path": "patches/002-terminal-http-auth-executor.patch",
+      "sha256": "20aae830cf9409032a12cfb5dc35dab8a3fde6bd505263da8edcd385bb366024",
+      "files": [
+        {
+          "path": "src/_api_client.ts",
+          "before_sha256": "716934a006f1d66cfd4bff59ac3f085ee71cfa253059c2544ac9245971baa307",
+          "after_sha256": "85b73ec28d222d3a42a938b1d03cebc29f0cdaa7d8f9ad9603c7dcf3bfc42bec"
+        },
+        {
+          "path": "src/node/_node_auth.ts",
+          "before_sha256": "8e05b9b13a18e20f25e324fc46ec4c02b593d7b3e314b86456e9fe749901d898",
+          "after_sha256": "dfd5604881ba4cb88576d89a5dc92ea6ec5cd9f60b86ac8b28ab7e1334cc4a1f"
+        },
+        {
+          "path": "src/node/butlers_egress.ts",
+          "before_sha256": null,
+          "after_sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"
+        },
+        {
+          "path": "src/node/node_client.ts",
+          "before_sha256": "9e1b948c8c53129d8da50f147a2b4eaadda7f54c030bb8b6f8d9dda550ae2ec2",
+          "after_sha256": "0ddf25aabafc5474937400b97510b3ebbc606310449a4afc8b33bfbd68c9223f"
+        },
+        {
+          "path": "src/node/undici-private.d.ts",
+          "before_sha256": null,
+          "after_sha256": "7151fafef798eb4c5da9235547c820dbf693f096d0f0d09778bb729aaa94442c"
+        }
+      ]
+    },
+    {
+      "path": "patches/003-websocket-executor.patch",
+      "sha256": "a588e52f617fb4a44d1c866088bfb01b235ae2f077075fd61b90d6d30d83e0d0",
+      "files": [
+        {
+          "path": "src/node/_node_websocket.ts",
+          "before_sha256": "f1ad38e54a35a81a57a8dc442e58cfab1b5651ccc4ff09fcb40b24bb1151493b",
+          "after_sha256": "46ce254d1c994c9361b574e2362cde7981c33bbb6741ed5a4f166f0ddec73dfc"
+        }
+      ]
+    }
+  ],
+  "source_tree_sha256": "806d397085acaaa39677f9607d947332d5f982da74f1439f948b24be75000b52",
+  "context_contract": "Exact complete preimage file hashes bind context; zero-context hunks avoid whitespace-only diff framing in tracked patches.",
+  "qualification": "Full stock npm ci/prepare build and npm pack passed on these nine patched inputs. Native operation, Gemini nested artifact substitution and final immutable image remain separate required evidence.",
+  "shared_executor_head": "318c33d665a67fdfb984e31333941b1bebdfa05e"
+}

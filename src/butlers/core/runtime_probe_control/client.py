@@ -52,6 +52,7 @@ from butlers.core.runtime_probe_control.endpoint import (
     READY_STATUS,
 )
 from butlers.core.runtime_probe_control.keys import SignerSnapshot, signer_snapshot
+from butlers.core.switchboard_tls import switchboard_http_options
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,9 @@ class RuntimeProbeControlClient:
 
         try:
             async with httpx.AsyncClient(
-                transport=self._transport, timeout=self._readiness_timeout
+                transport=self._transport,
+                timeout=self._readiness_timeout,
+                **switchboard_http_options(self._readiness_url, require_origin=True),
             ) as client:
                 response = await client.get(
                     self._readiness_url, params={READINESS_KEY_ID_PARAM: kid}
@@ -189,7 +192,9 @@ class RuntimeProbeControlClient:
     async def _request(self, compact: str) -> ProbeResult:
         try:
             async with httpx.AsyncClient(
-                transport=self._transport, timeout=self._timeout
+                transport=self._transport,
+                timeout=self._timeout,
+                **switchboard_http_options(self._url, require_origin=True),
             ) as client:
                 response = await client.post(
                     self._url,

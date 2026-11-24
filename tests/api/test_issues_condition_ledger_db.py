@@ -36,8 +36,7 @@ from butlers.api.audit_grouping import (
     issue_from_audit_group_row,
 )
 from butlers.api.reachability_ledger import open_condition_onset, record_probe
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -49,27 +48,11 @@ pytestmark = [
 BUTLER = "calendar"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.butler_reachability_conditions")
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
-    yield p
-    await p.close()
+async def ledger_pool(db) -> asyncpg.Pool:
+    p = await db("core", "switchboard")
+    await clear_audit_log_for_test(p)
+    return p
 
 
 async def _episodes(pool: asyncpg.Pool) -> list[asyncpg.Record]:
@@ -87,55 +70,59 @@ async def _episodes(pool: asyncpg.Pool) -> list[asyncpg.Record]:
 # ---------------------------------------------------------------------------
 
 
-async def test_continuous_outage_keeps_one_row_with_one_stable_onset(pool: asyncpg.Pool) -> None:
+async def test_continuous_outage_keeps_one_row_with_one_stable_onset(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     """Repeated probes of ONE uninterrupted outage must not manufacture recurrence.
 
     The onset is the epoch an acknowledgement is held against, so if it moved on
     any poll the ack would be outrun before the user could see it stick.
     """
-    first = await record_probe(pool, down={BUTLER: "connection refused"}, recovered=[])
+    first = await record_probe(ledger_pool, down={BUTLER: "connection refused"}, recovered=[])
     onset = first[BUTLER].started_at
 
     for _ in range(4):
-        again = await record_probe(pool, down={BUTLER: "connection refused"}, recovered=[])
+        again = await record_probe(ledger_pool, down={BUTLER: "connection refused"}, recovered=[])
         assert again[BUTLER].started_at == onset, (
             "onset moved during one uninterrupted outage; the ack watermark can never hold"
         )
 
-    rows = await _episodes(pool)
+    rows = await _episodes(ledger_pool)
     assert len(rows) == 1, f"one outage produced {len(rows)} episodes"
     assert rows[0]["observations"] == 5
     assert rows[0]["resolved_at"] is None
     # The probe clock advances (it is descriptive), the onset does not.
     assert rows[0]["last_seen_at"] >= rows[0]["started_at"]
-    assert await open_condition_onset(pool, BUTLER) == onset
+    assert await open_condition_onset(ledger_pool, BUTLER) == onset
 
 
-async def test_recovery_closes_the_condition_and_is_terminal(pool: asyncpg.Pool) -> None:
-    await record_probe(pool, down={BUTLER: "connection refused"}, recovered=[])
-    await record_probe(pool, down={}, recovered=[BUTLER])
+async def test_recovery_closes_the_condition_and_is_terminal(ledger_pool: asyncpg.Pool) -> None:
+    await record_probe(ledger_pool, down={BUTLER: "connection refused"}, recovered=[])
+    await record_probe(ledger_pool, down={}, recovered=[BUTLER])
 
-    rows = await _episodes(pool)
+    rows = await _episodes(ledger_pool)
     assert len(rows) == 1
     assert rows[0]["resolved_at"] is not None, "recovery did not close the condition"
-    assert await open_condition_onset(pool, BUTLER) is None, (
+    assert await open_condition_onset(ledger_pool, BUTLER) is None, (
         "a recovered butler still reports an open condition"
     )
 
     # Recovery is idempotent: a second reachable poll must not resurrect or
     # duplicate anything.
-    await record_probe(pool, down={}, recovered=[BUTLER])
-    assert len(await _episodes(pool)) == 1
+    await record_probe(ledger_pool, down={}, recovered=[BUTLER])
+    assert len(await _episodes(ledger_pool)) == 1
 
 
-async def test_later_down_transition_opens_a_genuinely_new_recurrence(pool: asyncpg.Pool) -> None:
+async def test_later_down_transition_opens_a_genuinely_new_recurrence(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     """After recovery, the next outage must get a NEW onset -- that is the
     recurrence signal that re-opens an acknowledged condition."""
-    first = await record_probe(pool, down={BUTLER: "connection refused"}, recovered=[])
+    first = await record_probe(ledger_pool, down={BUTLER: "connection refused"}, recovered=[])
     first_onset = first[BUTLER].started_at
-    await record_probe(pool, down={}, recovered=[BUTLER])
+    await record_probe(ledger_pool, down={}, recovered=[BUTLER])
 
-    second = await record_probe(pool, down={BUTLER: "timeout"}, recovered=[])
+    second = await record_probe(ledger_pool, down={BUTLER: "timeout"}, recovered=[])
     second_onset = second[BUTLER].started_at
 
     assert second_onset > first_onset, (
@@ -144,7 +131,7 @@ async def test_later_down_transition_opens_a_genuinely_new_recurrence(pool: asyn
     )
     assert second[BUTLER].observations == 1
 
-    rows = await _episodes(pool)
+    rows = await _episodes(ledger_pool)
     assert len(rows) == 2, "the resolved episode was overwritten instead of kept as history"
     assert rows[0]["resolved_at"] is not None
     assert rows[1]["resolved_at"] is None
@@ -152,14 +139,14 @@ async def test_later_down_transition_opens_a_genuinely_new_recurrence(pool: asyn
 
 
 async def test_partial_unique_index_permits_history_but_not_two_open_episodes(
-    pool: asyncpg.Pool,
+    ledger_pool: asyncpg.Pool,
 ) -> None:
     """The index predicate is the whole design; assert both halves of it."""
-    await record_probe(pool, down={BUTLER: "boom"}, recovered=[])
-    await record_probe(pool, down={}, recovered=[BUTLER])
-    await record_probe(pool, down={BUTLER: "boom"}, recovered=[])
+    await record_probe(ledger_pool, down={BUTLER: "boom"}, recovered=[])
+    await record_probe(ledger_pool, down={}, recovered=[BUTLER])
+    await record_probe(ledger_pool, down={BUTLER: "boom"}, recovered=[])
 
-    open_count = await pool.fetchval(
+    open_count = await ledger_pool.fetchval(
         """
         SELECT COUNT(*) FROM public.butler_reachability_conditions
          WHERE butler = $1 AND resolved_at IS NULL
@@ -169,24 +156,24 @@ async def test_partial_unique_index_permits_history_but_not_two_open_episodes(
     assert open_count == 1
 
     # Resolved rows are deliberately unconstrained: two of them may coexist.
-    total = await pool.fetchval(
+    total = await ledger_pool.fetchval(
         "SELECT COUNT(*) FROM public.butler_reachability_conditions WHERE butler = $1", BUTLER
     )
     assert total == 2
 
     # A second OPEN row for the same butler must be rejected by the index.
     with pytest.raises(asyncpg.exceptions.UniqueViolationError):
-        await pool.execute(
+        await ledger_pool.execute(
             "INSERT INTO public.butler_reachability_conditions (butler) VALUES ($1)", BUTLER
         )
 
 
-async def test_one_probe_separates_down_and_recovered_butlers(pool: asyncpg.Pool) -> None:
-    await record_probe(pool, down={"calendar": "refused", "health": "refused"}, recovered=[])
-    episodes = await record_probe(pool, down={"calendar": "refused"}, recovered=["health"])
+async def test_one_probe_separates_down_and_recovered_butlers(ledger_pool: asyncpg.Pool) -> None:
+    await record_probe(ledger_pool, down={"calendar": "refused", "health": "refused"}, recovered=[])
+    episodes = await record_probe(ledger_pool, down={"calendar": "refused"}, recovered=["health"])
 
     assert set(episodes) == {"calendar"}
-    open_butlers = await pool.fetch(
+    open_butlers = await ledger_pool.fetch(
         """
         SELECT butler FROM public.butler_reachability_conditions
          WHERE resolved_at IS NULL ORDER BY butler
@@ -223,17 +210,21 @@ async def _insert_error(
     )
 
 
-async def test_row_resolves_to_the_same_key_the_feed_computes(pool: asyncpg.Pool) -> None:
+async def test_row_resolves_to_the_same_key_the_feed_computes(ledger_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
     audit_id = await _insert_error(
-        pool, error="KeyError: 'access_token'", ts=now - timedelta(hours=1)
+        ledger_pool, error="KeyError: 'access_token'", ts=now - timedelta(hours=1)
     )
 
-    rows = await pool.fetch(build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24))
+    rows = await ledger_pool.fetch(
+        build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24)
+    )
     assert len(rows) == 1
     resolved = issue_from_audit_group_row(rows[0])
 
-    feed = [issue_from_audit_group_row(r) for r in await pool.fetch(build_audit_group_query())]
+    feed = [
+        issue_from_audit_group_row(r) for r in await ledger_pool.fetch(build_audit_group_query())
+    ]
     feed_keys = {i.issue_key for i in feed}
     assert resolved.issue_key in feed_keys, (
         "the door resolves to a key the Issues feed does not have; the link would 404"
@@ -241,7 +232,7 @@ async def test_row_resolves_to_the_same_key_the_feed_computes(pool: asyncpg.Pool
     assert resolved.issue_key == audit_group_key("KeyError: 'access_token'")
 
 
-async def test_rows_that_normalize_together_resolve_to_one_group(pool: asyncpg.Pool) -> None:
+async def test_rows_that_normalize_together_resolve_to_one_group(ledger_pool: asyncpg.Pool) -> None:
     """The client-side ``firstErrorLine`` approximation could not do this.
 
     These two raw ``error`` values differ in their trailing traceback AND in a
@@ -251,18 +242,18 @@ async def test_rows_that_normalize_together_resolve_to_one_group(pool: asyncpg.P
     """
     now = datetime.now(UTC)
     first = await _insert_error(
-        pool,
+        ledger_pool,
         error="OSError: cannot open /tmp/tmpab12cd34/state.json\n  at loader.py:19",
         ts=now - timedelta(hours=3),
     )
     second = await _insert_error(
-        pool,
+        ledger_pool,
         error="OSError: cannot open /tmp/tmpZZ99zz00/state.json\n  at writer.py:88",
         ts=now - timedelta(hours=2),
     )
 
     for audit_id in (first, second):
-        rows = await pool.fetch(
+        rows = await ledger_pool.fetch(
             build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24)
         )
         assert len(rows) == 1
@@ -275,58 +266,66 @@ async def test_rows_that_normalize_together_resolve_to_one_group(pool: asyncpg.P
 
 
 async def test_historical_row_is_invisible_in_the_default_window_but_found_with_none(
-    pool: asyncpg.Pool,
+    ledger_pool: asyncpg.Pool,
 ) -> None:
     """A 45-day-old failure has no group in a 24h window -- and that absence is
     real, not a lookup failure.  Widening the bound to NULL must find it."""
     now = datetime.now(UTC)
-    audit_id = await _insert_error(pool, error="RuntimeError: ancient", ts=now - timedelta(days=45))
+    audit_id = await _insert_error(
+        ledger_pool, error="RuntimeError: ancient", ts=now - timedelta(days=45)
+    )
 
-    narrow = await pool.fetch(
+    narrow = await ledger_pool.fetch(
         build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24)
     )
     assert narrow == [], "a 45-day-old row appeared inside a 24h window"
 
-    all_time = await pool.fetch(build_audit_group_for_row_query(), audit_id, None)
+    all_time = await ledger_pool.fetch(build_audit_group_for_row_query(), audit_id, None)
     assert len(all_time) == 1
     assert issue_from_audit_group_row(all_time[0]).issue_key == audit_group_key(
         "RuntimeError: ancient"
     )
 
 
-async def test_unrelated_errors_never_collapse_into_one_group(pool: asyncpg.Pool) -> None:
+async def test_unrelated_errors_never_collapse_into_one_group(ledger_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
-    mine = await _insert_error(pool, error="ValueError: alpha", ts=now - timedelta(hours=1))
-    await _insert_error(pool, error="ValueError: beta", ts=now - timedelta(hours=1))
+    mine = await _insert_error(ledger_pool, error="ValueError: alpha", ts=now - timedelta(hours=1))
+    await _insert_error(ledger_pool, error="ValueError: beta", ts=now - timedelta(hours=1))
 
-    rows = await pool.fetch(build_audit_group_for_row_query(), mine, now - timedelta(hours=24))
+    rows = await ledger_pool.fetch(
+        build_audit_group_for_row_query(), mine, now - timedelta(hours=24)
+    )
     assert len(rows) == 1
     issue = issue_from_audit_group_row(rows[0])
     assert issue.occurrences == 1
     assert issue.issue_key == audit_group_key("ValueError: alpha")
 
 
-async def test_scheduled_failure_row_resolves_to_a_critical_group(pool: asyncpg.Pool) -> None:
+async def test_scheduled_failure_row_resolves_to_a_critical_group(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     now = datetime.now(UTC)
     audit_id = await _insert_error(
-        pool,
+        ledger_pool,
         error="TimeoutError: sync overran",
         ts=now - timedelta(hours=1),
         metadata={"trigger_source": "schedule:nightly_sync"},
     )
 
-    rows = await pool.fetch(build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24))
+    rows = await ledger_pool.fetch(
+        build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24)
+    )
     issue = issue_from_audit_group_row(rows[0])
     assert issue.severity == "critical"
     assert issue.type == "scheduled_task_failure:nightly-sync"
 
 
-async def test_success_row_has_no_group_at_all(pool: asyncpg.Pool) -> None:
+async def test_success_row_has_no_group_at_all(ledger_pool: asyncpg.Pool) -> None:
     """``normalized_errors`` filters on ``result = 'error'``, so a success row's
     id resolves to nothing -- the router must report that explicitly rather than
     render the empty result as calm."""
     now = datetime.now(UTC)
-    audit_id = await pool.fetchval(
+    audit_id = await ledger_pool.fetchval(
         """
         INSERT INTO public.audit_log (actor, action, result, error, ts)
         VALUES ($1, 'session', 'success', NULL, $2)
@@ -336,5 +335,7 @@ async def test_success_row_has_no_group_at_all(pool: asyncpg.Pool) -> None:
         now - timedelta(hours=1),
     )
 
-    rows = await pool.fetch(build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24))
+    rows = await ledger_pool.fetch(
+        build_audit_group_for_row_query(), audit_id, now - timedelta(hours=24)
+    )
     assert rows == []

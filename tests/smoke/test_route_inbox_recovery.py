@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,6 +27,7 @@ from butlers.core.route_inbox import (
     route_inbox_recovery_sweep,
     route_inbox_scan_unprocessed,
 )
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
 
 pytestmark = pytest.mark.smoke
 
@@ -37,21 +37,10 @@ pytestmark = pytest.mark.smoke
 # ---------------------------------------------------------------------------
 
 
-def _make_pool() -> tuple[Any, Any]:
-    """Build a minimal asyncpg pool mock (no real DB)."""
-    conn = AsyncMock()
-    conn.execute = AsyncMock(return_value=None)
-    conn.fetch = AsyncMock(return_value=[])
-    conn.fetchval = AsyncMock(return_value=uuid.uuid4())
-
-    pool = MagicMock()
-    pool.acquire = MagicMock(
-        return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=conn),
-            __aexit__=AsyncMock(return_value=False),
-        )
-    )
-    return pool, conn
+def _pool_and_conn() -> tuple[FakePool, FakeConnection]:
+    """Build a minimal fake asyncpg pool (no real DB)."""
+    pool = fake_pool(execute=None, fetch=[], fetchval=uuid.uuid4())
+    return pool, pool.connection
 
 
 def _stub_row(row_id: uuid.UUID | None = None) -> dict:
@@ -76,7 +65,7 @@ async def test_scan_returns_accepted_and_processing_rows() -> None:
     can leave rows in either state with no task to complete them.  The scanner
     must include both so every stuck row is recovered.
     """
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     accepted_id = uuid.uuid4()
     processing_id = uuid.uuid4()
 
@@ -110,7 +99,7 @@ async def test_scan_returns_accepted_and_processing_rows() -> None:
 
 async def test_scan_returns_empty_when_no_stuck_rows() -> None:
     """scan_unprocessed returns an empty list when no rows are past the grace period."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     conn.fetch = AsyncMock(return_value=[])
 
     results = await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50)
@@ -129,7 +118,7 @@ async def test_recovery_sweep_dispatches_once_per_row() -> None:
     This is the core delivery guarantee: no row is silently skipped and no row
     receives more than one recovery dispatch per sweep.
     """
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     row_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
     conn.fetch = AsyncMock(return_value=[_stub_row(rid) for rid in row_ids])
 
@@ -153,7 +142,7 @@ async def test_recovery_sweep_dispatches_once_per_row() -> None:
 
 async def test_recovery_sweep_returns_zero_when_no_rows() -> None:
     """recovery_sweep returns 0 and never calls dispatch_fn when there are no stuck rows."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     conn.fetch = AsyncMock(return_value=[])
     dispatch = AsyncMock()
 
@@ -169,7 +158,7 @@ async def test_recovery_sweep_counts_only_successful_dispatches() -> None:
     A transient dispatch failure (e.g. spawner timeout) must not prevent the
     remaining rows from being re-dispatched.
     """
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     row_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
     conn.fetch = AsyncMock(return_value=[_stub_row(rid) for rid in row_ids])
 
@@ -205,7 +194,7 @@ async def test_recovered_row_reaches_terminal_state() -> None:
     is written to the DB as 'processed' (a terminal state).  This test verifies the
     full path: scan → dispatch → mark_processed → DB write.
     """
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     row_id = uuid.uuid4()
     session_id = uuid.uuid4()
 

@@ -612,6 +612,16 @@ Scope: v1-mandatory
 - **AND** the endpoint SHALL not rewrite, delete, relabel, or return the
   legacy row
 
+#### Scenario: A parser call that omits optional parameters pairs with its executed capture
+
+- **WHEN** a runtime reports a `chronicler_day_close_bundle` call that omits an optional
+  parameter the tool binds a default for
+- **THEN** the merged tool-call list SHALL hold one record for that call, carrying the
+  executed capture's outcome, result and bound `date_label` and `timezone`
+- **AND** that record SHALL keep the canonical tool name, so the day-close writer finds
+  its single outcome-bearing capture
+- **AND** no raw parser argument outside the capture allowlist SHALL be persisted
+
 ### Requirement: Episode Participant Resolution Read Path
 
 The API SHALL expose participant entity membership as a first-class
@@ -803,6 +813,11 @@ cache/admission metadata.
 - **AND** the daemon SHALL derive the exact manual-refresh trigger source,
   preserve configured complexity, invoke the existing token-bounded day-close
   path, run normal cache admission, and verify the exact coverage witness
+- **AND** the session-creation validator SHALL accept exactly
+  `api:day_close_refresh:<YYYY-MM-DD>` with a real calendar date and no other
+  `api:` source
+- **AND** a refresh that fails SHALL NOT be retried by the day-close continuation
+  before a fixed backoff has elapsed
 - **AND** the dashboard SHALL NOT depend on an in-process spawner callback
 
 #### Scenario: Manual regeneration is owner-silent

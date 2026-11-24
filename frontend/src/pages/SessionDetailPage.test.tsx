@@ -148,6 +148,9 @@ describe("SessionDetailPage — content", () => {
     setSessionState(BASE_SESSION);
     const html = renderPage();
     expect(html).toContain("claude-sonnet-4-6");
+    expect(html).toContain("No served identity recorded.");
+    setSessionState({ ...BASE_SESSION, served_source_state: "unavailable" });
+    expect(renderPage()).toContain("Served evidence unavailable.");
   });
 
   it("renders session prompt", () => {

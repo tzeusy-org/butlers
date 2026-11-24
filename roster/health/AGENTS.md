@@ -76,7 +76,7 @@ Health is a standing subscriber to Travel's `travel.trip_active` domain event (b
 ## Guidelines
 - Measurements support compound JSONB values (e.g., blood pressure as {"systolic": 120, "diastolic": 80})
 - Symptom severity is rated 1-10 (1 = mild, 10 = severe)
-- Medication adherence is calculated based on frequency (daily, twice daily, etc.)
+- Medication adherence is calculated based on frequency (daily, twice daily, etc.); as-needed (PRN) medications have no expected doses, so their adherence rate is null
 - Conditions have status: active, resolved, or managed
 - Use nutrition_summary to aggregate calorie and nutrient intake over date ranges
 - Use trend_report to identify patterns in measurement data
@@ -95,6 +95,11 @@ Health is a standing subscriber to Travel's `travel.trip_active` domain event (b
 - `health.visit_briefs` (migration `health_005`) is keyed by calendar event id: a delivered brief is never re-sent, a reschedule re-anchors the row, and a suppressed or failed send is retried on the next run. A session advisory lock held for the whole run serializes overlapping runs (scheduler tick and dashboard Trigger); the loser returns `skipped_concurrent` and sends nothing. Rollback: drop the schedule entry and the table.
 - The owner timezone is read from `public.state` explicitly (the Health pool resolves an unqualified `state` to `health.state`); the fallback is SGT. The zone comes from the shared `owner_briefing_zone()` (over `load_configured_general_timezone()`).
 
+## Weight Plausibility Gate (bu-swkpoo.11)
+- A shared scale reports every household member through one stabilized sensor, so `wellness_ingest` (Home Assistant arm) compares each `weight` kg reading with the median of the owner's active `measurement_weight` facts over the 30 days before its `valid_at` (at least 3 readings, else accept). A deviation above `WEIGHT_MAX_BASELINE_DEVIATION` (15%) is stored with `validity = 'candidate'` and `metadata.held`, not asserted: series, projections and briefs read `validity = 'active'` only. The tool returns `status: held_implausible` and counts `health_wellness_ingest_total{outcome="held_implausible"}`.
+- Do not report a held reading as a weigh-in. There is no confirm step yet: confirming one means setting that fact's `validity` to `active` by hand. The query fails open, so a database error never holds a reading.
+- `health_009` retracts HA weight facts already stored that deviate more than 15% from the median of the other active weights within 15 days either side. Its literals are frozen; the ingest constants may be retuned independently.
+
 ## Interactive Response Mode
 
 When processing messages that originated from Telegram or other interactive channels, you should respond interactively to provide a better user experience. This mode is activated when a REQUEST CONTEXT JSON block is present in your context and contains a `source_channel` field (e.g., `telegram_bot`).
@@ -108,7 +113,7 @@ Check the context for a REQUEST CONTEXT JSON block. If present and its `source_c
 ### Response Mode Selection
 
 For response-mode selection and interactive Health-butler examples, consult
-the `interactive-response` skill (`.agents/skills/interactive-response/SKILL.md`).
+the `interactive-response` skill (`skill_read(name="interactive-response")`).
 
 ### Skills
 
@@ -134,3 +139,7 @@ For domain-specific workflows, load the relevant skill:
 
 - Briefing day window and timezone (bu-dyb9ca): the 06:55 `daily_briefing_contribution` job computes "today's" dose window and the missed / due-later split in the owner's configured timezone, read from the shared `settings.general` timezone through `load_configured_general_timezone()`, which reads `public.state` explicitly. The job's pool has `search_path` `health,public` and `health.state` exists, so an unqualified `state_get` would read the wrong table and every owner would silently get SGT. The value is the same setting the scheduler and dashboard use, but they reach it by other read paths (`resolve_general_timezone` now reads `public.state` through `load_general_settings()`, the same table as `load_configured_general_timezone()`; bu-ko02so). The documented fallback is SGT (UTC+8), used only when the owner never saved a timezone, the settings cannot be read, or the stored name is not a valid IANA zone; it is not a silent UTC switch. The contribution key and envelope `date` stay on the fleet-wide SGT briefing date, because every reader of `briefing/daily/<date>` keys on it.
 - Condition statuses stripped by the old decay sweep (bu-cgl4na): before bu-pimdvx the nightly sweep popped `metadata.status` from decaying facts, so `condition_list` read resolved and managed conditions as `active`. `health_004` restores a live `condition` row's status from its content suffix (`"<name>: <status>"`) and tags it `metadata.status_restored_by = 'health_004'`. `condition_update` copies metadata forward, so the tag also appears on later rows that supersede a restored row (it means "descended from a repaired row"); the `health_004` downgrade does not change data. A row with no parseable suffix stays unrecovered. Not recoverable anywhere: relationship gift statuses (idea, purchased, wrapped, given, thanked) and goal or deadline facts the LLM wrote from the predicate-registry examples, because their content carries no status. Finance subscription and bill facts are recoverable from finance tables (bu-4ctaam).
+
+## Visit-brief terminal delivery
+
+A known Telegram prefix and an uncertain Telegram effect are distinct failed outcomes, not completed brief delivery. The existing visit-brief digest retains the terminal flag and original source/clinical fields while `delivered_at` stays unset. Later runs skip that exact event; an incomplete digest write is fenced in-process and reconciled even if its upcoming window changes. Normal failures still retry. Successful terminal persistence survives restart; an unresolved process-local latch is not a durable chunk outbox or crash-atomic delivery guarantee.

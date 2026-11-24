@@ -271,6 +271,12 @@ class ConversationMessage(BaseModel):
     captured_at: datetime | None = Field(
         None, description="When page_context was captured; null when page_context is null"
     )
+    taint_goal_id: UUID | None = Field(
+        None, description="RFC 0038 D6: the exposed goal that wrote this message, if any"
+    )
+    taint_invocation_id: UUID | None = Field(
+        None, description="RFC 0038 D6: the exposed goal invocation that wrote this message"
+    )
 
     @field_validator("sources", "citations", mode="before")
     @classmethod

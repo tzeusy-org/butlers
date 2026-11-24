@@ -27,6 +27,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -40,16 +41,6 @@ _T0 = datetime(2026, 7, 5, 0, 0, 0, tzinfo=UTC)
 _T1 = datetime(2026, 7, 6, 0, 0, 0, tzinfo=UTC)
 
 
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
 def _episode_row(
     *,
     episode_id: str | None = None,
@@ -60,8 +51,8 @@ def _episode_row(
     payload: dict | None = None,
     entity_id: Any = None,
     layer: str = "activity",
-) -> _Row:
-    return _Row(
+) -> Record:
+    return Record(
         {
             "episode_id": episode_id or str(uuid4()),
             "source_name": source_name,
@@ -84,7 +75,7 @@ def _find_chronicler_router_module(app: Any) -> Any:
 
 def _build_app(
     *,
-    rows: list[_Row] | None = None,
+    rows: list[Record] | None = None,
     raise_error: bool = False,
     fan_out_results: dict[str, list[Any]] | None = None,
     fan_out_failed: list[str] | None = None,
@@ -158,7 +149,7 @@ async def test_resolved_companion_returned_with_name_channel_and_duration():
     )
     app, db = _build_app(
         rows=[row],
-        fan_out_results={"relationship": [_Row({"id": _ENTITY_A, "canonical_name": "Alex"})]},
+        fan_out_results={"relationship": [Record({"id": _ENTITY_A, "canonical_name": "Alex"})]},
     )
     resp = await _get(app, _PARAMS)
     assert resp.status_code == 200
@@ -293,8 +284,8 @@ async def test_companions_sorted_by_duration_desc():
         rows=rows,
         fan_out_results={
             "relationship": [
-                _Row({"id": _ENTITY_A, "canonical_name": "Short"}),
-                _Row({"id": _ENTITY_B, "canonical_name": "Long"}),
+                Record({"id": _ENTITY_A, "canonical_name": "Short"}),
+                Record({"id": _ENTITY_B, "canonical_name": "Long"}),
             ]
         },
     )

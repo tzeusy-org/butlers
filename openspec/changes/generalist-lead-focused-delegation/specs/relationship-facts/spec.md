@@ -30,7 +30,15 @@ carries no goal, such as an owner dashboard call, SHALL record the goal and
 invocation as unknown rather than failing the write. Rows written before
 cutover SHALL keep their recorded session identifier unchanged.
 
-Source: RFC 0038 D7 and D17
+A fact row written under an exposed assertion carries its writer pointer
+(`taint_goal_id`, `taint_invocation_id`). Its S1 label SHALL resolve through
+that pointer to the writer invocation's persisted label, with no per-record
+label column; a missing, dangling or unreadable pointer SHALL resolve to the
+unknown label (`{world}`, all six categories). An unstamped legacy fact keeps
+its content-authority behaviour (REQ-capability-authorization-019).
+
+ID: REQ-relationship-facts-012
+Source: RFC 0038 D7 and D17; S1 (bu-dhloi1.6)
 Scope: v1-mandatory
 
 #### Scenario: Direct write records evidence and provenance atomically

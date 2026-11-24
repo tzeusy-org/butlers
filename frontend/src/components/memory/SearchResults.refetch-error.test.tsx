@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 
 import { inspectMemory } from "@/api/client";
+import type { MemoryInspectResult, MemoryPaginatedResponse } from "@/api/types";
 import SearchResults from "@/components/memory/SearchResults";
 
 vi.mock("@/api/client", async (original) => ({
@@ -17,15 +18,32 @@ vi.mock("@/api/client", async (original) => ({
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-describe("search refetch failure after an empty response", () => {
+describe("search refetch failure after a cached response", () => {
   afterEach(() => vi.mocked(inspectMemory).mockReset());
 
-  it("replaces the cached empty verdict with a retryable error, then recovers", async () => {
-    const empty = { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } };
+  it.each(["empty", "non-empty"] as const)("replaces cached %s results with a retryable error, then recovers", async (population) => {
+    const rows: MemoryInspectResult[] = population === "empty" ? [] : [{
+      id: "search-episode",
+      kind: "episode",
+      content: "Retained search episode",
+      butler: "general",
+      created_at: "2026-02-19T01:00:00Z",
+      metadata: {},
+    }];
+    const cached: MemoryPaginatedResponse<MemoryInspectResult> = {
+      data: rows,
+      meta: { total: rows.length, offset: 0, limit: 50, has_more: false },
+    };
+    const recovered = {
+      ...cached,
+      data: rows.map((row) => ({ ...row, content: "Recovered search episode" })),
+    };
+    const initialText = population === "empty" ? "Nothing in the books." : "Retained search episode";
+    const recoveredText = population === "empty" ? "Nothing in the books." : "Recovered search episode";
     vi.mocked(inspectMemory)
-      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(cached)
       .mockRejectedValueOnce(new Error("inspect unavailable"))
-      .mockResolvedValueOnce(empty);
+      .mockResolvedValueOnce(recovered);
 
     // Use the real hook/cache: refetch errors retain successful data in React Query.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -43,24 +61,25 @@ describe("search refetch failure after an empty response", () => {
           </QueryClientProvider>,
         );
       });
-      await waitFor(() => expect(container.textContent).toContain("Nothing in the books."));
+      await waitFor(() => expect(container.textContent).toContain(initialText));
 
       await act(async () => { await client.refetchQueries(); });
 
       await waitFor(() => {
-        const error = container.querySelector('[data-testid="memory-search-error"]');
+        const error = container.querySelector('[role="alert"]');
         expect(error?.getAttribute("role")).toBe("alert");
-        expect(error?.textContent).toContain("Couldn’t load search results.");
+        expect(error?.textContent).toContain("search results");
         expect(container.textContent).not.toContain("Nothing in the books.");
+        expect(container.textContent).not.toContain("Retained search episode");
       });
 
-      const retry = container.querySelector<HTMLButtonElement>('[data-testid="memory-search-error"] button');
-      expect(retry?.textContent).toBe("retry");
+      const retry = container.querySelector<HTMLButtonElement>('[role="alert"] button');
+      expect(retry?.textContent).toMatch(/^retry$/i);
       await act(async () => { retry!.click(); });
       await waitFor(() => {
         expect(inspectMemory).toHaveBeenCalledTimes(3);
-        expect(container.textContent).toContain("Nothing in the books.");
-        expect(container.querySelector('[data-testid="memory-search-error"]')).toBeNull();
+        expect(container.textContent).toContain(recoveredText);
+        expect(container.querySelector('[role="alert"]')).toBeNull();
       });
     } finally {
       act(() => root.unmount());

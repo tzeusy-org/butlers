@@ -44,8 +44,10 @@ def registered_notify():
     """Read the real registration signature without invoking a handler."""
     handlers = {}
 
-    def decorate(_group):
+    def decorate(_group, **tool_kwargs):
         def capture(fn):
+            if fn.__name__ == "notify":
+                assert tool_kwargs == {"exclude_args": ["priority"]}
             handlers[fn.__name__] = fn
             return fn
 
@@ -209,10 +211,13 @@ async def test_real_sanitized_notify_capture_and_merge_selects_intended_narratio
     class MCP:
         def __init__(self):
             self.handlers = {}
+            self.metadata = {}
 
         def tool(self, *args, **kwargs):
             def decorate(fn):
-                self.handlers[kwargs.get("name") or fn.__name__] = fn
+                name = kwargs.get("name") or fn.__name__
+                self.handlers[name] = fn
+                self.metadata[name] = kwargs
                 return fn
 
             return decorate
@@ -236,7 +241,8 @@ async def test_real_sanitized_notify_capture_and_merge_selects_intended_narratio
         is_messenger=False,
         route_metrics=None,
     )
-    register_notification_tools(context, proxy, lambda _group: proxy.tool())
+    register_notification_tools(context, proxy, lambda _group, **kwargs: proxy.tool(**kwargs))
+    assert mcp.metadata["notify"] == {"exclude_args": ["priority"]}
     token = set_current_runtime_session_id(str(SESSION))
     try:
         with ExitStack() as stack:
@@ -294,12 +300,20 @@ async def test_real_sanitized_notify_capture_and_merge_selects_intended_narratio
     pool.execute.assert_not_awaited()
     pool.fetch.assert_not_awaited()
     assert len(executed) == 1 and executed[0]["outcome"] == "success"
-    assert "input" not in executed[0]  # No raw message capture widening.
+    # Only the notify allowlist is captured; delivery arguments stay out.
+    assert executed[0]["input"] == {
+        "message": MESSAGE,
+        "channel": "telegram",
+        "intent": "send",
+        "recipient": None,
+        "entity_id": None,
+        "request_context": None,
+    }
     parsed = [
         {"name": "mcp__chronicler__notify", "input": {"channel": "telegram", "message": MESSAGE}}
     ]
     merged = _merge_tool_call_records(parsed, executed, butler_name="chronicler")
-    assert len(merged) == 2  # Default-expanded executed hash differs from raw parser hash.
+    assert len(merged) == 1  # The parser call pairs with its capture despite omitted defaults.
     selected = select_day_close_narration(
         [bundle(), *merged],
         output="Delivery deferred by quiet hours.",
@@ -341,7 +355,8 @@ def test_only_recomputed_actual_signature_fingerprint_binds_value_carrier(repres
     if representation == "JSON-arguments":
         parser = {"name": "mcp__chronicler__notify", "arguments": json.dumps(payload)}
     merged = _merge_tool_call_records([parser], [captured], butler_name="chronicler")
-    assert len(merged) == (1 if representation == "merged" else 2)
+    # A capture without its input view cannot confirm the parser's values, so they stay apart.
+    assert len(merged) == 2
     selected = select_day_close_narration(
         [bundle(), *merged],
         output="Delivery deferred by quiet hours.",
@@ -362,7 +377,6 @@ def test_only_recomputed_actual_signature_fingerprint_binds_value_carrier(repres
         "missing-hash",
         "missing-carrier",
         "duplicate-carrier",
-        "unknown-key",
         "duplicate-JSON-key",
         "malformed-JSON",
     ],
@@ -386,8 +400,6 @@ def test_unbound_or_ambiguous_parser_values_never_establish_executed_narration(s
         parsed = []
     elif species == "duplicate-carrier":
         parsed.append(dict(parser))
-    elif species == "unknown-key":
-        parser["input"]["invented_target"] = "fixture-other"
     elif species == "duplicate-JSON-key":
         parser["input"] = '{"message":"first","message":"second","channel":"telegram"}'
     elif species == "malformed-JSON":
@@ -405,10 +417,33 @@ def test_unbound_or_ambiguous_parser_values_never_establish_executed_narration(s
     assert selected.invalid
 
 
+def test_a_parser_key_outside_the_notify_allowlist_never_reaches_the_merged_record():
+    """An invented argument is stripped; only values the executed fingerprint proves bind."""
+    notify = notification()
+    captured = {k: v for k, v in notify.items() if k != "input"}
+    parser = {
+        "name": "mcp__chronicler__notify",
+        "input": {**notify["input"], "invented_target": "fixture-other"},
+    }
+    merged = _merge_tool_call_records([parser], [captured], butler_name="chronicler")
+    assert all("invented_target" not in call.get("input", {}) for call in merged)
+    selected = select_day_close_narration(
+        [bundle(), *merged],
+        output="Delivery deferred by quiet hours.",
+        session_id=str(SESSION),
+        target_date=DAY,
+        timezone="UTC",
+    )
+    assert not selected.invalid and selected.prose == MESSAGE
+
+
 @pytest.mark.parametrize("schema", ["unavailable", "changed-default"])
 def test_signature_discovery_failure_or_version_mismatch_cannot_guess_defaults(monkeypatch, schema):
     import inspect
 
+    from butlers.chronicler import day_close_writer as writer
+
+    discover = writer._notify_signature
     notify = notification()
     signature = inspect.signature(registered_notify())
     if schema == "changed-default":
@@ -429,6 +464,30 @@ def test_signature_discovery_failure_or_version_mismatch_cannot_guess_defaults(m
         timezone="UTC",
     )
     assert selected.invalid
+    # Inspect real registration for each policy drift, not a supplied signature.
+    for policy in (None, [], ["recipient"], ["priority", "recipient"]):
+
+        def changed_registration(context, mcp, decorate, policy=policy):
+            def changed_policy(group, **kwargs):
+                if "exclude_args" in kwargs:
+                    if policy is None:
+                        kwargs.pop("exclude_args")
+                    else:
+                        kwargs["exclude_args"] = policy
+                return decorate(group, **kwargs)
+
+            register_notification_tools(context, mcp, changed_policy)
+
+        with monkeypatch.context() as changed:
+            changed.setattr(
+                "butlers.core_tools._notifications.register_notification_tools",
+                changed_registration,
+            )
+            discover.cache_clear()
+            try:
+                assert discover() is None
+            finally:
+                discover.cache_clear()
 
 
 @pytest.mark.parametrize("inner", [{"status": "failed"}, {"status": "refused"}, None])

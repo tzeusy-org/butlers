@@ -8,8 +8,10 @@ header.
 
 Slices landed: the event publish (:func:`publish_security_event`) and the
 owner-answer door (:func:`record_security_answer`: ``yes`` is a no-op, ``no``
-opens a fleet case carrying the provider recovery door). The interactive
-"was this you?" prompt that calls :func:`record_security_answer` is deferred.
+opens a fleet case carrying the provider recovery door). The "was this you?" question is
+``butlers.core.security_questions`` (bu-s11n0s.1 S5c): an authenticated event is admitted to its
+outbox here, the owner answers on the dashboard, and the scheduled cycle calls
+:func:`record_security_answer` for each committed ``no``. The Telegram callback is deferred.
 """
 
 from __future__ import annotations
@@ -38,7 +40,8 @@ SECURITY_CASE_PREFIX = "account_security:"
 _SUBJECT_PREFIX = "Subject:"
 
 
-def _subject_from_normalized_text(normalized_text: str | None) -> str:
+def subject_from_normalized_text(normalized_text: str | None) -> str:
+    """An email's subject from its ingest ``normalized_text`` (``Subject: ...`` line 1)."""
     first_line = (normalized_text or "").split("\n", 1)[0].strip()
     if not first_line.startswith(_SUBJECT_PREFIX):
         return ""
@@ -77,7 +80,7 @@ def classify_ingest_record(
     auth_results = _auth_results_from_raw(raw)
     return classify_account_security(
         sender_address,
-        _subject_from_normalized_text(normalized_text),
+        subject_from_normalized_text(normalized_text),
         headers={"Authentication-Results": auth_results} if auth_results else None,
     )
 
@@ -164,7 +167,23 @@ async def publish_security_event(
     if result.get("status") != "ok":
         logger.warning("account-security event publish refused: %s", result.get("error"))
         return None
-    return str(result["event_id"])
+    event_id = str(result["event_id"])
+    if classification.sender_verification == "authenticated":
+        # Publisher-local outbox (the bus excludes a publisher from its own fan-out): one
+        # durable question per authenticated event. A crash before this line is recovered from
+        # the stored event by the scheduled cycle. Unverified events stay quiet records.
+        from butlers.core.security_questions import admit_event
+
+        try:
+            await admit_event(
+                pool,
+                event_id=event_id,
+                provider=classification.provider,
+                kind=classification.kind,
+            )
+        except Exception:
+            logger.warning("security question admission deferred to the sweep", exc_info=True)
+    return event_id
 
 
 async def record_security_answer(pool: Any, *, event_id: str, answer: str) -> dict[str, Any]:

@@ -6,7 +6,7 @@ TBD - created by archiving change computed-ci-shard-partition. Update Purpose af
 ## Requirements
 
 ### Requirement: Fresh collected membership and one inventory
-The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. A dedicated bounded inventory job SHALL start after route and own collection, both budgets and the exact source/run/attempt-bound inventory/assignment artifact. Backend matrix children SHALL depend on route and successful inventory, independently of static guards. Both test budgets SHALL consume this same inventory; collection and envelope failures SHALL be non-passing.
+The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. A dedicated bounded inventory job SHALL start after route and own collection and the exact source/run/attempt-bound inventory/assignment artifact. Backend matrix children SHALL depend on route and successful inventory, independently of static guards. Collection and envelope failures SHALL be non-passing. The CI system SHALL NOT enforce a collected-test count cap (owner decision 2026-11-03); test growth SHALL be governed by CI duration SLAs, namely the five-minute routine-lane target and job timeouts as they exist today, with an enforced duration gate to follow.
 
 ID: REQ-ci-shard-assurance-001
 Source: bu-ly3lv5.6 P1-P3; original complete S1-S5 and ten folded source objects; adopted testing-and-verification
@@ -208,6 +208,11 @@ Scope: v1-mandatory
 #### Scenario: Dependency prebundling preserves independent item authority
 - **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
 - **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
+
+#### Scenario: Failed execution retains informational opaque diagnostics only
+- **WHEN** an actual nonzero Vitest child leaves a fresh closed reporter file bound to its unchanged tracked source/run/attempt/shard identity and mandatory configuration predicates
+- **THEN** validated available opaque module/item observations and error/outcome counters survive cleanup while the original child exit, incomplete receipt and nonpassing wrapper verdict remain explicit
+- **AND** absent independent-reference membership and configuration-match authority remain `UNKNOWN` without discarding otherwise safe reported observations; missing, stale, malformed or mismatched evidence stays `UNKNOWN`, raw names/parameters/provider/exception/output text never escape, and diagnostics cannot authorize complete population, frontend or required-check success
 
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conversion and frontend expansion SHALL account for actual expanded rows and a concurrent peak no greater than14. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.

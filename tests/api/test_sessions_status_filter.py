@@ -27,6 +27,7 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db as _sessions_get_db
 from butlers.api.routers.sessions import _resolve_success_filter
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -54,12 +55,6 @@ def _make_session_row(*, success: bool) -> dict:
     }
 
 
-def _make_record(row: dict):
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
 def _make_app_filtering_on_success(rows: list[dict]) -> object:
     """Wire an app whose fan_out honors the resolved ``success`` WHERE arg.
 
@@ -79,7 +74,7 @@ def _make_app_filtering_on_success(rows: list[dict]) -> object:
         matched = _matching(tuple(args))
         if "count" in sql:
             return {"atlas": [[len(matched)]]}
-        return {"atlas": [_make_record(r) for r in matched]}
+        return {"atlas": [Record(r) for r in matched]}
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
@@ -105,7 +100,7 @@ def _make_butler_app_filtering_on_success(rows: list[dict]) -> object:
         return len(_matching(tuple(args)))
 
     async def _fetch(sql, *args):
-        return [_make_record(r) for r in _matching(tuple(args))]
+        return [Record(r) for r in _matching(tuple(args))]
 
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(side_effect=_fetchval)

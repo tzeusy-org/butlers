@@ -197,7 +197,7 @@ async def test_missing_dispatcher_pool_no_ops(monkeypatch) -> None:
 
 
 def test_dispatcher_exposes_pool() -> None:
-    from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+    from butlers.core.discretion_dispatcher import DiscretionDispatcher
 
     sentinel = object()
     disp = DiscretionDispatcher(pool=sentinel)  # type: ignore[arg-type]

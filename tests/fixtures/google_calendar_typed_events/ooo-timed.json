@@ -1,0 +1,23 @@
+{
+  "kind": "calendar#event",
+  "etag": "\"3400000000000000\"",
+  "id": "synthooo0001",
+  "status": "confirmed",
+  "created": "2026-06-20T08:00:00.000Z",
+  "updated": "2026-06-20T08:00:00.000Z",
+  "summary": "Out of office",
+  "creator": {"email": "owner@example.com", "self": true},
+  "organizer": {"email": "owner@example.com", "self": true},
+  "start": {"dateTime": "2026-07-01T09:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "end": {"dateTime": "2026-07-03T18:00:00+08:00", "timeZone": "Asia/Singapore"},
+  "transparency": "opaque",
+  "visibility": "public",
+  "iCalUID": "synthooo0001@example.com",
+  "sequence": 0,
+  "reminders": {"useDefault": false},
+  "eventType": "outOfOffice",
+  "outOfOfficeProperties": {
+    "autoDeclineMode": "declineAllConflictingInvitations",
+    "declineMessage": "Away until Friday"
+  }
+}

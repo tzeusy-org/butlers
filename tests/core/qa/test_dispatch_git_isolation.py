@@ -21,6 +21,8 @@ from butlers.core.git_env import isolated_git_env
 from butlers.core.healing import worktree as healing_worktree
 from butlers.core.qa import dispatch as qa_dispatch
 from butlers.core.qa import repo_clone
+from butlers.core.qa.publication import proposal
+from butlers.core.qa.publication.export import ExportRefused
 
 pytestmark = pytest.mark.unit
 
@@ -551,3 +553,105 @@ async def test_no_op_branch_detection_runs_no_planted_signature_program(tmp_path
 
     assert no_op is False
     assert not marker.exists()
+
+
+def _no_subprocess(*_args, **_kwargs):
+    raise AssertionError("publication head lookup must not spawn git in the agent repository")
+
+
+@pytest.mark.parametrize("packed", [False, True])
+def test_publication_head_lookup_reads_refs_without_running_git(
+    tmp_path: Path, monkeypatch, packed: bool
+):
+    """bu-mc01y5.20: the bound head is parsed from ref files; no git runs in repo_root."""
+    repo_root, _work, _markers = _repository(tmp_path)
+    _git(repo_root, "branch", _BRANCH, f"origin/{_BRANCH}")
+    expected = _git(repo_root, "rev-parse", f"refs/heads/{_BRANCH}")
+    if packed:
+        _git(repo_root, "pack-refs", "--all")
+        assert not (repo_root / ".git/refs/heads" / _BRANCH).exists()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_subprocess)
+    monkeypatch.setattr(subprocess, "Popen", _no_subprocess)
+
+    objects_dir, head = proposal.resolve_branch_head(repo_root, _BRANCH)
+
+    assert head == expected
+    assert objects_dir == repo_root / ".git" / "objects"
+
+
+@pytest.mark.parametrize(
+    ("plant", "branch"),
+    [
+        ("missing", _BRANCH),
+        ("symbolic", _BRANCH),
+        ("symlinked_ref", _BRANCH),
+        ("symlinked_git_dir", _BRANCH),
+        ("fifo_ref", _BRANCH),
+        ("none", "qa/../../config"),
+    ],
+)
+def test_publication_head_lookup_refuses_agent_shaped_refs(tmp_path: Path, plant: str, branch: str):
+    """Symbolic refs, symlinks and traversal never resolve to a bound head."""
+    repo_root, _work, _markers = _repository(tmp_path)
+    ref = repo_root / ".git/refs/heads" / _BRANCH
+    if plant != "missing":
+        _git(repo_root, "branch", _BRANCH, f"origin/{_BRANCH}")
+    if plant == "symbolic":
+        ref.write_text("ref: refs/heads/main\n")
+    elif plant == "symlinked_ref":
+        decoy = tmp_path / "decoy"
+        decoy.write_text(ref.read_text())
+        ref.unlink()
+        ref.symlink_to(decoy)
+    elif plant == "symlinked_git_dir":
+        moved = tmp_path / "elsewhere.git"
+        (repo_root / ".git").rename(moved)
+        (repo_root / ".git").symlink_to(moved)
+    elif plant == "fifo_ref":
+        # A FIFO with no writer would block a plain open() forever.
+        ref.unlink()
+        os.mkfifo(ref)
+
+    with pytest.raises(ExportRefused, match="branch_unreadable"):
+        proposal.resolve_branch_head(repo_root, branch)
+
+
+@pytest.mark.parametrize("stage", ["bind", "publish"])
+async def test_pre_egress_publication_failures_log_type_name_only(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture, stage: str
+):
+    """bu-btoenp: a pre-egress failure can carry unpublished PR text; log its type only."""
+    leaky = "UNPUBLISHED-PR-TEXT-xyz"
+    publisher = MagicMock()
+    publisher.repository = "owner/repo"
+    publisher.record_refusal = AsyncMock(return_value="refused")
+    publisher.publish = AsyncMock(side_effect=RuntimeError(leaky))
+    if stage == "bind":
+        monkeypatch.setattr(proposal, "resolve_branch_head", MagicMock(side_effect=OSError(leaky)))
+    else:
+        monkeypatch.setattr(
+            proposal, "resolve_branch_head", MagicMock(return_value=(tmp_path, "c" * 40))
+        )
+        monkeypatch.setattr(proposal, "build_sealed_export", AsyncMock())
+        monkeypatch.setattr(proposal, "compose_pr_text", MagicMock(return_value=("t", "b")))
+        monkeypatch.setattr(proposal, "load_pr_notes", MagicMock(return_value={}))
+
+    caplog.set_level("WARNING", logger=proposal.__name__)
+    await proposal.publish_investigation(
+        publisher,
+        repo_root=tmp_path,
+        worktree_path=tmp_path,
+        attempt_id=uuid.uuid4(),
+        finding=MagicMock(),
+        branch_name=_BRANCH,
+        base_sha="b" * 40,
+        identity=MagicMock(),
+        labels=[],
+        whitelist=None,
+        dashboard_base_url=None,
+    )
+
+    (record,) = caplog.records
+    assert record.exc_info is None
+    assert leaky not in caplog.text
+    assert ("OSError" if stage == "bind" else "RuntimeError") in record.getMessage()

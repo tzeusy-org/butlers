@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules.calendar import (
     CalendarEvent,
@@ -23,6 +24,7 @@ from butlers.modules.calendar import (
     CalendarEventUpdate,
     CalendarProvider,
 )
+from butlers.testing.mcp import tool_fn
 
 pytestmark = [
     pytest.mark.integration,
@@ -30,172 +32,16 @@ pytestmark = [
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
 
-# ---------------------------------------------------------------------------
-# SQL helpers — minimal native calendar schema for reminder lifecycle tests
-# ---------------------------------------------------------------------------
-
-_CREATE_CALENDAR_SOURCES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_sources (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_key TEXT NOT NULL UNIQUE,
-    source_kind TEXT NOT NULL,
-    lane TEXT NOT NULL DEFAULT 'user',
-    provider TEXT,
-    calendar_id TEXT,
-    butler_name TEXT,
-    display_name TEXT,
-    writable BOOLEAN NOT NULL DEFAULT false,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_sources_lane_check CHECK (lane IN ('user', 'butler')),
-    CONSTRAINT calendar_sources_source_key_nonempty
-        CHECK (length(btrim(source_key)) > 0),
-    CONSTRAINT calendar_sources_source_kind_nonempty
-        CHECK (length(btrim(source_kind)) > 0)
-)
-"""
-
-_CREATE_CALENDAR_EVENTS_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    origin_ref TEXT NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT,
-    body TEXT,
-    location TEXT,
-    timezone TEXT NOT NULL,
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    all_day BOOLEAN NOT NULL DEFAULT false,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    visibility TEXT NOT NULL DEFAULT 'default',
-    recurrence_rule TEXT,
-    source_butler TEXT NOT NULL DEFAULT 'unknown',
-    source_session_id TEXT,
-    etag TEXT,
-    origin_updated_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_events_source_origin_unique UNIQUE (source_id, origin_ref),
-    CONSTRAINT calendar_events_source_origin_nonempty
-        CHECK (length(btrim(origin_ref)) > 0),
-    CONSTRAINT calendar_events_window_check CHECK (ends_at > starts_at),
-    CONSTRAINT calendar_events_status_check
-        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
-)
-"""
-
-_CREATE_CALENDAR_EVENT_INSTANCES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_event_instances (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    origin_instance_ref TEXT NOT NULL,
-    timezone TEXT NOT NULL,
-    starts_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    status TEXT NOT NULL DEFAULT 'confirmed',
-    is_exception BOOLEAN NOT NULL DEFAULT false,
-    origin_updated_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT calendar_event_instances_event_origin_unique
-        UNIQUE (event_id, origin_instance_ref),
-    CONSTRAINT calendar_event_instances_origin_ref_nonempty
-        CHECK (length(btrim(origin_instance_ref)) > 0),
-    CONSTRAINT calendar_event_instances_window_check CHECK (ends_at > starts_at),
-    CONSTRAINT calendar_event_instances_status_check
-        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
-)
-"""
-
-_CREATE_CALENDAR_EVENT_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_event_entities (
-    event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
-    entity_id UUID NOT NULL,
-    PRIMARY KEY (event_id, entity_id)
-)
-"""
-
-_CREATE_CALENDAR_SYNC_CURSORS_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_sync_cursors (
-    source_id UUID NOT NULL REFERENCES calendar_sources(id) ON DELETE CASCADE,
-    cursor_name TEXT NOT NULL DEFAULT 'default',
-    sync_token TEXT,
-    checkpoint JSONB NOT NULL DEFAULT '{}'::jsonb,
-    full_sync_required BOOLEAN NOT NULL DEFAULT false,
-    last_synced_at TIMESTAMPTZ,
-    last_success_at TIMESTAMPTZ,
-    last_error_at TIMESTAMPTZ,
-    last_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, cursor_name),
-    CONSTRAINT calendar_sync_cursors_cursor_name_nonempty
-        CHECK (length(btrim(cursor_name)) > 0)
-)
-"""
-
-_CREATE_CALENDAR_ACTION_LOG_SQL = """
-CREATE TABLE IF NOT EXISTS calendar_action_log (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    idempotency_key TEXT NOT NULL UNIQUE,
-    request_id TEXT,
-    action_type TEXT NOT NULL,
-    action_status TEXT NOT NULL DEFAULT 'pending',
-    source_id UUID REFERENCES calendar_sources(id) ON DELETE SET NULL,
-    event_id UUID REFERENCES calendar_events(id) ON DELETE SET NULL,
-    instance_id UUID REFERENCES calendar_event_instances(id) ON DELETE SET NULL,
-    origin_ref TEXT,
-    action_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    action_result JSONB,
-    error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_at TIMESTAMPTZ,
-    CONSTRAINT calendar_action_log_idempotency_key_nonempty
-        CHECK (length(btrim(idempotency_key)) > 0),
-    CONSTRAINT calendar_action_log_action_type_nonempty
-        CHECK (length(btrim(action_type)) > 0),
-    CONSTRAINT calendar_action_log_status_check
-        CHECK (action_status IN ('pending', 'applied', 'failed', 'noop'))
-)
-"""
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+# Every test runs on ``db_pool``: the core chain creates the calendar projection
+# tables (core_003, core_076, core_194) and the public.entities they link to.
 
 
-@pytest.fixture
-async def reminder_pool(provisioned_postgres_pool):
-    """Fresh DB with the native calendar projection tables."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_CALENDAR_SOURCES_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENTS_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENT_INSTANCES_SQL)
-        await pool.execute(_CREATE_CALENDAR_EVENT_ENTITIES_SQL)
-        await pool.execute(_CREATE_CALENDAR_SYNC_CURSORS_SQL)
-        await pool.execute(_CREATE_CALENDAR_ACTION_LOG_SQL)
-        yield pool
-
-
-class _StubMCP:
-    """Minimal MCP stub that captures registered tools by function name."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self):
-        def decorator(func):
-            self.tools[func.__name__] = func
-            return func
-
-        return decorator
+async def _add_entity(pool) -> uuid.UUID:
+    """calendar_event_entities.entity_id references public.entities."""
+    return await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
+        f"reminder-entity-{uuid.uuid4().hex[:8]}",
+    )
 
 
 def _make_module(pool, *, butler_name: str = "relationship") -> object:
@@ -292,9 +138,9 @@ class _ReminderProviderDouble(CalendarProvider):
         return None
 
 
-async def test_calendar_native_butler_reminder_lifecycle(reminder_pool):
+async def test_calendar_native_butler_reminder_lifecycle(db_pool):
     """A native reminder can be resolved, updated, toggled, and deleted."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime(2026, 6, 1, 8, 0, tzinfo=UTC)
     end_at = start_at + timedelta(minutes=15)
@@ -337,10 +183,10 @@ async def test_calendar_native_butler_reminder_lifecycle(reminder_pool):
 
 
 async def test_native_reminder_provider_mirror_is_durable_idempotent_and_orphan_safe(
-    reminder_pool,
+    db_pool,
 ):
     """Native reminders create/update/delete one durable provider mirror."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     provider = _ReminderProviderDouble()
     mod._provider = provider
@@ -410,11 +256,11 @@ async def test_native_reminder_provider_mirror_is_durable_idempotent_and_orphan_
     assert provider.delete_calls == [provider_event_id]
 
 
-async def test_public_native_reminder_update_replaces_entity_links(reminder_pool):
+async def test_public_native_reminder_update_replaces_entity_links(db_pool):
     """The public update tool writes entity links against the native event ID."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
-    mcp = _StubMCP()
+    mcp = FastMCP("calendar-test-tools")
     await mod.register_tools(
         mcp=mcp,
         config={"provider": "google"},
@@ -425,8 +271,8 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
     mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
     mod._finalize_workspace_mutation = AsyncMock()
 
-    old_entity_id = uuid.uuid4()
-    new_entity_id = uuid.uuid4()
+    old_entity_id = await _add_entity(pool)
+    new_entity_id = await _add_entity(pool)
     start_at = datetime.now(UTC) + timedelta(days=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
         title="Review renewal",
@@ -438,7 +284,7 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
         entity_ids=[old_entity_id],
     )
 
-    result = await mcp.tools["calendar_update_butler_event"](
+    result = await (await tool_fn(mcp, "calendar_update_butler_event"))(
         event_id=str(event_id),
         title="Review subscription",
         entity_ids=[new_entity_id],
@@ -458,9 +304,9 @@ async def test_public_native_reminder_update_replaces_entity_links(reminder_pool
     assert [row["entity_id"] for row in rows] == [new_entity_id]
 
 
-async def test_native_recurring_reminder_refreshes_rolling_window(reminder_pool):
+async def test_native_recurring_reminder_refreshes_rolling_window(db_pool):
     """Create and periodic refresh both materialize multiple future instances."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC) + timedelta(days=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
@@ -499,10 +345,10 @@ async def test_native_recurring_reminder_refreshes_rolling_window(reminder_pool)
 
 @pytest.mark.pg_clock
 async def test_native_refresh_retains_and_dispatches_overdue_unnotified_instance(
-    reminder_pool,
+    db_pool,
 ):
     """Projection refresh cannot drop an occurrence before tick delivers it."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
@@ -551,9 +397,9 @@ async def test_native_refresh_retains_and_dispatches_overdue_unnotified_instance
 
 
 @pytest.mark.pg_clock
-async def test_native_tick_suppresses_cancelled_due_recurring_instance(reminder_pool):
+async def test_native_tick_suppresses_cancelled_due_recurring_instance(db_pool):
     """Only a due confirmed sibling dispatches and is marked notified."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
@@ -652,10 +498,10 @@ async def test_native_tick_suppresses_cancelled_due_recurring_instance(reminder_
 
 
 async def test_native_recurring_update_preserves_cancelled_and_notified_instances(
-    reminder_pool,
+    db_pool,
 ):
     """Changing recurrence replaces only future undispatched occurrence rows."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
     end_at = start_at + timedelta(minutes=15)
@@ -752,10 +598,10 @@ async def test_native_recurring_update_preserves_cancelled_and_notified_instance
 
 
 async def test_native_recurring_update_rolls_back_event_and_instances_on_refresh_failure(
-    reminder_pool,
+    db_pool,
 ):
     """Event and occurrence replacement commit atomically."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
     end_at = start_at + timedelta(minutes=15)
@@ -806,10 +652,10 @@ async def test_native_recurring_update_rolls_back_event_and_instances_on_refresh
 
 
 async def test_native_recurring_delete_supports_this_and_following_scopes(
-    reminder_pool,
+    db_pool,
 ):
     """Occurrence deletion keeps the series row and preserves earlier instances."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(
@@ -879,10 +725,10 @@ async def test_native_recurring_delete_supports_this_and_following_scopes(
 
 
 async def test_native_following_delete_rejects_non_occurrence_boundary_without_mutation(
-    reminder_pool,
+    db_pool,
 ):
     """An arbitrary timestamp cannot silently truncate a recurring reminder."""
-    pool = reminder_pool
+    pool = db_pool
     mod = _make_module(pool, butler_name="finance")
     start_at = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)
     event_id, _ = await mod._insert_reminder_to_calendar_events(

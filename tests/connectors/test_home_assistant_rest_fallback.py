@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 import butlers.connectors.home_assistant_checkpoint as ha_checkpoint
@@ -39,39 +40,14 @@ _TOKEN = "test-token"
 
 
 # ---------------------------------------------------------------------------
-# Fake aiohttp session for HARestPoller.poll_once (GET /api/states)
+# HTTPX MockTransport for HARestPoller.poll_once (GET /api/states)
 # ---------------------------------------------------------------------------
 
 
-class _FakeResp:
-    def __init__(self, payload: list[dict[str, Any]]) -> None:
-        self._payload = payload
-
-    async def __aenter__(self) -> _FakeResp:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    def raise_for_status(self) -> None:
-        return None
-
-    async def json(self) -> list[dict[str, Any]]:
-        return self._payload
-
-
-class _FakeSession:
-    def __init__(self, payload: list[dict[str, Any]]) -> None:
-        self._payload = payload
-
-    async def __aenter__(self) -> _FakeSession:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    def get(self, *args: object, **kwargs: object) -> _FakeResp:
-        return _FakeResp(self._payload)
+def _rest_client(payload):
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    )
 
 
 def _build_connector() -> HAConnector:
@@ -167,7 +143,7 @@ async def test_rest_fallback_activates_and_ingests_after_three_failed_reconnects
             "last_updated": "2026-06-27T10:00:00+00:00",
         }
     ]
-    monkeypatch.setattr(ha_rest.aiohttp, "ClientSession", lambda *a, **k: _FakeSession(states))
+    monkeypatch.setattr(ha_rest, "rest_client", lambda *a, **k: _rest_client(states))
 
     diffs = await rest_poller.poll_once()
     assert len(diffs) == 1  # new entity treated as a change
@@ -211,7 +187,7 @@ async def test_rest_poll_checkpoint_pins_rest_fallback_during_recovery_race(
             "last_updated": "2026-06-27T10:00:00+00:00",
         }
     ]
-    monkeypatch.setattr(ha_rest.aiohttp, "ClientSession", lambda *a, **k: _FakeSession(states))
+    monkeypatch.setattr(ha_rest, "rest_client", lambda *a, **k: _rest_client(states))
 
     # Simulate the recovery race: the WS client has just reconnected, so the
     # connector's dynamic transport now reads "websocket". The REST poller's

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs
 
 from starlette.requests import ClientDisconnect
 
+from butlers.core import session_timing
 from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_runtime_butler_name,
@@ -189,6 +190,11 @@ class _McpRuntimeSessionGuard:
         return resolved_session_id, trigger_source
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        from butlers.core.finance_warning_control import HEADER, _pending
+
+        pending_token = _pending.set(
+            self._header_value(scope.get("headers"), HEADER.lower().encode())
+        )
         runtime_session_id, trigger_source = self._resolve_session_params(scope)
         from butlers.core import fact_authority
 
@@ -207,11 +213,18 @@ class _McpRuntimeSessionGuard:
                 binding = None
             else:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
-        report_token = fact_authority._current_report.set(
-            binding.report
+        from butlers.core.attention_urgency import _current_origin
+
+        # Each request rechecks a routed owner report's endpoint custody (slice 3b).
+        report = (
+            await fact_authority.current_invocation_report(binding)
             if binding is not None
             else fact_authority.FactWriteContext("third_party")
         )
+        attention_token = _current_origin.set(
+            binding.attention_origin if binding is not None else None
+        )
+        report_token = fact_authority._current_report.set(report)
         source_token = fact_authority._incoming_source.set(
             self._header_value(scope.get("headers"), fact_authority.SOURCE_HEADER.encode())
         )
@@ -221,6 +234,9 @@ class _McpRuntimeSessionGuard:
         )
         if binding is not None:
             runtime_session_id = binding.runtime_session
+        if runtime_session_id:
+            # Diagnostic stage clock only (first request wins, unknown ids are no-ops).
+            session_timing.mark(runtime_session_id, "first_mcp_request_ms")
         session_token = set_current_runtime_session_id(runtime_session_id)
         locator_token = set_current_runtime_session_locator_unbound(
             binding is None and bool(runtime_session_id)
@@ -250,6 +266,8 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            _pending.reset(pending_token)
+            _current_origin.reset(attention_token)
             fact_authority._incoming_receipt.reset(receipt_token)
             fact_authority._pipeline_source.reset(pipeline_token)
             fact_authority._incoming_source.reset(source_token)

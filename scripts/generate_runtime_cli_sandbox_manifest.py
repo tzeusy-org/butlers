@@ -137,6 +137,15 @@ def _ldd_dependencies(
         text=True,
     )
     normalized_stdout = result.stdout.strip().casefold()
+    # glibc's ldd reports a static executable as exactly "\tnot a dynamic
+    # executable" on stderr with exit status 1 and nothing on stdout.
+    if (
+        strict
+        and result.returncode == 1
+        and not result.stdout
+        and result.stderr.strip().casefold() == "not a dynamic executable"
+    ):
+        return ()
     if strict and result.stderr:
         raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
     if strict and "not found" in normalized_stdout:
@@ -200,15 +209,44 @@ def _shebang_interpreters(path: Path) -> tuple[RuntimeInputBinding, ...]:
     return tuple(paths)
 
 
+def _package_elf_files(package_root: Path) -> tuple[Path, ...]:
+    """List the ELF objects a package tree can load, without following links.
+
+    A bound package directory makes its native children visible, but not the
+    shared libraries those children need from outside the tree.
+    """
+    found: list[Path] = []
+    for directory, _subdirectories, files in os.walk(package_root, followlinks=False):
+        for name in files:
+            path = Path(directory) / name
+            if not stat.S_ISREG(path.lstat().st_mode):
+                continue
+            with path.open("rb") as handle:
+                if handle.read(4) == b"\x7fELF":
+                    found.append(path)
+    return tuple(sorted(found))
+
+
 def _runtime_closure(
     executable: Path,
     package_root: Path,
 ) -> tuple[RuntimeInputBinding, ...]:
-    """Build the minimal explicit Bubblewrap input list for one CLI package."""
+    """Build the minimal explicit Bubblewrap input list for one CLI package.
+
+    Native objects inside the package tree (the Codex launcher's compiled child,
+    Node addons) contribute their out-of-tree shared libraries; in-tree ones are
+    already visible through the package binding.
+    """
     pending = [
         *(_runtime_input_binding(path) for path in (executable, package_root)),
         *(_runtime_input_binding(path) for path in _NETWORK_RUNTIME_FILES),
     ]
+    for native in _package_elf_files(package_root):
+        pending.extend(
+            dependency
+            for dependency in _ldd_dependencies(native)
+            if not dependency.destination.is_relative_to(package_root)
+        )
     closure: list[RuntimeInputBinding] = []
     seen: dict[Path, Path] = {}
     while pending:

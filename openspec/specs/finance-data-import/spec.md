@@ -9,7 +9,7 @@ Historical data import pipeline -- multi-format CSV normalization, deduplication
 The system SHALL auto-detect common bank export CSV formats by analyzing header rows and column patterns.
 
 #### Scenario: Known format detection
-- **WHEN** `import_transactions(file_path, account_id=None)` is called with a CSV file
+- **WHEN** `import_transactions(storage_ref, account_id=None)` is called with a CSV file
 - **THEN** the system SHALL read the header row and match it against known bank format signatures
 - **AND** supported formats SHALL include at minimum: Chase (Date, Description, Amount, Balance), Amex (Date, Description, Amount, Extended Details), Capital One (Transaction Date, Posted Date, Card No., Description, Category, Debit, Credit), and a generic CSV format (requires at least date, description/merchant, and amount columns)
 - **AND** the detected format SHALL be returned in the response as `detected_format`
@@ -20,10 +20,47 @@ The system SHALL auto-detect common bank export CSV formats by analyzing header 
 - **AND** if generic parsing fails, the system SHALL return an error with `status="unrecognized_format"` and include the detected headers for the user to provide a manual column mapping
 
 #### Scenario: Manual column mapping override
-- **WHEN** `import_transactions(file_path, column_map={date: "Col1", merchant: "Col2", amount: "Col3"})` is called with an explicit column mapping
+- **WHEN** `import_transactions(storage_ref, column_map={date: "Col1", merchant: "Col2", amount: "Col3"})` is called with an explicit column mapping
 - **THEN** the system SHALL use the provided mapping instead of auto-detection
-- **AND** required mapped columns SHALL be: `date`, `merchant` (or `description`), and `amount`
-- **AND** optional mapped columns SHALL include: `category`, `currency`, `account`, `reference`
+- **AND** required mapped columns SHALL be: `date`, `merchant`, and `amount`; `merchant` SHALL be the only key that maps the merchant column
+- **AND** optional mapped columns SHALL include: `description` (the transaction's own description field, never a merchant alias), `category`, `currency`, `account`, `reference`
+- **AND** when a generic CSV's merchant column is neither auto-detected nor mapped by `merchant`, the system SHALL return `status="unrecognized_format"` with `merchant` in `missing_columns`, even if `column_map` maps `description`
+
+### Requirement: Explicit CSV parsing options
+`import_transactions` SHALL support a caller-selected CSV delimiter, date format, and amount direction convention through closed parsing options.
+
+ID: REQ-finance-data-import-001
+Source: bu-svqpzo.5; RFC 0038 D2 and D3
+Scope: v1-mandatory
+
+#### Scenario: Apply explicit parsing options end to end
+- **WHEN** an import receives `delimiter`, `date_format`, or `amount_sign`
+- **THEN** the delimiter SHALL be one of comma, semicolon, tab, or pipe and SHALL apply to header detection, date sampling, and row parsing
+- **AND** an explicit `date_format` SHALL parse dates through `strptime` in place of format detection
+- **AND** an explicit `amount_sign` SHALL select `negative_debit`, `positive_debit`, or `split_cols` over the detected convention
+- **AND** `split_cols` SHALL use distinct `debit_col` and `credit_col` names from `column_map`
+
+#### Scenario: Refuse invalid options before reading the CSV
+- **WHEN** a delimiter, date format, amount convention, or split column mapping is invalid
+- **THEN** `import_transactions` SHALL return `status="error"` with `reason="invalid_import_options"` before reading blob bytes
+
+#### Scenario: Bound untrusted CSV text returned to the caller
+- **WHEN** a preview or error response contains CSV-derived text
+- **THEN** the daemon SHALL bound the returned preview, header samples, and per-row errors
+- **AND** row errors SHALL identify the row and failure without returning the original CSV row
+
+### Requirement: Blob Prefix Scoping
+`import_transactions(storage_ref, ...)` SHALL read only a blob under the importing butler's RFC 0016 key prefix (`{bucket}/{butler}/...`) or the connector prefix (`{bucket}/connectors/...`), where the butler name comes from the daemon context and never from the caller.
+
+#### Scenario: Foreign or malformed storage_ref refused before fetch
+- **WHEN** `import_transactions` receives a `storage_ref` under another butler's prefix, outside the deployment's bucket or scheme, without an owner segment, or with a `.`/`..` segment
+- **THEN** the system SHALL return `status="refused"` with `reason="attachment_forbidden"` (foreign prefix) or `reason="invalid_storage_ref"` (malformed ref)
+- **AND** it SHALL NOT fetch any bytes from blob storage
+
+#### Scenario: No caller-named local filesystem source
+- **WHEN** the finance butler's MCP tool surface is registered
+- **THEN** no import tool SHALL accept a local filesystem path; `storage_ref` SHALL be the only way a caller names CSV bytes to import
+- **AND** a CSV that exists only on local disk SHALL first be uploaded to blob storage (dashboard or attachment ingestion) to obtain a `storage_ref`
 
 ### Requirement: Data Normalization
 The system SHALL normalize transaction data from different bank formats into the canonical `finance.transactions` table schema.
@@ -57,15 +94,21 @@ The system SHALL prevent duplicate transactions during import by checking agains
 - **THEN** each transaction SHALL be checked against existing rows in `finance.transactions` using the tiered UNIQUE partial index strategy: Priority 1 `(account_id, external_id)` if an external ID is available, Priority 2 `(source_message_id, merchant, amount, posted_at)` if a source message ID is available, Priority 3 `(account_id, posted_at, amount, merchant)` as fallback for CSV imports without stable IDs
 - **AND** matching transactions SHALL be skipped and counted in the `skipped` total of the response
 
+#### Scenario: Duplicate CSV rows and simultaneous retries
+- **WHEN** a file repeats a transaction key or simultaneous CSV imports submit the same transaction key under the same account scope
+- **THEN** the daemon SHALL insert one matching transaction and count the other matching rows as skipped
+- **AND** the dry-run preview SHALL flag repeated keys within the preview without writing transactions
+- **AND** preview, duplicate matching, and insert SHALL use the same ledger-rounded amount
+
 #### Scenario: Import response with dedup summary
 - **WHEN** `import_transactions()` completes
 - **THEN** the response SHALL include: `total` (rows in CSV), `imported` (new transactions created), `skipped` (duplicates detected), `errors` (rows that failed validation), `error_details` (list of `{row, reason}`), `detected_format`, `date_range` (earliest and latest transaction dates), and `categories_used` (list of categories assigned)
 
 #### Scenario: Dry run mode
-- **WHEN** `import_transactions(file_path, dry_run=true)` is called
+- **WHEN** `import_transactions(storage_ref, dry_run=true)` is called
 - **THEN** the system SHALL parse and validate the CSV, detect duplicates, and return the import summary
 - **AND** no transaction rows SHALL be created in `finance.transactions`
-- **AND** the response SHALL include a `preview` of the first 10 transactions that would be imported
+- **AND** the response SHALL include a `preview` of the first 10 transactions that would be imported, each carrying an `is_duplicate` flag
 
 ### Requirement: Retroactive Baseline Analytics
 The system SHALL compute analytics baselines after a historical import to enable immediate anomaly detection and trend analysis.
@@ -73,7 +116,7 @@ The system SHALL compute analytics baselines after a historical import to enable
 #### Scenario: Post-import baseline computation
 - **WHEN** `import_transactions()` successfully imports 50+ transactions
 - **THEN** the system SHALL automatically trigger `compute_baselines()` to establish per-merchant and per-category baselines from the imported data
-- **AND** the import response SHALL include `baselines_computed=true`
+- **AND** the import response SHALL include `baselines_triggered=true`
 
 #### Scenario: Post-import merchant categorization learning
 - **WHEN** imported transactions include category data

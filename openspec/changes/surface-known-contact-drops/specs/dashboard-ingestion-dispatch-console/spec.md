@@ -68,3 +68,21 @@ Scope: v1-mandatory
 - **WHEN** an uncertain Gmail drop changes to replay_pending without a successful replay
 - **THEN** window classification remains unavailable
 - **AND** only an existing replay_complete outcome removes that unresolved drop from uncertainty
+
+### Requirement: The dropped-known aggregate covers WhatsApp and Drive honestly
+
+The dropped-known count, episode list and uncertainty count SHALL include WhatsApp and Drive rows marked under REQ-ingestion-policy-006. Rows of those connectors without a loaded classification SHALL count as uncertain and never as zero; rows classified `not_applicable` SHALL count as neither dropped nor uncertain.
+
+ID: REQ-dashboard-ingestion-dispatch-console-012
+Source: bu-q7vx1q.42
+Scope: v1-mandatory
+
+#### Scenario: Unknown WhatsApp or Drive history raises uncertainty
+
+- **WHEN** an unanswered WhatsApp or Drive row has an absent or unloaded classification
+- **THEN** the window classification is unavailable and the opener says gate harm is unknown
+
+#### Scenario: Not applicable rows do not move the aggregate
+
+- **WHEN** a group-chat or owner-only-file row is the only drop in the window
+- **THEN** the opener reports neither a known-contact drop nor uncertainty

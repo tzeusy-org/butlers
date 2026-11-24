@@ -27,13 +27,14 @@ from butlers.core.healing.fingerprint import (
 )
 from butlers.core.qa.sources.protocol import DiscoverySource
 from butlers.core.qa.sources.tool_call_failures import ToolCallFailuresSource
+from butlers.testing.records import Record
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _failure_row(
     source_butler: str = "finance",
     session_id: uuid.UUID | None = None,
     session_success: bool = True,
@@ -43,21 +44,21 @@ def _make_row(
     trigger_source: str | None = "tick",
     started_at: datetime | None = None,
     completed_at: datetime | None = None,
-) -> MagicMock:
-    """Build a mock asyncpg Record for v_qa_tool_call_failures."""
-    record = MagicMock()
-    record.__getitem__ = lambda self, key: {
-        "source_butler": source_butler,
-        "session_id": session_id or uuid.uuid4(),
-        "session_success": session_success,
-        "tool_name": tool_name,
-        "module_name": module_name,
-        "error": error,
-        "trigger_source": trigger_source,
-        "started_at": started_at or (datetime.now(UTC) - timedelta(minutes=5)),
-        "completed_at": completed_at or datetime.now(UTC),
-    }[key]
-    return record
+) -> Record:
+    """Build an asyncpg-shaped Record for v_qa_tool_call_failures."""
+    return Record(
+        {
+            "source_butler": source_butler,
+            "session_id": session_id or uuid.uuid4(),
+            "session_success": session_success,
+            "tool_name": tool_name,
+            "module_name": module_name,
+            "error": error,
+            "trigger_source": trigger_source,
+            "started_at": started_at or (datetime.now(UTC) - timedelta(minutes=5)),
+            "completed_at": completed_at or datetime.now(UTC),
+        }
+    )
 
 
 def _pool(rows: list | None = None) -> AsyncMock:
@@ -111,7 +112,7 @@ async def test_protocol_and_health_check():
 @pytest.mark.asyncio
 async def test_success_true_session_with_error_tool_call_surfaces_finding():
     """An outcome='error' tool call inside a success=true session yields a finding."""
-    row = _make_row(
+    row = _failure_row(
         source_butler="travel",
         session_success=True,
         tool_name="lookup_flight",
@@ -144,9 +145,9 @@ async def test_clean_success_session_yields_nothing():
 async def test_same_fingerprint_aggregates():
     """Identical failures across sessions collapse to one finding with a count."""
     rows = [
-        _make_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
-        _make_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
-        _make_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
+        _failure_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
+        _failure_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
+        _failure_row(session_id=uuid.uuid4(), error="ValueError: bad query"),
     ]
     findings = await ToolCallFailuresSource(pool=_pool(rows), repo_root=Path("/tmp")).discover(
         lookback_minutes=15
@@ -170,7 +171,7 @@ async def test_fingerprint_matches_log_scanner_for_same_tool_failure():
     error = "ValueError: bad query"
 
     # --- tool_call_failures source produces a fingerprint from the view row ---
-    row = _make_row(
+    row = _failure_row(
         source_butler=butler,
         module_name=module,
         tool_name=tool,

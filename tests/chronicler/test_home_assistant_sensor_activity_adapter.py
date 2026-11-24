@@ -35,6 +35,8 @@ from butlers.chronicler.adapters.home_assistant_sensor_activity import (
     HomeAssistantSensorActivityAdapter,
 )
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 7, 6, 8, 0, 0, tzinfo=UTC)
 _UUID_1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -45,17 +47,6 @@ _UUID_3 = uuid.UUID("33333333-3333-3333-3333-333333333333")
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 class _FakeReadConn:
@@ -86,8 +77,8 @@ class _FakeReadConn:
         self.fetch_calls.append((query, args))
         if "BASE TABLE" in query:
             # Retention-lag partition listing query.
-            return [_Row(r) for r in self._partition_names]
-        return [_Row(r) for r in self._rows]
+            return [Record(r) for r in self._partition_names]
+        return [Record(r) for r in self._rows]
 
 
 class _TieBoundaryReadConn(_FakeReadConn):
@@ -96,7 +87,7 @@ class _TieBoundaryReadConn(_FakeReadConn):
     async def fetch(self, query: str, *args: object) -> list:
         self.fetch_calls.append((query, args))
         if "BASE TABLE" in query:
-            return [_Row(r) for r in self._partition_names]
+            return [Record(r) for r in self._partition_names]
         if "received_at > $2" in query:
             since = args[1]
             assert isinstance(since, datetime)
@@ -105,17 +96,12 @@ class _TieBoundaryReadConn(_FakeReadConn):
             candidates = list(self._rows)
         limit = args[-1]
         assert isinstance(limit, int)
-        return [_Row(row) for row in candidates[:limit]]
-
-
-class _Row(dict):
-    def __getitem__(self, key: str) -> object:
-        return dict.__getitem__(self, key)
+        return [Record(row) for row in candidates[:limit]]
 
 
 def _read_pool(conn: _FakeReadConn) -> AsyncMock:
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -146,7 +132,7 @@ class _FakeChroniclerConn:
 
 def _chronicler_pool(conn: _FakeChroniclerConn) -> AsyncMock:
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -935,9 +921,9 @@ class _RecheckChroniclerConn:
     async def fetch(self, query: str, *args: object) -> list:
         if "LIMIT $5" in query:
             self.candidate_calls.append((query, args))
-            return [_Row(r) for r in self.candidates]
+            return [Record(r) for r in self.candidates]
         self.corroborator_calls.append((query, args))
-        return [_Row(r) for r in self.corroborators]
+        return [Record(r) for r in self.corroborators]
 
     async def execute(self, query: str, *args: object) -> str:
         self.execute_calls.append((query, args))

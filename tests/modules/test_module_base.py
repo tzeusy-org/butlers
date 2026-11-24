@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from butlers.modules.base import (
@@ -15,6 +17,7 @@ from butlers.modules.base import (
     guarded_tool,
     tool_registrar,
 )
+from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -319,21 +322,9 @@ async def test_bare_module_gets_formal_hook_defaults():
 # ---------------------------------------------------------------------------
 
 
-class _FakeMCP:
-    def __init__(self) -> None:
-        self.registered: list[str] = []
-
-    def tool(self):
-        def register(fn):
-            self.registered.append(fn.__name__)
-            return fn
-
-        return register
-
-
 class TestToolRegistrar:
     def test_registers_only_enabled_groups(self):
-        mcp = _FakeMCP()
+        mcp = FastMCP("module-base-registration-test-tools")
         tool = tool_registrar(mcp, ["core"])
 
         @tool("core")
@@ -342,10 +333,10 @@ class TestToolRegistrar:
         @tool("admin")
         async def in_admin() -> None: ...
 
-        assert mcp.registered == ["in_core"]
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["in_core"]
 
     def test_disabled_tool_function_is_still_defined(self):
-        tool = tool_registrar(_FakeMCP(), ["core"])
+        tool = tool_registrar(FastMCP("module-base-registration-test-tools"), ["core"])
 
         @tool("admin")
         async def in_admin() -> str:
@@ -355,16 +346,16 @@ class TestToolRegistrar:
 
     @pytest.mark.parametrize("groups", [None, []])
     def test_no_groups_registers_everything(self, groups):
-        mcp = _FakeMCP()
+        mcp = FastMCP("module-base-registration-test-tools")
         tool = tool_registrar(mcp, groups)
 
         @tool("anything")
         async def any_tool() -> None: ...
 
-        assert mcp.registered == ["any_tool"]
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["any_tool"]
 
     def test_accepts_a_module_config_carrying_groups(self):
-        mcp = _FakeMCP()
+        mcp = FastMCP("module-base-registration-test-tools")
         tool = tool_registrar(mcp, ToolGroupMixin(groups=["core"]))
 
         @tool("core")
@@ -373,7 +364,7 @@ class TestToolRegistrar:
         @tool("entity")
         async def entity_tool() -> None: ...
 
-        assert mcp.registered == ["core_tool"]
+        assert list(asyncio.run(snapshot_registered_tools(mcp))) == ["core_tool"]
 
 
 class TestGuardedTool:

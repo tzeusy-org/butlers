@@ -24,6 +24,7 @@ import {
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
   getEntityActivity,
+  getEntityCommitments,
   getEntityActivityBins,
   getEntityConcentration,
   getEntityCoreDates,
@@ -149,6 +150,37 @@ export function useEntityActivity(
       const nextOffset = lastPage.offset + lastPage.items.length;
       return lastPage.items.length > 0 && nextOffset < lastPage.total ? nextOffset : undefined;
     },
+    enabled: !!entityId,
+  });
+}
+
+/** Rows shown by the entity page's Shared Chronicles preview. */
+export const SHARED_CHRONICLES_PREVIEW_LIMIT = 5;
+
+/**
+ * Fetch the five most recent Chronicler rows of the unified activity aggregate
+ * (`source=chronicler&limit=5&offset=0`) for the Shared Chronicles preview.
+ * Lives in the `entity-activity` key family so activity invalidation refreshes it.
+ */
+export function useEntitySharedChronicles(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-activity", entityId, "chronicler", SHARED_CHRONICLES_PREVIEW_LIMIT],
+    queryFn: ({ signal }) =>
+      getEntityActivity(entityId!, {
+        source: "chronicler",
+        limit: SHARED_CHRONICLES_PREVIEW_LIMIT,
+        offset: 0,
+        signal,
+      }),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch the owner's active commitments with an entity (read-only). */
+export function useEntityCommitments(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-commitments", entityId],
+    queryFn: () => getEntityCommitments(entityId!),
     enabled: !!entityId,
   });
 }

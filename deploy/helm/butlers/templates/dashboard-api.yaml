@@ -18,13 +18,37 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 8 }}
     spec:
+      {{- $egress := dict "root" . "component" "dashboard-api" }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
+      {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+      serviceAccountName: dashboard-api
+      {{- end }}
+      {{- include "butlers.hostServedNodeSelector" . | nindent 6 }}
       initContainers:
         - name: migrations
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: ["db", "migrate"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
+              && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
+              {{- if .Values.database.applyGrants }}
+              && /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} --execute
+              {{- else }}
+              && (/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db apply-grants --database {{ .Values.database.name }} || true)
+              {{- end }}
+              {{- if .Values.publicMcp.reconcile }}
+              && top="$(/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers --help)"
+              && group=""
+              && if printf '%s\n' "$top" | grep -Eq '^ +public-mcp( |$)';
+              then group="$(/usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers public-mcp --help)"; fi
+              && if printf '%s\n' "$group" | grep -Eq '^ +reconcile( |$)';
+              then exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers public-mcp reconcile --database {{ .Values.database.name }};
+              else echo 'public-mcp reconcile: not in this image (a rollback); skipped' >&2; fi
+              {{- end }}
           env:
-            {{- include "butlers.postgresEnv" . | nindent 12 }}
+            {{- include "butlers.migratorPostgresEnv" . | nindent 12 }}
       containers:
         - name: dashboard-api
           image: {{ include "butlers.image" . }}
@@ -35,10 +59,16 @@ spec:
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
             - {name: BUTLERS_HOST, value: butlers-up}
-            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
+            {{- include "butlers.switchboardClientEnv" . | nindent 12 }}
+            {{- with (include "butlers.healthClientEnv" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
+            {{- if .Values.offsiteCopy.enabled }}
+            - {name: BUTLERS_OFFSITE_COPY_ENABLED, value: "1"}
+            {{- end }}
             - {name: BUTLERS_API_DB_POOL_MIN_SIZE, value: {{ .Values.database.apiPoolMinSize | quote }}}
             - {name: BUTLERS_API_DB_POOL_MAX_SIZE, value: {{ .Values.database.apiPoolMaxSize | quote }}}
             - name: GOOGLE_OAUTH_REDIRECT_URI
@@ -62,6 +92,9 @@ spec:
             - name: DASHBOARD_AUTH_DB_USER
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_AUTH_DB_USER, optional: true}
+            - name: BUTLERS_HEALTH_WRITER_DSN
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: BUTLERS_HEALTH_WRITER_DSN, optional: true}
             - name: DASHBOARD_API_KEY
               valueFrom:
                 secretKeyRef: {name: {{ .Values.localSecrets.envSecretName }}, key: DASHBOARD_API_KEY, optional: true}
@@ -96,6 +129,11 @@ spec:
             appArmorProfile: {type: Unconfined}
             {{- end }}
           volumeMounts:
+            {{- with (include "butlers.switchboardCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.healthCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+            - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
+            {{- end }}
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             - {name: backups, mountPath: /backups, readOnly: true}
@@ -104,7 +142,17 @@ spec:
               mountPath: /run/secrets/runtime_probe_control_signing_key
               subPath: runtime_probe_control_signing_key
               readOnly: true
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.switchboardCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- with (include "butlers.healthCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+        - name: workload-token
+          projected:
+            sources:
+              {{- include "butlers.healthPeerTokenSource" . | nindent 14 }}
+        {{- end }}
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}
@@ -126,6 +174,9 @@ metadata:
   labels:
     {{- include "butlers.labels" . | nindent 4 }}
 spec:
+  {{- with .Values.serviceClusterIPs.dashboardApi }}
+  clusterIP: {{ . | quote }}
+  {{- end }}
   selector:
     {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 4 }}
   ports:

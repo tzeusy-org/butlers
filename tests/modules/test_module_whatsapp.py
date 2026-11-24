@@ -15,9 +15,10 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 import butlers.connectors.bridge_manager as bridge_manager
@@ -28,6 +29,8 @@ from butlers.modules.whatsapp import (
     WhatsAppConfig,
     WhatsAppModule,
 )
+from butlers.testing.mcp import registered_tools
+from butlers.whatsapp_bridge_client import BridgeClient
 
 pytestmark = pytest.mark.unit
 
@@ -105,22 +108,6 @@ def whatsapp_module() -> WhatsAppModule:
     return WhatsAppModule()
 
 
-def _make_mcp() -> tuple[dict[str, Any], MagicMock]:
-    """Build a mock MCP whose ``@mcp.tool()`` captures registered tools by name."""
-    registered: dict[str, Any] = {}
-    mcp = MagicMock()
-
-    def _tool_decorator(*args: Any, **kw: Any):
-        def _wrap(fn):
-            registered[kw.get("name") or fn.__name__] = fn
-            return fn
-
-        return _wrap
-
-    mcp.tool = _tool_decorator
-    return registered, mcp
-
-
 class TestModuleABCCompliance:
     def test_module_contract(self, whatsapp_module: WhatsAppModule) -> None:
         """WhatsAppModule satisfies Module ABC: name, config_schema, registry."""
@@ -164,9 +151,10 @@ class TestToolRegistration:
     async def test_tool_registration_gated_by_send_tools(
         self, whatsapp_module: WhatsAppModule
     ) -> None:
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         # Default: send_tools=False → no tools registered
         await whatsapp_module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
+        registered = await registered_tools(mcp)
         assert len(registered) == 0
         # With send_tools=True → tools registered
         registered.clear()
@@ -176,6 +164,7 @@ class TestToolRegistration:
             db=None,
             butler_name="test-butler",
         )
+        registered = await registered_tools(mcp)
         assert len(registered) >= 1
 
 
@@ -184,6 +173,16 @@ class TestSendDisabled:
         # _SEND_DISABLED_ERROR is an actionable string message (not a dict)
         assert isinstance(_SEND_DISABLED_ERROR, str)
         assert "send_enabled" in _SEND_DISABLED_ERROR or "disabled" in _SEND_DISABLED_ERROR.lower()
+
+
+def _patch_bridge_requests(monkeypatch, get, post=None):
+    async def request(client, method, path, body=None, **kwargs):
+        if method == "GET":
+            return await get(client.socket_path, path)
+        assert post is not None
+        return await post(client.socket_path, path, body)
+
+    monkeypatch.setattr(BridgeClient, "request_json", request)
 
 
 class TestBridgeOwnership:
@@ -218,17 +217,17 @@ class TestBridgeOwnership:
             post_calls.append((sock, path, body))
             return {"ok": True}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": False},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert result == {"error": _SEND_DISABLED_ERROR}
@@ -249,17 +248,19 @@ class TestBridgeOwnership:
             post_calls.append((sock, path, body))
             return {"message_id": "wamid.1"}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
+        # Routing only; the custody fence has its own tests (TestCustodyEgressFence).
+        monkeypatch.setattr("butlers.modules.whatsapp.require_custody_clear", AsyncMock())
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
 
         send_result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
         reply_result = await registered["whatsapp_reply_to_message"](
@@ -292,17 +293,17 @@ class TestBridgeOwnership:
             posted.append(body)
             return {}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert "not connected" in result["error"]
@@ -314,17 +315,154 @@ class TestBridgeOwnership:
         async def _fake_get(sock: str, path: str) -> dict:
             raise ConnectionError("socket missing")
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
+        _patch_bridge_requests(monkeypatch, _fake_get)
 
         module = WhatsAppModule()
-        registered, mcp = _make_mcp()
+        mcp = FastMCP("providers8-whatsapp-tools")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="messenger",
         )
+        registered = await registered_tools(mcp)
         result = await registered["whatsapp_send_message"](recipient="+123", text="hi")
 
         assert "not reachable" in result["error"]
         assert "connector" in result["error"]
+
+
+OWNER_JID = "6587650123@s.whatsapp.net"
+BRIDGE_PHONE = "6591110000"
+
+
+class FakeCustodyPool:
+    """Answers the custody fence query from held targets; records every lookup."""
+
+    def __init__(self, held=(), *, error: bool = False) -> None:
+        self.held = set(held)
+        self.error = error
+        self.lookups: list[list[tuple[str, str]]] = []
+
+    async def fetchval(self, sql, predicates, objects):
+        assert "public.custody_target_held" in sql
+        targets = list(zip(predicates, objects, strict=True))
+        self.lookups.append(targets)
+        if self.error:
+            raise ConnectionError("database unavailable")
+        return any(target in self.held for target in targets)
+
+
+class TestCustodyEgressFence:
+    """bu-s11n0s.93, REQ-endpoint-custody-holds-007: every WhatsApp send asks custody first."""
+
+    async def _module(self, monkeypatch, pool, *, bridge_phone=BRIDGE_PHONE):
+        posted: list[dict] = []
+
+        async def _fake_get(sock: str, path: str) -> dict:
+            status = {"connected": True, "logged_in": True, "state": "connected"}
+            if bridge_phone is not None:
+                status["phone"] = bridge_phone
+            return status
+
+        async def _fake_post(sock: str, path: str, body: dict) -> dict:
+            posted.append(body)
+            return {"message_id": "wamid.1"}
+
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
+        module = WhatsAppModule()
+        await module.on_startup(
+            config={"send_tools": True, "send_enabled": True},
+            db=None if pool is None else MagicMock(pool=pool),
+        )
+        return module, posted
+
+    @pytest.mark.parametrize(
+        "held",
+        [
+            ("has-handle", OWNER_JID),
+            ("has-phone", "6587650123"),
+            # A held local spelling is a suffix of the JID's number.
+            ("has-phone", "87650123"),
+        ],
+        ids=["jid-handle", "full-phone", "local-phone"],
+    )
+    async def test_held_recipient_refuses_send_and_reply_before_bridge(
+        self, monkeypatch, held
+    ) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(monkeypatch, FakeCustodyPool({held}))
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient=OWNER_JID, text="hi")
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._reply_to_message(chat_jid=OWNER_JID, message_id="m", text="re")
+        assert posted == []
+
+    @pytest.mark.parametrize(
+        "held",
+        [
+            ("has-phone", BRIDGE_PHONE),
+            # The owner's WhatsApp is stored as a has-handle JID fact (identity.py).
+            ("has-handle", f"{BRIDGE_PHONE}@s.whatsapp.net"),
+            # core_296 parity: a held spelling up to two digits longer.
+            ("has-phone", f"00{BRIDGE_PHONE}"),
+        ],
+        ids=["account-phone", "account-jid-handle", "account-00-prefixed"],
+    )
+    async def test_held_bridge_account_refuses_every_send(self, monkeypatch, held) -> None:
+        """The bridge's own account (owner's number, from /status) held refuses all sends."""
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        pool = FakeCustodyPool({held})
+        module, posted = await self._module(monkeypatch, pool)
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient="6512345678@s.whatsapp.net", text="hi")
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._reply_to_message(
+                chat_jid="6512345678@s.whatsapp.net", message_id="m", text="re"
+            )
+        assert posted == []
+        assert held in pool.lookups[0]
+
+    async def test_held_00_prefixed_recipient_spelling_refuses(self, monkeypatch) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(
+            monkeypatch, FakeCustodyPool({("has-phone", "006587650123")})
+        )
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient=OWNER_JID, text="hi")
+        assert posted == []
+
+    @pytest.mark.parametrize(
+        ("pool", "bridge_phone", "recipient"),
+        [
+            (FakeCustodyPool(error=True), BRIDGE_PHONE, OWNER_JID),
+            (None, BRIDGE_PHONE, OWNER_JID),
+            (FakeCustodyPool(), None, OWNER_JID),
+            (FakeCustodyPool(), BRIDGE_PHONE, "+123"),
+        ],
+        ids=["lookup-error", "no-pool", "unreported-account", "unnameable-recipient"],
+    )
+    async def test_unknown_custody_fails_closed(
+        self, monkeypatch, pool, bridge_phone, recipient
+    ) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(monkeypatch, pool, bridge_phone=bridge_phone)
+        with pytest.raises(CustodyEgressRefused, match="eligibility_unknown"):
+            await module._send_message(recipient=recipient, text="hi")
+        assert posted == []
+
+    async def test_unheld_send_and_reply_reach_the_bridge(self, monkeypatch) -> None:
+        pool = FakeCustodyPool({("has-phone", "6599999999")})
+        module, posted = await self._module(monkeypatch, pool)
+        assert await module._send_message(recipient="+65 8765 0123", text="hi") == {
+            "message_id": "wamid.1"
+        }
+        assert await module._reply_to_message(chat_jid=OWNER_JID, message_id="m", text="re") == {
+            "message_id": "wamid.1"
+        }
+        assert [body["recipient"] for body in posted] == ["+65 8765 0123", OWNER_JID]
+        assert ("has-handle", OWNER_JID) in pool.lookups[0]

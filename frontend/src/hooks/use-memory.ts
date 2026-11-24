@@ -6,7 +6,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   confirmFact,
+  confirmLegacyRuleEndorsement,
   createEntityInfo,
+  endorseRule,
   getEntities,
   getEntity,
   getEpisode,
@@ -20,6 +22,7 @@ import {
   getRule,
   getRules,
   inspectMemory,
+  previewLegacyRuleEndorsement,
   promoteEntity,
   retireRule,
   retractFact,
@@ -27,6 +30,7 @@ import {
   revealEntitySecret,
   updateEntity,
   updateMemoryRetentionPolicies,
+  vouchFact,
   getDunbarRanking,
   forgetRelationshipEntity,
   getLifestyleTasteSummary,
@@ -41,6 +45,8 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  FactVouch,
+  LegacyRuleEndorsementPreview,
   MemoryInspectParams,
   MemoryRule,
   PaginatedResponse,
@@ -203,6 +209,42 @@ export function useConfirmFact() {
 }
 
 /**
+ * Vouch for a held fact (POST /facts/:id/vouch, owner only). Optimistically
+ * clears the held flag and stamps the vouch so the badge and the Vouch button
+ * disappear at once; a failure rolls back. bu-jv1moa.14.
+ */
+export function useVouchFact() {
+  return useOptimisticMutation<ApiResponse<FactVouch>, string, ListSnapshot>({
+    mutationFn: (factId: string) => vouchFact(factId),
+    cancelQueryKeys: (factId) => [["memory-fact", factId], ["memory-facts"]],
+    applyOptimisticUpdate: (factId, queryClient) => {
+      const endorsedAt = new Date().toISOString();
+      const vouched = (fact: Fact): Fact => ({ ...fact, held: false, endorsed_at: endorsedAt });
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<Fact>>(
+        queryClient,
+        ["memory-fact", factId],
+        (current) =>
+          current ? { ...current, data: vouched(current.data) } : current,
+      );
+      const listSnapshot = snapshotAndUpdateQueries<PaginatedResponse<Fact>>(
+        queryClient,
+        ["memory-facts"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: current.data.map((fact) => (fact.id === factId ? vouched(fact) : fact)),
+              }
+            : current,
+      );
+      return [...detailSnapshot, ...listSnapshot];
+    },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (factId) => [["memory-fact", factId], ["memory-facts"]],
+  });
+}
+
+/**
  * Retract a fact (POST /facts/:id/retract). On success, invalidates the
  * single-fact and facts-list caches so the detail page reflects the retracted
  * validity immediately, plus the memory-stats cache so the KPI counts (active
@@ -276,6 +318,30 @@ export function useRule(ruleId: string | null) {
     queryKey: ["memory-rule", ruleId],
     queryFn: () => getRule(ruleId!),
     enabled: !!ruleId,
+  });
+}
+
+export function useLegacyRuleEndorsementPreview() {
+  return useMutation({
+    mutationFn: async (ruleIds: string[]) => (await previewLegacyRuleEndorsement(ruleIds)).data,
+  });
+}
+
+export function useEndorseGuidance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (selection: string | LegacyRuleEndorsementPreview) =>
+      typeof selection === "string"
+        ? [(await endorseRule(selection)).data]
+        : (await confirmLegacyRuleEndorsement(selection)).data,
+    onSuccess: (receipts) => {
+      for (const receipt of receipts) {
+        void queryClient.invalidateQueries({ queryKey: ["memory-rule", receipt.rule_id] });
+      }
+      for (const key of ["memory-rules", "memory-stats", "memory-inspect"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
   });
 }
 

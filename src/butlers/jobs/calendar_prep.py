@@ -67,6 +67,8 @@ from typing import Any, TypedDict
 import asyncpg
 
 from butlers.core.state import state_delete, state_list, state_set
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.briefing import SGT, today_sgt
 
 logger = logging.getLogger(__name__)
@@ -144,9 +146,40 @@ class PrepContribution(TypedDict):
     attendees: list[PrepAttendee]
 
 
+# Upcoming entity-linked events in a window, from the job's own calendar projection. A
+# declared status (out of office, working location) is not a meeting and gets no prep.
+_UPCOMING_LINKED_EVENTS_SQL = """
+    -- quarantine-exempt: filtered in Python by asserts_owner_time
+    SELECT ce.id AS event_id,
+           ce.title AS title,
+           ce.starts_at AS starts_at,
+           ce.metadata AS metadata,
+           cs.time_role AS time_role,
+           array_agg(DISTINCT cee.entity_id) AS entity_ids
+    FROM calendar_event_entities cee
+    JOIN calendar_events ce ON ce.id = cee.event_id
+    JOIN calendar_sources cs ON cs.id = ce.source_id
+    WHERE ce.starts_at >= $1
+      AND ce.starts_at < $2
+      AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+    GROUP BY ce.id, ce.title, ce.starts_at, ce.metadata, cs.time_role
+    ORDER BY ce.starts_at ASC
+"""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _fetch_owner_events(pool: Any, window_start: datetime, window_end: datetime) -> list[Any]:
+    """Upcoming linked events that are the owner's own time (REQ-module-calendar-035).
+
+    An event on another person's calendar the owner is not invited to gets no prep card.
+    """
+    rows = await pool.fetch(_UPCOMING_LINKED_EVENTS_SQL, window_start, window_end)
+    return [row for row in rows if asserts_owner_time(row.get("time_role"), row.get("metadata"))]
 
 
 def prep_key(event_id: str) -> str:
@@ -242,23 +275,7 @@ async def run_relationship_calendar_prep_contribution(
     window_end = (sgt_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
 
     # --- Upcoming entity-linked events in the window ---
-    event_rows = await pool.fetch(
-        """
-        SELECT ce.id AS event_id,
-               ce.title AS title,
-               ce.starts_at AS starts_at,
-               array_agg(DISTINCT cee.entity_id) AS entity_ids
-        FROM calendar_event_entities cee
-        JOIN calendar_events ce ON ce.id = cee.event_id
-        WHERE ce.starts_at >= $1
-          AND ce.starts_at < $2
-          AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-        GROUP BY ce.id, ce.title, ce.starts_at
-        ORDER BY ce.starts_at ASC
-        """,
-        window_start,
-        window_end,
-    )
+    event_rows = await _fetch_owner_events(pool, window_start, window_end)
 
     # Collect the full set of attendee entity ids so per-attendee lookups can be
     # batched into one query each (instead of N+1 per event).
@@ -329,7 +346,7 @@ async def run_relationship_calendar_prep_contribution(
 
         # Last-met: the most recent PAST event each attendee co-attended.
         last_met_rows = await pool.fetch(
-            """
+            f"""
             SELECT DISTINCT ON (cee.entity_id)
                    cee.entity_id AS entity_id,
                    ce.starts_at AS starts_at,
@@ -339,6 +356,7 @@ async def run_relationship_calendar_prep_contribution(
             WHERE cee.entity_id = ANY($1::uuid[])
               AND ce.starts_at < $2
               AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+              AND NOT {quarantined_invitation_sql("ce")}
             ORDER BY cee.entity_id, ce.starts_at DESC
             """,
             entity_id_list,
@@ -594,23 +612,7 @@ async def run_email_calendar_prep_contribution(
     message_since = now_utc - timedelta(days=MESSAGE_CONTEXT_LOOKBACK_DAYS)
 
     # --- Upcoming entity-linked events in the window (own calendar projection) ---
-    event_rows = await pool.fetch(
-        """
-        SELECT ce.id AS event_id,
-               ce.title AS title,
-               ce.starts_at AS starts_at,
-               array_agg(DISTINCT cee.entity_id) AS entity_ids
-        FROM calendar_event_entities cee
-        JOIN calendar_events ce ON ce.id = cee.event_id
-        WHERE ce.starts_at >= $1
-          AND ce.starts_at < $2
-          AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-        GROUP BY ce.id, ce.title, ce.starts_at
-        ORDER BY ce.starts_at ASC
-        """,
-        window_start,
-        window_end,
-    )
+    event_rows = await _fetch_owner_events(pool, window_start, window_end)
 
     all_entity_ids: set[Any] = set()
     for row in event_rows:

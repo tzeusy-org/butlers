@@ -43,6 +43,7 @@ import { KpiStrip } from "@/components/overview/KpiStrip";
 import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
 import { Section } from "@/components/ui/Section";
 import { ChroniclesDrilldownPanel } from "@/components/chronicles/ChroniclesDrilldownPanel";
+import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer";
 import { RecentDaysIndex } from "@/components/chronicles/RecentDaysIndex";
 import {
   clampIsoDay,
@@ -230,6 +231,20 @@ export default function ChroniclesPage() {
       },
       { replace: true },
     );
+  }
+
+  // `?episode=<id>` opens the existing EpisodeDrawer for that exact episode
+  // (the Shared Chronicles door). The day page stays underneath; an unknown
+  // episode fails inside the drawer. Closing removes only `episode`.
+  const episodeParam = searchParams.get("episode")?.trim() || null;
+
+  function setEpisode(episodeId: string | null) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (episodeId) next.set("episode", episodeId);
+      else next.delete("episode");
+      return next;
+    });
   }
 
   // Canonicalize only future dates. Pre-floor archive links are valid input and
@@ -541,7 +556,14 @@ export default function ChroniclesPage() {
         </FetchingDim>
       </div>
 
-      {isKnownContentState ? <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} /> : null}
+      {isKnownContentState ? (
+        <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} onEpisodeSelect={setEpisode} />
+      ) : null}
+      <EpisodeDrawer
+        episodeId={episodeParam}
+        open={episodeParam !== null}
+        onClose={() => setEpisode(null)}
+      />
     </Page>
   );
 }

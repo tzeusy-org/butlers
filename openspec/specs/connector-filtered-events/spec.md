@@ -19,7 +19,7 @@ The `connectors.filtered_events` table persists every message a connector observ
 
 #### Scenario: Table structure
 - **WHEN** the `connectors.filtered_events` table is created
-- **THEN** it SHALL contain columns: `id` (UUID, primary key), `received_at` (timestamptz, not null, default now()), `connector_type` (text, not null), `endpoint_identity` (text, not null), `external_message_id` (text, not null), `source_channel` (text, not null), `sender_identity` (text, not null), `subject_or_preview` (text, nullable), `filter_reason` (text, not null), `status` (text, not null, default 'filtered'), `full_payload` (jsonb, not null), `error_detail` (text, nullable), `replay_requested_at` (timestamptz, nullable), `replay_completed_at` (timestamptz, nullable), `created_at` (timestamptz, not null, default now())
+- **THEN** it SHALL contain columns: `id` (UUID, primary key), `received_at` (timestamptz, not null, default now()), `connector_type` (text, not null), `endpoint_identity` (text, not null), `external_message_id` (text, not null), `source_channel` (text, not null), `sender_identity` (text, not null), `subject_or_preview` (text, nullable), `filter_reason` (text, not null), `status` (text, not null, default 'filtered'), `full_payload` (jsonb, not null), `error_detail` (text, nullable), `replay_requested_at` (timestamptz, nullable), `replay_completed_at` (timestamptz, nullable), `claim_token` (uuid, nullable; the replay drain holding the row), `claimed_at` (timestamptz, nullable; when that drain claimed it), `created_at` (timestamptz, not null, default now())
 - **AND** the table SHALL be partitioned by RANGE on `received_at`
 
 #### Scenario: Monthly partitioning

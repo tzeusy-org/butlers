@@ -1,18 +1,18 @@
 # Event Chains
 
 ## Purpose
-Provides post-event trigger sequences that fire workflows after calendar events complete, deadlines pass, or deadline thresholds are crossed. Event chains are stored in a dedicated `event_chains` table and materialized into one-shot `scheduled_tasks` entries when triggered. Actions execute in array order with cumulative delays.
+Provides post-event trigger sequences that fire workflows after deadlines pass or deadline thresholds are crossed. Historical calendar-end chains remain readable/removable but inert. Event chains are stored in a dedicated `event_chains` table and materialized into one-shot `scheduled_tasks` entries when triggered. Actions execute in array order with cumulative delays.
 
 ## Requirements
 
 ### Requirement: Event Chain Definition
 
-An event chain SHALL be a named sequence of actions triggered by a temporal event. Chains are stored in an `event_chains` table with fields: `id` (UUID), `name` (unique per butler), `trigger_type` (enum: `calendar_event_end`, `deadline_passed`, `deadline_threshold`), `trigger_reference` (string -- calendar event_id or deadline task UUID), `actions` (JSONB array), `status` (enum: `active`, `paused`, `fired`, `failed`), `butler_name`, `created_at`, `updated_at`.
+An event chain SHALL be a named sequence of actions triggered by a temporal event. New writes accept only `deadline_passed` and `deadline_threshold`. The stored historical enum is retained without data rewrite. Chains are stored in an `event_chains` table with fields: `id` (UUID), `name` (unique per butler), `trigger_type` (enum: `calendar_event_end`, `deadline_passed`, `deadline_threshold`), `trigger_reference` (string -- deadline task UUID, or retained historical calendar event_id), `actions` (JSONB array), `status` (enum: `active`, `paused`, `fired`, `failed`), `butler_name`, `created_at`, `updated_at`.
 
-#### Scenario: Create event chain triggered by calendar event end
-- **WHEN** `event_chain_create(name="post-dentist", trigger_type="calendar_event_end", trigger_reference="google-event-123", actions=[{action_type: "prompt", delay_minutes: 0, prompt: "Log the dentist visit and update next appointment"}, {action_type: "prompt", delay_minutes: 1440, prompt: "Send follow-up care reminder"}])` is called
-- **THEN** an `event_chains` row is inserted with `status='active'`
-- **AND** the chain's UUID is returned
+#### Scenario: Calendar-end writes are refused before storage access
+- **WHEN** `event_chain_create` or an explicit `event_chain_update` requests `trigger_type="calendar_event_end"`
+- **THEN** validation refuses before any database read or write
+- **AND** no replacement trigger, row cleanup, data rewrite or replay is performed
 
 #### Scenario: Create event chain triggered by deadline passing
 - **WHEN** `event_chain_create(name="post-tax-filing", trigger_type="deadline_passed", trigger_reference="<deadline-task-uuid>", actions=[{action_type: "job", delay_minutes: 60, job_name: "archive_tax_documents"}])` is called
@@ -40,12 +40,10 @@ Each action in the `actions` array SHALL have: `action_type` (enum: `prompt`, `j
 ### Requirement: Event Chain Trigger Detection
 The scheduler's `tick()` function SHALL detect chain triggers during each evaluation cycle.
 
-#### Scenario: Calendar event end triggers chain
-- **WHEN** `tick()` runs and a calendar projection event with `event_id` matching a chain's `trigger_reference` has `end_at < now()`
-- **AND** the chain has `status='active'` and `trigger_type='calendar_event_end'`
-- **AND** the chain has not previously fired for this event occurrence
-- **THEN** the chain's actions are materialized as one-shot scheduled_tasks
-- **AND** the chain's `status` transitions to `fired`
+#### Scenario: Historical calendar-end chains stay inert
+- **WHEN** `tick()` encounters an existing active `calendar_event_end` chain
+- **THEN** it does not query the retired calendar projection, materialize actions or change that chain's status
+- **AND** history remains available through the existing list/get representation and delete operation
 
 #### Scenario: Deadline passed triggers chain
 - **WHEN** a deadline task transitions to `deadline_status='expired'` or `deadline_status='completed'`
@@ -68,7 +66,7 @@ The scheduler's `tick()` function SHALL detect chain triggers during each evalua
 Event chains SHALL NOT cascade beyond 3 levels. A chain action that creates a new deadline or event SHALL NOT itself define a new event chain. The system SHALL track chain depth and reject chain creation that would exceed the limit.
 
 #### Scenario: Direct chain fires normally
-- **WHEN** a chain fires at depth 0 (directly triggered by a calendar event or deadline)
+- **WHEN** a chain fires at depth 0 (directly triggered by a supported deadline)
 - **THEN** all actions execute normally
 
 #### Scenario: Chain depth exceeded
@@ -79,9 +77,13 @@ Event chains SHALL NOT cascade beyond 3 levels. A chain action that creates a ne
 ### Requirement: Event Chain CRUD Tools
 The module SHALL register MCP tools: `event_chain_create`, `event_chain_update`, `event_chain_list`, `event_chain_delete`.
 
+ID: REQ-event-chains-005
+Source: RFC 0038 D4, D5, D8
+Scope: v1-mandatory
+
 #### Scenario: List chains by trigger type
 - **WHEN** `event_chain_list(trigger_type="calendar_event_end")` is called
-- **THEN** only chains with `trigger_type='calendar_event_end'` for this butler are returned
+- **THEN** only historical chains with `trigger_type='calendar_event_end'` for this butler are returned, without making the trigger writable or runnable
 
 #### Scenario: Update chain actions
 - **WHEN** `event_chain_update(id, actions=[...])` is called

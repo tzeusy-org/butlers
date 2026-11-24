@@ -37,126 +37,11 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with message_inbox table (including ingestion_tier).
-
-    WARNING: This fixture duplicates the database schema from sw_008 + sw_019 migrations.
-    If you update the message_inbox schema, you must manually update this fixture.
-
-    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
-    below lands in ``switchboard`` and the production code's schema-qualified
-    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    one-db/multi-schema topology. ``public.ingestion_events`` stays explicitly
-    public (cross-schema, exactly as production writes it).
-    """
-    async with provisioned_postgres_pool(schema="switchboard") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # Base message_inbox table (from sw_008 / test_ingest_api pattern)
-        await p.execute(
-            """
-            CREATE TABLE message_inbox (
-                id UUID NOT NULL DEFAULT gen_random_uuid(),
-                received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text TEXT NOT NULL,
-                decomposition_output JSONB,
-                dispatch_outcomes JSONB,
-                response_summary TEXT,
-                lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-                schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                final_state_at TIMESTAMPTZ,
-                trace_id TEXT,
-                session_id UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                attachments JSONB DEFAULT NULL,
-                direction TEXT NOT NULL DEFAULT 'inbound',
-                ingestion_tier TEXT NOT NULL DEFAULT 'full',
-                PRIMARY KEY (received_at, id)
-            ) PARTITION BY RANGE (received_at)
-            """
-        )
-
-        # Dedupe unique index (from sw_010)
-        await p.execute(
-            """
-            CREATE UNIQUE INDEX uq_message_inbox_dedupe_key_received_at
-            ON message_inbox ((request_context ->> 'dedupe_key'), received_at)
-            WHERE request_context ->> 'dedupe_key' IS NOT NULL
-            """
-        )
-
-        # ingestion_tier index (from sw_019)
-        await p.execute(
-            """
-            CREATE INDEX ix_message_inbox_ingestion_tier_received_at
-            ON message_inbox (ingestion_tier, received_at DESC)
-            """
-        )
-
-        # Partition management function
-        await p.execute(
-            """
-            CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
-                reference_ts TIMESTAMPTZ DEFAULT now()
-            ) RETURNS TEXT
-            LANGUAGE plpgsql
-            AS $$
-            DECLARE
-                month_start TIMESTAMPTZ;
-                month_end TIMESTAMPTZ;
-                partition_name TEXT;
-            BEGIN
-                month_start := date_trunc('month', reference_ts);
-                month_end := month_start + INTERVAL '1 month';
-                partition_name := format('message_inbox_p%s', to_char(month_start, 'YYYYMM'));
-                EXECUTE format(
-                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF message_inbox '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    partition_name, month_start, month_end
-                );
-                RETURN partition_name;
-            END;
-            $$
-            """
-        )
-
-        # Create partitions
-        await p.execute("SELECT switchboard_message_inbox_ensure_partition(now())")
-        await p.execute(
-            "SELECT switchboard_message_inbox_ensure_partition(now() + INTERVAL '1 month')"
-        )
-
-        # Create public.ingestion_events table (core_019 migration)
-        await p.execute(
-            """
-            CREATE TABLE IF NOT EXISTS public.ingestion_events (
-                id                       UUID PRIMARY KEY,
-                received_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-                source_channel           TEXT NOT NULL,
-                source_provider          TEXT NOT NULL,
-                source_endpoint_identity TEXT NOT NULL,
-                source_sender_identity   TEXT,
-                source_sender_display_name TEXT,
-                source_thread_identity   TEXT,
-                external_event_id        TEXT NOT NULL,
-                dedupe_key               TEXT NOT NULL,
-                dedupe_strategy          TEXT NOT NULL,
-                ingestion_tier           TEXT NOT NULL,
-                policy_tier              TEXT NOT NULL,
-                triage_decision          TEXT,
-                triage_target            TEXT,
-                sender_authentication    TEXT
-                    CONSTRAINT ck_ingestion_events_sender_authentication
-                    CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed')),
-                CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
-            )
-            """
-        )
-
-        yield p
+async def switchboard_pool(db):
+    """A private clone of the real core + switchboard chains, switchboard-scoped."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
 
 
 def _make_tier1_email_envelope(
@@ -233,16 +118,16 @@ def _make_tier2_email_envelope(
 class TestTier1FullIngestion:
     """Verify Tier 1 (full) ingest behavior."""
 
-    async def test_tier1_envelope_accepted(self, pool: asyncpg.Pool) -> None:
+    async def test_tier1_envelope_accepted(self, switchboard_pool: asyncpg.Pool) -> None:
         """Tier 1 envelope is accepted and persisted with lifecycle_state='accepted'."""
         envelope = _make_tier1_email_envelope(message_id="<tier1_001@ex.com>")
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
         assert isinstance(result, IngestAcceptedResponse)
         assert result.status == "accepted"
         assert result.duplicate is False
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT lifecycle_state, request_context, raw_payload FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -255,16 +140,16 @@ class TestTier1FullIngestion:
         raw = json.loads(raw_raw) if isinstance(raw_raw, str) else raw_raw
         assert raw["control"]["ingestion_tier"] == "full"
 
-    async def test_tier1_raw_payload_persisted(self, pool: asyncpg.Pool) -> None:
+    async def test_tier1_raw_payload_persisted(self, switchboard_pool: asyncpg.Pool) -> None:
         """Tier 1 raw payload dict is persisted in raw_payload column."""
         envelope = _make_tier1_email_envelope(
             message_id="<tier1_002@ex.com>",
             subject="Salary credit",
             body="$5000 credited",
         )
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT raw_payload FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -277,21 +162,23 @@ class TestTier1FullIngestion:
 class TestTier2MetadataIngestion:
     """Verify Tier 2 (metadata-only) ingest behavior."""
 
-    async def test_tier2_envelope_accepted(self, pool: asyncpg.Pool) -> None:
+    async def test_tier2_envelope_accepted(self, switchboard_pool: asyncpg.Pool) -> None:
         """Tier 2 (metadata) envelope is accepted and persisted."""
         envelope = _make_tier2_email_envelope(message_id="<tier2_001@ex.com>")
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
         assert isinstance(result, IngestAcceptedResponse)
         assert result.status == "accepted"
         assert result.duplicate is False
 
-    async def test_tier2_lifecycle_state_is_metadata_ref(self, pool: asyncpg.Pool) -> None:
+    async def test_tier2_lifecycle_state_is_metadata_ref(
+        self, switchboard_pool: asyncpg.Pool
+    ) -> None:
         """Tier 2 envelopes must use lifecycle_state='metadata_ref' to signal bypass."""
         envelope = _make_tier2_email_envelope(message_id="<tier2_002@ex.com>")
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT lifecycle_state FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -299,13 +186,13 @@ class TestTier2MetadataIngestion:
         assert row["lifecycle_state"] == "metadata_ref"
 
     async def test_tier2_ingestion_tier_annotated_in_request_context(
-        self, pool: asyncpg.Pool
+        self, switchboard_pool: asyncpg.Pool
     ) -> None:
         """Tier 2 request_context must include ingestion_tier='metadata'."""
         envelope = _make_tier2_email_envelope(message_id="<tier2_003@ex.com>")
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT request_context FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -313,12 +200,12 @@ class TestTier2MetadataIngestion:
         ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
         assert ctx["ingestion_tier"] == "metadata"
 
-    async def test_tier2_raw_payload_stored_as_null(self, pool: asyncpg.Pool) -> None:
+    async def test_tier2_raw_payload_stored_as_null(self, switchboard_pool: asyncpg.Pool) -> None:
         """Tier 2 raw_payload.payload.raw must be null (no full body stored)."""
         envelope = _make_tier2_email_envelope(message_id="<tier2_004@ex.com>")
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT raw_payload FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -326,26 +213,28 @@ class TestTier2MetadataIngestion:
         raw = json.loads(raw_raw) if isinstance(raw_raw, str) else raw_raw
         assert raw["payload"]["raw"] is None
 
-    async def test_tier2_normalized_text_contains_subject(self, pool: asyncpg.Pool) -> None:
+    async def test_tier2_normalized_text_contains_subject(
+        self, switchboard_pool: asyncpg.Pool
+    ) -> None:
         """Tier 2 normalized_text contains subject-only text."""
         envelope = _make_tier2_email_envelope(
             message_id="<tier2_005@ex.com>",
             subject="Weekly Tech Digest",
         )
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT normalized_text FROM message_inbox WHERE id = $1",
             result.request_id,
         )
         assert "Subject: Weekly Tech Digest" in row["normalized_text"]
 
-    async def test_tier2_deduplication_works(self, pool: asyncpg.Pool) -> None:
+    async def test_tier2_deduplication_works(self, switchboard_pool: asyncpg.Pool) -> None:
         """Tier 2 envelopes are deduplicated by the same strategy as Tier 1."""
         envelope = _make_tier2_email_envelope(message_id="<tier2_006@ex.com>")
 
-        result1 = await ingest_v1(pool, envelope)
-        result2 = await ingest_v1(pool, envelope)  # duplicate
+        result1 = await ingest_v1(switchboard_pool, envelope)
+        result2 = await ingest_v1(switchboard_pool, envelope)  # duplicate
 
         assert result1.duplicate is False
         assert result2.duplicate is True
@@ -355,7 +244,7 @@ class TestTier2MetadataIngestion:
 class TestIngestionTierBackwardCompatibility:
     """Verify backward compatibility: envelopes without ingestion_tier behave as Tier 1."""
 
-    async def test_no_control_field_defaults_to_tier1(self, pool: asyncpg.Pool) -> None:
+    async def test_no_control_field_defaults_to_tier1(self, switchboard_pool: asyncpg.Pool) -> None:
         """Envelopes with no control field at all are treated as Tier 1."""
         envelope = {
             "schema_version": "ingest.v1",
@@ -377,10 +266,10 @@ class TestIngestionTierBackwardCompatibility:
             },
         }
 
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
         assert result.status == "accepted"
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT lifecycle_state, request_context FROM message_inbox WHERE id = $1",
             result.request_id,
         )
@@ -390,7 +279,7 @@ class TestIngestionTierBackwardCompatibility:
         assert ctx["ingestion_tier"] == "full"
 
     async def test_control_without_ingestion_tier_defaults_to_tier1(
-        self, pool: asyncpg.Pool
+        self, switchboard_pool: asyncpg.Pool
     ) -> None:
         """Envelopes with control but no ingestion_tier field default to Tier 1."""
         envelope = {
@@ -415,9 +304,9 @@ class TestIngestionTierBackwardCompatibility:
             },
         }
 
-        result = await ingest_v1(pool, envelope)
+        result = await ingest_v1(switchboard_pool, envelope)
 
-        row = await pool.fetchrow(
+        row = await switchboard_pool.fetchrow(
             "SELECT lifecycle_state, request_context FROM message_inbox WHERE id = $1",
             result.request_id,
         )

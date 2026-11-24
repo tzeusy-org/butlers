@@ -14,7 +14,6 @@ import asyncio
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
 
 import pytest
 
@@ -35,164 +34,11 @@ pytestmark = [
 
 
 @pytest.fixture
-async def switchboard_pool(provisioned_postgres_pool):
-    """Provision a fresh database with switchboard tables.
-
-    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
-    below lands in ``switchboard`` and the production code's schema-qualified
-    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    one-db/multi-schema topology.
-    """
-    async with provisioned_postgres_pool(schema="switchboard") as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        # Create minimal required tables for conformance tests
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS message_inbox (
-                id UUID NOT NULL DEFAULT gen_random_uuid(),
-                received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                normalized_text TEXT NOT NULL,
-                decomposition_output JSONB,
-                dispatch_outcomes JSONB,
-                response_summary TEXT,
-                lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-                schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-                processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                final_state_at TIMESTAMPTZ,
-                trace_id TEXT,
-                session_id UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (received_at, id)
-            ) PARTITION BY RANGE (received_at)
-            """
-        )
-
-        # Create partitions covering test date range
-        await pool.execute(
-            """
-            CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
-                reference_ts TIMESTAMPTZ DEFAULT now()
-            ) RETURNS TEXT
-            LANGUAGE plpgsql
-            AS $$
-            DECLARE
-                month_start TIMESTAMPTZ;
-                month_end TIMESTAMPTZ;
-                partition_name TEXT;
-            BEGIN
-                month_start := date_trunc('month', reference_ts);
-                month_end := month_start + INTERVAL '1 month';
-                partition_name := format('message_inbox_p%s', to_char(month_start, 'YYYYMM'));
-                EXECUTE format(
-                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF message_inbox '
-                    'FOR VALUES FROM (%L) TO (%L)',
-                    partition_name, month_start, month_end
-                );
-                RETURN partition_name;
-            END;
-            $$
-            """
-        )
-
-        reference_now = datetime.now(UTC)
-        await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", reference_now)
-        await pool.execute(
-            "SELECT switchboard_message_inbox_ensure_partition($1::timestamptz + INTERVAL '1 month')",
-            reference_now,
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS fanout_execution_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_channel TEXT NOT NULL,
-                source_id TEXT,
-                tool_name TEXT NOT NULL,
-                fanout_mode TEXT NOT NULL,
-                join_policy TEXT NOT NULL,
-                abort_policy TEXT NOT NULL,
-                plan_payload JSONB NOT NULL,
-                execution_payload JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS dead_letter_queue (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                original_request_id UUID NOT NULL,
-                source_table TEXT NOT NULL,
-                failure_reason TEXT NOT NULL,
-                failure_category TEXT NOT NULL,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                last_retry_at TIMESTAMPTZ,
-                original_payload JSONB NOT NULL,
-                request_context JSONB NOT NULL,
-                error_details JSONB NOT NULL DEFAULT '{}'::jsonb,
-                replay_eligible BOOLEAN NOT NULL DEFAULT true,
-                replayed_at TIMESTAMPTZ,
-                replayed_request_id UUID,
-                replay_outcome TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT valid_failure_category CHECK (
-                    failure_category IN (
-                        'timeout',
-                        'retry_exhausted',
-                        'circuit_open',
-                        'policy_violation',
-                        'validation_error',
-                        'downstream_failure',
-                        'unknown'
-                    )
-                ),
-                CONSTRAINT valid_replay_outcome CHECK (
-                    replay_outcome IS NULL OR replay_outcome IN (
-                        'success',
-                        'failed',
-                        'rejected'
-                    )
-                )
-            )
-            """
-        )
-
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS operator_audit_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_type TEXT NOT NULL,
-                target_request_id UUID NOT NULL,
-                target_table TEXT NOT NULL,
-                operator_identity TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                action_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                outcome TEXT NOT NULL,
-                outcome_details JSONB NOT NULL DEFAULT '{}'::jsonb,
-                performed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT valid_action_type CHECK (
-                    action_type IN (
-                        'manual_reroute',
-                        'cancel_request',
-                        'abort_request',
-                        'controlled_replay',
-                        'controlled_retry',
-                        'force_complete'
-                    )
-                ),
-                CONSTRAINT valid_outcome CHECK (
-                    outcome IN ('success', 'failed', 'rejected', 'partial')
-                )
-            )
-            """
-        )
-
-        yield pool
+async def switchboard_pool(db):
+    """A private clone of the real core + switchboard chains, switchboard-scoped."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
 
 
 class TestIngressToCompletion:
@@ -332,45 +178,33 @@ class TestIngressToCompletion:
                 request_id,
             )
 
-            # Log fanout execution
-            fanout_id = uuid.uuid4()
+            # Record the fanout execution on the request (sw_014 dropped the
+            # separate fanout_execution_log; dispatch_outcomes carries it now).
             await conn.execute(
-                """
-                INSERT INTO fanout_execution_log (
-                    id,
-                    source_channel,
-                    source_id,
-                    tool_name,
-                    fanout_mode,
-                    join_policy,
-                    abort_policy,
-                    plan_payload,
-                    execution_payload
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
-                """,
-                fanout_id,
-                "telegram",
-                str(request_id),
-                "decompose_and_route",
-                "parallel",
-                "all",
-                "any_failure",
-                json.dumps({"targets": ["health", "relationship"]}),
+                "UPDATE message_inbox SET dispatch_outcomes = $1::jsonb WHERE id = $2",
                 json.dumps(
                     {
-                        "health": {"status": "success"},
-                        "relationship": {"status": "success"},
+                        "fanout_mode": "parallel",
+                        "join_policy": "all",
+                        "abort_policy": "any_failure",
+                        "plan": {"targets": ["health", "relationship"]},
+                        "execution": {
+                            "health": {"status": "success"},
+                            "relationship": {"status": "success"},
+                        },
                     }
                 ),
+                request_id,
             )
 
             # Verify fanout was logged
-            fanout_log = await conn.fetchrow(
-                "SELECT * FROM fanout_execution_log WHERE id = $1", fanout_id
+            fanout_log = json.loads(
+                await conn.fetchval(
+                    "SELECT dispatch_outcomes FROM message_inbox WHERE id = $1", request_id
+                )
             )
             assert fanout_log["fanout_mode"] == "parallel"
-            assert json.loads(fanout_log["execution_payload"])["health"]["status"] == "success"
+            assert fanout_log["execution"]["health"]["status"] == "success"
 
 
 class TestPartialFailureHandling:
@@ -405,44 +239,31 @@ class TestPartialFailureHandling:
             )
 
             # Simulate partial failure
-            fanout_id = uuid.uuid4()
             await conn.execute(
-                """
-                INSERT INTO fanout_execution_log (
-                    id,
-                    source_channel,
-                    source_id,
-                    tool_name,
-                    fanout_mode,
-                    join_policy,
-                    abort_policy,
-                    plan_payload,
-                    execution_payload
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
-                """,
-                fanout_id,
-                "telegram",
-                str(request_id),
-                "decompose_and_route",
-                "parallel",
-                "best_effort",
-                "continue",
-                json.dumps({"targets": ["health", "relationship"]}),
+                "UPDATE message_inbox SET dispatch_outcomes = $1::jsonb WHERE id = $2",
                 json.dumps(
                     {
-                        "health": {"status": "success"},
-                        "relationship": {"status": "failed", "error": "Target unavailable"},
+                        "fanout_mode": "parallel",
+                        "join_policy": "best_effort",
+                        "abort_policy": "continue",
+                        "plan": {"targets": ["health", "relationship"]},
+                        "execution": {
+                            "health": {"status": "success"},
+                            "relationship": {"status": "failed", "error": "Target unavailable"},
+                        },
                     }
                 ),
+                request_id,
             )
 
             # Verify partial success recorded
-            fanout_log = await conn.fetchrow(
-                "SELECT * FROM fanout_execution_log WHERE id = $1", fanout_id
+            fanout_log = json.loads(
+                await conn.fetchval(
+                    "SELECT dispatch_outcomes FROM message_inbox WHERE id = $1", request_id
+                )
             )
-            assert json.loads(fanout_log["execution_payload"])["health"]["status"] == "success"
-            assert json.loads(fanout_log["execution_payload"])["relationship"]["status"] == "failed"
+            assert fanout_log["execution"]["health"]["status"] == "success"
+            assert fanout_log["execution"]["relationship"]["status"] == "failed"
 
 
 class TestTimeoutScenarios:

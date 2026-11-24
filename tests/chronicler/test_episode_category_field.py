@@ -10,7 +10,6 @@ backend must surface the mapping (computed by ``lane_for_category`` over
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -19,6 +18,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -29,24 +29,14 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
 def _episode_row(
     *,
     source_name: str,
     episode_type: str,
     episode_id: str = "00000000-0000-0000-0000-000000000001",
-) -> _Row:
+) -> Record:
     now = datetime.now(UTC)
-    return _Row(
+    return Record(
         {
             "id": UUID(episode_id),
             "source_name": source_name,
@@ -72,7 +62,7 @@ def _episode_row(
     )
 
 
-def _build_app(rows: list[_Row]):
+def _build_app(rows: list[Record]):
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)
     pool.fetchrow = AsyncMock(return_value=rows[0] if rows else None)
@@ -105,7 +95,8 @@ def _build_app(rows: list[_Row]):
         ("core.sessions", "work", "butler_ops"),
         # Calendar is intent: no lane → "other" (and dropped from counting).
         ("google_calendar.completed", "scheduled_block", "other"),
-        ("spotify.session_summary", "listening_episode", "play"),
+        ("spotify.session_summary", "listening_episode", "other"),
+        ("chronicler.situation_inferred", "play_block", "play"),
         ("steam.play_history", "play_episode", "play"),
         ("totally.unknown_source", "mystery_type", "other"),
     ],

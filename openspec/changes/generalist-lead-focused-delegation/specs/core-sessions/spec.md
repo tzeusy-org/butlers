@@ -121,8 +121,6 @@ Scope: v1-mandatory
 - **WHEN** a deployment carries route sessions recorded before cutover
 - **THEN** their `ingestion_event_id` values are preserved and remain readable
 
-## ADDED Requirements
-
 ### Requirement: Epoch receipts reconstruct bounded continuation
 Session receipts SHALL bind goal/epoch/predecessor, immutable plan and label/grant/context digests, wake intent and honest outcome using S2/S5. These SHALL reference the sole goal ledger and preserve existing purpose/prompt/delivery audit rather than creating a second session authority.
 

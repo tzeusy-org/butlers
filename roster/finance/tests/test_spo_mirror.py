@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import row as record_row
+
 # Async tests: apply asyncio mark at function level to avoid warnings on sync tests.
 pytestmark = pytest.mark.unit
 
@@ -30,7 +33,7 @@ def _utcnow() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _txn_row(
     *,
     id: str = "00000000-0000-0000-0000-000000000001",
     merchant: str = "ACME",
@@ -70,31 +73,6 @@ def _make_row(
     }
 
 
-def _make_asyncpg_record(row_dict: dict):
-    """Build a MagicMock that looks like an asyncpg Record."""
-    record = MagicMock()
-    record.__getitem__ = MagicMock(side_effect=lambda k: row_dict[k])
-    record.__iter__ = MagicMock(side_effect=lambda: iter(row_dict.items()))
-    record.keys = MagicMock(return_value=list(row_dict.keys()))
-    record.items = MagicMock(return_value=list(row_dict.items()))
-    # __contains__ for dict(record) usage
-    record.__contains__ = MagicMock(side_effect=lambda k: k in row_dict)
-    return record
-
-
-def _make_pool(fetchrow_return=None):
-    """Build a minimal asyncpg pool mock."""
-    pool = AsyncMock()
-    row_dict = fetchrow_return or _make_row()
-    if not isinstance(fetchrow_return, MagicMock):
-        record = _make_asyncpg_record(row_dict)
-    else:
-        record = fetchrow_return
-    pool.fetchrow = AsyncMock(return_value=record)
-    pool.fetchval = AsyncMock(return_value=0)  # dedupe check returns 0 (no existing row)
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # 6.1 / 6.4: SPO mirror is scheduled after a successful primary insert
 # ---------------------------------------------------------------------------
@@ -105,7 +83,7 @@ async def test_record_transaction_schedules_spo_mirror():
     """After a successful insert, record_transaction() schedules a SPO mirror task."""
     from butlers.tools.finance.transactions import record_transaction
 
-    pool = _make_pool()
+    pool = fake_pool(fetchrow=record_row(**_txn_row()), fetchval=0)
     mirror_called = asyncio.Event()
 
     async def _fake_mirror_to_spo(*args, **kwargs):
@@ -137,7 +115,9 @@ async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
     """
     from butlers.tools.finance.transactions import record_transaction
 
-    pool = _make_pool(fetchrow_return=_make_row(merchant="Netflix", direction="debit"))
+    pool = fake_pool(
+        fetchrow=record_row(**_txn_row(merchant="Netflix", direction="debit")), fetchval=0
+    )
 
     async def _failing_fact(*args, **kwargs):
         raise RuntimeError("Simulated SPO mirror failure")
@@ -165,12 +145,12 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
     """SPO mirror receives the correct arguments for a debit transaction."""
     from butlers.tools.finance.transactions import record_transaction
 
-    inserted_row = _make_row(merchant="Starbucks", direction="debit")
+    inserted_row = _txn_row(merchant="Starbucks", direction="debit")
     pool = AsyncMock()
 
     async def _fetchrow(query, *args):
         if "INSERT INTO transactions" in query:
-            return _make_asyncpg_record(inserted_row)
+            return record_row(**inserted_row)
         return None
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
@@ -206,8 +186,8 @@ async def test_spo_mirror_called_for_credit_transaction():
     """SPO mirror is called for credit (positive amount) transactions too."""
     from butlers.tools.finance.transactions import record_transaction
 
-    pool_row = _make_row(direction="credit", amount=Decimal("100.00"))
-    pool = _make_pool(fetchrow_return=pool_row)
+    pool_row = _txn_row(direction="credit", amount=Decimal("100.00"))
+    pool = fake_pool(fetchrow=record_row(**pool_row), fetchval=0)
     mirror_called = asyncio.Event()
 
     async def _capture_mirror(*args, **kwargs):
@@ -234,10 +214,9 @@ async def test_spo_mirror_not_called_on_dedup_hit():
     (The mirror for the original insert was already done at insert time.)"""
     from butlers.tools.finance.transactions import record_transaction
 
-    existing_row = _make_row(source_message_id="msg-dedup-001")
-    pool = _make_pool()
+    existing_row = _txn_row(source_message_id="msg-dedup-001")
     # Simulate dedup: fetchrow returns existing row for source_message_id check
-    pool.fetchrow = AsyncMock(return_value=_make_asyncpg_record(existing_row))
+    pool = fake_pool(fetchrow=record_row(**existing_row), fetchval=0)
     mirror_calls = []
 
     async def _capture_mirror(*args, **kwargs):
@@ -409,17 +388,16 @@ async def test_bulk_record_transactions_handles_missing_merchant():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_skips_duplicates():
-    """Rows that raise UniqueViolationError are counted as skipped."""
-    import asyncpg
-
+    """Dedup replays (``_inserted=False``) are skipped, not imported."""
     from butlers.tools.finance.transactions import bulk_record_transactions
 
-    async def _raise_unique(*args, **kwargs):
-        raise asyncpg.UniqueViolationError()
+    async def _replay(*args, **kwargs):
+        assert kwargs["_include_insert_status"] is True
+        return {"id": "existing-id", "_inserted": False}
 
     with patch(
         "butlers.tools.finance.transactions.record_transaction",
-        side_effect=_raise_unique,
+        side_effect=_replay,
     ):
         result = await bulk_record_transactions(
             pool=MagicMock(),
@@ -436,6 +414,30 @@ async def test_bulk_record_transactions_skips_duplicates():
     assert result["total"] == 1
     assert result["skipped"] == 1
     assert result["error_details"][0]["reason"] == "duplicate"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_record_transactions_row_value_error_does_not_abort_batch():
+    """A per-row ValueError (e.g. unresolvable account) errors that row; later rows import."""
+    from butlers.tools.finance.transactions import (  # pyright: ignore[reportMissingImports]
+        bulk_record_transactions,
+    )
+
+    async def _record(*args, **kwargs):
+        if kwargs["merchant"] == "Bad Account":
+            raise ValueError("unknown account 'nope'")
+        return {"id": "new-id", "_inserted": True}
+
+    rows = [
+        {"posted_at": _utcnow().isoformat(), "merchant": m, "amount": "-5.00"}
+        for m in ("Bad Account", "Good Co")
+    ]
+    with patch("butlers.tools.finance.transactions.record_transaction", side_effect=_record):
+        result = await bulk_record_transactions(pool=MagicMock(), transactions=rows)
+
+    assert (result["imported"], result["errors"]) == (1, 1)
+    assert result["error_details"][0]["index"] == 0
+    assert result["error_details"][0]["reason"].startswith("invalid_row:")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -652,11 +654,11 @@ def _make_bill_pool(bill_row: dict | None = None, *, existing_id: str | None = N
     """
     pool = AsyncMock()
     row = bill_row or _make_bill_row()
-    record = _make_asyncpg_record(row)
+    record = record_row(**row)
 
     if existing_id is not None:
         # First fetchrow → SELECT existing id; second fetchrow → UPDATE RETURNING *
-        existing_record = _make_asyncpg_record({"id": existing_id})
+        existing_record = record_row(**{"id": existing_id})
         pool.fetchrow = AsyncMock(side_effect=[existing_record, record])
     else:
         # First fetchrow → None (no existing); second fetchrow → INSERT RETURNING *

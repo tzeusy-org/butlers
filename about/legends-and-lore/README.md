@@ -49,7 +49,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | Accepted | Fail-closed HA risk map, approval boundary, per-attempt receipt, post-condition proof, rollback hints. |
 | [0029](rfcs/0029-expected-signals-and-honest-absence.md) | Expected Signals and Honest Absence | Accepted | Shared present/absent/unmeasurable ledger, producer-liveness join, producer-owned upserts, degraded rendering. |
 | [0030](rfcs/0030-system-plane-read-exception.md) | System-Plane Read Exception | Accepted | Concierge answers system-plane questions via column-allowlisted read-only UNION views (RFC 0010 plus a sixth guardrail). |
-| [0031](rfcs/0031-public-entity-graph-projection.md) | Public Entity Graph Projection | **Decision record; implementation partial.** Source-owned public projection with atomic writer effects, sensitivity count-only stubs and zero-LLM traversal. The complete contract lives in entity-graph; dossier API/UI, historical recovery and migrated substrate proof remain mandatory, with S7 grant/activity findings explicit. |
+| [0031](rfcs/0031-public-entity-graph-projection.md) | Public Entity Graph Projection | Decision record; implementation partial | Source-owned public projection with atomic writer effects, sensitivity count-only stubs and zero-LLM traversal. The complete contract lives in entity-graph; dossier API/UI, historical recovery and migrated substrate proof remain mandatory, with S7 grant/activity findings explicit. |
 | [0032](rfcs/0032-fleet-case-file.md) | Fleet Case File | Decision record; conformance partial | Canonical fleet-case-file contract preserves all mandatory behavior; immutable evidence, honest read outages and transport/lifecycle proof remain incomplete. |
 | [0033](rfcs/0033-fleet-cost-claims.md) | Fleet Cost Claims | Implemented | Typed sibling-asserted money claims, role-fenced Finance verdicts, honest reconciliation coverage. |
 | [0034](rfcs/0034-messenger-voice-egress.md) | Messenger-Owned Voice Egress | Draft | Messenger-owned local-first voice delivery: explicit initiation, presence, DND suppression, replay fencing, text fallback. |
@@ -57,6 +57,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
 | [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
 | [0038](rfcs/0038-goal-runtime-and-capability-authorization.md) | Goal Runtime and Capability Authorization | Accepted | Switchboard control plane admits goals, sandboxes lead and depth-1 child sessions, brokers origin-derived grants with exposure gating and domain-verified signed calls; `transact` disabled and messages to anyone but the owner always need owner approval; hard cutover replaces classify-and-route. |
+| [0039](rfcs/0039-public-mcp-read-surface.md) | Public MCP Read Surface | Accepted | Doctrine exception: one deterministic, gateway-fronted, read-only MCP server for the owner's AI clients, reading a one-way logical-replication projection; Worker-signed per-call assertions, per-domain kill switches, and an owner-approved `propose_fact` as the only write. Amends RFC 0038 D5/D6/D7/D13; implementation not started. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
@@ -64,7 +65,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
-- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover; the [2026-11-04 record](decisions/2026-11-04-doctrine-public-mcp-read-surface.md) adopts the public MCP read surface exception (RFC 0039).
 
 ## Conventions
 

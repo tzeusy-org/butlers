@@ -30,6 +30,24 @@ database:
   poolMaxSize: 4
   apiPoolMinSize: 0
   apiPoolMaxSize: 2
+  # When true the migrations initContainer runs `butlers db apply-grants --execute`
+  # (revoke what the public grant manifest omits, grant what it lists). Off by default:
+  # enabling it changes live grants, which is an owner act. When false the initContainer
+  # only prints the plan (dry run). Enabled, it is fail-closed: if the apply cannot
+  # converge or the plan would GRANT (widen), the initContainer fails and the
+  # dashboard API does not start. Read the dry-run output on dev first.
+  # Needs an image that ships the `butlers db apply-grants` command; on an older image
+  # the step fails (fail-closed when true, ignored when false) so enable it only after
+  # the chart's image tag includes that command.
+  applyGrants: false
+  # bu-dss7he.6 S3: when true the migrations initContainer connects as the dedicated
+  # migrator login (externalSecrets.migratorData) instead of the shared runtime login;
+  # every other container keeps the shared login. Off by default. Enable only after the
+  # owner steps in docs/data_and_storage/migrator-login.md: the login exists, its BWS keys
+  # exist, and `butlers db transfer-ownership --execute` plus an init-db.sql replay with
+  # butlers.connecting_user set to the migrator have run.
+  migratorLogin:
+    enabled: false
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS
@@ -42,6 +60,11 @@ externalSecrets:
     POSTGRES_USER: BUTLERS_RUNTIME_DB_USER
     POSTGRES_PASSWORD: BUTLERS_RUNTIME_DB_PASSWORD
     DASHBOARD_AUTH_DB_PASSWORD: BUTLERS_RUNTIME_DASHBOARD_AUTH_DB_PASSWORD
+  # Synced into the same Secret only when database.migratorLogin.enabled (bu-dss7he.21
+  # provisions these keys and the butlers_migrator login they name).
+  migratorData:
+    MIGRATOR_POSTGRES_USER: BUTLERS_RUNTIME_MIGRATOR_DB_USER
+    MIGRATOR_POSTGRES_PASSWORD: BUTLERS_RUNTIME_MIGRATOR_DB_PASSWORD
   # Used only when localSecrets.source=bws: BWS key names (never values) for the
   # two Secrets below. Each key is listed explicitly; nothing is wildcard-synced.
   runtimeProbeControl:
@@ -75,9 +98,27 @@ publicUrl:
 
 # Restrict the NodePort-exposed pods to host-originated traffic.
 hostIngress:
-  restrict: true
   # Source address of host-originated traffic on single-node k3s (cni0).
   nodeSourceCidr: 10.42.0.1/32
+  # Further single-host sources. The tailscale-serve host reaches a pod on
+  # another node via flannel.1, so its source is the host's flannel.1 address
+  # (10.42.0.0), not cni0. Each entry must be a /32.
+  extraSourceCidrs:
+    - 10.42.0.0/32
+
+# Optional fixed Service ClusterIPs, so a host `tailscale serve` route that
+# targets one survives the Service being recreated. Leave empty to let the
+# cluster assign; set the site's addresses in the gitignored values.local.yaml
+# (they must be free addresses inside the cluster's service CIDR).
+serviceClusterIPs:
+  frontend: ""
+  dashboardApi: ""
+
+# nodeSelector for the pods host `tailscale serve` proxies to (frontend,
+# dashboard-api, connector-owntracks). On a multi-node cluster they must run on
+# the serve host's node; set it in the gitignored values.local.yaml, e.g.
+#   hostServedNodeSelector: {kubernetes.io/hostname: <serve-host-node>}
+hostServedNodeSelector: {}
 
 nodePorts:
   frontend: 0
@@ -93,12 +134,23 @@ dashboardAuth:
   # `tailscale serve` -> NodePort, this is the node's cni0 address.
   trustedProxyPeers: ""
 
+# Daemon shutdown. `butlers up` unwinds its daemons one at a time inside one process budget
+# (BUTLERS_SHUTDOWN_BUDGET_S), giving each an equal share of what is left. The pod's
+# terminationGracePeriodSeconds is the budget plus a margin for pool close and interpreter
+# exit; without it Kubernetes SIGKILLs at its 30s default, which one slow daemon can use up.
+# A butler's own `[butler.shutdown].timeout_s` still caps its share.
+shutdown:
+  budgetSeconds: 60
+  graceMarginSeconds: 30
+  # `butlers-control` runs one daemon, bounded by its own [butler.shutdown].timeout_s (30s default).
+  daemonTimeoutSeconds: 30
+
 # Plain env applied to butlers-up, dashboard-api and every connector.
 commonEnv:
   # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.invalid:4318  # override in values.local.yaml
-  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
-  BUTLERS_FLEET_CONDITION_HANDOFF: "0"
+  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
 
 # Dev-only opt-in to a key-absent topology. No signing configuration exists.
 butlersControl:
@@ -106,6 +158,66 @@ butlersControl:
   resources:
     requests: {cpu: 250m, memory: 1Gi}
     limits: {memory: 4Gi}
+
+# RFC 0038 D3 session host: dark. Refuses every launch; serves the Codex credential
+# volume over mTLS on `port`, reachable from butlers-control only. No database,
+# domain or connector credential; its only secret is its own PKI (pkiSecret).
+sessionHost:
+  enabled: false
+  port: 41198
+  # Secret with tls.crt, tls.key, client-ca.crt, server.sha256 and caller.sha256,
+  # provisioned out of band (production CA and rotation are a separate gate).
+  pkiSecret: session-host-pki
+  # The goal broker the host's runtimes would reach; unused while no profile is
+  # installed, and real only once the gateway lands (bu-kiuh8v.4).
+  brokerOrigin: https://broker.invalid
+  stagingSize: 256Mi
+  credentialsSize: 16Mi
+  # deploy/seccomp/session-host-sandbox.json, once installed on the node under the
+  # kubelet seccomp root (/var/lib/kubelet/seccomp), named relative to it, e.g.
+  # butlers/session-host-sandbox.json. Empty leaves the pod's seccomp unchanged: a
+  # Localhost profile the node lacks stops the pod from starting.
+  seccompLocalhostProfile: ""
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# bu-ejow5p.11 per-attempt QA investigator: dark. When enabled the chart renders the
+# machinery the daemon's Jobs run under (ServiceAccount without a token or RBAC, the
+# daemon's narrow Job-create Role, the exchange claim, and a ValidatingAdmissionPolicy that
+# refuses any Job in this namespace that is not the pinned investigator shape). The Jobs
+# themselves are created per attempt by the daemon, never by the chart. Requires
+# egressProfiles.enabled (a Job pod must start with no egress) and the service-plane
+# ServiceAccounts (the Role binds to the daemon's own account).
+qaInvestigator:
+  enabled: false
+  exchangeSize: 2Gi
+  # Fixed non-root UID/GID of the investigator process; the admission policy pins it.
+  uid: 10001
+  # sha256:<64 hex> digest of the daemon image (image.repository). Required when enabled: the
+  # admission policy admits the investigator image by digest only. The dev deploy script
+  # resolves it from the registry; it is never a tag.
+  imageDigest: ""
+  # Admission policy action: Deny enforces; Audit only logs (for a first look on a cluster).
+  admissionAction: Deny
+
+# RFC 0038 D7 service-plane caller authentication: dark. When enabled (requires
+# butlersControl.enabled), butlers-control and butlers-up run under their own
+# ServiceAccounts and BUTLERS_SERVICE_PLANE_AUTH=1. butlers-control mounts a projected,
+# pod-bound token for Messenger's delivery audience; Messenger verifies it against the
+# cluster issuer's JWKS. No private key is provisioned: the API server signs.
+servicePlaneAuth:
+  enabled: false
+  issuer: https://kubernetes.default.svc.cluster.local
+  tokenExpirationSeconds: 600
+  switchboardTLS:
+    enabled: false
+    servingSecretName: ""
+    caConfigMapName: ""
+  healthTLS:
+    enabled: false
+    servingSecretName: ""
+    caConfigMapName: ""
 
 butlersUp:
   resources:
@@ -140,6 +252,13 @@ dashboardApi:
     urlSecretRef: {name: "", key: ""}
     intervalSeconds: 600
 
+# Public MCP read surface (RFC 0039). reconcile converges publication butlers_public_v1 and
+# mcp_surface.manifest_state in the migrations initContainer, after Alembic, as the same
+# migration login. It refuses unless init-db.sql created mcp_surface, which needs the CNPG
+# projection roles and the butlers_public database, so it is on only where those exist (dev).
+publicMcp:
+  reconcile: false
+
 frontend:
   resources:
     requests: {cpu: 10m, memory: 32Mi}
@@ -166,10 +285,59 @@ backup:
   schedule: "0 2 * * *"
   retainDays: 14
 
+# Off-node copy of the backup dumps (bu-ivuf9u): an encrypted restic
+# repository on the owner's second always-on tailnet device, over SFTP.
+# Disabled by default; every live step is owner-gated. Runbook:
+# docs/operations/offsite-backup-copy.md.
+offsiteCopy:
+  enabled: false
+  # Runs after the 02:00 dump has finished.
+  schedule: "30 3 * * *"
+  # Owner-supplied, no default: the device's tailnet IP or a name that
+  # resolves from inside a pod, and the repository path on it.
+  host: ""
+  repoPath: ""
+  user: restic
+  port: 22
+  # Name of an existing Secret in the release namespace. The chart never
+  # creates it. Keys: restic-password, ssh-private-key, known-hosts.
+  secretName: ""
+  # true only for the owner-approved first run against an empty repository.
+  initRepository: false
+  sourceHostLabel: butlers
+  keep: {daily: 14, weekly: 8, monthly: 6}
+  image: restic/restic:0.18.1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
 connectorDefaults:
   resources:
     requests: {cpu: 25m, memory: 192Mi}
     limits: {memory: 1Gi}
+
+# Cluster scraping of connector prometheus_client metrics. Connector health
+# servers bind 127.0.0.1 and also serve POST /reload, so each connector with a
+# healthPort gets a sidecar (scripts/connector_metrics_proxy.py) that republishes
+# only GET /metrics on the pod network as the named port `metrics`.
+connectorMetrics:
+  enabled: true
+  port: 9464
+  # Pod annotations for annotation-driven discovery: Grafana k8s-monitoring
+  # (k8s.grafana.com/*) and the prometheus.io/* convention.
+  annotations: true
+  # Prometheus Operator PodMonitor, for a cluster whose Prometheus/Alloy
+  # selects PodMonitors. `labels` must match its podMonitorSelector.
+  podMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  # The cluster scraper's namespace, the only outside source admitted to the
+  # metrics port. Required while enabled; the public MCP namespaces are refused.
+  sourceNamespace: lgtm
+  resources:
+    requests: {cpu: 5m, memory: 24Mi}
+    limits: {memory: 64Mi}
 
 # One Deployment per enabled connector.
 #   module:     python -m butlers.connectors.<module>
@@ -183,6 +351,7 @@ connectors:
     logSubdir: telegram_bot
     provider: telegram
     channel: telegram_bot
+    healthPort: 40081
     env:
       CONNECTOR_INTERNAL_API_URL: http://dashboard-api:41200
   telegram-user:
@@ -190,6 +359,7 @@ connectors:
     logSubdir: telegram_user
     provider: telegram
     channel: telegram_user_client
+    healthPort: 40080
   whatsapp-user:
     module: whatsapp_user_client
     logSubdir: whatsapp_user
@@ -226,6 +396,10 @@ connectors:
     provider: owntracks
     channel: owntracks
     healthPort: 40086
+    env:
+      # Raw-fix expiry worker (bu-s11n0s.75). It deletes only what Chronicler offers, and
+      # Chronicler offers nothing unless the owner turned expiry on in Settings.
+      OWNTRACKS_RAW_RETENTION_ENABLED: "true"
   activitywatch:
     module: activitywatch
     logSubdir: activitywatch
@@ -255,6 +429,7 @@ connectors:
     logSubdir: gmail
     provider: gmail
     channel: email
+    healthPort: 40082
     oauth: true
     sharedDb: true
     env:
@@ -278,9 +453,68 @@ connectors:
     channel: wellness
     healthPort: 40090
     oauth: true
+    # Prevent polling before Health can accept this connector's wellness routes.
+    waitForHealthRoutes: true
 
 # Runtime pods remain isolated from the engineering tracker after bridge retirement.
 # Site CIDRs come from scripts/k8s/site-helm-args.sh; dev retains its existing deny.
 trackerEgress:
   enabled: false
   deniedCidrs: []
+
+# Opt-in egress boundary mirroring scripts/egress-firewall.sh (see
+# docs/operations/kubernetes-deployment.md). Folds into the one tracker-egress
+# policy: the public rule excludes privateCidrs, and allowedCidrs (site-specific
+# /32 hosts such as telemetry, Postgres, ollama, storage, Home Assistant; never
+# commit real addresses) are admitted explicitly. Default off: no posture change.
+egressPolicy:
+  enabled: false
+  allowedCidrs: []
+  # Render with an empty allowlist (every private address denied) only when true.
+  allowNoAllowlist: false
+  privateCidrs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+
+# Reviewed per-workload egress from deploy/egress-profiles.toml (RFC 0038 S7; see
+# docs/operations/egress-profiles.md). Default off. When enabled it replaces the
+# tracker-egress policy with default-deny egress plus one policy per workload, and
+# refuses egressPolicy.enabled. External hosts go only through the shared egress
+# gateway rendered with it (templates/egress-gateway.yaml).
+egressProfiles:
+  enabled: false
+  # Location of each site peer the profiles name, never its port (the profile owns
+  # that): {namespace: <name>, podLabels: {...}} or {cidr: <one IPv4>/32}. A required
+  # site with no entry fails the render; an optional one is simply not admitted.
+  # Never commit real LAN or tailnet addresses: supply them per site.
+  sites: {}
+  # The shared gateway (src/butlers/egress/gateway.py), rendered only when enabled.
+  gateway:
+    replicas: 2
+    # Use the actual cluster DNS domain. The gateway server certificate needs
+    # egress-gateway.<release namespace>.svc.<clusterDomain> in its DNS SAN.
+    clusterDomain: cluster.local
+    # A dedicated server Secret and a distinct client Secret for each external
+    # profile. Each contains tls.crt, tls.key and the appropriate peer CA (ca.crt).
+    # Supply these references and the SHA-256 leaf fingerprint map at the site.
+    tlsSecret: ""
+    clientSecrets: {}
+    clientPins: {}
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 256Mi}
+    relayResources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {memory: 128Mi}
+    # Destinations the gateway's own policy never admits, beside egressPolicy.privateCidrs
+    # and the tracker. The gateway refuses them per tunnel as well.
+    deniedCidrs:
+      - 0.0.0.0/8
+      - 127.0.0.0/8
+      - 192.0.0.0/24
+      - 198.18.0.0/15
+      - 224.0.0.0/4
+      - 240.0.0.0/4

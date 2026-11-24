@@ -15,6 +15,8 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
+from butlers.testing.records import row as _row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -25,19 +27,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: kwargs[key])
-    row.get = MagicMock(side_effect=lambda key, default=None: kwargs.get(key, default))
-    return row
-
-
 def _build_app(
     monkeypatch: pytest.MonkeyPatch,
     ranked: list[dict],
-    entity_rows: list[MagicMock],
-    owner_row: MagicMock | None,
+    entity_rows: list[Record],
+    owner_row: Record | None,
 ) -> FastAPI:
     """Wire up a test app whose pool returns controlled data for the ranking endpoint."""
     mock_pool = AsyncMock()
@@ -426,3 +420,48 @@ class TestDunbarRankingGhostEntries:
         entries = resp.json()["entries"]
         assert [e["canonical_name"] for e in entries] == ["Alive Person"]
         assert all(e["entity_id"] != str(ghost_entity) for e in entries)
+
+
+class TestDunbarRankingReadOnly:
+    """GET /dunbar/ranking evaluates cadence without writing expected_signals."""
+
+    async def test_ranking_does_not_write_expected_signals(self, monkeypatch: pytest.MonkeyPatch):
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        from butlers.roster_imports import roster_module  # noqa: PLC0415
+
+        stale_contacts = roster_module("relationship", "tools/stale_contacts")
+
+        entity_id = uuid4()
+        ranked = [
+            {
+                "contact_id": uuid4(),
+                "entity_id": entity_id,
+                "dunbar_tier": 50,
+                "dunbar_score": 0.8,
+                "dunbar_tier_override": False,
+                "last_interaction_at": datetime.now(UTC) - timedelta(days=400),
+            }
+        ]
+        entity_rows = [_row(id=entity_id, canonical_name="Cad Ence", aliases=[], avatar_url=None)]
+        app = _build_app(monkeypatch, ranked, entity_rows, owner_row=None)
+        pool = app.dependency_overrides[get_db]().pool.return_value
+        base_fetch = pool.fetch
+
+        async def _fetch(sql, *args, **kwargs):
+            if "FROM facts" in sql:  # provenance lookup for the stale-contact signal
+                return [_row(metadata={})]
+            return await base_fetch(sql, *args, **kwargs)
+
+        pool.fetch = _fetch
+        pool.execute = AsyncMock()
+        monkeypatch.setattr(
+            stale_contacts, "_resolve_latest_producer", AsyncMock(return_value=("owner", None))
+        )
+
+        resp = await _get_ranking(app)
+
+        assert resp.status_code == 200
+        pool.execute.assert_not_awaited()
+        entry = resp.json()["entries"][0]
+        assert entry["stale_contact_state"] == "absent"

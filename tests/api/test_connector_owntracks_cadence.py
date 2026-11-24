@@ -148,4 +148,4 @@ async def test_archived_owntracks_identity_does_not_query_or_warn(app: FastAPI) 
     assert data["owntracks_cadence_available"] is True
     assert data["connectors"][0]["archived"] is True
     assert data["connectors"][0]["operational_warnings"] == []
-    assert pool.fetch.await_count == 3
+    assert not any("owntracks_points" in call.args[0] for call in pool.fetch.await_args_list)

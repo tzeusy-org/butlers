@@ -109,6 +109,34 @@ describe("QA dossier fix-column components", () => {
     expect(screen.queryByText(/\+\d+ \/ -\d+/)).toBeNull();
   });
 
+  it("keeps a published PR link when its lifecycle is unknown after failure", () => {
+    const { rerender } = render(
+      <PRPanel
+        pr={{ ...pr, state: null }}
+        whyThisFix={null}
+        stage="failed"
+        proposalState="published"
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Open PR" }).getAttribute("href")).toBe(pr.url);
+    expect(screen.getByText("PR state unknown")).toBeTruthy();
+    expect(screen.getByText("pr #42 · state unknown")).toBeTruthy();
+    expect(screen.queryByText(/No PR|not merged|pr #42 · (closed|merged)/)).toBeNull();
+    const chip = screen.getByText("PR state unknown");
+    expect(chip.style.borderColor).not.toBe("var(--green)");
+    expect(screen.queryByText(pr.merged_at!)).toBeNull();
+    rerender(
+      <PRPanel
+        pr={{ ...pr, state: "merged", merged_at: null }}
+        whyThisFix={null}
+        stage="failed"
+        proposalState="published"
+      />,
+    );
+    expect(screen.getByText(/merge time unavailable/)).toBeTruthy();
+    expect(screen.queryByText("not merged")).toBeNull();
+  });
+
   it("test_pr_panel_omits_empty_diff_preview", () => {
     render(
       <PRPanel
@@ -162,7 +190,7 @@ describe("QA dossier fix-column components", () => {
     ["open", "var(--amber)"],
     ["merged", "var(--green)"],
     ["closed", "var(--dim)"],
-  ] as [QaPrSummary["state"], string][])(
+  ] as [NonNullable<QaPrSummary["state"]>, string][])(
     "test_pr_panel_state_chip_%s",
     (state, expectedBorderColor) => {
       render(
@@ -180,6 +208,10 @@ describe("QA dossier fix-column components", () => {
         (el) => (el as HTMLElement).style.borderColor === expectedBorderColor,
       );
       expect(chip).toBeTruthy();
+      if (state === "merged") {
+        expect(screen.getByText(pr.merged_at!)).toBeTruthy();
+        expect(screen.queryByText("not merged")).toBeNull();
+      }
     },
   );
 });

@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -377,7 +377,7 @@ class TestCredentialsStatusProductionWiring:
         app, pool = _build_summary_app()
         mock_db = app.dependency_overrides[get_db]()
 
-        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_READ_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
 
         # Point the deps singleton at the same mock_db so the production-wired
         # callable (which reads get_db_manager()) resolves against this pool.
@@ -402,6 +402,7 @@ class TestCredentialsStatusProductionWiring:
         # Only presence booleans + the optional hint are exposed — no secret values.
         assert set(creds.keys()) == {
             "gh_token_present",
+            "gh_write_token_present",
             "git_author_name_present",
             "git_author_email_present",
             "provisioning_hint",
@@ -428,13 +429,13 @@ class TestCredentialsStatusProductionWiring:
         assert creds["git_author_name_present"] is False
         assert creds["git_author_email_present"] is False
         assert creds["provisioning_hint"] is not None
-        assert "BUTLERS_QA_GH_TOKEN" in creds["provisioning_hint"]
+        assert "BUTLERS_QA_GH_READ_TOKEN" in creds["provisioning_hint"]
 
     async def test_make_credentials_status_fn_returns_booleans_only(self) -> None:
         """The factory's callable reads presence via the store and returns ONLY
         booleans (never secret values)."""
         pool = MagicMock()
-        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN"})
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_READ_TOKEN"})
         db = MagicMock(spec=DatabaseManager)
         db.credential_shared_pool.return_value = pool
 
@@ -444,6 +445,7 @@ class TestCredentialsStatusProductionWiring:
 
         assert result == {
             "gh_token_present": True,
+            "gh_write_token_present": False,
             "git_author_name_present": False,
             "git_author_email_present": False,
         }
@@ -1069,6 +1071,124 @@ class TestGetCircuitBreakerStatus:
         cb_query = next(q for q in captured if "healing_session_id IS NOT NULL" in q)
         assert "breaker_resets" in cb_query
         assert "manual_reset" not in cb_query
+
+
+class TestCircuitBreakerCause:
+    """The breaker names why it tripped and when it next probes (bu-ejow5p.3)."""
+
+    @staticmethod
+    def _rows(details: list[str | None], *, status: str = "failed") -> list[_MockRecord]:
+        from datetime import timedelta
+
+        return [
+            _r(
+                {
+                    "id": uuid.uuid4(),
+                    "status": status,
+                    "error_detail": detail,
+                    "closed_at": _NOW - timedelta(minutes=minutes),
+                }
+            )
+            for minutes, detail in enumerate(details)
+        ]
+
+    async def _get(self, rows):
+        return (
+            await _call(
+                _build_app(fetch_side_effect=lambda *_a: rows)[0],
+                "get",
+                "/api/qa/circuit-breaker",
+            )
+        ).json()["data"]
+
+    async def test_one_structural_cause_is_named_with_the_next_probe_time(self) -> None:
+        pub = "publication_unavailable: no publisher configured\nsecond line"
+        data = await self._get(self._rows([pub] * 5))
+        assert data["tripped"] is True
+        assert data["dominant_cause"] == "publisher_unconfigured"
+        assert data["cause_counts"] == {"publisher_unconfigured": 5}
+        assert data["next_probe_at"] == "2026-04-05T12:15:00Z"
+        first = data["recent_attempts"][0]
+        assert first["reason_class"] == "publisher_unconfigured"
+        assert first["reason_text"] == "publication_unavailable: no publisher configured"
+
+    async def test_mixed_causes_say_mixed_with_counts(self) -> None:
+        pub = "publication_unavailable: no publisher"
+        data = await self._get(self._rows([None] + [pub] * 4))
+        assert data["dominant_cause"] == "mixed"
+        assert data["cause_counts"] == {"execution_failure": 1, "publisher_unconfigured": 4}
+
+    async def test_unparseable_text_is_an_execution_failure_never_publication(self) -> None:
+        data = await self._get(self._rows(["???"] * 5))
+        assert data["dominant_cause"] == "execution_failure"
+        assert {a["reason_class"] for a in data["recent_attempts"]} == {"execution_failure"}
+
+    async def test_a_closed_breaker_names_no_cause_and_no_probe(self) -> None:
+        data = await self._get(self._rows([None] * 3))
+        assert data["tripped"] is False
+        assert data["dominant_cause"] is None
+        assert data["next_probe_at"] is None
+
+    async def test_reason_text_never_carries_a_credential(self) -> None:
+        secret = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc"
+        data = await self._get(self._rows([f"provider auth failed\n{secret}"] * 5))
+        assert {a["reason_text"] for a in data["recent_attempts"]} == {"provider auth failed"}
+        data = await self._get(self._rows([f"{secret} rejected"] * 5))
+        assert "eyJhbGci" not in data["recent_attempts"][0]["reason_text"]
+
+    async def test_attempt_closed_at_is_a_timestamp_and_opened_at_names_the_trip(self) -> None:
+        data = await self._get(self._rows([None] * 5))
+        assert data["recent_attempts"][0]["closed_at"] == "2026-04-05T12:00:00Z"
+        assert data["opened_at"] == "2026-04-05T12:00:00Z"
+
+    async def test_the_summary_breaker_carries_opened_at_with_the_cause(self) -> None:
+        from datetime import timedelta
+
+        rows = [
+            _r(
+                {
+                    "id": uuid.uuid4(),
+                    "status": "failed",
+                    "error_detail": None,
+                    "closed_at": _NOW - timedelta(minutes=i),
+                }
+            )
+            for i in range(5)
+        ]
+        app, _ = _build_summary_app(cb_rows=rows)
+        breaker = (await _call(app, "get", "/api/qa/summary")).json()["data"]["circuit_breaker"]
+        assert breaker["tripped"] is True
+        assert breaker["opened_at"] == "2026-04-05T12:00:00Z"
+        assert breaker["dominant_cause"] == "execution_failure"
+
+    async def test_failed_probes_push_the_next_probe_out(self) -> None:
+        data = await self._get(self._rows([None] * 7))  # trip plus two failed probes
+        assert data["next_probe_at"] == "2026-04-05T13:00:00Z"  # 60 minute backoff
+
+
+class TestPatrolHaltReason:
+    async def test_the_patrol_list_and_detail_carry_the_halt_reason(self) -> None:
+        patrol_id = uuid.uuid4()
+        row = _make_patrol_row(patrol_id=patrol_id, status="halted", halt_reason="circuit_breaker")
+        listed = (
+            await _call(
+                _build_app(fetch_rows=[row], fetchval_result=1)[0], "get", "/api/qa/patrols"
+            )
+        ).json()["data"][0]
+        assert listed["status"] == "halted" and listed["halt_reason"] == "circuit_breaker"
+        detail = (
+            await _call(
+                _build_app(fetchrow_result=row, fetch_rows=[])[0],
+                "get",
+                f"/api/qa/patrols/{patrol_id}",
+            )
+        ).json()["data"]
+        assert detail["halt_reason"] == "circuit_breaker"
+
+    async def test_halted_is_an_accepted_status_filter(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+        response = await _call(app, "get", "/api/qa/patrols?status=halted")
+        assert response.status_code == 200
 
 
 class TestGetPatrol:
@@ -1731,3 +1851,142 @@ class TestUpdateGitAuthor:
             json={"name": "QA Staffer", "email": "qa@butlers.local"},
         )
         assert resp.status_code == 503
+
+
+class TestKnownIssueLinks:
+    """Owner links from a finding to the work that tracks it (bu-ejow5p.9)."""
+
+    FP = "a" * 64
+
+    @staticmethod
+    def _link_row(created: bool = True, **over: Any) -> dict[str, Any]:
+        row = {
+            "id": uuid.uuid4(),
+            "fingerprint": "a" * 64,
+            "tracker_kind": "bead",
+            "tracker_ref": "bu-2cgabc",
+            "linked_by": "owner",
+            "linked_at": _NOW,
+            "fix_ref": None,
+            "state": "tracked",
+            "expires_at": _NOW,
+            "created": created,
+        }
+        row.update(over)
+        return row
+
+    async def _post(self, body: dict[str, Any], **app_kwargs: Any):
+        app, pool = _build_app(**app_kwargs)
+        response = await _call(app, "post", f"/api/qa/known-issues/{self.FP}/link", json=body)
+        return response, pool
+
+    async def test_a_bead_link_is_created_unverified_and_201(self) -> None:
+        response, pool = await self._post(
+            {"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            fetchrow_result=self._link_row(),
+        )
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["tracker_ref"] == "bu-2cgabc" and data["state"] == "tracked"
+        args = pool.fetchrow.await_args.args
+        assert args[1:5] == (self.FP, "bead", "bu-2cgabc", "owner")
+        assert args[5] is not None  # a default expiry, never an unbounded suppression
+
+    async def test_a_repeat_link_is_200_idempotent(self) -> None:
+        response, _ = await self._post(
+            {"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            fetchrow_result=self._link_row(created=False),
+        )
+        assert response.status_code == 200
+
+    async def test_a_non_owner_is_refused_403(self) -> None:
+        with patch(
+            "butlers.api.routers.qa.authenticated_principal",
+            side_effect=PermissionError("Authenticated owner principal is required"),
+        ):
+            response, pool = await self._post({"tracker_kind": "bead", "tracker_ref": "bu-1"})
+        assert response.status_code == 403
+        pool.fetchrow.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"tracker_kind": "email", "tracker_ref": "x"},
+            {"tracker_kind": "bead", "tracker_ref": "   "},
+            {"tracker_kind": "bead", "tracker_ref": "see the other ticket"},
+            {"tracker_kind": "bead", "tracker_ref": "bu-" + "a" * 400},
+            {"tracker_kind": "github_pr", "tracker_ref": "not a pr url"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/issues/7"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://evil.example/o/r/pull/7"},
+            {"tracker_kind": "github_issue", "tracker_ref": "https://github.com/o/r/pull/7"},
+        ],
+    )
+    async def test_invalid_links_are_422(self, body: dict[str, Any]) -> None:
+        response, pool = await self._post(body)
+        assert response.status_code == 422
+        pool.fetchrow.assert_not_awaited()
+
+    @pytest.mark.parametrize("state", ["closed", "merged"])
+    async def test_a_pr_that_is_already_done_is_rejected(self, state: str) -> None:
+        meta = MagicMock(state=state)
+        client = MagicMock(fetch=AsyncMock(return_value=meta))
+        with patch("butlers.api.routers.qa.get_pr_client", return_value=client):
+            response, pool = await self._post(
+                {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/pull/7"}
+            )
+        assert response.status_code == 422
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_an_open_or_unverifiable_pr_is_accepted(self) -> None:
+        for state in ("open", None):
+            client = MagicMock(fetch=AsyncMock(return_value=MagicMock(state=state)))
+            with patch("butlers.api.routers.qa.get_pr_client", return_value=client):
+                response, _ = await self._post(
+                    {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/pull/7"},
+                    fetchrow_result=self._link_row(tracker_kind="github_pr"),
+                )
+            assert response.status_code == 201
+
+    async def test_expiry_must_be_future_and_within_ninety_days(self) -> None:
+        now = datetime.now(UTC)
+        for value, status in (
+            (now - timedelta(minutes=1), 422),
+            (now + timedelta(days=91), 422),
+            (now + timedelta(days=90) - timedelta(minutes=1), 201),
+        ):
+            response, _ = await self._post(
+                {
+                    "tracker_kind": "bead",
+                    "tracker_ref": "bu-2cgabc",
+                    "expires_at": value.isoformat(),
+                },
+                fetchrow_result=self._link_row(),
+            )
+            assert response.status_code == status, value
+
+    async def test_a_fingerprint_that_is_not_a_sha256_digest_is_refused(self) -> None:
+        for bad in ("short", "A" * 64, "g" * 64, "a" * 65):
+            app, _ = _build_app()
+            post = await _call(
+                app,
+                "post",
+                f"/api/qa/known-issues/{bad}/link",
+                json={"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            )
+            app, _ = _build_app()
+            delete = await _call(
+                app, "delete", f"/api/qa/known-issues/{bad}/link?tracker_ref=bu-2cgabc"
+            )
+            assert post.status_code == delete.status_code == 422, bad
+
+    async def test_closing_a_link_reports_whether_one_was_open(self) -> None:
+        app, _ = _build_app(fetchval_result=uuid.uuid4())
+        ok = await _call(
+            app, "delete", f"/api/qa/known-issues/{self.FP}/link?tracker_ref=bu-2cgabc"
+        )
+        assert ok.status_code == 200 and ok.json()["data"] == {"closed": True}
+        app, _ = _build_app(fetchval_result=None)
+        missing = await _call(
+            app, "delete", f"/api/qa/known-issues/{self.FP}/link?tracker_ref=bu-2cgabc"
+        )
+        assert missing.status_code == 404

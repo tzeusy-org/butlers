@@ -14,6 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,12 @@ from butlers.connectors.gmail import (
     GmailConnectorConfig,
     GmailConnectorRuntime,
     _classify_source_api_error,
+)
+from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
 )
 
 
@@ -47,7 +54,10 @@ def gmail_config() -> GmailConnectorConfig:
 
 @pytest.fixture
 def gmail_runtime(gmail_config: GmailConnectorConfig) -> GmailConnectorRuntime:
-    return GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    # A swallowed ingest error is parked durably, so it needs a pool to commit to.
+    runtime._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    return runtime
 
 
 def _make_message(
@@ -565,6 +575,24 @@ def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> Non
     assert is_auth_revocation is False
     assert "503" in description or "UNAVAILABLE" in description
 
+    nested = _http_error_with_response(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (
+        False,
+        "code=503, reason=syntheticReason, message=Retry",
+    )
+    request = httpx.Request("GET", "https://gmail.googleapis.com/synthetic")
+    for body in (b"", b"synthetic plain body", b"[]", b'{"error": {}}'):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, "http_error: source failure")
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "timeout: synthetic timeout",
+    )
+
 
 def test_classify_source_api_error_falls_back_for_bare_exception() -> None:
     """A network-level exception with no HTTP response still yields a real description."""
@@ -941,7 +969,9 @@ async def test_known_contact_drop_is_marked_important(
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        next_stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        next_stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][
+            9
+        ]
         next_class = next_stored["drop_context"]["classification"]
         assert next_class["state"] == "loaded" and next_class["generation"] == loaded.generation
         assert next_stored["payload"]["raw"] == {}
@@ -995,7 +1025,7 @@ async def test_submission_error_retains_raw_payload(
     ):
         await gmail_runtime._ingest_single_message("msg123")
 
-    rows = gmail_runtime._filtered_event_buffer._rows
+    rows = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
@@ -1543,8 +1573,13 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             )
 
     for code in ("invalid_grant", "unauthorized_client"):
-        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
-        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        # Independent failing grants: a successful first case must not seed
+        # this case through the intentionally shared account token cache.
+        case_config = gmail_config.model_copy(
+            update={"gmail_refresh_token": f"synthetic-grant-{code}"}
+        )
+        runtime = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
         runtime._metrics = MagicMock()
         requests = []
 
@@ -1686,7 +1721,7 @@ async def test_forward_marker_starts_a_forwarded_span(
 
     message = _make_message(subject="Fwd: urgent", body_text=body)
     for stage in ("connector", "global", "submission", "label"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         allow = PolicyDecision(action="pass_through")
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
@@ -1720,7 +1755,7 @@ async def test_forward_marker_starts_a_forwarded_span(
                     gmail_runtime._label_filter, exclude_labels=frozenset({"CATEGORY_PROMOTIONS"})
                 )
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         assert stored["sender"]["identity"] == "sender@example.com"
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "forwarded", "start": 0, "end": len("[no text]")}
@@ -1813,7 +1848,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
         for action in ("metadata_only", "pass_through"):
             broken = _make_message(subject=subject)
             broken["payload"]["body"]["data"] = "a"
-            gmail_runtime._filtered_event_buffer._rows.clear()
+            clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
             submitted = AsyncMock()
             with (
                 patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=broken)),
@@ -1844,7 +1879,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
                 parse_ingest_envelope(delivered)
             else:
                 submitted.assert_not_awaited()
-                row = gmail_runtime._filtered_event_buffer._rows[-1]
+                row = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1]
                 assert row[8] == "error"
                 delivered = row[9]
                 _sanitize_replay_payload(delivered)
@@ -1884,7 +1919,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
     assert "ordinary owner text" in plain["payload"]["normalized_text"]
     assert "untrusted_spans" not in plain["payload"]
     for stage in ("connector", "global", "submission"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
             patch.object(
@@ -1910,9 +1945,288 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         _sanitize_replay_payload(stored)
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "quoted", "start": 0, "end": len("[no text]")}
         ]
         assert "owner before" not in str(stored)
+
+
+async def test_static_identity_env_cannot_relabel_real_gmail_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB-injected credentials and the real envelope retain Gmail identity."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("GMAIL_USER_EMAIL", "test@example.com")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    config = GmailConnectorConfig.from_env(
+        gmail_client_id="synthetic-client",
+        gmail_client_secret="synthetic-secret",
+        gmail_refresh_token="synthetic-refresh",
+    )
+    runtime = GmailConnectorRuntime(config, cursor_pool=MagicMock())
+    first = await runtime._build_ingest_envelope(_make_message())
+    replay = await runtime._build_ingest_envelope(_make_message())
+    assert first["source"] == {
+        "channel": "email",
+        "provider": "gmail",
+        "endpoint_identity": "gmail:user:test@example.com",
+    }
+    assert first["control"]["idempotency_key"] == (
+        "gmail:gmail:user:test@example.com:<unique-msg-id@example.com>"
+    )
+    assert first["control"]["idempotency_key"] == replay["control"]["idempotency_key"]
+    assert first["event"]["external_conversation_id"] == "thread456"
+
+
+@pytest.mark.parametrize(
+    ("raw", "legacy_pubsub", "process_pubsub", "legacy_backfill", "process_backfill"),
+    [
+        (None, False, False, True, True),
+        ("true", True, True, True, True),
+        ("1", True, True, True, True),
+        ("yes", True, True, True, True),
+        ("on", False, True, True, True),
+        ("false", False, False, False, False),
+        ("0", False, False, False, False),
+        ("no", False, False, False, False),
+        ("off", False, False, False, False),
+        ("other", False, False, True, False),
+        ("", False, False, True, False),
+    ],
+)
+def test_shared_gmail_loader_keeps_each_boolean_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str | None,
+    legacy_pubsub: bool,
+    process_pubsub: bool,
+    legacy_backfill: bool,
+    process_backfill: bool,
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "synthetic-topic")
+    for key in ("GMAIL_PUBSUB_ENABLED", "CONNECTOR_BACKFILL_ENABLED"):
+        if raw is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, raw)
+    legacy = GmailConnectorConfig._load_non_secret_env_config()
+    process = GmailProcessConfig.from_env()
+    assert legacy["gmail_pubsub_enabled"] is legacy_pubsub
+    assert process.gmail_pubsub_enabled is process_pubsub
+    assert legacy["connector_backfill_enabled"] is legacy_backfill
+    assert process.connector_backfill_enabled is process_backfill
+
+
+def test_shared_gmail_defaults_keep_real_account_overrides_and_credential_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    settings = {
+        "SWITCHBOARD_MCP_URL": "http://switchboard.test/sse",
+        "CONNECTOR_MAX_INFLIGHT": "17",
+        "CONNECTOR_HEALTH_PORT": "40123",
+        "GMAIL_WATCH_RENEW_INTERVAL_S": "321",
+        "GMAIL_POLL_INTERVAL_S": "23",
+        "GMAIL_PUBSUB_ENABLED": "true",
+        "GMAIL_PUBSUB_TOPIC": "shared-topic",
+        "GMAIL_PUBSUB_WEBHOOK_PORT": "40124",
+        "GMAIL_PUBSUB_WEBHOOK_PATH": "/synthetic-hook",
+        "GMAIL_PUBSUB_WEBHOOK_TOKEN": "synthetic-hook-token",
+        "GMAIL_LABEL_INCLUDE": "INBOX",
+        "GMAIL_LABEL_EXCLUDE": "TRASH",
+        "CONNECTOR_BACKFILL_ENABLED": "false",
+        "CONNECTOR_BACKFILL_POLL_INTERVAL_S": "24",
+        "CONNECTOR_BACKFILL_PROGRESS_INTERVAL": "25",
+        "GMAIL_ACCOUNT_RESCAN_INTERVAL_S": "26",
+        "GMAIL_USER_EMAIL": "legacy@example.com",
+        "GMAIL_SENT_LOOKBACK_DAYS": "27",
+        "GMAIL_SENT_MAX_MESSAGES": "28",
+        "GMAIL_CLIENT_SECRET": "ignored-env-secret",
+    }
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+    runtime = GmailConnectorConfig.from_env(
+        gmail_client_id=" client ",
+        gmail_client_secret=" injected ",
+        gmail_refresh_token=" refresh ",
+    )
+    process = GmailProcessConfig.from_env()
+    common = {
+        "switchboard_mcp_url",
+        "connector_max_inflight",
+        "connector_health_port",
+        "gmail_watch_renew_interval_s",
+        "gmail_poll_interval_s",
+        "gmail_pubsub_enabled",
+        "gmail_pubsub_topic",
+        "gmail_pubsub_webhook_port",
+        "gmail_pubsub_webhook_path",
+        "gmail_pubsub_webhook_token",
+        "gmail_label_include",
+        "gmail_label_exclude",
+        "connector_backfill_enabled",
+        "connector_backfill_poll_interval_s",
+        "connector_backfill_progress_interval",
+    }
+    assert {k: getattr(runtime, k) for k in common} == {k: getattr(process, k) for k in common}
+    assert runtime.gmail_client_secret == "injected"
+    assert runtime.connector_endpoint_identity == "gmail:user:legacy@example.com"
+    assert (runtime.gmail_sent_lookback_days, runtime.gmail_sent_max_messages) == (27, 28)
+    assert process.gmail_account_rescan_interval_s == 26
+    first = process.make_account_config(
+        "one@example.com",
+        "one-client",
+        "one-secret",
+        "one-refresh",
+        {
+            "label_include": "STARRED",
+            "label_exclude": "SPAM",
+            "poll_interval_s": 29,
+            "pubsub_enabled": False,
+            "pubsub_topic": "one-topic",
+        },
+        pubsub_webhook_token="one-hook",
+    )
+    second = process.make_account_config(
+        "two@example.com", "two-client", "two-secret", "two-refresh"
+    )
+    assert (first.connector_endpoint_identity, second.connector_endpoint_identity) == (
+        "gmail:user:one@example.com",
+        "gmail:user:two@example.com",
+    )
+    assert first.connector_health_port == second.connector_health_port == 0
+    assert first.gmail_client_secret == "one-secret" and second.gmail_client_secret == "two-secret"
+    assert first.gmail_pubsub_webhook_token == "one-hook"
+    assert second.gmail_pubsub_webhook_token == "synthetic-hook-token"
+    assert (first.gmail_label_include, first.gmail_label_exclude, first.gmail_poll_interval_s) == (
+        ("STARRED",),
+        ("SPAM",),
+        29,
+    )
+    assert first.gmail_pubsub_enabled is False and first.gmail_pubsub_topic == "one-topic"
+    assert (
+        second.gmail_label_include,
+        second.gmail_label_exclude,
+        second.gmail_poll_interval_s,
+    ) == (("INBOX",), ("TRASH",), 23)
+    assert second.gmail_pubsub_enabled is True and second.gmail_pubsub_topic == "shared-topic"
+    with pytest.raises(ValueError, match="DB-resolved Gmail credentials"):
+        GmailConnectorConfig.from_env(
+            gmail_client_id="client", gmail_client_secret=" ", gmail_refresh_token="refresh"
+        )
+
+
+@pytest.mark.parametrize("entry", ["runtime", "process"])
+def test_gmail_loader_preserves_error_order_and_path_only_inputs(
+    monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    from butlers.connectors.gmail import GmailProcessConfig
+
+    monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "bad")
+    monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
+    monkeypatch.delenv("GMAIL_PUBSUB_TOPIC", raising=False)
+    loader = (
+        GmailConnectorConfig._load_non_secret_env_config
+        if entry == "runtime"
+        else GmailProcessConfig.from_env
+    )
+    with pytest.raises(
+        ValueError, match="CONNECTOR_MAX_INFLIGHT" if entry == "runtime" else "GMAIL_PUBSUB_TOPIC"
+    ):
+        loader()
+    monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "false")
+    if entry == "process":
+        with pytest.raises(KeyError, match="SWITCHBOARD_MCP_URL"):
+            loader()
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "8")
+    monkeypatch.setenv("GMAIL_SENT_LOOKBACK_DAYS", "bad")
+    monkeypatch.setenv("GMAIL_ACCOUNT_RESCAN_INTERVAL_S", "bad")
+    with pytest.raises(
+        ValueError,
+        match="GMAIL_SENT_LOOKBACK_DAYS"
+        if entry == "runtime"
+        else "GMAIL_ACCOUNT_RESCAN_INTERVAL_S",
+    ):
+        loader()
+
+
+async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Backfill progress is identity-scoped, per-batch, and replay-safe (bu-f4iw1n).
+
+    Switchboard adds each report's counters, and CachedMCPClient resends the same
+    args once after a transport drop, so every report carries its own token and
+    only the rows since the previous report.
+    """
+    from butlers.connectors.gmail import BackfillJob
+
+    config = gmail_config.model_copy(update={"connector_backfill_progress_interval": 2})
+    runtime = GmailConnectorRuntime(config, cursor_pool=MagicMock())
+    pages = [([{"id": "m1"}, {"id": "m2"}], "p2"), ([{"id": "m3"}, {"id": "m4"}], None)]
+    runtime._fetch_backfill_message_page = AsyncMock(side_effect=pages)  # type: ignore[method-assign]
+    runtime._fetch_message = AsyncMock(side_effect=RuntimeError("gone"))  # type: ignore[method-assign]
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
+    # Park each message on its first failure instead of holding (bu-dhloi1.149); the
+    # park is written durably, so it needs a pool to write to (bu-dhloi1.250).
+    runtime._backfill_ingest_retry = IngestRetryBudget(1)
+    runtime._db_pool = FilteredEventsPool()
+
+    await runtime._execute_backfill_job(
+        BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31")
+    )
+
+    calls = [c.args for c in runtime._mcp_client.call_tool.await_args_list]
+    assert [name for name, _ in calls] == ["backfill.progress"] * 3
+    reports = [args for _, args in calls]
+    for args in reports:
+        assert args["connector_type"] == "gmail"
+        assert args["endpoint_identity"] == "gmail:user:test@example.com"
+    assert [a["rows_skipped"] for a in reports] == [2, 2, 0]
+    assert reports[-1]["status"] == "completed"
+    tokens = [a["progress_token"] for a in reports]
+    assert all(tokens) and len(set(tokens)) == 3
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        (RuntimeError("endpoint_identity does not match job"), logging.ERROR),
+        (ConnectionError("switchboard unreachable"), logging.WARNING),
+    ],
+    ids=["application-error", "transport-error"],
+)
+async def test_backfill_progress_failure_logs_application_errors_loudly(
+    gmail_config: GmailConnectorConfig,
+    caplog: pytest.LogCaptureFixture,
+    exc: Exception,
+    level: int,
+) -> None:
+    """A rejected progress report is a protocol break, not a blip (bu-02zdve).
+
+    Both failures stay non-fatal so the backfill keeps going, but a tool error
+    (RuntimeError from CachedMCPClient) logs at ERROR so a contract break like
+    the missing identity fields fixed in #5173 cannot stay silent.
+    """
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(side_effect=exc)
+
+    with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        status = await runtime._report_backfill_progress(
+            job_id="job-1", rows_processed=1, rows_skipped=0, cost_spent_cents=1
+        )
+
+    assert status == "ack"
+    [record] = [r for r in caplog.records if "backfill.progress" in r.getMessage()]
+    assert record.levelno == level
+    assert "job-1" in record.getMessage() and str(exc) in record.getMessage()

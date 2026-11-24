@@ -3,6 +3,7 @@
 database:
   host: postgres-dev-rw.postgres-dev.svc.cluster.local
   apiPoolMaxSize: 4
+  applyGrants: true
 
 externalSecrets:
   storeRef: bitwarden-secretsmanager-dev
@@ -13,6 +14,11 @@ externalSecrets:
 # butlers-runtime-probe-control and butlers-local-env come from BWS on dev.
 localSecrets:
   source: bws
+
+# postgres-dev holds the projection roles and butlers_public (Tzeusy/homelab#40), so the
+# migrations initContainer reconciles the public MCP publication (RFC 0039 D4, OD20).
+publicMcp:
+  reconcile: true
 
 publicUrl:
   dashboardPrefix: butlers-dev
@@ -27,7 +33,8 @@ nodePorts:
 dashboardAuth:
   enabled: true
   deployment: dev
-  trustedProxyPeers: 10.42.0.1
+  # cni0 (host -> pod on this node) and flannel.1 (host -> pod on another node).
+  trustedProxyPeers: 10.42.0.1,10.42.0.0
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
@@ -44,6 +51,16 @@ commonEnv:
 trackerEgress:
   enabled: true
 
-# Current service traffic moves to its own process; session health refuses (503).
-butlersControl:
+# Owner decision 2026-11-08 (domain-egress-dev-enable = B): private/tailnet egress is
+# allowlist-only in dev, smoke-tested in a rehearsal namespace. The allowlist is site
+# input (ALLOWED_TAILNET_HOSTS via scripts/k8s/site-helm-args.sh); rendering refuses
+# without it. Host set: docs/operations/kubernetes-deployment.md (egress policy); no
+# prod change.
+egressPolicy:
   enabled: true
+
+# Owner-approved 2026-11-04 temporary cohosting for RFC 0023 same-PID approval
+# recovery. Actual rollout is exclusive and data-preserving; see
+# docs/operations/approval-delivery-dev-rollout.md. Split support stays opt-in.
+butlersControl:
+  enabled: false

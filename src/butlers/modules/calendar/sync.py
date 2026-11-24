@@ -9,6 +9,7 @@ from typing import Any
 
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.temporal.calendar_source_roles import inferred_role_or_none
 
 from .constants import (
     DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
@@ -217,7 +218,11 @@ class SyncMixin:
         display_name = await provider.get_calendar_summary(calendar_id) or calendar_id
         # Butler-specific calendars (from credential store) are owned by this
         # butler; the shared project calendar (auto-discovered) is not.
-        is_butler_cal = self._calendar_is_butler_specific
+        # The flag is module-wide (the Butlers calendar id came from the credential store), and
+        # the poller syncs every calendar: only the resolved Butlers calendar is butler-specific.
+        is_butler_cal = self._calendar_is_butler_specific and calendar_id == getattr(
+            self, "_resolved_calendar_id", None
+        )
         try:
             source_id = await self._ensure_calendar_source(
                 source_key=source_key,
@@ -232,6 +237,9 @@ class SyncMixin:
                     "projection": "provider_sync",
                     "butler_specific": is_butler_cal,
                 },
+                time_role=inferred_role_or_none(
+                    calendar_id=calendar_id, butler_specific=is_butler_cal
+                ),
             )
         except Exception as exc:
             logger.debug("Failed to ensure provider calendar source '%s': %s", source_key, exc)
@@ -654,6 +662,10 @@ class SyncMixin:
                 await self._project_internal_sources()
             except Exception as exc:
                 logger.error("Calendar internal projection poller error: %s", exc, exc_info=True)
+            try:
+                await self._settle_orphaned_overlap_rows()  # pyright: ignore[reportAttributeAccessIssue]
+            except Exception as exc:
+                logger.warning("Settling orphaned overlap rows failed: %s", exc)
             # Push butler events to the Butlers Google Calendar after projection.
             try:
                 await self._push_internal_events_to_provider()

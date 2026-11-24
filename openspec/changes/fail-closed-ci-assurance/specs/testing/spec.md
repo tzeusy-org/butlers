@@ -33,21 +33,17 @@ Scope: v1-mandatory
 - **AND** collection, worker startup and session finalization remain bounded by the owning job watchdog because an item timeout alone cannot prove those phases terminate
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
-Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
-
-The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
-pull request as a fast gate, distinct from and faster than the integration tier,
-and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.
+The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every pull request, merge-group tree and push to main as a fast gate in the dedicated `smoke` job, which starts beside the lane groups together with the fresh lane counts and both lane budgets. It SHALL be distinct from the integration tier and MUST NOT pull in the E2E suite or any real LLM dependency. Smoke evidence SHALL come only from the dedicated smoke command, never from lane-group results.
 
 ID: REQ-testing-034
-Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verification; bu-ly3lv5.6 P8 full-mode proof qualification
+Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verification; bu-29wkwj.3 (every event runs the complete pipeline)
 Scope: v1-mandatory
 
 #### Scenario: Dedicated smoke selection in CI
-- **WHEN** the CI `check-preflight` job runs
+- **WHEN** the CI `smoke` job runs
 - **THEN** smoke tests are selected via `-m smoke` (excluding `e2e` and any real-LLM
-  paths) and run alongside the independent unit and integration shards
-- **AND** a smoke failure fails the CI run
+  paths) and run alongside the independent unit and integration groups
+- **AND** a smoke failure fails `alls-green`
 
 #### Scenario: No E2E or real-LLM dependency in the smoke gate
 - **WHEN** the smoke step runs in CI
@@ -56,68 +52,62 @@ Scope: v1-mandatory
   existing E2E CI-exclusion mechanisms
 
 #### Scenario: Existing post-queue and docs-only smoke skips are explicit
-- **WHEN** a successful classifier identifies a docs/spec-only pull request, or the workflow is a push to main after protected merge-group validation
-- **THEN** check-preflight may skip under the existing event policy
-- **AND** this skip cannot authorize a missing classifier verdict, a failed/cancelled preflight, a backend-applicable pull request, or a merge-group omission
+- **WHEN** a docs/spec-only pull request runs, or the workflow is a push to main after protected merge-group validation
+- **THEN** the smoke job still runs; the former docs-only and post-queue skips are retired (bu-29wkwj.3)
 
 #### Scenario: Exact full-lane smoke reuse preserves the same guarantee
-- **WHEN** full-lane receipts prove every item selected by the dedicated smoke command actually completed successfully
-- **THEN** preflight emits explicitly derived release evidence with actual commands and exact source/run/attempt identity
-- **AND** any uncovered or unavailable selected item requires the original dedicated command or a non-successful preflight
+- **WHEN** the lane groups also run smoke-marked tests
+- **THEN** release evidence still comes only from the dedicated smoke command, so no derived record can stand in for it
 
 ## ADDED Requirements
 
 ### Requirement: Complete fail-closed CI fan-in
 
-The required check context SHALL execute under always(), validate every supplied needed-job result, reject missing or malformed required evidence, and use an explicit job/event/plan skip policy. Changes and guards SHALL succeed; preflight SHALL be required independently of the heavy-shard consistency state. Frontend remains a separate required context and frontend-e2e remains advisory.
+The single required check, `alls-green`, SHALL execute under always(), list every workload job as a direct need and pass only when the supplied results are exactly that set and each is success. A failure, cancellation, skip, missing or malformed result, or an empty needs set SHALL fail it. Every event SHALL run the complete job set, so no skip policy exists. The verdict SHALL be a short shell step with no Python heredoc, checkout or report work.
 
 ID: REQ-testing-035
-Source: bu-ly3lv5.1 original outcome/AC1-2; engineering-bar; testing-and-verification terminal-gate doctrine; bu-tt97y closed scoped-loop invariant.
+Source: bu-ly3lv5.1 original outcome/AC1-2; engineering-bar; testing-and-verification terminal-gate doctrine; bu-29wkwj.3 (owner decision bu-w72da2 = A).
 Scope: v1-mandatory
 
 #### Scenario: A failed or cancelled prerequisite cannot be hidden
-- **WHEN** a declared needed job reports failure, cancelled, an unknown result, or missing/malformed result evidence
-- **THEN** check fails and names the needed job
-- **AND** this applies to changes, guards, plan when applicable, preflight and every selected test lane, even if all other lanes succeeded
+- **WHEN** a declared needed job reports failure, cancelled, skipped, an unknown result, or missing/malformed result evidence
+- **THEN** `alls-green` fails
+- **AND** this applies to guards, smoke, check-totals and every lane group, Vitest child and browser job, even if all other jobs succeeded
 
 #### Scenario: Scoped success excludes preflight from heavy-shard classification
-- **WHEN** an admitted backend PR has a successful scoped planner, successful preflight and successful check-affected with every heavy shard skipped
-- **THEN** check succeeds
-- **AND** preflight success never makes the heavy shards appear to have run
+- **WHEN** any pull request runs
+- **THEN** it runs every heavy group; the scoped plan and affected lane are retired, so smoke never stands in for a heavy group
 
 #### Scenario: Docs-only PR admits the existing complete backend skip
-- **WHEN** a pull request has a successful classifier with backend false and successful guards
-- **THEN** plan, preflight, every heavy shard and check-affected report skipped and check succeeds
-- **AND** missing or malformed classification, partial heavy execution, or failed/cancelled evidence cannot authorize that skip
+- **WHEN** a pull request changes only docs or specs
+- **THEN** every job still runs and must succeed; the docs-only skip is retired
 
 #### Scenario: A full backend PR requires independent preflight and heavy evidence
-- **WHEN** a pull request has a successful classifier with backend true, successful guards and a successful planner with mode full
-- **THEN** preflight and every heavy shard report success, check-affected reports skipped and check succeeds
-- **AND** a missing or invalid planner mode, partial heavy skip or any unsuccessful required result fails check
+- **WHEN** a backend pull request runs
+- **THEN** smoke and every heavy group report success and `alls-green` succeeds
+- **AND** any unsuccessful required result fails `alls-green`
 
 #### Scenario: A scoped backend PR preserves the affected-only pairing
-- **WHEN** a pull request has a successful classifier with backend true, successful guards and a successful planner with mode scoped
-- **THEN** preflight and check-affected report success, every heavy shard reports skipped and check succeeds
-- **AND** preflight never contributes to heavy-ran consistency; a heavy success or missing affected success fails check
+- **WHEN** a pull request would formerly have been planned as scoped
+- **THEN** it runs the complete job set; no affected-only pairing remains
 
 #### Scenario: Main push admits post-queue skips
-- **WHEN** the event is push to refs/heads/main and classification and guards succeed with backend true
-- **THEN** plan, preflight, every heavy shard and check-affected report skipped and check succeeds
-- **AND** a non-main push or unknown event is not an allowed skip context
+- **WHEN** the event is push to refs/heads/main
+- **THEN** the complete job set runs again; the post-queue skips are retired
 
 #### Scenario: Merge-group requires the complete terminal matrix
-- **WHEN** the event is merge_group and classification and guards succeed with backend true
-- **THEN** preflight and every heavy shard report success, plan and check-affected report skipped and check succeeds
-- **AND** no scoped planner, cached result or unexpected skip can replace the full selected terminal population
+- **WHEN** the event is merge_group
+- **THEN** smoke, check-totals and every heavy group report success before `alls-green` succeeds
+- **AND** no cached result or skip can replace the full selected terminal population
 
 #### Scenario: An added needed job defaults to fail closed
-- **WHEN** a later workflow adds a needed job
-- **THEN** the table-driven consumer reads its result without a separately maintained per-job environment loop
-- **AND** success is accepted while skip has no permission until an explicit reviewed policy row exists; failure/cancellation/unknown results fail
+- **WHEN** a later workflow adds a workload job
+- **THEN** the required-checks contract test fails until the job is a direct need of `alls-green` and the expected job count matches
+- **AND** a skip of any needed job fails the verdict; there is no per-job skip permission
 
 ### Requirement: CI checker movement preserves enforcement
 
-Lock, lint, format and SQL-safety checks SHALL move to guards with their current command scopes, run as mandatory checks, and feed a failed guards job into required check. Exact-once, budget and smoke/release checks SHALL remain in preflight until independently adopted replacement assurance actually lands. Every moved or removed checker SHALL name its enforcing survivor.
+Lock, lint, format and SQL-safety checks SHALL move to guards with their current command scopes, run as mandatory checks, and feed a failed guards job into the required `alls-green` check. Exact-once, budget and smoke/release checks SHALL remain in the `smoke` job until independently adopted replacement assurance actually lands. Every moved or removed checker SHALL name its enforcing survivor.
 
 ID: REQ-testing-036
 Source: bu-ly3lv5.1 slice2/Assurance gate; ci-preflight-guards move1.
@@ -125,12 +115,12 @@ Scope: v1-mandatory
 
 #### Scenario: A deliberate format or Ruff violation fails both required contexts
 - **WHEN** an isolated canary introduces a real violation in the current enforcement scope
-- **THEN** the moved checker fails guards and check fails from guards' result
-- **AND** healthy and scoped PR companions remain eligible; no real secrets/provider/DB action is needed to plant the canary
+- **THEN** the moved checker fails guards and `alls-green` fails from guards' result
+- **AND** healthy PR companions remain eligible; no real secrets/provider/DB action is needed to plant the canary
 
 #### Scenario: Remaining preflight evidence cannot pass advisory
 - **WHEN** exact-once ownership, budget, or smoke fails
-- **THEN** preflight and check are non-successful
+- **THEN** smoke and `alls-green` are non-successful
 - **AND** smoke retains exact command, SHA, duration, outcome, skipped classes and sanitized artifact controls
 
 ### Requirement: Coverage reporting is independent of required verdicts
@@ -142,14 +132,14 @@ Source: bu-ly3lv5.1 folded deep-seven-minute-plan move1 and measure-ci-critical-
 Scope: v1-mandatory
 
 #### Scenario: PR assurance survives without coverage instrumentation
-- **WHEN** PR shard or affected tests run
+- **WHEN** PR shard tests run
 - **THEN** markers, paths, workers, JUnit and sanitization remain unchanged, while coverage arguments/uploads are absent
 - **AND** coverage environment opt-in is exact and deliberate; malformed supplied configuration fails, with no ambient accidental PR instrumentation
 
 #### Scenario: Complete terminal coverage survives in a non-required job
 - **WHEN** all merge_group shards finish successfully on the same exact tree
 - **THEN** coverage downloads all ten distinct non-empty shard artifacts, combines them, uploads the existing combined report and updates the badge
-- **AND** coverage is not a prerequisite or required status of check/guards/frontend
+- **AND** coverage is not a prerequisite or required status of `alls-green`
 - **AND** every input is read and validated individually before combination; combine warnings or a nine-of-ten partial success cannot publish a report or badge
 - **AND** each input is bound to the actual checkout, workflow run and attempt, declared lane/shard and current selected manifest by producer metadata and a raw-file digest
 - **AND** the exact ten-file population has readable CoverageData, the complete current measured source population and compatible tracing; extra, stale or mixed evidence fails before report/badge outputs
@@ -157,7 +147,7 @@ Scope: v1-mandatory
 #### Scenario: Reporting failure remains visible without falsifying gate evidence
 - **WHEN** a planted shard coverage artifact is missing/empty/corrupt or the reporting step fails
 - **THEN** coverage is non-successful and does not publish a partial success report/badge
-- **AND** check still depends on real selected-test/preflight/guard outcomes, rather than declaring those tests failed or granting a coverage threshold exception
+- **AND** `alls-green` still depends on real selected-test/smoke/guard outcomes, rather than declaring those tests failed or granting a coverage threshold exception
 
 ### Requirement: CI hangs are finite and diagnosable
 

@@ -382,6 +382,12 @@ async def test_triage_novel_finding_insert_called_with_none_attempt_id():
             "butlers.core.qa.triage.get_active_attempt", new_callable=AsyncMock, return_value=None
         ),
         patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
+        patch("butlers.core.qa.triage.get_gating_link", new_callable=AsyncMock, return_value=None),
+        patch(
+            "butlers.core.qa.triage.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch(
             "butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock, return_value=None
         ),

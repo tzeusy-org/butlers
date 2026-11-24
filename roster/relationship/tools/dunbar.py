@@ -22,6 +22,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.expected_signals import ExpectedSignalState
+from butlers.core.goal_lineage import taint_insert
 
 logger = logging.getLogger(__name__)
 
@@ -850,6 +851,12 @@ async def dunbar_tier_set(
     # Retract any existing active overrides and optionally insert a new one atomically.
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Bulk-retract all active overrides for this entity in one statement,
             # then cascade the memory_catalog disownment + entity_graph_edges
             # deletion forget_memory() would perform, on this same connection/
@@ -882,8 +889,9 @@ async def dunbar_tier_set(
                 }
 
             # Store new override fact
+            taint = taint_insert(4)
             await conn.execute(
-                """
+                f"""
                 INSERT INTO facts (
                     subject,
                     predicate,
@@ -891,15 +899,16 @@ async def dunbar_tier_set(
                     scope,
                     entity_id,
                     validity,
-                    permanence
+                    permanence{taint.columns}
                 ) VALUES (
                     $1, 'dunbar_tier_override', $2, 'relationship',
-                    $3::uuid, 'active', 'permanent'
+                    $3::uuid, 'active', 'permanent'{taint.placeholders}
                 )
                 """,
                 f"contact:{contact_id}",
                 str(tier),
                 entity_id_str,
+                *taint.values,
             )
 
     return {
@@ -1016,7 +1025,9 @@ async def get_contact_dunbar_with_stale_flag(
 # ---------------------------------------------------------------------------
 
 
-async def contacts_overdue_evaluation(pool: asyncpg.Pool) -> dict[str, Any]:
+async def contacts_overdue_evaluation(
+    pool: asyncpg.Pool, *, persist: bool = True
+) -> dict[str, Any]:
     """Return overdue contacts plus aggregate cadence measurability.
 
     Effective cadence per contact:
@@ -1032,6 +1043,9 @@ async def contacts_overdue_evaluation(pool: asyncpg.Pool) -> dict[str, Any]:
     helper before it can enter the overdue result.  ``cadence_available`` is
     false when any requested contact is unmeasurable, preventing an empty
     filtered list from becoming a false all-clear.
+
+    ``persist=False`` evaluates cadence without writing ``expected_signals``; the
+    read-only dashboard API uses it because its role lacks producer rights.
     """
     from butlers.tools.relationship.stale_contacts import evaluate_stale_contact_signal
 
@@ -1099,6 +1113,7 @@ async def contacts_overdue_evaluation(pool: asyncpg.Pool) -> dict[str, Any]:
             entity_id=contact["entity_id"],
             expected_cadence=timedelta(days=effective_cadence),
             last_observed_at=contact.get("last_interaction_at"),
+            persist=persist,
         )
         if signal.evaluation.state is ExpectedSignalState.UNMEASURABLE:
             unmeasurable_count += 1

@@ -2,7 +2,9 @@
 
 ## Purpose
 The Telegram Bot connector is the butler ecosystem's primary user-facing chat interface. It receives Telegram updates from a bot account, normalizes them into `ingest.v1` envelopes for Switchboard ingestion, and provides the bidirectional channel through which butlers communicate with the user. The bot account is the "face" of the butler system on Telegram — users message the bot, and butlers reply through the Messenger butler's channel tools. This connector handles the inbound half of that loop.
+
 ## Requirements
+
 ### Requirement: Telegram Bot Identity and Role
 The Telegram bot connector SHALL bridge a Telegram bot account into the butler ecosystem as the primary interactive chat channel.
 
@@ -61,6 +63,10 @@ Each Telegram update SHALL be normalized to the canonical `ingest.v1` envelope.
 ### Requirement: Tiered Text Extraction
 The connector SHALL extract human-readable text from Telegram messages using a four-tier fallback strategy.
 
+ID: REQ-connector-telegram-bot-005
+Source: bu-r0dsz; [Observed] `src/butlers/connectors/telegram_bot.py` `_extract_normalized_text`
+Scope: v1-mandatory
+
 #### Scenario: Tier 1 — text field
 - **WHEN** a Telegram message has a `text` field
 - **THEN** it is used as `payload.normalized_text`
@@ -77,6 +83,16 @@ The connector SHALL extract human-readable text from Telegram messages using a f
   - `[Sticker: <emoji>]` (includes the sticker's emoji)
   - `[Contact: <name>]` (includes the contact's display name)
   - `[Poll: <question>]` (includes the poll question text)
+
+#### Scenario: Tier 3 supersession — voice-note transcription
+- **WHEN** a message's only extractable content is a `voice` field, and the
+  `telegram-voice-transcription` capability's eligibility gate, media bounds, and STT call all
+  succeed with acceptable confidence for that note
+- **THEN** the transcript text supersedes the `[Voice message]` descriptor as `payload.normalized_text`
+  (per that capability's Successful Transcript requirement)
+- **AND** every other case — an ineligible or forwarded note, a disabled feature, an oversize or overlong note,
+  a download/transcode/STT failure, or an empty/low-confidence result — leaves this Tier 3 scenario's
+  `[Voice message]` descriptor exactly as specified above, unconditional and unchanged
 
 #### Scenario: Tier 4 — service messages (skipped)
 - **WHEN** a message has no extractable content (service messages, non-message updates)
@@ -112,6 +128,39 @@ other `callback_query` SHALL retain its existing drop behavior.
 - **AND** when the internal API URL is unconfigured or unreachable, the tap
   SHALL still be acknowledged with a graceful toast rather than left with a
   loading spinner
+
+### Requirement: Owner Reach Command
+The connector SHALL answer an exact `/reach` from the primary owner in a private chat with the revocable break-through clauses, and SHALL let the owner revoke but never create or grant a clause. `/reach add <matcher>` SHALL only record a pending proposal; confirmation happens on the dashboard.
+
+#### Scenario: Owner /reach lists and revokes break-through clauses
+- **WHEN** a message whose text is exactly `/reach` arrives in a private chat
+  (`chat.id` equals `from.id`) from the primary owner
+- **THEN** the connector SHALL answer deterministically, without ingesting the
+  message or invoking a model, with the unrevoked break-through clauses and one
+  inline button per clause whose `callback_data` is a signed `rch1:` token
+  bound to the chat
+- **AND** a tap on an `rch1:` button from the primary owner SHALL revoke that
+  clause via `POST /api/attention/reach/telegram` and SHALL always be
+  acknowledged via `answerCallbackQuery`, including when the owner lookup fails
+- **AND** the surface SHALL be narrowing-only: no Telegram path creates or
+  grants a clause
+- **AND** `/reach` from a non-owner or from a group chat SHALL fall through
+  unanswered as an ordinary message
+
+#### Scenario: Owner /reach add records a pending proposal only
+- **WHEN** a message `/reach add <matcher>` arrives in a private chat from the
+  primary owner, where the matcher words are `domain:`/a bare domain,
+  `channel:`, `kind:` and `scope:` drawn from the closed clause sets
+- **THEN** the connector SHALL NOT ingest the message or invoke a model, SHALL
+  forward only the parsed matchers (never message text) to
+  `POST /api/attention/reach/telegram`, and SHALL reply "Proposed; confirm on
+  the dashboard at /settings/reach" with no confirm button
+- **AND** an unparseable command (no matcher, an unknown or repeated field, an
+  out-of-set value, free text) SHALL be answered with usage and SHALL propose
+  nothing
+- **AND** from a non-owner, a non-primary sender or a group chat the command
+  SHALL fall through as an ordinary message
+- **AND** no Telegram path SHALL create a clause
 
 ### Requirement: Lifecycle Reactions
 Lifecycle reactions SHALL be applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector SHALL neither send nor track reactions. The emoji mapping below documents the cross-component behavior for reference.

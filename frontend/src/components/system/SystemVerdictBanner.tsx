@@ -168,6 +168,15 @@ export function SystemVerdictBanner() {
     if (backupData?.last_run?.result === "failed") {
       problems.push({ key: "backup-run-failed", text: "last backup run failed" });
     }
+    // bu-ivuf9u: the off-node copy is the only backup that survives losing
+    // this node's storage. Only an enabled copy speaks; "disabled" (or an
+    // older backend with no field) raises nothing.
+    const copy = backupData?.offsite_copy;
+    if (copy?.result === "failed") {
+      problems.push({ key: "backup-offsite-failed", text: "off-node backup copy failed" });
+    } else if (copy && copy.result !== "disabled" && copy.stale) {
+      problems.push({ key: "backup-offsite-stale", text: "off-node backup copy is stale" });
+    }
     if (backupData && !backupData.last_backup_at) {
       problems.push({ key: "backup-never", text: "never backed up" });
     } else if (backupData) {

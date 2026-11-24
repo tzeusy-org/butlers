@@ -284,10 +284,10 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: QA-Owned Runtime and Launch Authority
-Initial and follow-up QA investigations SHALL execute under a core-owned dispatch capability bound to the QA daemon identity and lifecycle generation, with explicit model resolution, budget ownership and launch lineage.
+Initial and follow-up QA investigations SHALL execute under a core-owned dispatch capability bound to the QA daemon identity and lifecycle generation, with explicit model resolution, budget ownership and launch lineage. These launches SHALL be RFC 0038 D18 engineering executors started by the surviving Spawner with trigger source `qa`, not goal invocations.
 
 ID: REQ-qa-investigation-dispatch-011
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Multiple daemons start in any order
@@ -302,11 +302,17 @@ Scope: v1-mandatory
 - **THEN** its cleanup cannot unregister or mutate the replacement's dispatch capability
 - **AND** concurrent launches are charged once to the owning incident and runtime budgets
 
+#### Scenario: Engineering-executor launch stays outside the goal runtime
+- **WHEN** QA launches an initial or follow-up investigation before or after the RFC 0038 switch
+- **THEN** the session is recorded in the QA session store with trigger source `qa` and creates no goal, goal invocation, invocation token or broker grant
+- **AND** its environment is exactly the environment the `confine-qa-publication-authority` **Agent environment** scenario (REQ-qa-investigation-dispatch-001, Investigation Agent Sandbox) allows, unchanged by this requirement
+- **AND** its work is charged to the QA incident work budget, never to an RFC 0038 D10 goal budget, and a staffer goal's judgment cannot request, resume or reserve the launch
+
 ### Requirement: Evidence-Driven PR Follow-Up
 QA SHALL observe PR state, exact head, required-check state and all unresolved feedback through a deterministic complete provider projection, then lease at most one bounded follow-up for each new actionable feedback/head state.
 
 ID: REQ-qa-investigation-dispatch-012
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Inline-only feedback and duplicate pollers
@@ -320,6 +326,7 @@ Scope: v1-mandatory
 - **THEN** the claimed operation is revalidated or held without a blind agent/publication retry
 - **AND** any unknown remote effect retains its existing publisher lineage hold
 - **AND** investigators receive only sanitized feedback and never provider credentials or authority to review, approve, merge or queue
+- **AND** a follow-up is an engineering-executor launch under the same incident budget, never a goal, and review feedback enters its prompt as untrusted data that cannot widen its scope, credentials or publication authority
 
 #### Scenario: Candidate artifact survives publication outage
 - **WHEN** a validated patch cannot be published

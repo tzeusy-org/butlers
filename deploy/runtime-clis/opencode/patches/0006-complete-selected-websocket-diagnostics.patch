@@ -1,0 +1,401 @@
+--- a/packages/llm/src/route/executor.ts
++++ b/packages/llm/src/route/executor.ts
+@@ -205,0 +206,16 @@
++/** Sanitize selected non-HTTP transport identity with the same request-secret rules. */
++export const transportFailureIdentity = (
++  input: { readonly url: string; readonly headers: Headers.Headers },
++  message: string,
++  redactedNames: ReadonlyArray<string | RegExp>,
++) => {
++  const request = HttpClientRequest.get(input.url).pipe(HttpClientRequest.setHeaders(input.headers))
++  const url = redactBody(redactUrl(input.url), request, redactedNames)
++  return {
++    url,
++    // Invalid URL construction can include the entire supplied value in its
++    // message. Replace it before field/literal sanitizing, even when unparseable.
++    message: redactBody(message.split(input.url).join(url), request, redactedNames),
++  }
++}
++
+@@ -223,0 +240,6 @@
++  // Redaction can expand a short secret. Bound the sanitized UTF-8 output too,
++  // dropping only an incomplete final code point rather than emitting U+FFFD.
++  const body = redact(response.body)
++  const encoded = new TextEncoder().encode(body)
++  const truncated = encoded.byteLength > 64 * 1024
++  const boundedBody = truncated ? new TextDecoder().decode(encoded.subarray(0, 64 * 1024), { stream: true }) : body
+@@ -232,4 +254,3 @@
+-      // The connector has already enforced its 64KiB/10s body bound. Preserve
+-      // that truncation signal while sanitizing, rather than buffering again.
+-      body: redact(response.body),
+-      bodyTruncated: response.truncated,
++      // Preserve the upstream input/deadline bound and either truncation signal.
++      body: boundedBody,
++      bodyTruncated: response.truncated || truncated,
+--- a/packages/llm/src/route/transport/websocket.ts
++++ b/packages/llm/src/route/transport/websocket.ts
+@@ -6 +6 @@
+-import { transportFailureDetails } from "../executor"
++import { transportFailureDetails, transportFailureIdentity } from "../executor"
+@@ -34 +34,2 @@
+-  input: { readonly url?: string; readonly kind?: string } = {},
++  input: { readonly url?: string; readonly kind?: string; readonly headers?: Headers.Headers } = {},
++  redactedNames: ReadonlyArray<string | RegExp> = [],
+@@ -39 +40,7 @@
+-    reason: new TransportReason({ message, url: input.url, kind: input.kind }),
++    reason: new TransportReason({
++      ...(input.url !== undefined &&
++      (process.env.BUTLERS_EGRESS_MODE !== undefined || process.env.BUTLERS_EGRESS_GATEWAY !== undefined)
++        ? transportFailureIdentity({ url: input.url, headers: input.headers ?? Headers.empty }, message, redactedNames)
++        : { message, url: input.url }),
++      kind: input.kind,
++    }),
+@@ -58,4 +65,10 @@
+-      transportError("open", `WebSocket closed before opening (state ${ws.readyState})`, {
+-        url: input.url,
+-        kind: "open",
+-      }),
++      transportError(
++        "open",
++        `WebSocket closed before opening (state ${ws.readyState})`,
++        {
++          url: input.url,
++          headers: input.headers,
++          kind: "open",
++        },
++        redactedNames,
++      ),
+@@ -82,0 +96,11 @@
++      if (!failure)
++        return resume(
++          Effect.fail(
++            transportError(
++              "open",
++              `Failed to open WebSocket: ${eventMessage(event)}`,
++              { ...input, kind: "open" },
++              redactedNames,
++            ),
++          ),
++        )
+@@ -89 +113 @@
+-              message: failure?.message ?? `Failed to open WebSocket: ${eventMessage(event)}`,
++              message: failure.message,
+@@ -91 +115 @@
+-              ...(failure ? transportFailureDetails(input, failure, redactedNames) : { url: input.url }),
++              ...transportFailureDetails(input, failure, redactedNames),
+@@ -101,4 +125,10 @@
+-          transportError("open", `WebSocket closed before opening with code ${event.code}`, {
+-            url: input.url,
+-            kind: "open",
+-          }),
++          transportError(
++            "open",
++            `WebSocket closed before opening with code ${event.code}`,
++            {
++              url: input.url,
++              headers: input.headers,
++              kind: "open",
++            },
++            redactedNames,
++          ),
+@@ -115 +145 @@
+-const webSocketUrl = (value: string) =>
++const webSocketUrl = (value: string, headers: Headers.Headers, redactedNames: ReadonlyArray<string | RegExp>) =>
+@@ -130,4 +160,10 @@
+-      transportError("prepare", error instanceof Error ? error.message : "Invalid WebSocket URL", {
+-        url: value,
+-        kind: "websocket",
+-      }),
++      transportError(
++        "prepare",
++        error instanceof Error ? error.message : "Invalid WebSocket URL",
++        {
++          url: value,
++          headers,
++          kind: "websocket",
++        },
++        redactedNames,
++      ),
+@@ -137,14 +173,23 @@
+-  Effect.try({
+-    try: () => {
+-      const selected = gatewaySocket(input.url, input.headers)
+-      if (selected) return selected as unknown as globalThis.WebSocket
+-      return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, {
+-        headers: input.headers,
+-      })
+-    },
+-    catch: (error) =>
+-      transportError("open", error instanceof Error ? error.message : "Failed to construct WebSocket", {
+-        url: input.url,
+-        kind: "open",
+-      }),
+-  }).pipe(Effect.flatMap((ws) => fromWebSocket(ws, input)))
++  Effect.gen(function* () {
++    const redactedNames = yield* Headers.CurrentRedactedNames
++    return yield* Effect.try({
++      try: () => {
++        const selected = gatewaySocket(input.url, input.headers)
++        if (selected) return selected as unknown as globalThis.WebSocket
++        return new (globalThis.WebSocket as unknown as WebSocketConstructorWithHeaders)(input.url, {
++          headers: input.headers,
++        })
++      },
++      catch: (error) =>
++        transportError(
++          "open",
++          error instanceof Error ? error.message : "Failed to construct WebSocket",
++          {
++            url: input.url,
++            headers: input.headers,
++            kind: "open",
++          },
++          redactedNames,
++        ),
++    }).pipe(Effect.flatMap((ws) => fromWebSocket(ws, input)))
++  })
+@@ -170 +215,6 @@
+-          transportError("message", "Unsupported WebSocket message payload", { url: input.url, kind: "message" }),
++          transportError(
++            "message",
++            "Unsupported WebSocket message payload",
++            { ...input, kind: "message" },
++            redactedNames,
++          ),
+@@ -178 +228,6 @@
+-          transportError("message", `WebSocket error: ${eventMessage(event)}`, { url: input.url, kind: "message" }),
++          transportError(
++            "message",
++            `WebSocket error: ${eventMessage(event)}`,
++            { ...input, kind: "message" },
++            redactedNames,
++          ),
+@@ -187 +242,6 @@
+-          transportError("message", `WebSocket closed with code ${event.code}`, { url: input.url, kind: "close" }),
++          transportError(
++            "message",
++            `WebSocket closed with code ${event.code}`,
++            { ...input, kind: "close" },
++            redactedNames,
++          ),
+@@ -206,4 +266,10 @@
+-            transportError("sendText", error instanceof Error ? error.message : "Failed to send WebSocket message", {
+-              url: input.url,
+-              kind: "write",
+-            }),
++            transportError(
++              "sendText",
++              error instanceof Error ? error.message : "Failed to send WebSocket message",
++              {
++                url: input.url,
++                headers: input.headers,
++                kind: "write",
++              },
++              redactedNames,
++            ),
+@@ -252 +318 @@
+-        url: yield* webSocketUrl(parts.url),
++        url: yield* webSocketUrl(parts.url, parts.headers, yield* Headers.CurrentRedactedNames),
+@@ -262,0 +329 @@
++          headers: prepared.headers,
+--- a/packages/llm/test/gateway-websocket-errors.test.ts
++++ b/packages/llm/test/gateway-websocket-errors.test.ts
+@@ -1 +1 @@
+-import { afterEach, expect, test } from "bun:test"
++import { afterEach, beforeEach, expect, test } from "bun:test"
+@@ -10 +10 @@
+-import { fromWebSocket, open } from "../src/route/transport/websocket"
++import { fromWebSocket, open, json } from "../src/route/transport/websocket"
+@@ -68 +68,6 @@
+-async function failure(status: number, body: string, extra: Record<string, string> = {}) {
++async function failure(
++  status: number,
++  body: string,
++  extra: Record<string, string> = {},
++  requestHeaders: Record<string, string> = {},
++) {
+@@ -80 +85 @@
+-        headers: Headers.fromInput({ "x-safe": "visible", "x-private-custom": markers.custom }),
++        headers: Headers.fromInput({ "x-safe": "visible", "x-private-custom": markers.custom, ...requestHeaders }),
+@@ -226,0 +232,181 @@
++
++// Every synthetic operation proves containment in its actual child first.
++beforeEach(() => {
++  expect(readlinkSync("/proc/self/ns/net") === process.env.HOST_NETWORK_NAMESPACE).toBe(false)
++  expect(
++    readFileSync("/proc/net/route", "utf8")
++      .trim()
++      .split("\n")
++      .slice(1)
++      .every((line) => line.split(/\s+/)[0] === "lo"),
++  ).toBe(true)
++})
++async function selectedInput() {
++  return {
++    url: `wss://api.openai.com/v1/responses?api_key=${markers.query}&model=retained-model`,
++    headers: await Effect.runPromise(
++      Auth.toEffect(Auth.bearer(markers.bearer))({
++        request: {} as any,
++        method: "GET",
++        url: "https://api.openai.com/v1/responses",
++        body: "",
++        headers: Headers.fromInput({ "x-safe": "visible" }),
++      }),
++    ),
++  }
++}
++function assertSanitized(error: LLMError, kind: string) {
++  const serialized = JSON.stringify({ error, cause: error.cause, message: error.message })
++  for (const marker of Object.values(markers)) expect(serialized.includes(marker)).toBe(false)
++  expect(error).toBeInstanceOf(LLMError)
++  expect(error.reason._tag).toBe("Transport")
++  expect(error.reason.kind).toBe(kind)
++  expect(error.cause === error.reason).toBe(true)
++  expect(error.retryable).toBe(false)
++  const url = new URL((error.reason as any).url)
++  expect(url.pathname).toBe("/v1/responses")
++  expect(url.searchParams.get("model")).toBe("retained-model")
++  expect(url.searchParams.get("api_key") === "<redacted>").toBe(true)
++}
++for (const variant of ["timeout", "refused", "close-before-open", "already-closed"] as const)
++  test(`selected ${variant} uses sanitized actual Effect error identity`, async () => {
++    const { http, port } = await server()
++    process.env.BUTLERS_EGRESS_MODE = "request-v1"
++    process.env.BUTLERS_EGRESS_GATEWAY = `http://egress-gateway:${port}`
++    const input = await selectedInput()
++    let seen = 0
++    http.on("upgrade", (_request, socket) => {
++      seen++
++      if (variant === "close-before-open") socket.end()
++    })
++    let selectLookup = lookup
++    if (variant === "refused") {
++      // Use a genuinely closed owned loopback port, not a fake socket/error.
++      const probe = createServer()
++      await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve))
++      const closedPort = (probe.address() as { port: number }).port
++      await new Promise<void>((resolve) => probe.close(() => resolve()))
++      process.env.BUTLERS_EGRESS_GATEWAY = `http://egress-gateway:${closedPort}`
++    }
++    const socket = createGatewayWebSocket({ lookup: selectLookup })(input.url, input.headers, 100)!
++    const closed = new Promise<void>((resolve) => socket.once("close", resolve))
++    const error = await Effect.runPromise(fromWebSocket(socket as any, input).pipe(Effect.flip))
++    await closed
++    assertSanitized(error, "open")
++    expect(seen).toBe(variant === "refused" ? 0 : 1)
++    if (variant === "already-closed") {
++      const repeated = await Effect.runPromise(fromWebSocket(socket as any, input).pipe(Effect.flip))
++      assertSanitized(repeated, "open")
++    }
++  })
++test("selected constructor and real JSON prepare failures sanitize logical identity", async () => {
++  process.env.BUTLERS_EGRESS_MODE = "request-v1"
++  process.env.BUTLERS_EGRESS_GATEWAY = "http://egress-gateway:3101"
++  const input = await selectedInput()
++  const bad = { ...input, url: input.url.replace("wss:", "https:") }
++  const constructor = await Effect.runPromise(open(bad).pipe(Effect.flip))
++  assertSanitized(constructor, "open")
++  const prepared = await Effect.runPromise(
++    json({ toMessage: Effect.succeed, encodeMessage: JSON.stringify })
++      .prepare({
++        request: {} as any,
++        body: {},
++        encodeBody: JSON.stringify,
++        endpoint: {
++          baseURL: "ftp://api.openai.com",
++          path: "/v1/responses",
++          query: { api_key: markers.query, model: "retained-model" },
++        },
++        auth: Auth.bearer(markers.bearer),
++      })
++      .pipe(Effect.flip),
++  )
++  assertSanitized(prepared, "websocket")
++})
++for (const variant of ["error", "abnormal-close", "unsupported-message", "send", "closing"] as const)
++  test(`selected actual socket ${variant} retains sanitized typed diagnostics`, async () => {
++    const { http, port } = await server()
++    process.env.BUTLERS_EGRESS_MODE = "request-v1"
++    process.env.BUTLERS_EGRESS_GATEWAY = `http://egress-gateway:${port}`
++    const wss = new WebSocketServer({ server: http })
++    cleanup.push(async () => {
++      for (const peer of wss.clients) peer.terminate()
++      await new Promise<void>((resolve) => wss.close(() => resolve()))
++    })
++    let peer: import("butlers-egress-ws").default | undefined
++    wss.on("connection", (value) => {
++      peer = value
++      value.on("message", (data) => value.send(data.toString()))
++    })
++    const input = await selectedInput()
++    const socket = createGatewayWebSocket({ lookup })(input.url, input.headers, 500)!
++    const closed = new Promise<void>((resolve) => socket.once("close", resolve))
++    const connection = await Effect.runPromise(fromWebSocket(socket as any, input))
++    try {
++      // Healthy selected upgrade/frames are a companion to each error branch.
++      await Effect.runPromise(connection.sendText("benign-frame"))
++      const received = await Effect.runPromise(Stream.runHead(connection.messages))
++      expect(Option.getOrThrow(received)).toBe("benign-frame")
++      let error: LLMError
++      if (variant === "send") {
++        // Real ws rejects a non-wire-representable send argument; no method mock.
++        error = await Effect.runPromise(connection.sendText(Symbol("invalid") as any).pipe(Effect.flip))
++      } else if (variant === "closing") {
++        socket.close(1000)
++        expect(socket.readyState).toBe(WebSocket.CLOSING)
++        error = await Effect.runPromise(fromWebSocket(socket as any, input).pipe(Effect.flip))
++      } else {
++        if (variant === "abnormal-close") peer!.close(1011, "benign-close")
++        if (variant === "error") socket.emit("error", new Error(`synthetic-event ${markers.query}`))
++        if (variant === "unsupported-message") socket.emit("message", { unsupported: true }, true)
++        error = await Effect.runPromise(Stream.runDrain(connection.messages).pipe(Effect.flip))
++      }
++      assertSanitized(
++        error,
++        variant === "send"
++          ? "write"
++          : variant === "closing"
++            ? "open"
++            : variant === "abnormal-close"
++              ? "close"
++              : "message",
++      )
++    } finally {
++      await Effect.runPromise(connection.close)
++      socket.terminate()
++      await closed
++    }
++  })
++test("off-mode early closed identity remains native and unredacted", async () => {
++  const { http, port } = await server()
++  const wss = new WebSocketServer({ server: http })
++  cleanup.push(async () => {
++    for (const peer of wss.clients) peer.terminate()
++    await new Promise<void>((resolve) => wss.close(() => resolve()))
++  })
++  const url = `ws://127.0.0.1:${port}/v1/responses?api_key=${markers.query}&model=retained-model`
++  const socket = new WebSocket(url)
++  const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve(), { once: true }))
++  await new Promise<void>((resolve) => socket.addEventListener("open", () => resolve(), { once: true }))
++  socket.close(1000)
++  await closed
++  const error = await Effect.runPromise(fromWebSocket(socket, { url, headers: Headers.empty }).pipe(Effect.flip))
++  expect(error.reason._tag).toBe("Transport")
++  expect((error.reason as any).url === url).toBe(true)
++})
++for (const multibyte of [false, true])
++  test(`sanitized diagnostic encoded-byte cap handles ${multibyte ? "UTF8" : "short-secret expansion"}`, async () => {
++    const prefix = multibyte ? "visible-xxxxxxxxxxx" : "visible-prefix "
++    const body = multibyte ? prefix + "aaaa😀".repeat(8189) : prefix + "aaaa".repeat(16380)
++    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(65536)
++    const error = await failure(401, body, {}, { "x-short-secret": "aaaa" })
++    const details = (error.reason as any).http
++    expect(details.body.includes("aaaa")).toBe(false)
++    expect(details.body.startsWith(prefix)).toBe(true)
++    expect(details.body.includes("<redacted>")).toBe(true)
++    expect(Buffer.byteLength(details.body)).toBeLessThanOrEqual(65536)
++    expect(details.body.endsWith("\uFFFD")).toBe(false)
++    expect(details.bodyTruncated).toBe(true)
++    expect(details.response.status).toBe(401)
++    expect(details.response.headers["retry-after"]).toBe("3")
++  })

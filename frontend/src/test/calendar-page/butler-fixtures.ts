@@ -82,6 +82,7 @@ export function setButlerWorkspaceFixtures() {
             staleness_ms: 900,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: false,
           },
           {
             source_id: "source-butler-2",
@@ -104,6 +105,7 @@ export function setButlerWorkspaceFixtures() {
             staleness_ms: 900,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: false,
           },
         ],
         lanes: [
@@ -157,6 +159,7 @@ export function setButlerWorkspaceFixtures() {
             staleness_ms: 900,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: false,
           },
           {
             source_id: "source-butler-2",
@@ -179,6 +182,7 @@ export function setButlerWorkspaceFixtures() {
             staleness_ms: 900,
             error_kind: "none",
             sync_enabled: true,
+            sync_applicable: false,
           },
         ],
         writable_calendars: [],

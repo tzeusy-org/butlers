@@ -6,9 +6,15 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getCalendarAccounts, setPrimaryCalendar, toggleCalendarSource } from "@/api/index.ts";
+import {
+  getCalendarAccounts,
+  setCalendarSourceRole,
+  setPrimaryCalendar,
+  toggleCalendarSource,
+} from "@/api/index.ts";
 import type {
   ApiResponse,
+  CalendarSourceRoleRequest,
   CalendarSourceToggleRequest,
   CalendarSourceToggleResponse,
   CalendarWorkspaceMetaResponse,
@@ -218,6 +224,22 @@ export function useSetPrimaryCalendar() {
     mutationFn: (body: SetPrimaryCalendarRequest) => setPrimaryCalendar(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+    },
+  });
+}
+
+/**
+ * Set or clear the role of a calendar source. Not optimistic: the role decides what counts as the
+ * owner's time everywhere, so the UI shows the server's answer, and a partial write is surfaced.
+ */
+export function useSetCalendarSourceRole() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalendarSourceRoleRequest) => setCalendarSourceRole(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] });
     },
   });
 }

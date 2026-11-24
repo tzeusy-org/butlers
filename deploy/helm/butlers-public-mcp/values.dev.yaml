@@ -1,0 +1,15 @@
+# Namespace butlers-public-dev. Reads postgres-dev, the LIVE database despite the name.
+env: dev
+
+# Site host is never committed: make deploy-dev passes --set dashboardBase from BUTLERS_PUBLIC_HOST.
+dashboardBase: https://butlers.invalid/butlers-dev
+
+# The cluster Prometheus (kube-prometheus-stack in `lgtm`) selects PodMonitors and
+# PrometheusRules by release=lgtm.
+monitoring:
+  podMonitor:
+    enabled: true
+    labels: {release: lgtm}
+  rules:
+    enabled: true
+    labels: {release: lgtm}

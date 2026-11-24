@@ -40,7 +40,7 @@ The daemon creates or receives a connected `Database` and assigns `db.owner_butl
 
 ### Step 7: Run Core and Butler Migrations
 
-Core Alembic migrations run first (schema-scoped), followed by a butler-specific chain when one exists. This creates the state store, session log, scheduled tasks, and other core tables.
+Core Alembic migrations run first (schema-scoped), followed by a butler-specific chain when one exists. This creates the state store, session log, scheduled tasks, and other core tables. With `BUTLERS_STARTUP_MIGRATIONS=check` (set by the chart once the migrator login is split; see [Migrator Login](../data_and_storage/migrator-login.md)) the daemon does not migrate: it reads each version table and raises `MigrationsNotAtHeadError`, refusing to start, when a core or butler chain is not exactly at head; a module chain that is behind disables only that module.
 
 ### Step 8: Prepare Module Dependencies and Bootstrap State
 
@@ -87,7 +87,10 @@ The liveness reporter starts periodic health pings and the daemon begins accepti
 After startup completes, the butler enters its idle running state. It is:
 
 - Listening for MCP connections on its configured port
-- Running the scheduler loop (checking for due tasks every tick interval)
+- Running the scheduler loop (checking for due tasks every tick interval; a failed tick is logged
+  and the next one runs, and only a cancel of the loop itself ends it; the approval delivery,
+  owner attention, buffer and confirm workers and the catalog renewal treat a stray cancel as a
+  failure too)
 - Maintaining heartbeats with the Switchboard (non-switchboard butlers)
 - Ready to accept `trigger` or `route.execute` calls
 
@@ -116,14 +119,16 @@ When a trigger arrives (either from the `trigger` MCP tool, the `route.execute` 
 Graceful shutdown proceeds in reverse order:
 
 1. Stop the MCP SSE server
-2. Stop accepting new triggers
-3. Drain in-flight runtime sessions (up to a configurable timeout)
-4. Cancel the Switchboard heartbeat task
-5. Close the Switchboard MCP client connection
-6. Cancel the scheduler loop (waiting for any in-progress `tick()` to finish)
+2. Cancel the scheduler loop. An in-progress `tick()` may finish within the shutdown budget, then it is cancelled. The spawner still accepts triggers meanwhile, because a tick advances `next_run_at` when it claims an occurrence and dispatches after, so a refusing spawner would lose that occurrence. Cancelling the loop also tells that tick to claim no further rows. Jobs run inside the tick, so they keep their Switchboard client until this step ends
+3. Stop accepting new triggers
+4. Drain in-flight runtime sessions (up to a configurable timeout)
+5. Cancel the Switchboard heartbeat task
+6. Close the Switchboard MCP client connection
 7. Cancel the liveness reporter loop
 8. Shut down modules in **reverse** topological order (each module's `on_shutdown()`)
 9. Close the database connection pool
+
+`butlers up` runs several daemons in one process and shuts them down one at a time. When `BUTLERS_SHUTDOWN_BUDGET_S` is set (the Helm chart sets it), they share one process budget counted from the signal; unset, each daemon keeps its own full timeout. Each daemon gets an equal share of what is left among the daemons still to go, capped by its own timeout, so time a quick daemon leaves passes to the next and one slow daemon cannot starve the rest. The Helm chart sets the pod's `terminationGracePeriodSeconds` to `shutdown.budgetSeconds + shutdown.graceMarginSeconds`; the margin covers pool close and interpreter exit. A database pool that will not close is terminated: after 10 seconds, or after what is left of the daemon's share (at least 1 second) when a share is set.
 
 ## Module Failure Handling
 

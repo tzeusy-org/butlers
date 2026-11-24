@@ -5,12 +5,19 @@ on:
     # Run daily at 2am UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      exact_image_only:
+        description: Run only the complete exact-image conformance job
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   nightly:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     timeout-minutes: 25
     runs-on: ubuntu-latest
 
@@ -55,6 +62,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   faketime-matrix:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     # bu-10fgt.4: catches wall-clock time-bomb tests -- fixtures/business logic
     # that freeze one clock reading (e.g. a fixture-computed "_NOW") while
     # comparing it against a fresh datetime.now()/date.today() call elsewhere,
@@ -78,7 +86,7 @@ jobs:
     # from 2026-07-25 as new tests arrived without the marker.
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
-    # slow the required `check` job, only surface future hazards early. A
+    # slow the required `alls-green` check, only surface future hazards early. A
     # failure here is visible via GitHub's built-in scheduled-workflow-failure
     # email notification -- no bespoke issue-tracking automation is added
     # (kept in scope with the epic's cost budget).
@@ -244,7 +252,11 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
-    timeout-minutes: 30
+    # Provisional cold source-build envelope; Codex alone measured 85 minutes.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      actions: read
     # bu-zfmq2: task 3.6b's real-kernel exact-image proof
     # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
     # only runs when BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 names an explicitly
@@ -289,6 +301,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
+      - name: Disk and docker storage at job start
+        run: |
+          df -h / /mnt
+          # Annotations survive a runner that hits ENOSPC (run 43532052607), but not one that loses
+          # communication with the server (run 43556274608 kept none of them).
+          echo "::notice title=docker storage::$(docker info --format 'driver={{.Driver}} root={{.DockerRootDir}} status={{json .DriverStatus}}' 2>&1 | tr '\n' ' ')"
+          echo "::notice title=containerd store::$(docker info 2>/dev/null | grep -i 'driver-type\|io.containerd' | tr -s ' ' | tr '\n' ';')"
+          echo "::notice title=disk at start::$(df -h --output=target,size,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ';')"
+
       - name: Free disk space before image builds
         run: |
           sudo rm -rf /usr/local/lib/android
@@ -298,31 +319,128 @@ jobs:
           sudo rm -rf /usr/share/swift
           sudo rm -rf /usr/local/share/boost
           sudo apt-get clean -q
-          docker image prune -f --filter "until=1h" || true
+          docker system prune -af || true
 
-      - name: Build butlers-base image
-        # Labels mirror scripts/compose.sh's freshness receipt so this stays
-        # provably the same base-image build contract production uses.
+      # bu-kiuh8v.24: this hosted runner has ONE disk. /mnt is a plain directory on / (run
+      # 43554266906: `df / /mnt` printed `/ 145G` for both), so moving docker's data-root or
+      # containerd to /mnt frees nothing; #5804 tried it and / still filled. Do not retry it.
+      # What filled / was finished producers' build cache (76 GB, 57 GB reclaimable): the
+      # producer now prunes the cache after each context (--prune-build-cache below).
+      - name: Image scratch on the runner's single disk
         run: |
-          # shellcheck source=scripts/base-image-input-fingerprint.sh
-          source scripts/base-image-input-fingerprint.sh
-          BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
-          BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
-            Dockerfile.base \
-            scripts/runtime_cli_sandbox_init.c \
-            scripts/generate_runtime_cli_sandbox_manifest.py)
-          docker build \
-            --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
-            --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
-            -f Dockerfile.base \
-            -t butlers-base:latest .
+          echo "::notice title=/mnt mount::/mnt is on $(findmnt -n -o TARGET --target /mnt)"
+          echo "IMAGE_SCRATCH=${RUNNER_TEMP}" >> "$GITHUB_ENV"
+
+      - name: Produce complete closed image contexts
+        run: |
+          # The producer runs in its own process group beside a watchdog (scripts/
+          # nightly_disk_watchdog.py). Below a free-space floor on / the watchdog freezes the
+          # producer, prunes the build cache, snapshots and stops the producer, so the step fails
+          # cleanly while the runner can still upload evidence; a runner that dies loses its logs
+          # and its annotations (runs 43532052607, 43545970763, 43556274608). The watchdog also
+          # samples disk and memory every two minutes and annotates sparsely.
+          watch_dir="${IMAGE_SCRATCH}/disk-watchdog"
+          mkdir -p "${watch_dir}"
+          setsid python3 -I -B scripts/runtime_clis/produce_image_contexts.py \
+            --prune-build-cache \
+            --project "${GITHUB_WORKSPACE}" \
+            --work "${IMAGE_SCRATCH}/image-context-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" &
+          producer=$!
+          python3 -u -I -B scripts/nightly_disk_watchdog.py watch \
+            --pid "${producer}" --out "${watch_dir}" --floor-mb 3072 --interval 10 &
+          watchdog=$!
+          echo "${watchdog}" > "${RUNNER_TEMP}/disk-sampler.pid"
+          status=0
+          wait "${producer}" || status=$?
+          kill "${watchdog}" 2>/dev/null || true
+          exit "${status}"
+
+      - name: Stop the disk sampler and show the final disk state
+        if: always()
+        run: |
+          if [ -f "${RUNNER_TEMP}/disk-sampler.pid" ]; then
+            kill "$(cat "${RUNNER_TEMP}/disk-sampler.pid")" 2>/dev/null || true
+          fi
+          df -h / /mnt || true
+          docker system df || true
+          python3 -u -I -B scripts/nightly_disk_watchdog.py summarize --out "${IMAGE_SCRATCH}/disk-watchdog" || true
+
+      - name: Upload the disk sampler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-disk-sampler-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.IMAGE_SCRATCH }}/disk-watchdog/
+          if-no-files-found: ignore
 
       - name: Build butlers-app exact image
         env:
           GIT_SHA: ${{ github.sha }}
         run: |
-          DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
-            -t "butlers-app:${GIT_SHA}" .
+          python3 -I -B scripts/runtime_clis/build_image_chain.py \
+            --project "${GITHUB_WORKSPACE}" \
+            --contexts "${IMAGE_SCRATCH}/image-contexts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --work "${IMAGE_SCRATCH}/image-chain-work-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output "${IMAGE_SCRATCH}/image-chain-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --revision "${GIT_SHA}"
+
+      - name: Export installed runtime image files
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXPORT_WORK="${RUNNER_TEMP}/runtime-export-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 0700 "${EXPORT_WORK}"
+          mkdir -m 0700 "${EXPORT_WORK}/payload"
+          python3 -B -m scripts.export_runtime_image_closure identity \
+            --output "${EXPORT_WORK}/identity.json"
+          IMAGE_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_id"])' "${EXPORT_WORK}/identity.json")
+          IDENTITY=$(cat "${EXPORT_WORK}/identity.json")
+          cleanup_export() {
+            if [ -f "${EXPORT_WORK}/container.cid" ]; then
+              local owned_id
+              owned_id=$(cat "${EXPORT_WORK}/container.cid")
+              if [[ ! "${owned_id}" =~ ^[0-9a-f]{64}$ ]]; then
+                return 1
+              fi
+              timeout --signal=TERM --kill-after=5s 20s \
+                docker rm --force "${owned_id}" >/dev/null 2>&1 || return 1
+              rm "${EXPORT_WORK}/container.cid"
+            fi
+          }
+          trap 'status=$?; trap - EXIT; if ! cleanup_export; then exit 1; fi; exit "$status"' EXIT
+          timeout --signal=TERM --kill-after=5s 20s docker create --pull never \
+            --cidfile "${EXPORT_WORK}/container.cid" \
+            --name "runtime-export-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 16 --memory 512m --cpus 1 \
+            --ulimit nofile=64:64 --ulimit fsize=268435456:268435456 --ulimit core=0:0 \
+            --user "$(id -u):$(id -g)" --log-driver none \
+            --mount "type=bind,src=${EXPORT_WORK}/payload,dst=/export" \
+            --entrypoint /usr/local/bin/python3 --workdir /app \
+            "${IMAGE_ID}" -B -m scripts.export_runtime_image_closure export \
+            --output /export --identity "${IDENTITY}" >/dev/null
+          OWNED_ID=$(cat "${EXPORT_WORK}/container.cid")
+          [[ "${OWNED_ID}" =~ ^[0-9a-f]{64}$ ]]
+          timeout --signal=TERM --kill-after=10s 120s docker start --attach "${OWNED_ID}"
+          STATE=$(timeout --signal=TERM --kill-after=5s 10s \
+            docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "${OWNED_ID}")
+          [ "${STATE}" = "exited 0" ]
+          cleanup_export
+          python3 -B -m scripts.export_runtime_image_closure verify \
+            --output "${EXPORT_WORK}/payload" --identity-file "${EXPORT_WORK}/identity.json"
+
+      - name: Upload installed runtime image files
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-runtime-files-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-export-${{ github.run_id }}-${{ github.run_attempt }}/payload/manifest.json
+            ${{ runner.temp }}/runtime-export-${{ github.run_id }}-${{ github.run_attempt }}/payload/files/*.bin
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Allow unprivileged user namespaces for Bubblewrap (runner host setting)
         # bu-3kyyyy: ubuntu-24.04 hosts (what ubuntu-latest now is) set
@@ -356,6 +474,7 @@ jobs:
                 or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
 
   quarantined:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     timeout-minutes: 30
     # bu-w4c1iw: tests listed in tests/quarantine.json flake for a known cause
     # owned by a bead, so every default pytest run (PR and merge-queue shards
@@ -389,6 +508,7 @@ jobs:
   # covered one. It uploads the combined report as an artifact and refreshes the
   # main badge; it is not a required check.
   coverage-shards:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: 3.12.15
@@ -488,6 +608,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
@@ -512,7 +633,7 @@ jobs:
     timeout-minutes: 27
     needs:
       - coverage-shards
-    if: always()
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || !inputs.exact_image_only) }}
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -535,7 +656,7 @@ jobs:
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-receipts
-      - name: Check the covered lane groups add up and stay within the test budget
+      - name: Check the covered lane groups add up
         run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
@@ -637,7 +758,7 @@ jobs:
     needs:
       - coverage-shards
       - coverage-preflight
-    if: always()
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || !inputs.exact_image_only) }}
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -778,27 +899,56 @@ jobs:
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
   durations-refresh:
-    # Merges every covered group's measured durations into the committed
-    # .test_durations that pytest-split balances the CI lane groups with. The
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
+    # Merges the measured durations of every lane group of the latest successful
+    # merge-group CI run into the committed .test_durations that pytest-split
+    # balances the CI lane groups with. Those groups run untraced, exactly as the
+    # groups being balanced do; the covered groups here pay coverage tracing,
+    # which skewed group balance by up to 1.8x (bu-q1hzqn.13) Merge-group
+    # artifacts live 14 days, so a fortnight without merges fails this job closed. The
     # merged file is always uploaded; Monday's scheduled run on main, or a manual
     # dispatch on main, also opens a PR with it. It never pushes to main. A stale
     # file only skews group balance: which tests run stays exact, because
     # `ci_lanes.py totals` checks every lane's groups against --collect-only
-    # (bu-29wkwj.2).
+    # (bu-29wkwj.2). The PR is pushed and opened as the butlers-ci-bot GitHub App,
+    # not GITHUB_TOKEN: the repo does not let Actions open PRs, and a PR opened
+    # with GITHUB_TOKEN would not trigger pull_request CI (bu-29wkwj.9).
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [coverage-shards]
-    if: ${{ !cancelled() }}
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      actions: read
     steps:
+      - name: Mint the butlers-ci-bot token
+        id: ci-bot
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.ci-bot.outputs.token || github.token }}
+      - name: Find the latest successful merge-group CI run
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+            echo "::error::no successful merge-group CI run to measure durations from"
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
       - name: Download every lane group's evidence
         uses: actions/download-artifact@v4
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-evidence
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
       - name: Merge the measured durations
         run: python3 scripts/ci_lanes.py durations --evidence "${RUNNER_TEMP}/ci-test-evidence"
       - name: Upload the merged durations
@@ -813,7 +963,8 @@ jobs:
       - name: Open a durations refresh PR
         if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.ci-bot.outputs.token }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
@@ -825,12 +976,13 @@ jobs:
             exit 0
           fi
           branch="ci/test-durations-${GITHUB_RUN_ID}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bot="${{ steps.ci-bot.outputs.app-slug }}[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "/users/${bot}" --jq .id)+${bot}@users.noreply.github.com"
           git switch -c "$branch"
           git add .test_durations
-          git commit -m "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}"
+          git commit -m "ci: refresh .test_durations from merge-group run ${SOURCE_RUN_ID}"
           git push origin "$branch"
           gh pr create --base main --head "$branch" \
-            --title "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}" \
-            --body "Measured by the covered lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."
+            --title "ci: refresh .test_durations from merge-group run ${SOURCE_RUN_ID}" \
+            --body "Measured by the untraced lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."

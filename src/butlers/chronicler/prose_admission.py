@@ -71,6 +71,19 @@ INADMISSIBLE_PROSE = "inadmissible_prose"
 DATE_MISMATCH = "date_mismatch"
 
 
+def is_delivery_status_scaffold(text: str | None) -> bool:
+    """Recognize delivery bookkeeping, without imposing general prose admission.
+
+    Scheduled day-close callers may exclude these tails from session memory.
+    Ordinary interactions can still contain JSON corrections, plans or other
+    content that is inappropriate only for the retrospective cache.
+    """
+    if text is None:
+        return False
+    stripped = text.strip()
+    return bool(_DELIVERY_SCAFFOLD_RE.match(stripped) or _TOOL_SUMMARY_RE.search(stripped))
+
+
 def classify_prose_shape(text: str | None) -> str | None:
     """Deterministic shape predicate for a day-close prose candidate.
 
@@ -99,7 +112,7 @@ def classify_prose_shape(text: str | None) -> str | None:
         return INADMISSIBLE_PROSE
     if _EXECUTION_SCAFFOLD_RE.match(stripped):
         return INADMISSIBLE_PROSE
-    if _DELIVERY_SCAFFOLD_RE.match(stripped) or _TOOL_SUMMARY_RE.search(stripped):
+    if is_delivery_status_scaffold(stripped):
         return INADMISSIBLE_PROSE
     # JSON containers begin with ``{``/``[``; Python literal containers can
     # also begin with ``(`` (tuple) or ``set`` (empty sets accept arbitrary
@@ -151,4 +164,5 @@ __all__ = [
     "classify_day_close_candidate",
     "classify_prose_shape",
     "date_label_matches",
+    "is_delivery_status_scaffold",
 ]

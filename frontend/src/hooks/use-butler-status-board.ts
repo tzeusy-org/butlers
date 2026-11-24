@@ -18,6 +18,7 @@ import { useMemo } from "react"
 
 import { useButlersBoard } from "@/hooks/use-butlers.ts"
 import type { BoardRow } from "@/api/types"
+import { buildBucketSeries, hourlySlotStarts } from "@/lib/bucket-series"
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -60,10 +61,13 @@ export interface StatusBoardRow {
   lastHeartbeatISO: string | null
   /** Seconds since the last registry heartbeat; null when never seen. */
   heartbeatAgeSeconds: number | null
-  /** 24 hourly session counts, oldest first (slot 0 = oldest). */
-  hourlyStripe: number[]
-  /** Sum of hourlyStripe buckets — shown as the SESS·24H KPI (agrees with stripe total). */
-  hourlyTotal: number
+  /**
+   * 24 hourly session counts, oldest first (slot 0 = oldest), keyed by bucket
+   * start onto the UTC hours ending at the current one; null = unreported.
+   */
+  hourlyStripe: (number | null)[]
+  /** Sum of hourlyStripe buckets — shown as the SESS·24H KPI; null when the stripe failed. */
+  hourlyTotal: number | null
   /** Always false: the board loads in one round trip, no per-row stagger. */
   hourlyStripeLoading: boolean
   /** True when this butler's own schema was unreachable when the board was computed. */
@@ -165,7 +169,12 @@ function mapRow(row: BoardRow): StatusBoardRow {
     lastRunISO: row.last_session_at,
     lastHeartbeatISO: row.last_heartbeat_at,
     heartbeatAgeSeconds: row.heartbeat_age_seconds,
-    hourlyStripe: row.hourly_stripe,
+    hourlyStripe: buildBucketSeries(
+      row.hourly_buckets,
+      (bucket) => bucket.hour_start,
+      (bucket) => bucket.sessions_count,
+      hourlySlotStarts(Date.now()),
+    ),
     hourlyTotal: row.hourly_total,
     hourlyStripeLoading: false,
     hourlyStripeError: row.schema_unreachable || (row.stripe_source_error ?? false),

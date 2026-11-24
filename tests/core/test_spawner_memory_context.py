@@ -221,3 +221,25 @@ class TestSpawnerMemoryContextInjection:
         ) as mock_fetch2:
             await spawner2.trigger(prompt="do task", trigger_source="trigger")
         mock_fetch2.assert_not_called()
+
+    async def test_consolidation_session_skips_memory_context_injection(self, tmp_path: Path):
+        """A consolidation session gets only its partition-filtered prompt context.
+
+        Recall-based injection would surface facts of every authority into an
+        owner-partition session, which could restate them as owner-evidenced
+        new facts (bu-dhloi1.1).
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "CLAUDE.md").write_text("Base prompt.")
+        config = _make_config(modules={"memory": {}})
+        adapter = _CapturingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        with patch(
+            "butlers.core.spawner.fetch_memory_context",
+            new_callable=AsyncMock,
+            return_value="Remembered: a third party's fact.",
+        ) as mock_fetch:
+            await spawner.trigger(prompt="consolidate", trigger_source="schedule:consolidation")
+        mock_fetch.assert_not_called()
+        assert adapter.captured_system_prompts[-1] == "Base prompt."

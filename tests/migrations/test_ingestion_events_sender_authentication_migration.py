@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -18,16 +19,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_271", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _emitted(fn_name: str) -> str:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_271")
     mock_op = MagicMock()
     with patch.object(mod, "op", mock_op):
         getattr(mod, fn_name)()
@@ -36,7 +29,7 @@ def _emitted(fn_name: str) -> str:
 
 @pytest.mark.unit
 def test_revision_chain_is_a_single_additive_step() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_271")
 
     assert (mod.revision, mod.down_revision) == ("core_271", "core_268")
     assert mod.branch_labels is None and mod.depends_on is None
@@ -64,7 +57,7 @@ def test_the_check_is_added_not_valid_then_validated_in_autocommit_under_a_lock_
 
 @pytest.mark.unit
 def test_the_upgrade_runs_inside_an_autocommit_block() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_271")
     mock_op = MagicMock()
     with patch.object(mod, "op", mock_op):
         mod.upgrade()

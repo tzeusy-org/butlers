@@ -19,10 +19,13 @@ from __future__ import annotations
 import uuid
 import warnings
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from butlers.testing.fake_pool import FakeConnection, fake_pool
+from butlers.testing.records import Record as _MockRecord
+from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
 
@@ -32,111 +35,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-
-
-def _make_row(data: dict[str, Any]) -> _MockRecord:
-    return _MockRecord(data)
-
-
-def _make_conn(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg connection."""
-    conn = AsyncMock()
-
-    if fetchrow_returns is not None:
-        conn.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        conn.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        conn.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        conn.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        conn.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        conn.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        conn.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        conn.execute = AsyncMock(return_value="UPDATE 1")
-
-    # Wire transaction() as async context manager
-    tx_ctx = MagicMock()
-    tx_ctx.__aenter__ = AsyncMock(return_value=None)
-    tx_ctx.__aexit__ = AsyncMock(return_value=False)
-    conn.transaction = MagicMock(return_value=tx_ctx)
-
-    return conn
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (direct pool calls)."""
-    pool = AsyncMock()
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
-
-
-def _make_pool_with_conn(conn: AsyncMock) -> MagicMock:
+def _make_pool_with_conn(conn: FakeConnection) -> MagicMock:
     """Build a pool whose acquire() context manager yields conn."""
     pool = MagicMock()
     acquire_ctx = MagicMock()
@@ -386,17 +285,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=0,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],  # schedule count = 0
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=0,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",  # schedule count = 0
         )
         pool = _make_pool_with_conn(conn)
 
@@ -432,17 +335,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=3,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=3,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched-2")
@@ -468,17 +375,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=5,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=5,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched-3")
@@ -501,7 +412,7 @@ class TestSpacedRepetitionRecordResponse:
             spaced_repetition_record_response,
         )
 
-        pool = _make_pool_with_conn(_make_conn())
+        pool = _make_pool_with_conn(FakeConnection())
         with pytest.raises(ValueError, match="quality must be between 0 and 5"):
             await spaced_repetition_record_response(
                 pool,
@@ -517,7 +428,7 @@ class TestSpacedRepetitionRecordResponse:
             spaced_repetition_record_response,
         )
 
-        conn = _make_conn(fetchrow_returns=[None])
+        conn = FakeConnection(fetchrow=AsyncMock(side_effect=[None]))
         pool = _make_pool_with_conn(conn)
 
         with pytest.raises(ValueError, match="not found"):
@@ -539,17 +450,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=0,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[20],  # 20 pending schedules → batch cap reached
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=0,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[20]),
+            fetch=[],
+            execute="UPDATE 1",  # 20 pending schedules → batch cap reached
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched-batch")
@@ -576,17 +491,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=3,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=3,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched")
@@ -616,17 +535,21 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=1,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        ease_factor=2.5,
+                        repetitions=1,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched")
@@ -655,16 +578,20 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    mind_map_id=map_id,
-                    repetitions=2,
-                    ease_factor=2.5,
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        mind_map_id=map_id,
+                        repetitions=2,
+                        ease_factor=2.5,
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched")
@@ -692,16 +619,20 @@ class TestSpacedRepetitionRecordResponse:
         node_id = str(uuid.uuid4())
         map_id = str(uuid.uuid4())
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    ease_factor=2.5,
-                    repetitions=0,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        ease_factor=2.5,
+                        repetitions=0,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched")
@@ -737,18 +668,22 @@ class TestSpacedRepetitionRecordResponse:
         last_reviewed = now - timedelta(days=6)
         next_review = now  # so last_interval = 6 days
 
-        conn = _make_conn(
-            fetchrow_returns=[
-                _node_row(
-                    node_id=node_id,
-                    ease_factor=2.5,
-                    repetitions=4,
-                    next_review_at=next_review,
-                    last_reviewed_at=last_reviewed,
-                    mastery_status="reviewing",
-                )
-            ],
-            fetchval_returns=[0],
+        conn = FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _node_row(
+                        node_id=node_id,
+                        ease_factor=2.5,
+                        repetitions=4,
+                        next_review_at=next_review,
+                        last_reviewed_at=last_reviewed,
+                        mastery_status="reviewing",
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[0]),
+            fetch=[],
+            execute="UPDATE 1",
         )
         pool = _make_pool_with_conn(conn)
         schedule_create = AsyncMock(return_value="sched")
@@ -783,31 +718,33 @@ class TestSpacedRepetitionPendingReviews:
         node_id_2 = str(uuid.uuid4())
         overdue = datetime.now(tz=UTC) - timedelta(hours=1)
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "node_id": node_id_1,
-                            "label": "Concept A",
-                            "ease_factor": 2.5,
-                            "repetitions": 2,
-                            "next_review_at": overdue,
-                            "mastery_status": "reviewing",
-                        }
-                    ),
-                    _make_row(
-                        {
-                            "node_id": node_id_2,
-                            "label": "Concept B",
-                            "ease_factor": 2.3,
-                            "repetitions": 1,
-                            "next_review_at": overdue,
-                            "mastery_status": "reviewing",
-                        }
-                    ),
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "node_id": node_id_1,
+                                "label": "Concept A",
+                                "ease_factor": 2.5,
+                                "repetitions": 2,
+                                "next_review_at": overdue,
+                                "mastery_status": "reviewing",
+                            }
+                        ),
+                        _make_row(
+                            {
+                                "node_id": node_id_2,
+                                "label": "Concept B",
+                                "ease_factor": 2.3,
+                                "repetitions": 1,
+                                "next_review_at": overdue,
+                                "mastery_status": "reviewing",
+                            }
+                        ),
+                    ]
                 ]
-            ]
+            )
         )
 
         result = await spaced_repetition_pending_reviews(pool, map_id)
@@ -820,7 +757,7 @@ class TestSpacedRepetitionPendingReviews:
             spaced_repetition_pending_reviews,
         )
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await spaced_repetition_pending_reviews(pool, str(uuid.uuid4()))
         assert result == []
 
@@ -835,22 +772,24 @@ class TestSpacedRepetitionPendingReviews:
         map_id = str(uuid.uuid4())
         overdue = datetime.now(tz=UTC) - timedelta(hours=1)
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "node_id": str(uuid.uuid4()),
-                            "label": "Concept",
-                            "ease_factor": 2.5,
-                            "repetitions": 1,
-                            "next_review_at": overdue,
-                            "mastery_status": "reviewing",
-                            "mastery_score": 0.42,
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "node_id": str(uuid.uuid4()),
+                                "label": "Concept",
+                                "ease_factor": 2.5,
+                                "repetitions": 1,
+                                "next_review_at": overdue,
+                                "mastery_status": "reviewing",
+                                "mastery_score": 0.42,
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         result = await spaced_repetition_pending_reviews(pool, map_id)
@@ -865,21 +804,23 @@ class TestSpacedRepetitionPendingReviews:
         map_id = str(uuid.uuid4())
         overdue = datetime(2026, 1, 15, 10, 0, 0, tzinfo=UTC)
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "node_id": str(uuid.uuid4()),
-                            "label": "Concept",
-                            "ease_factor": 2.5,
-                            "repetitions": 1,
-                            "next_review_at": overdue,
-                            "mastery_status": "reviewing",
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "node_id": str(uuid.uuid4()),
+                                "label": "Concept",
+                                "ease_factor": 2.5,
+                                "repetitions": 1,
+                                "next_review_at": overdue,
+                                "mastery_status": "reviewing",
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         result = await spaced_repetition_pending_reviews(pool, map_id)
@@ -901,7 +842,7 @@ class TestSpacedRepetitionScheduleCleanup:
         )
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"status": "active"})])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row({"status": "active"})]))
 
         schedule_delete = AsyncMock()
 
@@ -924,16 +865,18 @@ class TestSpacedRepetitionScheduleCleanup:
         node_id = str(uuid.uuid4())
         schedule_name = f"review-{node_id}-rep2"
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"status": "completed"})],
-            fetch_returns=[
-                # node list
-                [_make_row({"id": node_id})],
-                # node schedule names
-                [_make_row({"name": schedule_name})],
-                # batch schedule names
-                [],
-            ],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"status": "completed"})]),
+            fetch=AsyncMock(
+                side_effect=[
+                    # node list
+                    [_make_row({"id": node_id})],
+                    # node schedule names
+                    [_make_row({"name": schedule_name})],
+                    # batch schedule names
+                    [],
+                ]
+            ),
         )
 
         schedule_delete = AsyncMock()
@@ -953,14 +896,16 @@ class TestSpacedRepetitionScheduleCleanup:
         map_id = str(uuid.uuid4())
         batch_name = f"review-{map_id}-batch"
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"status": "abandoned"})],
-            fetch_returns=[
-                # node list — empty
-                [],
-                # batch schedule names
-                [_make_row({"name": batch_name})],
-            ],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"status": "abandoned"})]),
+            fetch=AsyncMock(
+                side_effect=[
+                    # node list — empty
+                    [],
+                    # batch schedule names
+                    [_make_row({"name": batch_name})],
+                ]
+            ),
         )
 
         schedule_delete = AsyncMock()
@@ -977,7 +922,7 @@ class TestSpacedRepetitionScheduleCleanup:
             spaced_repetition_schedule_cleanup,
         )
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         schedule_delete = AsyncMock()
 
         with warnings.catch_warnings(record=True):
@@ -997,12 +942,14 @@ class TestSpacedRepetitionScheduleCleanup:
 
         map_id = str(uuid.uuid4())
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"status": "completed"})],
-            fetch_returns=[
-                [],  # nodes
-                [],  # batch schedules
-            ],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"status": "completed"})]),
+            fetch=AsyncMock(
+                side_effect=[
+                    [],  # nodes
+                    [],  # batch schedules
+                ]
+            ),
         )
 
         schedule_delete = AsyncMock()
@@ -1023,13 +970,15 @@ class TestSpacedRepetitionScheduleCleanup:
         node_sched = f"review-{node_id}-rep3"
         batch_sched = f"review-{map_id}-batch"
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"status": "completed"})],
-            fetch_returns=[
-                [_make_row({"id": node_id})],
-                [_make_row({"name": node_sched})],
-                [_make_row({"name": batch_sched})],
-            ],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"status": "completed"})]),
+            fetch=AsyncMock(
+                side_effect=[
+                    [_make_row({"id": node_id})],
+                    [_make_row({"name": node_sched})],
+                    [_make_row({"name": batch_sched})],
+                ]
+            ),
         )
 
         schedule_delete = AsyncMock()

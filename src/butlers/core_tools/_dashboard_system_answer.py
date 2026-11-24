@@ -106,6 +106,8 @@ async def read_system_answer(
 
     try:
         permission = await check_permission(pool, source_butler, CROSS_BUTLER_PERMISSION)
+        if permission.unavailable:
+            return await unavailable("Permission state is unavailable; no answer was inferred.")
         if not permission.allowed:
             return await unavailable("Switchboard is not authorized to read Concierge tools.")
         message_id = _dashboard_turn_id_from_context(

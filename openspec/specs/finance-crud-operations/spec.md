@@ -49,7 +49,7 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 Bulk imports SHALL generate an ephemeral `import_batch_id` correlator, process rows in batches, stamp the correlator onto each inserted transaction, and trigger post-import analytics. There is no persisted import-batch record; the correlator and result counts exist only in memory and in the returned result.
 
 #### Scenario: Correlator generation and processing
-- **WHEN** `import_transactions` is called with a file path and account ID
+- **WHEN** `import_transactions` is called with a `storage_ref` and account ID
 - **THEN** it SHALL generate a single in-memory `import_batch_id` (a UUIDv4 string) for the run
 - **AND** it SHALL detect the CSV format, parse rows, normalize dates/amounts/merchant names
 - **AND** it SHALL process rows in batches of 500

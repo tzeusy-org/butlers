@@ -135,6 +135,9 @@ export function useConversationTurn({
   const abortRef = useRef<AbortController | null>(null);
   const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeMessageIdRef = useRef<string | null>(null);
+  // The butler that owns the in-flight turn, captured at send time so a Stop
+  // keeps addressing it even if the caller's butlerName moves (route change).
+  const turnButlerRef = useRef<string | null>(null);
   const confirmedStopMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -149,6 +152,16 @@ export function useConversationTurn({
       confirmedStopMessageIdRef.current = null;
     };
   }, []);
+
+  // A move between two existing conversations must not leave A's error (and
+  // its Retry text/messageId) visible in B. A null -> id transition is a new
+  // conversation getting its id, not a switch, so it keeps its error.
+  const previousActiveRef = useRef(activeConversationId);
+  useEffect(() => {
+    const previous = previousActiveRef.current;
+    previousActiveRef.current = activeConversationId;
+    if (previous != null && activeConversationId !== previous) setSendError(null);
+  }, [activeConversationId]);
 
   // Sync server messages into local state. Avoid overwriting optimistic/
   // streaming messages while an SSE stream is active. Guards the transient
@@ -249,6 +262,7 @@ export function useConversationTurn({
       const controller = new AbortController();
       abortRef.current = controller;
       activeMessageIdRef.current = messageId;
+      turnButlerRef.current = butlerName;
       confirmedStopMessageIdRef.current = null;
 
       const userMessage: Message = {
@@ -542,12 +556,13 @@ export function useConversationTurn({
     if (!streaming || !streaming.stopReady || streaming.cancelling) return;
     const messageId = streaming.messageId;
     if (activeMessageIdRef.current !== messageId) return;
+    const turnButler = turnButlerRef.current ?? butlerName;
 
     setStreaming((prev) =>
       prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
     );
     try {
-      const result = await cancelConversationMessageTurn(butlerName, messageId);
+      const result = await cancelConversationMessageTurn(turnButler, messageId);
       if (activeMessageIdRef.current !== messageId) return;
       if (!result.cancelled) {
         if (result.already_finished) {

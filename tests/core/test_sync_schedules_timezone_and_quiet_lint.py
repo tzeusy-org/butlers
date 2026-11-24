@@ -11,11 +11,15 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.config import ScheduleSpec
-from butlers.core.scheduler import schedule_always_in_quiet_window, sync_schedules
+from butlers.core.scheduler.sync import sync_schedules
+from butlers.core.scheduler.timing import schedule_always_in_quiet_window
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
 
@@ -24,25 +28,22 @@ SGT_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Asia/Sin
 NOW = datetime(2026, 10, 19, 3, 0, tzinfo=UTC)
 
 
-class _FakePool:
-    """Records writes; reports every optional column present and no existing rows."""
+def _schedule_pool(existing: list[Any] | None = None) -> FakePool:
+    """``scheduled_tasks`` as sync sees it: by-name rows, then no leftover TOML rows."""
+    return fake_pool(
+        fetch=AsyncMock(side_effect=[existing or [], []]),
+        fetchval=uuid.uuid4(),
+        execute="OK",
+    )
 
-    def __init__(self) -> None:
-        self.executed: list[tuple[str, tuple[Any, ...]]] = []
-        self.inserted: list[tuple[Any, ...]] = []
 
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        if "information_schema" in sql:
-            return True
-        self.inserted.append(args)
-        return uuid.uuid4()
+def _inserted(pool: FakePool) -> list[tuple[Any, ...]]:
+    """Bound parameters of each ``INSERT INTO scheduled_tasks``."""
+    return [call.args[1:] for call in pool.fetchval.await_args_list]
 
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        return []
 
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.executed.append((sql, args))
-        return "OK"
+def _executed(pool: FakePool) -> list[tuple[str, tuple[Any, ...]]]:
+    return [(call.args[0], call.args[1:]) for call in pool.execute.await_args_list]
 
 
 def _schedule(name: str, cron: str, **extra: Any) -> ScheduleSpec:
@@ -55,8 +56,8 @@ def _schedule(name: str, cron: str, **extra: Any) -> ScheduleSpec:
     return ScheduleSpec(**base)
 
 
-async def _sync(schedules: list[ScheduleSpec], **kwargs: Any) -> _FakePool:
-    pool = _FakePool()
+async def _sync(schedules: list[ScheduleSpec], **kwargs: Any) -> FakePool:
+    pool = _schedule_pool()
     await sync_schedules(pool, schedules, default_timezone="Asia/Singapore", **kwargs)  # type: ignore[arg-type]
     return pool
 
@@ -100,7 +101,7 @@ async def test_repeated_sync_repeats_the_same_single_warning(
 
 async def test_sync_proceeds_and_writes_the_row_despite_the_warning() -> None:
     pool = await _sync([_schedule("nightly", "0 23 * * *")], quiet_policy=SGT_POLICY)
-    assert len(pool.inserted) == 1
+    assert len(_inserted(pool)) == 1
 
 
 @pytest.mark.parametrize("policy", [None, {}, {"quiet_start_hour": None, "quiet_end_hour": None}])
@@ -152,14 +153,14 @@ async def test_stagger_pushing_a_firing_out_of_the_window_means_no_warning() -> 
 async def test_explicit_zone_drives_next_run_and_is_stored() -> None:
     utc_pinned = await _sync([_schedule("infra", "15 4 * * *", timezone="Etc/UTC")])
     sg_default = await _sync([_schedule("infra", "15 4 * * *")])
-    pinned_next = utc_pinned.inserted[0][7]
-    default_next = sg_default.inserted[0][7]
+    pinned_next = _inserted(utc_pinned)[0][7]
+    default_next = _inserted(sg_default)[0][7]
     # 04:15 UTC versus 04:15 Singapore (= 20:15 UTC the day before); stagger is under 15 minutes.
     assert 4 <= pinned_next.astimezone(UTC).hour < 5
     assert default_next.astimezone(UTC).hour in {19, 20}
-    stored = {args[1] for sql, args in utc_pinned.executed if "SET timezone" in sql}
+    stored = {args[1] for sql, args in _executed(utc_pinned) if "SET timezone" in sql}
     assert stored == {"Etc/UTC"}
-    sentinel = {args[1] for sql, args in sg_default.executed if "SET timezone" in sql}
+    sentinel = {args[1] for sql, args in _executed(sg_default) if "SET timezone" in sql}
     assert sentinel == {"UTC"}
 
 
@@ -175,30 +176,24 @@ async def test_sentinel_schedule_timezone_is_refused_naming_etc_utc(sentinel: st
         _schedule("bad", "0 4 * * *", timezone=sentinel)
 
 
-class _ExistingRowPool(_FakePool):
-    """Reports one existing TOML row identical to the schedule except for its timezone."""
-
-    def __init__(self, stored_timezone: str, schedule: ScheduleSpec) -> None:
-        super().__init__()
-        self._row = {
-            "id": uuid.uuid4(),
-            "name": schedule.name,
-            "source": "toml",
-            "cron": schedule.cron,
-            "prompt": schedule.prompt,
-            "dispatch_mode": "prompt",
-            "job_name": None,
-            "job_args": None,
-            "complexity": "workhorse",
-            "enabled": True,
-            "task_type": "cron",
-            "max_token_budget": None,
-            "continuity": False,
-            "timezone": stored_timezone,
-        }
-
-    async def fetch(self, sql: str, *args: Any) -> list[Any]:
-        return [self._row] if "name = ANY" in sql else []
+def _existing_toml_row(stored_timezone: str, schedule: ScheduleSpec):
+    """One existing TOML row identical to *schedule* except for its timezone."""
+    return row(
+        id=uuid.uuid4(),
+        name=schedule.name,
+        source="toml",
+        cron=schedule.cron,
+        prompt=schedule.prompt,
+        dispatch_mode="prompt",
+        job_name=None,
+        job_args=None,
+        complexity="workhorse",
+        enabled=True,
+        task_type="cron",
+        max_token_budget=None,
+        continuity=False,
+        timezone=stored_timezone,
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,11 +204,13 @@ async def test_a_changed_timezone_alone_updates_the_existing_row(
     stored: str, declared: str | None, expect_update: bool
 ) -> None:
     schedule = _schedule("infra", "15 4 * * *", timezone=declared)
-    pool = _ExistingRowPool(stored, schedule)
+    pool = _schedule_pool([_existing_toml_row(stored, schedule)])
     await sync_schedules(pool, [schedule], default_timezone="Asia/Singapore")  # type: ignore[arg-type]
-    updated = [sql for sql, _ in pool.executed if "UPDATE scheduled_tasks" in sql]
+    pool.fetchval.assert_not_awaited()  # matched by name: never re-inserted
+    executed = _executed(pool)
+    updated = [sql for sql, _ in executed if "UPDATE scheduled_tasks" in sql]
     assert bool(updated) is expect_update
     if expect_update:
         assert any(
-            args[1] == (declared or "UTC") for sql, args in pool.executed if "SET timezone" in sql
+            args[1] == (declared or "UTC") for sql, args in executed if "SET timezone" in sql
         )

@@ -171,6 +171,7 @@ _OFFSET_ENVELOPE_EXCEPTIONS = frozenset(
         "/api/relationship/entities",
         "/api/relationship/entities/queue",
         "/api/relationship/entities/{entity_id}/activity",
+        "/api/relationship/entities/{entity_id}/commitments",
         "/api/relationship/entities/{entity_id}/gifts",
         "/api/relationship/entities/{entity_id}/interactions",
         "/api/relationship/entities/{entity_id}/loans",

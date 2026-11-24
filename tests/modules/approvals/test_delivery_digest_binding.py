@@ -31,6 +31,13 @@ class _Pool:
             "reversibility": "irreversible",
             "tool_args": _ARGS,
             "origin": None,
+            "goal_id": uuid.UUID(int=1),
+            "goal_invocation_id": uuid.UUID(int=2),
+            "goal_depth": 0,
+            "goal_exposed": True,
+            "goal_origin": "third_party",
+            "goal_exposure_cause": "read",
+            "goal_rule_possible": False,
         }
 
 
@@ -80,3 +87,38 @@ def test_018_downgrade_refuses_while_a_presentation_digest_exists(monkeypatch) -
     assert "WHERE args_digest IS NOT NULL" in guard
     assert "Cannot downgrade approvals_018" in guard
     assert drop.strip().startswith("ALTER TABLE approval_delivery_presentations DROP COLUMN")
+
+
+async def test_the_rendered_card_carries_the_park_records_lineage() -> None:
+    from butlers.modules.approvals.delivery_recovery import DirectRenderSubject
+    from butlers.modules.approvals.lineage_facts import lineage_facts
+
+    repository = ApprovalDeliveryRepository(_Pool())
+    subject = await repository.load_render_subject(_claim(uuid.uuid4(), 1))
+
+    assert isinstance(subject, DirectRenderSubject)
+    facts = lineage_facts(subject.action)
+    assert facts is not None
+    assert (facts.origin, facts.exposure_cause, facts.rule_possible) == (
+        "third_party",
+        "read",
+        False,
+    )
+
+
+async def test_a_digest_does_no_hold_work_while_mode_holds_are_dark(monkeypatch) -> None:
+    from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+    from butlers.perception import flags
+
+    class _Untouchable:
+        def acquire(self):
+            raise AssertionError("dark digest must not touch the pool")
+
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_MODE_HOLDS_LIVE", False)
+    repository = ApprovalDeliveryRepository(_Untouchable())
+    assert (
+        await repository.prepare_owner_delivery(
+            _claim(uuid.uuid4(), 1, "digest"), owner_recipient="owner"
+        )
+        is None
+    )

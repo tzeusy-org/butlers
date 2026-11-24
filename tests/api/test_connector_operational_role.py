@@ -38,6 +38,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -52,14 +53,6 @@ _SECOND_ACCOUNT_UUID = "00000000-0000-4000-8000-000000000002"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(data: dict) -> MagicMock:
-    """Build a mock asyncpg record."""
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    return row
-
-
 def _runtime_row(
     *,
     connector_type: str,
@@ -67,9 +60,9 @@ def _runtime_row(
     last_heartbeat_at: dt.datetime | None = None,
     state: str = "healthy",
     archived_at: dt.datetime | None = None,
-) -> MagicMock:
+) -> Record:
     """A registry row for an executing connector process."""
-    return _make_row(
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -101,14 +94,14 @@ def _checkpoint_row(
     parent_endpoint_identity: str | None,
     checkpoint_cursor: str = "cursor-token",
     checkpoint_updated_at: dt.datetime | None = None,
-) -> MagicMock:
+) -> Record:
     """A registry row that is a persisted cursor, not a process.
 
     Mirrors what ``cursor_store.save_cursor`` writes for a cursor that declares
     a parent: no instance, no heartbeat, no uptime, ``state`` left at the column
     default.
     """
-    return _make_row(
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -131,9 +124,9 @@ def _checkpoint_row(
     )
 
 
-def _unknown_row(*, connector_type: str, endpoint_identity: str) -> MagicMock:
+def _unknown_row(*, connector_type: str, endpoint_identity: str) -> Record:
     """A registry row no producer has claimed — e.g. settings written before any run."""
-    return _make_row(
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,

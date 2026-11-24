@@ -61,20 +61,21 @@ def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
     log = tmp_path / "python-arguments"
     for name, body in {
         "python3": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ARGUMENT_LOG"\n',
-        "git": "#!/bin/sh\nexit 0\n",
+        "git": '#!/bin/sh\nprintf "git %s\\n" "$*" >> "$ARGUMENT_LOG"\n',
         "openspec": "#!/bin/sh\nexit 0\n",
     }.items():
         tool = tools / name
         tool.write_text(body)
         tool.chmod(0o755)
     prerequisites = (
+        "check-host-policy-selectors",
         "check-lock",
         "lint",
         "check-format",
         "check-for-update-joins",
         "check-em-dashes",
-        "check-spec-overwrites",
-        "check-countable-tasks",
+        "check-requirement-trace",
+        "check-requirement-citations",
         "check-duplicate-names",
         "check-session-links",
     )
@@ -94,7 +95,7 @@ def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
         check=True,
         capture_output=True,
     )
-    assert (
-        "scripts/frontend_guards.py --base review-fork --skip-inventory"
-        in log.read_text().splitlines()
-    )
+    commands = log.read_text().splitlines()
+    assert "scripts/frontend_guards.py --base review-fork" in commands
+    assert not any("extract-frontend-copy.py" in command for command in commands)
+    assert not any("COPY_INVENTORY.md" in command for command in commands)

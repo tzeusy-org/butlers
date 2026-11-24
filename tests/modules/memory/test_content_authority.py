@@ -8,14 +8,19 @@ visibility.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 import uuid
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
+import httpx
 import pytest
 
+from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     reset_current_runtime_session_id,
@@ -28,11 +33,17 @@ from butlers.modules.memory import storage
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact, NewRule
 from butlers.modules.memory.content_authority import (
+    HELD_FACT_SQL,
+    ContentAuthority,
+    catalog_attribution,
     classify_routing_context,
     combine_authorities,
+    with_custody_provenance,
 )
 from butlers.modules.memory.tools import context as _context
+from butlers.modules.memory.tools import reading as _reading
 from butlers.modules.memory.tools import writing as _writing
+from tests.api.auth_helpers import create_authenticated_domain_app
 
 # Re-used so the migrated-DB provisioning stays defined in exactly one place.
 from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
@@ -47,6 +58,8 @@ def _routed(sender: uuid.UUID | None, channel: str = "telegram") -> dict:
     ctx: dict = {"request_context": {"source_channel": channel}}
     if sender is not None:
         ctx["source_entity_id"] = str(sender)
+        # Route producers name the sender's endpoint for the write-time custody recheck.
+        ctx["source_endpoint"] = {"channel": channel, "identity": "111"}
     return ctx
 
 
@@ -75,6 +88,45 @@ def test_classify_routing_context(routing_context, owner_id, expected) -> None:
     assert classify_routing_context(routing_context, owner_id).authority == expected
 
 
+def _held(sender: uuid.UUID | None) -> dict:
+    return {**_routed(sender), "source_custody": "endpoint_held"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("routing_context", "expected"),
+    [
+        # REQ-endpoint-custody-holds-005: held or unreadable owner endpoint keeps the owner
+        # entity for attribution, carries third_party authority and the closed reason.
+        (_held(OWNER), ContentAuthority("third_party", OWNER, "endpoint_held")),
+        (_routed(OWNER), ContentAuthority("owner", OWNER)),
+        # The flag only narrows an owner sender; a stranger stays a plain third party.
+        (_held(STRANGER), ContentAuthority("third_party", STRANGER)),
+        # Only the server-side constant demotes; any other value is ignored, not trusted.
+        ({**_routed(OWNER), "source_custody": "cleared"}, ContentAuthority("owner", OWNER)),
+        # System context stays system: a flag cannot appear without routing.
+        (None, ContentAuthority("system")),
+    ],
+    ids=["held-owner", "owner", "held-stranger", "other-value", "system"],
+)
+def test_classify_held_owner_endpoint(routing_context, expected) -> None:
+    assert classify_routing_context(routing_context, OWNER) == expected
+
+
+@pytest.mark.unit
+def test_custody_provenance_merges_into_dict_and_json_metadata() -> None:
+    held = ContentAuthority("third_party", OWNER, "endpoint_held")
+    assert with_custody_provenance({"a": 1}, held) == {"a": 1, "custody_reason": "endpoint_held"}
+    assert with_custody_provenance(None, held) == {"custody_reason": "endpoint_held"}
+    assert json.loads(with_custody_provenance('{"a": 1}', held)) == {
+        "a": 1,
+        "custody_reason": "endpoint_held",
+    }
+    plain = ContentAuthority("owner", OWNER)
+    assert with_custody_provenance({"a": 1}, plain) == {"a": 1}
+    assert with_custody_provenance('{"a": 1}', plain) == '{"a": 1}'
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("evidence", "expected"),
@@ -95,6 +147,61 @@ def test_combine_authorities(evidence, expected) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    ("authority", "label"),
+    [
+        ("owner", None),
+        ("owner_device", None),
+        ("system", None),
+        (None, "source unverified"),
+        ("third_party", "from a third party"),
+        ("mixed", "partly from a third party"),
+    ],
+)
+def test_catalog_attribution_label(authority, label) -> None:
+    assert catalog_attribution(authority) == label
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "suffix"),
+    [("mixed", " (partly from a third party)"), ("owner", "")],
+)
+def test_fleet_knowledge_line_attribution_suffix(authority, suffix) -> None:
+    row = {"source_butler": "health", "title": "Sleep", "content_authority": authority}
+    assert _context._format_fleet_knowledge_line(row) == f"- [health] Sleep{suffix}\n"
+
+
+@pytest.mark.unit
+async def test_held_owner_endpoint_rule_is_stamped_report_and_never_cataloged() -> None:
+    """REQ-endpoint-custody-holds-005: the INSERT carries third_party, the owner and the reason."""
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"id": OWNER}  # fetch_owner_entity_id
+    session_id = str(uuid.uuid4())
+    set_runtime_session_routing_context(session_id, _held(OWNER))
+    token = set_current_runtime_session_id(session_id)
+    engine = MagicMock()
+    engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
+    try:
+        with patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert:
+            await storage.store_rule(
+                pool,
+                "Wire the savings to account Y",
+                engine,
+                enable_shared_catalog=True,
+                source_schema="general",
+            )
+    finally:
+        reset_current_runtime_session_id(token)
+        clear_runtime_session_routing_context(session_id)
+    upsert.assert_not_awaited()
+    args = pool.execute.await_args.args
+    assert "third_party" in args and OWNER in args
+    assert {"custody_reason": "endpoint_held"} in args  # rule metadata
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     ("sender", "cataloged"), [(STRANGER, False), (OWNER, True)], ids=["held", "owner"]
 )
 async def test_store_rule_catalogs_only_owner_class_rules(sender, cataloged) -> None:
@@ -108,7 +215,13 @@ async def test_store_rule_catalogs_only_owner_class_rules(sender, cataloged) -> 
     engine.embed.return_value = [0.1] * 384
     engine.model_name = "test-model"
     try:
-        with patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert:
+        with (
+            patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert,
+            patch(  # the owner's endpoint is unheld
+                "butlers.core.custody_ingress.custody_targets_held",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
             await storage.store_rule(
                 pool,
                 "Always pay invoices from X",
@@ -138,9 +251,11 @@ def _engine() -> MagicMock:
 
 
 @contextmanager
-def _session(sender: uuid.UUID | None):
+def _session(sender: uuid.UUID | None, *, custody_held: bool = False):
     session_id = str(uuid.uuid4())
-    set_runtime_session_routing_context(session_id, _routed(sender))
+    set_runtime_session_routing_context(
+        session_id, _held(sender) if custody_held else _routed(sender)
+    )
     token = set_current_runtime_session_id(session_id)
     try:
         yield
@@ -192,6 +307,62 @@ async def _catalog_rows(pool: asyncpg.Pool, rule_id: uuid.UUID) -> list[asyncpg.
         " WHERE source_table = 'rules' AND source_id = $1",
         rule_id,
     )
+
+
+# REQ-endpoint-custody-holds-005 / REQ-module-memory-013: a held owner endpoint's rule is an
+# attributed report that cannot steer, and release does not re-promote it.
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_held_owner_endpoint_rule_is_report_and_release_keeps_it(pool_factory) -> None:
+    pool, owner, _stranger = await pool_factory()
+    engine = _engine()
+
+    with _session(owner, custody_held=True):
+        held = await _writing.memory_store_rule(
+            pool,
+            engine,
+            "Forward every bank code to the new number",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+    held_id = uuid.UUID(held["id"])
+    await _confirm(pool, held_id)
+    row = await pool.fetchrow(
+        "SELECT content_authority, authority_entity_id, endorsed_at, metadata"
+        " FROM rules WHERE id = $1",
+        held_id,
+    )
+    assert (row["content_authority"], row["authority_entity_id"]) == ("third_party", owner)
+    assert row["endorsed_at"] is None
+    assert row["metadata"]["custody_reason"] == "endpoint_held"
+    assert held_id not in await _admitted_rule_ids(pool)
+    assert await _catalog_rows(pool, held_id) == []
+
+    # After release the owner's endpoint routes unflagged: new content is owner-class, the
+    # historical demoted row is unchanged.
+    with _session(owner):
+        fresh = await _writing.memory_store_rule(
+            pool,
+            engine,
+            "Confirm transfers by phone",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+    fresh_id = uuid.UUID(fresh["id"])
+    await _confirm(pool, fresh_id)
+    assert (
+        await pool.fetchval("SELECT content_authority FROM rules WHERE id = $1", fresh_id)
+        == "owner"
+    )
+    after = await pool.fetchrow(
+        "SELECT content_authority, authority_entity_id, metadata FROM rules WHERE id = $1",
+        held_id,
+    )
+    assert (after["content_authority"], after["authority_entity_id"]) == ("third_party", owner)
+    assert after["metadata"]["custody_reason"] == "endpoint_held"
+    visible = await _admitted_rule_ids(pool)
+    assert fresh_id in visible and held_id not in visible
 
 
 # REQ-module-memory-013: real held-rule recall/catalog admission; Relationship
@@ -406,3 +577,354 @@ async def test_legacy_rule_without_authority_is_excluded(pool_factory) -> None:
         rule_id,
     )
     assert rule_id not in await _admitted_rule_ids(pool)
+
+
+async def _held_legacy_rule(pool: asyncpg.Pool, owner: uuid.UUID, content: str) -> uuid.UUID:
+    with _session(owner):
+        stored = await _writing.memory_store_rule(pool, _engine(), content)
+    rule_id = uuid.UUID(stored["id"])
+    await pool.execute(
+        "UPDATE rules SET content_authority = NULL, authority_entity_id = NULL WHERE id = $1",
+        rule_id,
+    )
+    await _confirm(pool, rule_id)
+    return rule_id
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_legacy_endorsement_race_and_reader_visibility(pool_factory) -> None:
+    pool, owner, _ = await pool_factory()
+    contents = [f"Legacy rule {uuid.uuid4()}" for _ in range(5)]
+    first, second, third, held, retired = [
+        await _held_legacy_rule(pool, owner, content) for content in contents
+    ]
+    manager = DatabaseManager()
+    manager._pools["memory"] = pool
+    manager._butler_schemas["memory"] = "public"
+    manager._butler_modules["memory"] = frozenset({"memory"})
+    manager.register_configured_modules("memory", frozenset({"memory"}))
+    app = create_authenticated_domain_app()
+    app.dependency_overrides[get_db] = lambda: manager
+
+    ids_a = [str(first), str(second)]
+    ids_b = [str(third), str(second)]
+    assert {first, second, third, held}.isdisjoint(await _admitted_rule_ids(pool))
+    endpoint = "/api/memory/rules/endorse-legacy"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+
+        async def preview(ids):
+            response = await client.post(endpoint + "/preview", json={"rule_ids": ids})
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        async def confirm(ids, preview):
+            return await client.post(
+                endpoint,
+                json={"rule_ids": ids, "confirmation_digest": preview["confirmation_digest"]},
+            )
+
+        preview_a = await preview(ids_a)
+        preview_b = await preview(ids_b)
+        assert [row["rule_id"] for row in preview_a["rules"]] == ids_a
+        manager.register_configured_modules("unavailable", frozenset({"memory"}))
+        unavailable_preview = await client.post(endpoint + "/preview", json={"rule_ids": ids_a})
+        unavailable_confirm = await confirm(ids_a, preview_a)
+        held_response = await client.get("/api/memory/rules", params={"held": True})
+        assert unavailable_preview.status_code == unavailable_confirm.status_code == 503
+        assert held_response.json()["meta"]["pools_failed"] == ["unavailable"]
+        assert {row["id"] for row in held_response.json()["data"]} >= {str(first), str(second)}
+        manager.register_configured_modules("unavailable", frozenset({"calendar"}))
+        assert (await confirm(list(reversed(ids_a)), preview_a)).status_code == 409
+        stale_ids = [str(first), str(retired)]
+        stale_preview = await preview(stale_ids)
+        await pool.execute("UPDATE rules SET retired_at = now() WHERE id = $1", retired)
+        assert (await confirm(stale_ids, stale_preview)).status_code == 409
+        assert {first, second, third, held}.isdisjoint(await _admitted_rule_ids(pool))
+
+        response_a, response_b = await asyncio.gather(
+            confirm(ids_a, preview_a), confirm(ids_b, preview_b)
+        )
+        repeat_response = await confirm(ids_a, preview_a)
+        assert (response_a.status_code, response_b.status_code, repeat_response.status_code) == (
+            200,
+            200,
+            200,
+        )
+        result_a, result_b, repeat = (
+            response.json()["data"] for response in (response_a, response_b, repeat_response)
+        )
+    assert {receipt["endorsed_by"] for receipt in result_a + result_b} == {str(owner)}
+    admitted = await _admitted_rule_ids(pool)
+    assert {first, second, third}.issubset(admitted) and {held, retired}.isdisjoint(admitted)
+    context = await _context.memory_context(pool, _engine(), "legacy rule", "general")
+    assert all(content in context for content in contents[:3])
+    assert all(content not in context for content in contents[3:])
+    assert sum(receipt["changed"] for receipt in result_a + result_b) == 3
+    assert repeat == [receipt | {"changed": False} for receipt in result_a]
+    for rule_id in (first, second, third):
+        assert len(await _catalog_rows(pool, rule_id)) == 1
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type = 'rule_endorsed' AND memory_id=$1",
+                rule_id,
+            )
+            == 1
+        )
+    assert await _catalog_rows(pool, held) == []
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_legacy_endorsement_rolls_back_all_effects(pool_factory, monkeypatch) -> None:
+    pool, owner, _ = await pool_factory()
+    ids = [await _held_legacy_rule(pool, owner, f"Rollback rule {uuid.uuid4()}") for _ in range(2)]
+    selection = {"source_name": "memory", "endorsed_by": owner}
+    preview = await storage.preview_legacy_rule_endorsements(pool, ids, **selection)
+    args = {"confirmation_digest": preview["confirmation_digest"], **selection}
+    write = storage._write_rule_endorsement
+
+    async def fail_after_second_write(conn, table, row, owner_id, schema):
+        receipt = await write(conn, table, row, owner_id, schema)
+        if row["id"] == ids[1]:
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_events WHERE event_type = 'rule_endorsed'"
+                    " AND memory_id=ANY($1::uuid[])",
+                    ids,
+                )
+                == 2
+            )
+            await conn.execute("SELECT 1/0")
+        return receipt
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(storage, "_write_rule_endorsement", fail_after_second_write)
+        with pytest.raises(asyncpg.DivisionByZeroError):
+            await storage.endorse_legacy_rules(pool, ids, **args)
+
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM rules WHERE id=ANY($1::uuid[]) AND endorsed_at IS NOT NULL",
+                ids,
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type='rule_endorsed'"
+                " AND memory_id=ANY($1::uuid[])",
+                ids,
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM public.memory_catalog WHERE source_id=ANY($1::uuid[])",
+                ids,
+            )
+            == 0
+        )
+    assert all(
+        receipt["changed"] for receipt in await storage.endorse_legacy_rules(pool, ids, **args)
+    )
+
+
+# REQ-module-memory-013 "Catalog readers attribute non-owner content".
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_catalog_rows_carry_fact_authority_and_tool_attributes_it(pool_factory) -> None:
+    pool, owner, stranger = await pool_factory()
+    engine = _engine()
+    tag = uuid.uuid4().hex[:8]
+    catalog = {"enable_shared_catalog": True, "source_schema": "public"}
+
+    with _session(owner):
+        own = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"tea_{tag}", f"oolong {tag}", entity_id=str(owner), **catalog
+        )
+    with _session(stranger):
+        reported = await _writing.memory_store_fact(
+            pool,
+            engine,
+            "Owner",
+            f"coffee_{tag}",
+            f"espresso {tag}",
+            entity_id=str(owner),
+            **catalog,
+        )
+    with _session(owner):
+        legacy = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"juice_{tag}", f"orange {tag}", entity_id=str(owner)
+        )
+    own_id, reported_id, legacy_id = (uuid.UUID(f["id"]) for f in (own, reported, legacy))
+    await pool.execute(
+        "UPDATE facts SET content_authority = NULL, authority_entity_id = NULL WHERE id = $1",
+        legacy_id,
+    )
+    # A row cataloged before the column existed starts NULL; the backfill syncs it.
+    await pool.execute(
+        "UPDATE public.memory_catalog SET content_authority = NULL WHERE source_id = $1", own_id
+    )
+
+    await storage.run_memory_catalog_backfill(pool, source_schema="public")
+
+    rows = await pool.fetch(
+        "SELECT source_id, content_authority FROM public.memory_catalog"
+        " WHERE source_table = 'facts' AND source_id = ANY($1::uuid[])",
+        [own_id, reported_id, legacy_id],
+    )
+    assert {r["source_id"]: r["content_authority"] for r in rows} == {
+        own_id: "owner",
+        reported_id: "third_party",
+        legacy_id: None,
+    }
+
+    results = await _reading.memory_catalog_search(
+        pool,
+        engine,
+        tag,
+        mode="keyword",
+        limit=50,
+        read_policy=await _search.load_catalog_read_policy(pool),
+    )
+    by_id = {r["source_id"]: r for r in results}
+    assert by_id[str(own_id)]["content_authority"] == "owner"
+    assert by_id[str(own_id)]["attribution"] is None
+    assert by_id[str(reported_id)]["attribution"] == "from a third party"
+    assert by_id[str(legacy_id)]["attribution"] == "source unverified"
+
+
+# REQ-module-memory-013 owner vouch for held facts (bu-jv1moa.14): additive, single
+# receipt under two connections, typed conflict for dead facts, reversible.
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_vouch_is_additive_single_receipt_and_reversible(pool_factory) -> None:
+    pool, owner, stranger = await pool_factory()
+    engine = _engine()
+    tag = uuid.uuid4().hex[:8]
+    catalog = {"enable_shared_catalog": True, "source_schema": "public"}
+    with _session(stranger):
+        stored = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"car_{tag}", f"red {tag}", entity_id=str(owner), **catalog
+        )
+        hidden = await _writing.memory_store_fact(
+            pool,
+            engine,
+            "Owner",
+            f"diagnosis_{tag}",
+            f"private {tag}",
+            entity_id=str(owner),
+            sensitivity=sorted(storage.CATALOG_WRITE_EXCLUDED_SENSITIVITIES)[0],
+            **catalog,
+        )
+        dead = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"bike_{tag}", f"blue {tag}", entity_id=str(owner)
+        )
+    fact_id, hidden_id, dead_id = (uuid.UUID(f["id"]) for f in (stored, hidden, dead))
+    lineage = "SELECT content_authority, authority_entity_id, source_episode_id, supersedes_id"
+    before = await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id)
+    assert before["content_authority"] == "third_party"
+
+    # Only the shared held predicate admits a vouch. Legacy/system and owner-class
+    # rows are complete no-ops, including an already-present catalog entry.
+    for authority in (None, "system", "owner", "owner_device"):
+        with _session(stranger):
+            ordinary = await _writing.memory_store_fact(
+                pool,
+                engine,
+                "Owner",
+                f"nonheld_{tag}_{authority}",
+                f"unchanged {tag}",
+                entity_id=str(owner),
+                **catalog,
+            )
+        ordinary_id = uuid.UUID(ordinary["id"])
+        # NULL represents a legacy row; explicit stamps exercise the persisted
+        # classifier independently of the session authority writer.
+        await pool.execute(
+            "UPDATE facts SET content_authority = $2 WHERE id = $1", ordinary_id, authority
+        )
+        fact_before = await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id)
+        catalog_before = await pool.fetchrow(
+            "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+            ordinary_id,
+        )
+        assert catalog_before is not None
+        assert fact_before["endorsed_at"] is None and fact_before["endorsed_by"] is None
+        for _ in range(2):
+            assert await storage.endorse_fact(pool, ordinary_id, endorsed_by=owner) == {
+                "fact_id": ordinary_id,
+                "content_authority": authority,
+                "endorsed_at": None,
+                "endorsed_by": None,
+                "changed": False,
+            }
+        assert await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id) == fact_before
+        assert (
+            await pool.fetchrow(
+                "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+                ordinary_id,
+            )
+            == catalog_before
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type = 'fact_vouched' AND memory_id = $1",
+                ordinary_id,
+            )
+            == 0
+        )
+
+    # Two connections race: one CAS wins, both get the same receipt, one event.
+    first, second = await asyncio.gather(
+        storage.endorse_fact(pool, fact_id, endorsed_by=owner),
+        storage.endorse_fact(pool, fact_id, endorsed_by=owner),
+    )
+    assert sorted([first["changed"], second["changed"]]) == [False, True]
+    assert first["endorsed_at"] == second["endorsed_at"] is not None
+    assert first["endorsed_by"] == second["endorsed_by"] == owner
+    repeat = await storage.endorse_fact(pool, fact_id, endorsed_by=owner)
+    assert repeat["changed"] is False and repeat["endorsed_at"] == first["endorsed_at"]
+    events = "SELECT count(*) FROM memory_events WHERE event_type = 'fact_vouched'"
+    assert await pool.fetchval(f"{events} AND memory_id = $1", fact_id) == 1
+    assert await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id) == before
+    assert (
+        await pool.fetchval(
+            "SELECT content_authority FROM public.memory_catalog"
+            " WHERE source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        == "third_party"
+    )
+
+    # Clearing the stamps restores the prior admission state exactly.
+    await pool.execute(
+        "UPDATE facts SET endorsed_at = NULL, endorsed_by = NULL WHERE id = $1", fact_id
+    )
+    assert await pool.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", fact_id)
+    assert await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id) == before
+
+    # Endorsement never overrides the catalog's sensitivity exclusion.
+    assert (await storage.endorse_fact(pool, hidden_id, endorsed_by=owner))["changed"] is True
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog WHERE source_id = $1", hidden_id
+        )
+        == 0
+    )
+
+    # A retracted/superseded fact is a typed conflict and writes nothing.
+    for validity in ("retracted", "superseded"):
+        await pool.execute("UPDATE facts SET validity = $2 WHERE id = $1", dead_id, validity)
+        with pytest.raises(storage.FactNotEndorsableError):
+            await storage.endorse_fact(pool, dead_id, endorsed_by=owner)
+        assert await pool.fetchval("SELECT endorsed_at FROM facts WHERE id = $1", dead_id) is None
+    assert await pool.fetchval(f"{events} AND memory_id = $1", dead_id) == 0

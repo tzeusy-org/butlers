@@ -37,6 +37,7 @@ import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
 import { useSessionAggregate } from "@/hooks/use-sessions"
 import { formatCostUsd } from "@/lib/format-cost"
+import { HOUR_MS, hourlySlotStarts } from "@/lib/bucket-series"
 import type {
   ActivityEventType,
   ApprovalAction,
@@ -83,16 +84,14 @@ function activityLabel(eventType: ActivityEventType): string {
 
 /**
  * Computes the [since, until) ISO window for stripe slot `index` (0 = oldest
- * of the last 24h, 23 = the current hour), matching the bucketing convention
- * in useButlerStatusBoard (hourlyStripe slot 23 - bucket.hour_index).
+ * of the last 24h, 23 = the current hour): the slot's own UTC-hour bucket, the
+ * same keys useButlerStatusBoard places the stripe on (bu-s11n0s.5.1).
  */
 function stripeSlotWindow(index: number): { since: string; until: string } {
-  const hoursAgoUntil = 23 - index
-  const hoursAgoSince = hoursAgoUntil + 1
-  const now = Date.now()
+  const start = hourlySlotStarts(Date.now())[index]
   return {
-    since: new Date(now - hoursAgoSince * 3_600_000).toISOString(),
-    until: new Date(now - hoursAgoUntil * 3_600_000).toISOString(),
+    since: new Date(start).toISOString(),
+    until: new Date(start + HOUR_MS).toISOString(),
   }
 }
 
@@ -377,7 +376,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const costPerSession = costToday != null && sessions24h > 0 ? costToday / sessions24h : null
   const visiblePendingActions = pendingActions ?? []
   const recentEvents = activityFeedData?.events ?? []
-  const stripe = row?.hourlyStripe ?? Array(24).fill(0)
+  const stripe = row?.hourlyStripe ?? Array<number | null>(24).fill(null)
   const status = butler?.status ?? row?.status
   // meta.total (not the page-size-capped result length) is the true count of
   // pending approvals -- the KPI previously read "5" when 20 were pending

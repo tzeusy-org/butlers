@@ -14,11 +14,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.connectors.filtered_event_buffer import _sanitize_replay_payload
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     ChatBuffer,
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
 )
+from tests.connectors.filtered_event_fakes import FilteredEventsPool  # noqa: E402
 
 _SERVICE = "777000"
 _CODE = "".join(("48", "29", "13"))  # bare login code, built at runtime
@@ -131,14 +133,18 @@ async def _flush_service_batch(connector, *, submit=None, policy=None, global_po
     connector._flush_and_drain = AsyncMock()
     connector._save_checkpoint = AsyncMock()
     await connector._flush_chat_buffer(_SERVICE)
-    return _row(connector)
+    return _row(connector) if connector._filtered_event_buffer._rows else None
 
 
 async def test_flushed_service_batch_error_row_scrubs_error_detail(connector):
     connector._discretion_dispatcher = None
-    row = await _flush_service_batch(
+    # A failed batch is parked per message once its attempts are spent (bu-dhloi1.277).
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()
+    await _flush_service_batch(
         connector, submit=AsyncMock(side_effect=RuntimeError(f"rejected text {_CODE}"))
     )
+    (row,) = pool.written
     assert _CODE not in str(row[_ERROR_IDX])
     assert _SERVICE in row[_PAYLOAD_IDX]["sender"]["participants"]
 

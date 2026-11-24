@@ -4,6 +4,8 @@ Creates pre-bound sockets with SO_REUSEADDR so health servers can restart
 quickly without hitting EADDRINUSE from TIME_WAIT sockets left by a
 previous process.  If a stale process is holding the port, it is
 terminated automatically before binding.
+
+Also renders the ``/metrics`` response those health servers share.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ import signal
 import socket
 import subprocess
 import time
+
+from fastapi import Response
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 
 logger = logging.getLogger(__name__)
 
@@ -88,3 +93,12 @@ def make_health_socket(host: str, port: int, backlog: int = 128) -> socket.socke
         return sock
     # Unreachable, but keeps type checkers happy.
     raise RuntimeError("Failed to bind health socket")
+
+
+def prometheus_metrics_response() -> Response:
+    """Render the default registry in Prometheus text exposition format.
+
+    A FastAPI route that returns raw ``bytes`` JSON-encodes them into a quoted
+    string, which no Prometheus scraper can parse.
+    """
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)

@@ -17,6 +17,7 @@ from __future__ import annotations
 from butlers.chronicler.adapters.activitywatch import ActivityWatchWindowAdapter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
+from butlers.chronicler.adapters.calendar_revisions import CalendarRevisionsAdapter
 from butlers.chronicler.adapters.comms import CommsSocialAdapter
 from butlers.chronicler.adapters.exercise import ExerciseInferredAdapter
 from butlers.chronicler.adapters.focus import FocusInferredAdapter
@@ -40,6 +41,7 @@ from butlers.chronicler.adapters.reading import ReadingInferredAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
+from butlers.chronicler.adapters.steam_status import SteamStatusAdapter
 
 __all__ = [
     "ActivityWatchWindowAdapter",
@@ -60,9 +62,11 @@ __all__ = [
     "OwnTracksPlaceClusterAdapter",
     "OwnTracksPointAdapter",
     "OwnTracksSsidPresenceAdapter",
+    "CalendarRevisionsAdapter",
     "OwnerOutboundMessageAdapter",
     "ProjectionAdapter",
     "ReadingInferredAdapter",
     "SpotifySessionAdapter",
     "SteamPlayAdapter",
+    "SteamStatusAdapter",
 ]

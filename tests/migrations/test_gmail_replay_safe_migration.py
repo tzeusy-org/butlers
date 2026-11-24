@@ -8,11 +8,12 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -29,18 +30,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("sw_013", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_execute_calls(fn_name: str) -> list[str]:
     """Run upgrade() or downgrade() with op.execute mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "sw_013")
     calls_collected: list[str] = []
 
     mock_op = MagicMock()

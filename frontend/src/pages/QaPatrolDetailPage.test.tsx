@@ -133,6 +133,7 @@ describe("QaPatrolDetailPage — header", () => {
     ["clean", "clean"],
     ["findings_dispatched", "findings dispatched"],
     ["suppressed", "findings suppressed"],
+    ["halted", "dispatch halted"],
     ["error", "patrol error"],
     ["running", "patrol running"],
     ["skipped_overlap", "patrol skipped due to overlap"],

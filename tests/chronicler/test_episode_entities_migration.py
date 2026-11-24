@@ -16,11 +16,12 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -36,20 +37,9 @@ _EXPECTED_REVISION = "chronicler_014"
 _EXPECTED_DOWN_REVISION = "chronicler_013"
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    path = _MIGRATIONS_DIR / _MIGRATION_FILE
-    assert path.exists(), f"Migration file not found: {path}"
-    spec = importlib.util.spec_from_file_location("chronicler_014", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
     """Run upgrade() with op mocked; return SQL strings passed to op.execute."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE, "chronicler_014")
     calls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = calls.append
@@ -60,7 +50,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 def _collect_downgrade_sqls() -> list[str]:
     """Run downgrade() with op mocked; return SQL strings passed to op.execute."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE, "chronicler_014")
     calls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = calls.append
@@ -77,7 +67,7 @@ def _collect_downgrade_sqls() -> list[str]:
 @pytest.fixture(scope="module")
 def migration_mod():
     """Loaded migration module."""
-    return _load_migration()
+    return load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE, "chronicler_014")
 
 
 @pytest.fixture(scope="module")

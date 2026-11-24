@@ -103,6 +103,9 @@ def test_every_bootstrapped_definer_is_pinned_with_an_empty_allowlist(bootstrapp
         "public.register_butler_boot",
         "switchboard.switchboard_connector_heartbeat_log_ensure_partition",
         "general.connectors_filtered_events_ensure_partition",
+        "chronicler_memory_admin.projection_row_visible",
+        "public.chronicler_catalog_row_visible",
+        "public.chronicler_graph_row_visible",
     ):
         assert any(signature.startswith(expected + "(") for signature in signatures), expected
 

@@ -22,6 +22,14 @@ from uuid import UUID
 
 TELEGRAM_HANDLE_PREFIX = "telegram:"
 
+#: Predicate of a permanent-bounce fact written by ``automated_evidence_sync`` (bu-s11n0s.14).
+UNDELIVERABLE_EMAIL_PREDICATE = "undeliverable-email"
+
+
+class NoLiveEmailAddressError(Exception):
+    """The entity has email addresses, and every one carries an undeliverable-email fact."""
+
+
 # CI types that use the ``has-handle`` predicate and require a ``telegram:`` prefix
 # on the stored object value for disambiguation from linkedin/twitter/other handles.
 _TELEGRAM_CI_TYPES = frozenset({"telegram", "telegram_user_id", "telegram_username"})

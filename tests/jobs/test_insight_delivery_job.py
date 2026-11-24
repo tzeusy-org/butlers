@@ -18,11 +18,15 @@ resolve_owner_entity_info() are all mocked.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.fake_pool import AsyncCtx, FakeConnection
+from butlers.testing.records import row
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -37,61 +41,6 @@ _PINNED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 def _make_mock_pool() -> AsyncMock:
     """Return a minimal asyncpg.Pool mock."""
     return AsyncMock()
-
-
-class _FakeRecord:
-    """Minimal asyncpg.Record-alike that supports dict(row) via keys() + __getitem__."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def keys(self) -> Any:
-        return self._data.keys()
-
-    def __iter__(self) -> Any:
-        return iter(self._data)
-
-
-class _FakeTxnCtx:
-    """No-op async context manager standing in for asyncpg's conn.transaction()."""
-
-    async def __aenter__(self) -> _FakeTxnCtx:
-        return self
-
-    async def __aexit__(self, *exc_info: Any) -> bool:
-        return False
-
-
-class _FakeConn:
-    """Minimal connection stand-in for the post-delivery bookkeeping transaction.
-
-    delivery_cycle()'s deliver_success path acquires a connection and marks
-    candidates delivered on it directly; record_cooldowns()/
-    record_engagement_rows() are patched out wholesale in these tests, so this
-    only needs to support conn.execute() and conn.transaction().
-    """
-
-    def __init__(self) -> None:
-        self.execute = AsyncMock(return_value="UPDATE 3")
-
-    def transaction(self) -> _FakeTxnCtx:
-        return _FakeTxnCtx()
-
-
-class _FakeAcquireCtx:
-    """No-op async context manager standing in for asyncpg's pool.acquire()."""
-
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: Any) -> bool:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +82,7 @@ class TestBuildSwitchboardInsightNotifyFn:
         assert call_kwargs.kwargs["message"] == "Test insight"
         assert call_kwargs.kwargs["recipient"] == "12345678"
         assert call_kwargs.kwargs["source_butler"] == "switchboard"
+        assert call_kwargs.kwargs["metadata"] == {"channel": "telegram", "intent": "insight"}
 
     @pytest.mark.asyncio
     async def test_failed_status_translated_to_error(self):
@@ -161,10 +111,28 @@ class TestBuildSwitchboardInsightNotifyFn:
             result = await notify_fn("msg", {"channel": "telegram"})
 
         assert result["status"] == "error"
-        assert "Telegram unavailable" in result["error"]
+        assert result["error"] == "delivery_error"
+        assert deliver_failed["error"] == "Telegram unavailable"
+
+        # The broker treats only status=error as failure: an empty/missing
+        # acknowledgement must not escape as a successful candidate delivery.
+        for unconfirmed in ({}, None):
+            with (
+                patch(
+                    "butlers.credential_store.resolve_owner_entity_info",
+                    AsyncMock(return_value="12345"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.notification.deliver.deliver",
+                    AsyncMock(return_value=unconfirmed),
+                ) as send,
+            ):
+                result = await notify_fn("msg", {"channel": "telegram"})
+            assert result["status"] == "error"
+            send.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_no_telegram_chat_id_returns_error(self):
+    async def test_no_telegram_chat_id_returns_error(self, caplog):
         """When no telegram_chat_id is configured, notify_fn returns status='error'."""
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
 
@@ -186,6 +154,19 @@ class TestBuildSwitchboardInsightNotifyFn:
         ]
         assert result["status"] == "error"
         assert "telegram" in result["error"].lower()
+
+        with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                AsyncMock(side_effect=ValueError("sentinel-private-owner-lookup")),
+            ),
+            patch("butlers.tools.switchboard.notification.deliver.deliver", AsyncMock()) as send,
+        ):
+            unavailable = await notify_fn("msg", {"channel": "telegram"})
+        assert unavailable["status"] == "error"
+        assert "ValueError" in unavailable["error"]
+        assert "sentinel-private-owner-lookup" not in str(unavailable) + caplog.text
+        send.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_email_channel_resolves_email_recipient(self):
@@ -487,7 +468,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         ],
     )
     @pytest.mark.asyncio
-    async def test_majority_channel_for_digest(self, channels, expected_channel):
+    async def test_majority_channel_for_digest(self, channels, expected_channel, caplog):
         """The broker computes meta['channel'] from candidate channels:
         majority vote when present, None when no candidate specifies one.
         """
@@ -497,11 +478,14 @@ class TestBrokerChannelSelectionInNotifyMetadata:
 
         async def _capture_notify(message: str, metadata: dict) -> dict:
             captured_metadata.append(dict(metadata))
-            return {"status": "sent"}
+            return await actual_notify(message, metadata)
 
         import asyncpg  # noqa: PLC0415
 
         mock_pool = AsyncMock(spec=asyncpg.Pool)
+        from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+        actual_notify = _build_switchboard_insight_notify_fn(mock_pool)
 
         cid1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         cid2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -551,6 +535,17 @@ class TestBrokerChannelSelectionInNotifyMetadata:
         all_ids = [cid1, cid2, cid3]
 
         with (
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                AsyncMock(return_value="owner"),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                AsyncMock(return_value={"status": "sent", "notification_id": "sent-1"}),
+            ) as send,
+            patch(
+                "butlers.tools.switchboard.insight.broker.record_attention_event", AsyncMock()
+            ) as ledger,
             patch(
                 "butlers.tools.switchboard.insight.broker.get_insight_settings",
                 new=AsyncMock(
@@ -604,24 +599,364 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                 "butlers.tools.switchboard.insight.broker.check_total_disengagement_auto_off",
                 new=AsyncMock(return_value=False),
             ),
+            # The shared claim is proven against real rows in
+            # tests/modules/test_insight_timed_lane.py; this mock pool cannot hold one.
+            patch(
+                "butlers.tools.switchboard.insight.broker.sends_today",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.claim_for_delivery",
+                new=AsyncMock(return_value=(uuid.UUID(int=7), None)),
+            ),
+            patch("butlers.tools.switchboard.insight.broker.mark_attempt_started", new=AsyncMock()),
         ):
 
             async def mock_fetch(query: str, *args: Any) -> list:
+                if "status, delivery_attempt_count" in query:
+                    return [
+                        row(**{**c, "status": "pending", "delivery_attempt_count": 1})
+                        for c in candidates
+                    ]
                 if "SELECT id, origin_butler" in query:
-                    return [_FakeRecord(c) for c in candidates]
+                    return [row(**c) for c in candidates]
                 if "insight_candidates" in query:
-                    return [_FakeRecord({"id": c["id"]}) for c in candidates]
+                    return [row(**{"id": c["id"]}) for c in candidates]
                 return []
 
             mock_pool.fetch = mock_fetch
             mock_pool.execute = AsyncMock(return_value="UPDATE 3")
             mock_pool.executemany = AsyncMock()
-            mock_pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
+            mock_pool.acquire = lambda: AsyncCtx(FakeConnection(execute="UPDATE 3"))
 
             await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
+            send.assert_awaited_once()
+            assert ledger.await_count == len(candidates)
+            assert all(c.kwargs["source"] == "insight" for c in ledger.await_args_list)
+            assert all(c.kwargs["outcome"] == "coalesced" for c in ledger.await_args_list)
+
+            # Use the real production callback at the actual broker logger, not
+            # a synthetic error result that bypasses the omitted transport.
+            for failure in (
+                RuntimeError("sentinel-private-insight-owner-message-recipient"),
+                {"status": "failed", "error": "sentinel-private-insight-owner-message-recipient"},
+            ):
+                send.reset_mock(side_effect=True)
+                send.side_effect = failure if isinstance(failure, Exception) else None
+                send.return_value = failure
+                ledger.reset_mock()
+                failed = await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
+                send.assert_awaited_once()
+                assert failed["delivered"] == []
+                assert ledger.await_count == len(candidates)
+                assert all(c.kwargs["outcome"] == "failed" for c in ledger.await_args_list)
+                assert "sentinel-private-insight-owner-message-recipient" not in caplog.text
+                assert all(r.exc_info is None for r in caplog.records)
+            assert "RuntimeError" in caplog.text
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]
         assert meta.get("channel") == expected_channel, (
             f"Expected channel {expected_channel!r}, got {meta.get('channel')!r}"
         )
+
+
+async def test_actual_insight_notifier_preserves_terminal_partial_flag():
+    from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+    notify = _build_switchboard_insight_notify_fn(_make_mock_pool())
+    with (
+        patch("butlers.credential_store.resolve_owner_entity_info", AsyncMock(return_value="123")),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(
+                return_value={
+                    "status": "failed",
+                    "error": "telegram_partial_delivery",
+                    "partial_delivery": True,
+                    "retryable": False,
+                }
+            ),
+        ) as send,
+    ):
+        result = await notify("x" * 5000, {"channel": "telegram"})
+        send.assert_awaited_once()
+        send.reset_mock()
+        send.return_value = {
+            "status": "failed",
+            "telegram_effect_uncertain": True,
+            "retryable": False,
+            "error": "sentinel-private-uncertain-provider-detail",
+        }
+        uncertain = await notify("second insight", {"channel": "telegram"})
+        send.assert_awaited_once()
+    assert result["status"] == "error"
+    assert result["partial_delivery"] is True
+    assert result["retryable"] is False
+
+    assert uncertain["status"] == "error"
+    assert uncertain["telegram_effect_uncertain"] is True
+    assert uncertain["retryable"] is False
+    assert "sentinel-private-uncertain-provider-detail" not in uncertain["error"]
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_actual_insight_cycle_quarantines_partial_through_failed_terminal_write(
+    terminal_field,
+):
+    import uuid
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from butlers.tools.switchboard.insight import broker
+
+    candidate_id = str(uuid.uuid4())
+    candidate = {
+        "id": candidate_id,
+        "origin_butler": "health",
+        "priority": 20,
+        "category": "controlled",
+        "dedup_key": "controlled:partial",
+        "cooldown_days": None,
+        "message": "x" * 5000,
+        "channel": "telegram",
+        "metadata": {},
+        "expires_at": _PINNED_NOW + timedelta(days=2),
+        "created_at": _PINNED_NOW,
+    }
+    state, attempts, fail_once = "pending", 0, True
+
+    async def fetch(sql, *_):
+        if "delivery_attempt_count" in sql:
+            return [{**candidate, "status": state, "delivery_attempt_count": attempts}]
+        return [candidate] if state == "pending" else []
+
+    async def execute(sql, *args):
+        nonlocal state, attempts, fail_once
+        if "metadata = COALESCE(metadata" in sql and args[1].get("delivery_failure"):
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("controlled terminal write failure")
+            state = "filtered"
+        elif "delivery_attempt_count = delivery_attempt_count + 1" in sql:
+            attempts += 1
+
+    pool = MagicMock(fetch=fetch, execute=execute)
+    notify = AsyncMock(return_value={"status": "error", terminal_field: True, "retryable": False})
+    ledger = AsyncMock()
+    with ExitStack() as stack:
+        values = {
+            "get_insight_settings": {"verbosity": "normal", "custom_budget": None},
+            "get_approvals_policy_quiet_hours": {},
+            "get_suppressing_context_signal": None,
+            "expire_candidates": 0,
+            "_revalidate_premises": ({}, 0),
+            "filter_by_cooldown": [candidate_id],
+            "deduplicate_candidates": [candidate_id],
+            "compute_effective_budget": 1,
+            "compute_category_budget_weights": {},
+            "_pending_fold_lines": [],
+            "cleanup_old_rows": None,
+            "check_total_disengagement_auto_off": False,
+            "sends_today": 0,
+            "claim_for_delivery": (uuid.UUID(int=7), None),
+            "mark_attempt_started": None,
+            "_release_stale_digest_claims": None,
+        }
+        for name, value in values.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(patch.object(broker, "is_policy_quiet_now", return_value=False))
+        stack.enter_context(patch.object(broker, "record_attention_event", ledger))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(return_value=SimpleNamespace(interrupts=False)),
+            )
+        )
+        with pytest.raises(RuntimeError, match="controlled terminal"):
+            await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        assert broker._PARTIAL_INSIGHTS.contains(pool, candidate_id)
+        second = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        third = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+    assert notify.await_count == 1
+    assert second["delivered"] == third["delivered"] == []
+    assert state == "filtered" and attempts == 0
+    assert ledger.await_count == 1
+    assert ledger.await_args.kwargs["outcome"] == "failed"
+    assert ledger.await_args.kwargs["metadata"]["retryable"] is False
+    assert ledger.await_args.kwargs["metadata"][terminal_field] is True
+    assert not broker._PARTIAL_INSIGHTS.contains(pool, candidate_id)
+
+    # A settled old send must not turn into a pool-wide permanent mute.
+    old_id = candidate_id
+    fresh_id = str(uuid.uuid4())
+    fresh = {**candidate, "id": fresh_id, "dedup_key": "controlled:fresh", "message": "fresh"}
+    fresh_state = "pending"
+    conn = FakeConnection(execute="UPDATE 3")
+
+    async def fresh_fetch(sql, *_):
+        return [fresh] if fresh_state == "pending" else []
+
+    async def fresh_write(sql, *args):
+        nonlocal fresh_state
+        if "SET status = 'delivered'" in sql:
+            assert args[1] == [fresh_id]
+            fresh_state = "delivered"
+        return "UPDATE 1"
+
+    conn.execute.side_effect = fresh_write
+    pool.fetch = AsyncMock(side_effect=fresh_fetch)
+    pool.acquire.return_value = AsyncCtx(conn)
+    notify.return_value = {"status": "sent"}
+    values.update(
+        {
+            "filter_by_cooldown": [fresh_id],
+            "deduplicate_candidates": [fresh_id],
+            "record_cooldowns": None,
+            "record_engagement_rows": None,
+        }
+    )
+    with ExitStack() as stack:
+        for name, value in values.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(patch.object(broker, "is_policy_quiet_now", return_value=False))
+        stack.enter_context(patch.object(broker, "record_attention_event", ledger))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(return_value=SimpleNamespace(interrupts=False)),
+            )
+        )
+        fourth = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        fifth = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+    assert fourth["delivered"] == [fresh_id] and fifth["delivered"] == []
+    assert notify.await_count == 2 and fresh_state == "delivered"
+    assert state == "filtered" and attempts == 0
+    assert [c.kwargs["notification_ref"] for c in ledger.await_args_list] == [old_id, fresh_id]
+    assert [c.kwargs["outcome"] for c in ledger.await_args_list] == ["failed", "delivered"]
+    assert not broker._PARTIAL_INSIGHTS.keys(pool)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    ["_run_switchboard_insight_delivery_cycle_job", "_run_switchboard_insight_urgent_subcycle_job"],
+)
+async def test_actual_daily_and_urgent_assembly_supplies_only_installed_pool_reader(job_name):
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from butlers import scheduled_jobs
+    from butlers.core import finance_warning_control as control
+
+    pool = object()
+    daemon = SimpleNamespace(
+        db=SimpleNamespace(pool=pool),
+        config=SimpleNamespace(name="switchboard"),
+        _tool_catalog=None,
+        _boot_instance_id=UUID(int=1),
+        _boot_epoch=1,
+    )
+    owner = control.FinanceWarningControlOwner(daemon)
+    daemon._finance_warning_control_owner = owner
+    cycle = AsyncMock(return_value={})
+    try:
+        with patch("butlers.tools.switchboard.insight.broker.delivery_cycle", cycle):
+            await getattr(scheduled_jobs, job_name)(pool, None)
+        callback = cycle.call_args.kwargs["finance_warning_reader"]
+        assert callback.__self__ is owner
+        assert cycle.call_args.kwargs["notify_fn"] is not None
+        assert (
+            await callback({"subject": str(UUID(int=1)), "selected_date": "2026-10-27", "epoch": 0})
+            is None
+        )
+    finally:
+        await owner.close(1)
+
+
+@pytest.mark.parametrize("final_verdict", [False, None])
+async def test_real_delivery_cycle_rechecks_finance_after_format_and_preserves_unknown(
+    final_verdict,
+):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from butlers.tools.switchboard.insight import broker
+
+    cid = UUID(int=1)
+    candidate = {
+        "id": cid,
+        "origin_butler": "finance",
+        "priority": 75,
+        "category": "subscription-renewal",
+        "dedup_key": "finance:subscription-renewal:synthetic:2026-01-16",
+        "cooldown_days": None,
+        "message": "Synthetic unverified renewal",
+        "channel": None,
+        "metadata": {},
+        "expires_at": _PINNED_NOW + timedelta(days=1),
+        "created_at": _PINNED_NOW,
+        "premise": {
+            "kind": "probe",
+            "butler": "finance",
+            "probe": "subscription_warning_still_relevant",
+            "args": {"subject": str(cid), "selected_date": "2026-01-16", "epoch": 0},
+        },
+    }
+    pool = AsyncMock()
+
+    async def fetch(query, *args):
+        return [row(**candidate)]
+
+    pool.fetch = fetch
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.acquire = lambda: AsyncCtx(FakeConnection(execute="UPDATE 3"))
+    read = AsyncMock(side_effect=[True, final_verdict])
+    notify = AsyncMock(return_value={"status": "sent"})
+    replacements = {
+        "get_insight_settings": {"verbosity": "normal", "custom_budget": None},
+        "get_approvals_policy_quiet_hours": {
+            "quiet_start_hour": None,
+            "quiet_end_hour": None,
+            "timezone": "UTC",
+        },
+        "get_suppressing_context_signal": None,
+        "expire_candidates": 0,
+        "_pending_fold_lines": [],
+        "filter_by_cooldown": [str(cid)],
+        "deduplicate_candidates": [str(cid)],
+        "compute_effective_budget": 1,
+        "compute_category_budget_weights": {},
+        "record_cooldowns": None,
+        "record_engagement_rows": None,
+        "cleanup_old_rows": None,
+        "check_total_disengagement_auto_off": False,
+        "record_attention_event": None,
+        "sends_today": 0,
+        "claim_for_delivery": (UUID(int=7), None),
+        "mark_attempt_started": None,
+    }
+    with ExitStack() as stack:
+        for name, value in replacements.items():
+            stack.enter_context(patch.object(broker, name, AsyncMock(return_value=value)))
+        stack.enter_context(
+            patch(
+                "butlers.core.attention_urgency.candidate_interruption",
+                AsyncMock(
+                    return_value=SimpleNamespace(interrupts=False, cause="routine", ref=None)
+                ),
+            )
+        )
+        result = await broker.delivery_cycle(
+            pool, notify_fn=notify, now=_PINNED_NOW, finance_warning_reader=read
+        )
+    assert read.await_count == 2
+    if final_verdict is False:
+        assert result["reason"] == "finance_warning_superseded"
+        notify.assert_not_awaited()
+        assert any("status = 'withdrawn'" in call.args[0] for call in pool.execute.call_args_list)
+    else:
+        assert result["delivered"] == [str(cid)]
+        wire = notify.call_args.args[0]
+        assert "as of 2026-01-15 12:00 UTC" in wire and "Unverified Finance report" in wire

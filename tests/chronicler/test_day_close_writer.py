@@ -734,9 +734,10 @@ async def test_writer_accepts_executed_wrapper_capture_with_parser_duplicate_and
     """The real Codex parser + wrapper merge keeps one validated execution witness.
 
     The parser emits only the requested arguments, while the execution capture
-    fingerprints defaults too. They therefore remain two canonical-name records
-    after merging; the writer must ignore the parser-only duplicate without
-    accepting an unbound or duplicate execution record.
+    fingerprints defaults too. The merge still pairs them by call order into one
+    canonical-name record carrying the execution outcome, so the writer validates
+    a single witness and never has to accept an unbound or duplicate execution
+    record.
     """
     target = date(2026, 3, 8)
     timezone = "America/Los_Angeles"
@@ -806,7 +807,7 @@ async def test_writer_accepts_executed_wrapper_capture_with_parser_duplicate_and
         executed_calls,
         butler_name="chronicler",
     )
-    assert len(merged_calls) == 2
+    assert len(merged_calls) == 1
     assert sum("outcome" in call for call in merged_calls) == 1
 
     result = MagicMock()

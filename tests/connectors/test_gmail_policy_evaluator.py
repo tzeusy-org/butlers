@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.connectors.gmail_policy import GmailPolicyEvaluator
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -26,13 +27,10 @@ def _make_db_row(email: str):
     return m
 
 
-def _make_pool(emails: list[str] | None = None, *, raises: Exception | None = None):
-    pool = AsyncMock()
+def _contacts_pool(emails: list[str] | None = None, *, raises: Exception | None = None):
     if raises is not None:
-        pool.fetch = AsyncMock(side_effect=raises)
-    else:
-        pool.fetch = AsyncMock(return_value=[_make_db_row(e) for e in (emails or [])])
-    return pool
+        return fake_pool(fetch=AsyncMock(side_effect=raises))
+    return fake_pool(fetch=[_make_db_row(e) for e in (emails or [])])
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +45,7 @@ async def test_evaluator_loads_contacts_from_db():
     # refresh and returning an empty frozenset.  Fixed in PR #1800 by
     # initialising _cache_loaded_at to float("-inf") so the cache is always
     # treated as expired on the first call regardless of system uptime.
-    pool = _make_pool(["alice@example.com", "bob@example.com"])
+    pool = _contacts_pool(["alice@example.com", "bob@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     contacts = await evaluator.get_known_contacts()
@@ -67,7 +65,7 @@ async def test_evaluator_loads_contacts_from_db():
 
 
 async def test_evaluator_normalizes_email_addresses():
-    pool = _make_pool(["Alice@Example.COM", " BOB@EXAMPLE.COM "])
+    pool = _contacts_pool(["Alice@Example.COM", " BOB@EXAMPLE.COM "])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     contacts = await evaluator.get_known_contacts()
@@ -82,7 +80,7 @@ async def test_evaluator_normalizes_email_addresses():
 
 
 async def test_evaluator_does_not_refresh_within_ttl():
-    pool = _make_pool(["alice@example.com"])
+    pool = _contacts_pool(["alice@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     await evaluator.get_known_contacts()  # first load
@@ -92,7 +90,7 @@ async def test_evaluator_does_not_refresh_within_ttl():
 
 
 async def test_evaluator_refreshes_after_ttl_expiry():
-    pool = _make_pool(["alice@example.com"])
+    pool = _contacts_pool(["alice@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=0.0)  # zero TTL → always expired
 
     await evaluator.get_known_contacts()
@@ -130,7 +128,7 @@ async def test_evaluator_retains_cache_on_db_error():
 
 async def test_evaluator_empty_on_first_db_error():
     """If DB fails on the very first call, return empty set (no flat-file fallback)."""
-    pool = _make_pool(raises=RuntimeError("DB unavailable"))
+    pool = _contacts_pool(raises=RuntimeError("DB unavailable"))
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     contacts = await evaluator.get_known_contacts()
@@ -141,7 +139,7 @@ async def test_evaluator_empty_on_first_db_error():
     no_pool = GmailPolicyEvaluator()
     assert await no_pool.get_known_contacts() == frozenset()
     assert no_pool.peek_snapshot().reason == "no_pool"
-    empty = GmailPolicyEvaluator(_make_pool([]))
+    empty = GmailPolicyEvaluator(_contacts_pool([]))
     empty_success = await empty.get_snapshot()
     assert empty_success.state == "loaded" and empty_success.contacts == frozenset()
     assert empty_success.last_success_at is not None
@@ -153,7 +151,7 @@ async def test_evaluator_empty_on_first_db_error():
 
 
 async def test_is_priority_sender_true():
-    pool = _make_pool(["alice@example.com"])
+    pool = _contacts_pool(["alice@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     result = await evaluator.is_priority_sender("alice@example.com")
@@ -162,7 +160,7 @@ async def test_is_priority_sender_true():
 
 
 async def test_is_priority_sender_false():
-    pool = _make_pool(["alice@example.com"])
+    pool = _contacts_pool(["alice@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     result = await evaluator.is_priority_sender("unknown@example.com")
@@ -171,7 +169,7 @@ async def test_is_priority_sender_false():
 
 
 async def test_is_priority_sender_normalizes_input():
-    pool = _make_pool(["alice@example.com"])
+    pool = _contacts_pool(["alice@example.com"])
     evaluator = GmailPolicyEvaluator(db_pool=pool, ttl=900)
 
     # Input with display name and uppercase should still match
@@ -186,7 +184,7 @@ async def test_snapshot_refresh_serializes_and_keeps_query_success_separate_from
 ):
     """One actual query generation, bounded diagnostics, and both cancellation boundaries."""
     entered, release = asyncio.Event(), asyncio.Event()
-    pool = _make_pool()
+    pool = _contacts_pool()
 
     async def fetch(*_args):
         entered.set()

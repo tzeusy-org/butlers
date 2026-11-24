@@ -42,31 +42,9 @@ from butlers.jobs.secrets_staleness import (
     run_secrets_probe_all,
     run_secrets_staleness_check,
 )
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
-
-
-class _FakeDatabaseManager:
-    """Minimal stand-in for DatabaseManager: butler_names / pool / credential_shared_pool."""
-
-    def __init__(self, *, butler_pools: dict[str, object], shared_pool: object | None):
-        self._butler_pools = butler_pools
-        self._shared_pool = shared_pool
-
-    @property
-    def butler_names(self) -> list[str]:
-        return list(self._butler_pools)
-
-    def pool(self, name: str):
-        try:
-            return self._butler_pools[name]
-        except KeyError:
-            raise KeyError(name) from None
-
-    def credential_shared_pool(self):
-        if self._shared_pool is None:
-            raise KeyError("shared_pool")
-        return self._shared_pool
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +55,7 @@ class _FakeDatabaseManager:
 async def test_collect_probe_targets_aggregates_all_families():
     finance_pool = object()
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"finance": finance_pool}, shared_pool=shared_pool)
+    db = db_manager({"finance": finance_pool}, credential_pool=shared_pool)
     entity_id = str(uuid4())
 
     async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
@@ -148,7 +126,7 @@ async def test_collect_probe_targets_aggregates_all_families():
 
 async def test_collect_probe_targets_returns_system_only_when_no_shared_pool():
     finance_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"finance": finance_pool}, shared_pool=None)
+    db = db_manager({"finance": finance_pool}, credential_pool=None)
 
     async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
         return [SystemSecret(key="FINANCE_KEY", state="ok", butler="finance")]
@@ -167,9 +145,9 @@ async def test_collect_probe_targets_continues_after_per_butler_failure_and_trac
     broken_pool = object()
     healthy_pool = object()
     shared_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"broken": broken_pool, "healthy": healthy_pool},
-        shared_pool=shared_pool,
+    db = db_manager(
+        {"broken": broken_pool, "healthy": healthy_pool},
+        credential_pool=shared_pool,
     )
     tracker = DegradedSources(logging.getLogger(__name__))
     entity_id = str(uuid4())

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -36,6 +37,7 @@ from butlers.core.deploy import (
     run_deploy,
     run_migrations,
     wait_for_health,
+    wait_for_semantic_readiness,
 )
 from tests.restore_drill_endpoint_policy import (
     EXECUTOR_NUMERIC_IDENTITIES_REJECTED,
@@ -442,7 +444,21 @@ class TestRestoreDrillDeployBoundary:
 
 
 class TestBuildImage:
-    def test_success_builds_with_git_sha_arg(self, monkeypatch):
+    @staticmethod
+    def _build_config(tmp_path):
+        artifacts = tmp_path / "python-artifacts"
+        artifacts.mkdir()
+        (artifacts / "provenance.json").write_text("{}")
+        go_artifacts = tmp_path / "go-artifacts"
+        go_artifacts.mkdir()
+        (go_artifacts / "provenance.json").write_text("{}")
+        return _config(
+            base_image="registry.example.test/butlers/base@sha256:" + "a" * 64,
+            python_artifacts=artifacts,
+            go_artifacts=go_artifacts,
+        )
+
+    def test_success_builds_with_git_sha_arg(self, monkeypatch, tmp_path):
         captured = {}
 
         def fake_run(cmd, cwd, env, capture_output, text):
@@ -451,22 +467,71 @@ class TestBuildImage:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        build_image(_config(), "abc1234")
+        config = self._build_config(tmp_path)
+        build_image(config, "abc1234")
         cmd = captured["cmd"]
         assert cmd[:2] == ["docker", "build"]
         assert "--build-arg" in cmd
         assert "GIT_SHA=abc1234" in cmd
         assert "butlers-app:latest" in cmd
+        assert cmd[cmd.index("--target") + 1] == "production"
+        assert f"BUTLERS_BASE_IMAGE={config.base_image}" in cmd
+        assert f"python-artifacts={config.python_artifacts}" in cmd
+        assert f"go-artifacts={config.go_artifacts}" in cmd
 
-    def test_failure_raises_deploy_error_with_build_phase(self, monkeypatch):
+    def test_failure_raises_deploy_error_with_build_phase(self, monkeypatch, tmp_path):
         def fake_run(cmd, cwd, env, capture_output, text):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no space left on device")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(DeployError) as exc_info:
-            build_image(_config(), "abc1234")
+            build_image(self._build_config(tmp_path), "abc1234")
         assert exc_info.value.phase == "build"
         assert "no space left on device" in str(exc_info.value)
+
+    @pytest.mark.parametrize("base_image", [None, "butlers-base:latest", "sha256:" + "a" * 64])
+    def test_missing_or_floating_base_refused_before_docker(self, monkeypatch, base_image):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        with pytest.raises(DeployError, match="registry/repository@sha256"):
+            build_image(_config(base_image=base_image), "abc1234")
+
+    @pytest.mark.parametrize("kind", ["missing", "directory", "provenance", "symlink"])
+    def test_missing_or_invalid_context_refused_before_docker(self, monkeypatch, tmp_path, kind):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        path = tmp_path / "context"
+        if kind in {"provenance", "symlink"}:
+            path.mkdir()
+        if kind == "symlink":
+            (path / "provenance.json").write_text("{}")
+            link = tmp_path / "link"
+            link.symlink_to(path)
+            path = link
+        config = _config(
+            base_image="registry.example.test/butlers/base@sha256:" + "a" * 64,
+            python_artifacts=None if kind == "missing" else path,
+        )
+        with pytest.raises(DeployError, match="[Pp]ython artifact"):
+            build_image(config, "abc1234")
+
+    @pytest.mark.parametrize(
+        "kind", ["missing", "directory", "provenance", "symlink", "provenance-link"]
+    )
+    def test_missing_or_invalid_go_context_refused_before_docker(self, monkeypatch, tmp_path, kind):
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker was reached"))
+        config = self._build_config(tmp_path)
+        path = tmp_path / "invalid-go"
+        if kind in {"provenance", "symlink", "provenance-link"}:
+            path.mkdir()
+        if kind == "symlink":
+            (path / "provenance.json").write_text("{}")
+            link = tmp_path / "go-link"
+            link.symlink_to(path)
+            path = link
+        if kind == "provenance-link":
+            (path / "provenance.json").symlink_to(config.go_artifacts / "provenance.json")
+        config = replace(config, go_artifacts=None if kind == "missing" else path)
+        with pytest.raises(DeployError, match="Go artifact"):
+            build_image(config, "abc1234")
 
 
 class TestRunMigrations:
@@ -594,6 +659,35 @@ class TestWaitForHealth:
         assert calls["n"] == 2
 
 
+async def test_green_health_alone_never_completes_the_semantic_readiness_phase(monkeypatch):
+    """REQ-dashboard-api-064: no readiness config, or a failed sustained wait,
+    fails the phase closed with only the content-blind receipt."""
+    with pytest.raises(DeployError, match="no sustained-readiness") as exc_info:
+        await wait_for_semantic_readiness(_config(), AsyncMock())
+    assert exc_info.value.phase == "semantic-readiness"
+
+    from butlers.core.deploy_readiness import ReadinessReceipt, resolve_target
+    from butlers.core.qa.patrol_provenance import QaPatrolContract
+
+    entry = type(
+        "E",
+        (),
+        {
+            "name": "qa",
+            "liveness_ttl_seconds": 300,
+            "qa_patrol_contract": QaPatrolContract(("infra_state",), 10),
+        },
+    )
+    receipt = ReadinessReceipt(False, "recommended", ("fleet",), 1, 0, 0.0, 2100.0, 2100.0)
+    monkeypatch.setattr(
+        "butlers.core.deploy.await_sustained_readiness", AsyncMock(return_value=receipt)
+    )
+    with pytest.raises(DeployError) as exc_info:
+        await wait_for_semantic_readiness(_config(readiness=resolve_target([entry()])), AsyncMock())
+    assert exc_info.value.phase == "semantic-readiness"
+    assert '"failing_categories":["fleet"]' in str(exc_info.value)
+
+
 class TestRunDeploy:
     """Orchestration only — record_deployment is mocked here; the real write
     is covered by the integration test."""
@@ -626,6 +720,14 @@ class TestRunDeploy:
             lambda config: RestoreDrillEndpoint("postgres.example.test", "10.23.4.5", 5432),
         )
         monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
+
+        async def _ready(config, pool):
+            calls.append("semantic-readiness")
+            if fail_at == "semantic-readiness":
+                raise DeployError("semantic-readiness", '{"result":"failed"}')
+            return '{"result":"success"}'
+
+        monkeypatch.setattr("butlers.core.deploy.wait_for_semantic_readiness", _ready)
         monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: "deadbeef")
         # Preflight is exercised directly in TestPreflightCheck against real
         # tmp git repos; the orchestration tests use a fake `/repo` path, so
@@ -650,8 +752,10 @@ class TestRunDeploy:
             "restore-drill-boundary",
             "recreate",
             "health-check",
+            "semantic-readiness",
         ]
         assert result.result == "success"
+        assert result.readiness_receipt == '{"result":"success"}'
         assert result.git_sha == "deadbeef"
         assert result.migration_head == "core_163"
         record_mock.assert_awaited_once_with(
@@ -667,7 +771,15 @@ class TestRunDeploy:
         pool.close.assert_not_awaited()
 
     @pytest.mark.parametrize(
-        "fail_at", ["build", "migrate", "restore-drill-boundary", "recreate", "health-check"]
+        "fail_at",
+        [
+            "build",
+            "migrate",
+            "restore-drill-boundary",
+            "recreate",
+            "health-check",
+            "semantic-readiness",
+        ],
     )
     async def test_failure_at_each_phase_records_failed_row_and_reraises(
         self, monkeypatch, fail_at
@@ -950,7 +1062,13 @@ def test_key_absent_control_workload_and_session_network_contract():
         for name, service in services.items()
         if "control-session" in service.get("networks", [])
     }
-    assert members == {"butlers-control", "butlers-control-hotreload", "control-session-health"}
+    assert members == {
+        "butlers-control",
+        "butlers-control-hotreload",
+        "control-session-health",
+        "session-host",
+    }
+    assert services["session-host"]["profiles"] == ["session-host"]
     assert services["control-session-health"]["profiles"] == ["control-health"]
     assert (
         services["dashboard-api"]["environment"]["SWITCHBOARD_MCP_URL"]
@@ -977,9 +1095,48 @@ def test_key_absent_control_workload_and_session_network_contract():
             "database.host=db.invalid",
             "--set",
             "trackerEgress.enabled=false",
+            "--set",
+            "egressPolicy.enabled=false",
             *extra,
         ]
         return subprocess.run(command, capture_output=True, text=True)
+
+    # Selected dev and the unchanged production default cohost all daemons.
+    # An explicit true render below remains the protected split-stage control.
+    for environment in ("dev", "prod"):
+        cohost = render(environment)
+        assert cohost.returncode == 0, cohost.stderr
+        cohost_docs = {
+            (doc["kind"], doc["metadata"]["name"]): doc
+            for doc in yaml.safe_load_all(cohost.stdout)
+            if doc
+        }
+        assert not any(name.startswith("butlers-control") for _, name in cohost_docs)
+        combined = cohost_docs[("Deployment", "butlers-up")]
+        assert combined["spec"]["replicas"] == 1
+        assert combined["spec"]["strategy"]["type"] == "Recreate"
+        container = combined["spec"]["template"]["spec"]["containers"][0]
+        assert "--exclude" not in " ".join(container["command"])
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
+        assert "SWITCHBOARD_MCP_URL" not in env
+        assert env["BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"] == "1"
+        assert env["BUTLERS_FLEET_CONDITION_HANDOFF"] == "1"
+        assert {port["containerPort"] for port in container["ports"]} == {41100}
+        for probe in ("readinessProbe", "startupProbe", "livenessProbe"):
+            assert container[probe]["httpGet"] == {"path": "/health", "port": "daemon"}
+        assert 41100 in {
+            port["port"] for port in cohost_docs[("Service", "butlers-up")]["spec"]["ports"]
+        }
+        api = cohost_docs[("Deployment", "dashboard-api")]["spec"]["template"]["spec"]
+        api_env = {item["name"]: item.get("value") for item in api["containers"][0]["env"]}
+        assert api_env["SWITCHBOARD_MCP_URL"] == "http://butlers-up:41100/sse"
+        assert not any(
+            port["port"] == 41199
+            for (kind, _name), doc in cohost_docs.items()
+            if kind == "Service"
+            for port in doc["spec"]["ports"]
+        )
 
     result = render("dev", "--set", "butlersControl.enabled=true")
     assert result.returncode == 0, result.stderr
@@ -1040,11 +1197,14 @@ def test_key_absent_control_workload_and_session_network_contract():
         for peer in session_rule["from"]
     )
     assert all(set(peer) == {"podSelector"} for peer in session_rule["from"])
-    assert render("dev", "--set", "butlersUp.maxGlobalSessions=6").returncode != 0
-    assert render("dev", "--set", "butlersUp.maxGlobalSessions=1").returncode != 0
+    split = ("--set", "butlersControl.enabled=true")
+    assert render("dev", *split, "--set", "butlersUp.maxGlobalSessions=6").returncode != 0
+    assert render("dev", *split, "--set", "butlersUp.maxGlobalSessions=1").returncode != 0
     for invalid in ("0", "-1", "4.5", "invalid"):
-        assert render("dev", "--set", f"butlersUp.maxGlobalSessions={invalid}").returncode != 0
-    prod = render("prod", "--set", "butlersControl.enabled=false")
+        assert (
+            render("dev", *split, "--set", f"butlersUp.maxGlobalSessions={invalid}").returncode != 0
+        )
+    prod = render("prod")
     assert prod.returncode == 0, prod.stderr
     prod_docs = [doc for doc in yaml.safe_load_all(prod.stdout) if doc]
     assert not any(doc["metadata"]["name"] == "butlers-control" for doc in prod_docs)

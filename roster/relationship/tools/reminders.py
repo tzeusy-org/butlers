@@ -15,9 +15,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from butlers.core.general_settings import resolve_general_timezone
 from butlers.jobs.owner_notify import send_owner_telegram
 from butlers.tools.relationship.dates import upcoming_dates
 from butlers.tools.relationship.dunbar import (
@@ -27,6 +29,8 @@ from butlers.tools.relationship.dunbar import (
     compute_urgency,
     contacts_overdue_evaluation,
 )
+
+from .away_until import away_until_by_entity
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +142,15 @@ async def run_relationship_maintenance(
     rank_fn: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     urgency_fn: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     notify_fn: NotifyFn | None = None,
+    away_fn: Callable[..., Awaitable[dict[Any, date]]] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Suggest up to 3 overdue reconnections, ranked by unified urgency.
+
+    A contact whose most recent unexpired ``away-until`` date (today or later, in the owner's
+    timezone) is set is deferred to the day after it: left out of this run, reconsidered by the
+    first run after the date. If deferral empties the list, nothing is sent: an all-clear would
+    claim the relationships are up to date.
 
     Eligibility is ``contacts_overdue_evaluation``'s overdue, measurable set. When any cadence
     is unmeasurable nothing is sent, not even the all-clear. Only eligible contacts enter
@@ -160,6 +171,20 @@ async def run_relationship_maintenance(
 
     notify = notify_fn or _owner_notify(pool, "relationship.relationship_maintenance")
     overdue = {c["id"]: c for c in evaluation["contacts"]}
+    deferred = 0
+    if overdue:
+        away_for = away_fn or away_until_by_entity
+        owner_today = (
+            (now or datetime.now(UTC))
+            .astimezone(ZoneInfo(await resolve_general_timezone(pool)))
+            .date()
+        )
+        away = await away_for(pool, [c["entity_id"] for c in overdue.values()], owner_today)
+        for cid in [cid for cid, c in overdue.items() if c["entity_id"] in away]:
+            del overdue[cid]
+            deferred += 1
+        if deferred and not overdue:
+            return {"status": "deferred", "deferred": deferred, "notify": None}
     if not overdue:
         outcome = await notify(ALL_CLEAR_MESSAGE)
         return {"status": "all_clear", "suggested": 0, "notify": outcome}
@@ -191,5 +216,6 @@ async def run_relationship_maintenance(
         "suggested": len(suggestions),
         "overdue": len(overdue),
         "unranked": unranked,
+        "deferred": deferred,
         "notify": outcome,
     }

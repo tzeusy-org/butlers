@@ -45,6 +45,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, override
 import anthropic
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import api_evidence, observe_invocation
+from butlers.egress.http_transport import GatewayConfig, external_async_client
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -125,6 +127,7 @@ class ApiAdapter(RuntimeAdapter):
         self._client: Any | None = None
         self._client_api_key: str | None = None
         self._last_process_info: dict[str, Any] | None = None
+        self._served_executions: list[dict[str, Any]] = []
 
     #: ``invoke()`` raises on any non-empty ``mcp_servers`` (this adapter never
     #: bridges MCP into the Anthropic tool-use protocol), so tool use is a hard
@@ -134,6 +137,7 @@ class ApiAdapter(RuntimeAdapter):
     declared_capabilities: ClassVar[Mapping[str, bool]] = {
         "tool_use": False,
         "structured_output": True,
+        "workspace_agent": False,
     }
 
     @property
@@ -144,6 +148,14 @@ class ApiAdapter(RuntimeAdapter):
     @property
     def last_process_info(self) -> dict[str, Any] | None:
         return self._last_process_info
+
+    def create_worker(self) -> ApiAdapter:
+        """Own evidence per invocation while retaining constructor credential authority."""
+        return ApiAdapter(
+            butler_name=self._butler_name,
+            credential_store=self._credential_store,
+            client=self._client_override,
+        )
 
     async def _resolve_api_key(self, env: dict[str, str]) -> str | None:
         """Resolve the Anthropic API key, mirroring ``ClaudeCodeAdapter``'s order.
@@ -174,11 +186,17 @@ class ApiAdapter(RuntimeAdapter):
         if self._client_override is not None:
             return self._client_override
         if self._client is None or self._client_api_key != api_key:
-            self._client = anthropic.AsyncAnthropic(api_key=api_key)
+            options: dict[str, Any] = {}
+            if GatewayConfig.from_environment() is not None:
+                options["http_client"] = external_async_client(
+                    client_factory=anthropic.DefaultAsyncHttpxClient,
+                )
+            self._client = anthropic.AsyncAnthropic(api_key=api_key, **options)
             self._client_api_key = api_key
         return self._client
 
     @override
+    @observe_invocation("api")
     async def invoke(
         self,
         prompt: str,
@@ -268,8 +286,10 @@ class ApiAdapter(RuntimeAdapter):
         result_text = _extract_text(response.content)
         tool_calls = _extract_tool_calls(response.content)
         usage = _extract_usage(getattr(response, "usage", None))
+        self._served_executions.append(api_evidence(response, usage, configured=model))
         return result_text, tool_calls, usage
 
+    @observe_invocation("api")
     async def invoke_structured(
         self,
         prompt: str,
@@ -386,6 +406,7 @@ class ApiAdapter(RuntimeAdapter):
         tool_calls = _extract_tool_calls(response.content)
         text = _extract_text(response.content)
         usage = _extract_usage(getattr(response, "usage", None))
+        self._served_executions.append(api_evidence(response, usage, configured=model))
         return tool_calls, text, usage
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:

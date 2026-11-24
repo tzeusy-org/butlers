@@ -4,7 +4,7 @@ Provides a REST API for starting and polling CLI tool authentication
 flows. Supports two modes:
 
 - **device_code**: Interactive device-code authorization (OpenCode, Codex).
-- **api_key**: Simple API key storage and validation (OpenCode Go).
+- **api_key**: Simple API key storage and validation (OpenCode Go, Claude).
 
 After a successful auth flow, credentials are persisted to the shared
 credential store so they survive container restarts (no PV needed).
@@ -16,7 +16,7 @@ import logging
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -34,6 +34,7 @@ from butlers.api.models.cli_auth import (
 from butlers.cli_auth.health import AuthHealthState, probe_all, probe_provider
 from butlers.cli_auth.persistence import (
     capture_device_auth_authority_baseline,
+    persist_store_only_api_key,
     persist_validated_staged_device_auth_bytes,
 )
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
@@ -50,6 +51,9 @@ from butlers.cli_auth.session import (
 )
 from butlers.core.runtimes.opencode import canonical_to_execution_model
 from butlers.credential_store import CredentialStore
+
+if TYPE_CHECKING:
+    from butlers.session_host.codex_auth import CodexAuthTarget
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +89,13 @@ class _DeviceAuthAuthorityPersistence:
 
     requires_prelaunch_prepare = True
 
-    def __init__(self, store: CredentialStore) -> None:
+    def __init__(
+        self, store: CredentialStore, *, session_host: CodexAuthTarget | None = None
+    ) -> None:
         self._store = store
+        # Dark (RFC 0038 D3, bu-kiuh8v.3): no live caller sets this yet, so a
+        # Codex login still lands in this process's ~/.codex/auth.json.
+        self._session_host = session_host
         self._provider_name: str | None = None
         self._expected_authority_value: str | None = None
 
@@ -119,12 +128,16 @@ class _DeviceAuthAuthorityPersistence:
         if completed_provider.name != self._provider_name:
             logger.warning("CLI auth on_success: device-auth provider identity changed")
             return False
+        retarget: dict[str, CodexAuthTarget] = {}
+        if self._session_host is not None and completed_provider.name == "codex":
+            retarget["session_host"] = self._session_host
         persisted = await persist_validated_staged_device_auth_bytes(
             completed_provider,
             self._store,
             staged_output,
             expected_authority_value=self._expected_authority_value,
             codex_authority=self._store if completed_provider.name == "codex" else None,
+            **retarget,
         )
 
         if completed_provider.name == "codex":
@@ -139,17 +152,20 @@ class _DeviceAuthAuthorityPersistence:
         return persisted
 
 
-def _build_on_success(db_manager: Any):
+def _build_on_success(db_manager: Any, *, session_host: CodexAuthTarget | None = None):
     """Return the synchronous compatibility factory consumed by ``secrets_v2``.
 
     ``secrets_v2`` owns an older synchronous handoff and is deliberately out
     of this slice.  Keep that public callable shape intact while returning an
     object whose common prelaunch hook fences every session before child spawn.
+    ``session_host`` stays None on every live path while the session host is dark.
     """
     store = _make_credential_store(db_manager)
     if store is None:
         return None
-    return _DeviceAuthAuthorityPersistence(store)
+    if session_host is None:
+        return _DeviceAuthAuthorityPersistence(store)
+    return _DeviceAuthAuthorityPersistence(store, session_host=session_host)
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +345,25 @@ async def save_api_key(
         raise HTTPException(
             status_code=400,
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        )
+
+    if provider_def.token_path is None:
+        # Store-only provider (e.g. Claude): the credential store row is the
+        # only copy, so there is nothing to report as stored without a DB.
+        store = _make_credential_store(db_manager)
+        if store is None:
+            raise HTTPException(status_code=503, detail="Credential store unavailable.")
+        try:
+            await persist_store_only_api_key(provider_def, store, body.api_key)
+        except Exception as exc:
+            # Never log the exception: DB bind context can retain the key.
+            logger.warning("CLI auth: failed to store API key for %s", provider_def.name)
+            raise HTTPException(status_code=500, detail="Failed to store API key.") from exc
+        logger.info("CLI auth: stored API key for %s", provider_def.name)
+        return CLIAuthApiKeyResponse(
+            provider=provider_def.name,
+            stored=True,
+            message=f"API key saved for {provider_def.display_name}.",
         )
 
     # Write the key into the CLI's auth.json so the binary can use it
@@ -744,8 +779,9 @@ async def _run_provider_test(
     sandbox: DashboardCLIAuthSandbox | None = None,
 ) -> CLIAuthTestResponse:
     """Run the live credential check for a provider and return the outcome."""
-    if provider_def.auth_mode != "api_key":
-        # device_code (and any non-api_key) provider: probe live auth health.
+    if provider_def.auth_mode != "api_key" or provider_def.token_path is None:
+        # device_code providers, and store-only api_key providers (e.g. Claude)
+        # with no auth file for a test command to read: probe live auth health.
         store = credential_store or _make_credential_store(db_manager)
         health = await probe_provider(
             provider_def,

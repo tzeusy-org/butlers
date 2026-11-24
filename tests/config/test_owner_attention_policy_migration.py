@@ -8,12 +8,13 @@ downgrade compatibility visible without requiring a live deployment database.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MIGRATION_PATH = (
@@ -22,16 +23,8 @@ _MIGRATION_PATH = (
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_177_owner_attention", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _sqls(function_name: str) -> list[str]:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_177_owner_attention")
     op = MagicMock()
     captured: list[str] = []
     op.execute.side_effect = captured.append

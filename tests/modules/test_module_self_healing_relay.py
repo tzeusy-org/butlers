@@ -1,23 +1,23 @@
-"""Tests for the SelfHealingModule QA relay behavior (task 5.3).
+"""Tests for the daemon-owned core QA relay behavior.
 
 Covers:
 - QA available: Switchboard route() with correct args, fingerprint, context handling
 - QA unavailable: fallback scenarios (no client, not in registry, errors)
 - Cached list_butlers TTL prevents per-error roundtrip
-- wire_runtime accepts switchboard_client
+- current client replacement invalidates availability cache
 """
 
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
 
-from butlers.core.healing import DispatchResult
+from butlers.core.qa.relay import QaRelay
 from butlers.core.spawn_hooks import clear_spawner, register_spawner
-from butlers.modules.self_healing import SelfHealingModule
 
 pytestmark = pytest.mark.unit
 
@@ -27,11 +27,8 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_module(switchboard_client: object | None = None) -> SelfHealingModule:
-    mod = SelfHealingModule()
-    mod._butler_name = "general"
-    mod._switchboard_client = switchboard_client
-    return mod
+def _make_module(switchboard_client: object | None = None) -> QaRelay:
+    return QaRelay("general", None, lambda: switchboard_client)
 
 
 def _make_call_tool_mock(list_result=None, route_result=None, route_raises=None, list_raises=None):
@@ -81,11 +78,9 @@ class TestSwitchboardNotConnected:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
         dispatch = AsyncMock(
-            return_value=DispatchResult(accepted=True, fingerprint="f" * 64, reason="dispatched")
+            return_value=SimpleNamespace(accepted=True, fingerprint="f" * 64, reason="dispatched")
         )
-        monkeypatch.setattr(
-            "butlers.modules.self_healing.dispatch_healing", dispatch, raising=False
-        )
+        monkeypatch.setattr("butlers.core.qa.dispatch.dispatch_qa_investigation", dispatch)
         # Establish the counter positive; removal must not cause an AttributeError red.
         assert (await dispatch()).accepted
         dispatch.reset_mock()
@@ -93,7 +88,8 @@ class TestSwitchboardNotConnected:
         register_spawner(spawner)
         mcp = FastMCP("operational-relay")
         try:
-            await mod.register_tools(mcp, None, MagicMock(pool=pool), "general")
+            mod._pool = pool
+            mod.register_tools(mcp)
             async with Client(mcp) as client:
                 result = (
                     await client.call_tool(
@@ -179,15 +175,9 @@ class TestQaUnavailableFallback:
         pool.fetchrow.return_value = None
         mod._pool = pool
         dispatch = AsyncMock(
-            return_value=DispatchResult(accepted=True, fingerprint="f" * 64, reason="dispatched")
+            return_value=SimpleNamespace(accepted=True, fingerprint="f" * 64, reason="dispatched")
         )
-        redispatch = AsyncMock()
-        monkeypatch.setattr(
-            "butlers.modules.self_healing.dispatch_healing", dispatch, raising=False
-        )
-        monkeypatch.setattr(
-            "butlers.modules.self_healing.redispatch_attempt_by_id", redispatch, raising=False
-        )
+        monkeypatch.setattr("butlers.core.qa.dispatch.dispatch_qa_investigation", dispatch)
         spawner = MagicMock()
         register_spawner(spawner)
         try:
@@ -195,7 +185,6 @@ class TestQaUnavailableFallback:
         finally:
             clear_spawner()
         dispatch.assert_not_awaited()
-        redispatch.assert_not_awaited()
         pool.fetchrow.assert_not_awaited()
         spawner.trigger.assert_not_called()
         assert result["accepted"] is False
@@ -287,16 +276,34 @@ class TestQaAvailabilityCache:
 
 
 class TestWireRuntime:
-    def test_wire_runtime_accepts_switchboard_client(self):
-        mod = SelfHealingModule()
-        client = MagicMock()
-        mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
-        assert mod._switchboard_client is client
+    async def test_wire_runtime_accepts_switchboard_client(self):
+        """A replacement transport invalidates the old registry cache immediately."""
+        from pathlib import Path
+
+        from butlers.config import ButlerConfig, RuntimeSeedConfig
+        from butlers.daemon import ButlerDaemon
+
+        absent, old_calls = _make_call_tool_mock(list_result=[])
+        daemon = ButlerDaemon(Path("/synthetic"))
+        daemon.config = ButlerConfig(
+            name="general", port=18999, runtime_seed=RuntimeSeedConfig(core_groups=())
+        )
+        daemon.db = MagicMock(pool=None)
+        daemon.mcp = FastMCP("late-core-qa-client")
+        daemon.switchboard_client = absent
+        daemon._modules = []
+        daemon._register_core_tools()
+        arguments = {"error_type": "ValueError", "error_message": "synthetic report"}
+        async with Client(daemon.mcp) as client:
+            assert (await client.call_tool("report_error", arguments)).data["accepted"] is False
+            replacement, calls = _make_call_tool_mock()
+            daemon.switchboard_client = replacement
+            assert (await client.call_tool("report_error", arguments)).data["accepted"] is True
+        assert len(calls) == 1 and old_calls == []
 
     def test_wire_runtime_without_switchboard_client(self):
-        mod = SelfHealingModule()
-        mod.wire_runtime(MagicMock(), "/repo")
-        assert mod._switchboard_client is None
+        mod = _make_module()
+        assert mod._switchboard_client_getter() is None
 
 
 async def test_concierge_declared_qa_scope_preserves_error_relay():

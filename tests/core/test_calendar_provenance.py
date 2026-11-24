@@ -12,10 +12,30 @@ from butlers.core.temporal.calendar_provenance import (
     is_explicit_butler_generated,
     is_legacy_all_day_like,
     is_owner_attending,
+    is_quarantined_invitation,
+    is_status_event,
     is_transparent,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected"),
+    [
+        ("outOfOffice", True),
+        ("workingLocation", True),
+        # Case-sensitive provider values; anything else is an ordinary event.
+        ("outofoffice", False),
+        ("focusTime", False),
+        ("default", False),
+        ("someFutureType", False),
+        (None, False),
+        (7, False),
+    ],
+)
+def test_only_the_provider_status_types_are_status_events(event_type, expected) -> None:
+    assert is_status_event(event_type) is expected
 
 
 def test_explicit_butler_generated_marker_is_narrow_and_tolerates_malformed_metadata() -> None:
@@ -89,7 +109,11 @@ def test_owner_declined_is_not_attending_for_either_key_spelling(key: str) -> No
 
 @pytest.mark.parametrize("status", ["accepted", "tentative", "needs_action", "needsAction"])
 def test_owner_non_declined_statuses_are_attending(status: str) -> None:
-    assert is_owner_attending({"attendees": [{"self": True, "response_status": status}]}) is True
+    metadata = {
+        "organizer_verdict": "known_entity",  # an unanswered invitation needs a trusted organizer
+        "attendees": [{"self": True, "response_status": status}],
+    }
+    assert is_owner_attending(metadata) is True
 
 
 def test_only_the_self_attendee_decides_attendance_and_malformed_metadata_is_attending() -> None:
@@ -108,3 +132,48 @@ def test_transparency_transparent_is_free_time_everything_else_is_busy() -> None
     assert is_transparent({"transparency": "opaque"}) is False
     assert is_transparent({}) is False
     assert is_transparent(None) is False
+
+
+def _invite(status: str = "needsAction", **extra: object) -> dict[str, object]:
+    return {
+        "organizer": "sam@example.org",
+        "attendees": [
+            {"email": "me@example.com", "self": True, "response_status": status},
+            {"email": "sam@example.org", "organizer": True, "response_status": "accepted"},
+        ],
+        **extra,
+    }
+
+
+@pytest.mark.parametrize("verdict", ["first_contact", "blocked", "unknown", "bogus", None])
+def test_an_unanswered_invitation_from_an_untrusted_or_unstamped_organizer_is_quarantined(
+    verdict: str | None,
+) -> None:
+    metadata = _invite(**({} if verdict is None else {"organizer_verdict": verdict}))
+    assert is_quarantined_invitation(metadata) is True
+    assert is_owner_attending(metadata) is False
+
+
+@pytest.mark.parametrize("verdict", ["owner", "known_entity", "known_domain"])
+def test_a_trusted_organizer_is_never_quarantined(verdict: str) -> None:
+    assert is_quarantined_invitation(_invite(organizer_verdict=verdict)) is False
+
+
+@pytest.mark.parametrize("status", ["accepted", "tentative", "declined"])
+def test_the_owners_own_answer_wins_over_a_blocked_verdict(status: str) -> None:
+    assert is_quarantined_invitation(_invite(status, organizer_verdict="blocked")) is False
+
+
+def test_the_owners_own_events_and_butler_events_are_never_quarantined() -> None:
+    mine = {
+        "organizer": "me@example.com",
+        "attendees": [{"email": "me@example.com", "self": True, "response_status": "needsAction"}],
+    }
+    assert is_quarantined_invitation(mine) is False
+    assert is_quarantined_invitation(_invite(butler_generated=True)) is False
+    organizer_flag = {"attendees": [{"self": True, "organizer": True}]}
+    assert is_quarantined_invitation(organizer_flag) is False
+    assert is_quarantined_invitation({"attendees": [{"email": "x@y.test"}]}) is False  # not invited
+    assert is_quarantined_invitation(None) is False
+    assert is_quarantined_invitation("not json") is False
+    assert is_quarantined_invitation({"attendees": "nope"}) is False

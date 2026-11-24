@@ -56,6 +56,7 @@ from butlers.core.failover_classifier import FailoverContext, classify_failover_
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
+    ceiling_refusal_reason,
     check_token_quota,
     next_same_tier_candidate,
     record_token_usage,
@@ -465,6 +466,14 @@ async def try_structured_classification(
             # A hard per-entry block, not failover-eligible (mirrors
             # DiscretionDispatcher) — fall back to the CLI path rather than
             # hunting for another same-tier "api" candidate.
+            return None
+
+        refusal = await ceiling_refusal_reason(pool)
+        if refusal is not None:
+            # The owner's monthly spend ceiling caps this lane too (bu-svqpzo.14). Fall back to
+            # the caller's dispatch_fn path, whose Spawner enforces the same ceiling and records
+            # the refusal, so nothing is double-counted and nothing bypasses it.
+            logger.warning("structured_classify: refusing the fast lane: %s", refusal)
             return None
 
         adapter = adapter_cache.get(runtime_type)

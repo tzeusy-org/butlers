@@ -62,6 +62,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.healing.constants import QA_PUBLICATION_UNAVAILABLE_PREFIX
+
 logger = logging.getLogger(__name__)
 
 # Type aliases
@@ -87,7 +89,8 @@ VALID_STATUSES = frozenset(
     }
 )
 
-#: Terminal states — no further transitions are allowed once reached.
+#: Terminal states — no further transitions are allowed once reached.  The core_305
+#: ``closed_at`` stamp trigger and the core_301 export prune guard repeat this set.
 TERMINAL_STATUSES = frozenset(
     {"pr_merged", "failed", "unfixable", "anonymization_failed", "timeout"}
 )
@@ -165,6 +168,34 @@ class PublicationLineageHeld(RuntimeError):
 async def get_publication_hold(pool: asyncpg.Pool, fingerprint: str) -> bool:
     """Return True while an ambiguous publication holds *fingerprint*'s lineage."""
     return bool(await pool.fetchval(f"SELECT {_PUBLICATION_HOLD_EXISTS_SQL}", fingerprint))
+
+
+async def get_paused_proposal(
+    pool: asyncpg.Pool, fingerprint: str, hold_days: int
+) -> uuid.UUID | None:
+    """Return the attempt whose retained, unpruned proposal holds *fingerprint*, if any.
+
+    A proposal holds while publication is absent (bu-ejow5p.2): the attempt closed
+    ``failed`` with ``publication_unavailable`` within *hold_days* and its sealed export
+    is still retained.  A pruned export or an expired window releases the fingerprint.
+    """
+    return await pool.fetchval(
+        """
+        SELECT a.id
+        FROM public.healing_attempts AS a
+        JOIN public.qa_publication_exports AS x ON x.attempt_id = a.id
+        WHERE a.fingerprint = $1
+          AND a.status = 'failed'
+          AND a.error_detail LIKE $2
+          AND a.closed_at >= now() - ($3 * INTERVAL '1 day')
+          AND x.pruned_at IS NULL
+        ORDER BY a.closed_at DESC
+        LIMIT 1
+        """,
+        fingerprint,
+        QA_PUBLICATION_UNAVAILABLE_PREFIX + "%",
+        hold_days,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -516,9 +547,9 @@ async def get_recent_attempt(
     """Return the most recent terminal attempt for *fingerprint* closed within the window.
 
     Used for cooldown gate checks: prevents re-investigating an error that was
-    recently resolved (or failed) within *window_minutes*.  A lineage held by an
-    unresolved publication is returned as ``{"publication_held": True, ...}``
-    regardless of the window, so cooldown expiry never releases it.
+    recently resolved (or failed) within *window_minutes*.  It reports only the real
+    attempt: a lineage held by an unresolved publication outlives the window, so the
+    cooldown/dedup gates ask :func:`get_publication_hold` explicitly beside this call.
 
     Parameters
     ----------
@@ -534,11 +565,6 @@ async def get_recent_attempt(
     HealingAttemptRow or None
         The most recently closed terminal attempt, or None if none exists.
     """
-    if await get_publication_hold(pool, fingerprint):
-        # An unresolved publication outlives the cooldown window: report it as
-        # the blocking record so every cooldown gate treats the lineage as held.
-        return {"publication_held": True, "fingerprint": fingerprint}
-
     row = await pool.fetchrow(
         """
         SELECT *

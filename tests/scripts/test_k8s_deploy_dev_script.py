@@ -21,7 +21,11 @@ def fake_repo(tmp_path: Path) -> Path:
     """A repo-shaped tree holding the real scripts plus stub tools on PATH."""
     (tmp_path / "scripts" / "k8s").mkdir(parents=True)
     (tmp_path / "deploy" / "helm" / "butlers").mkdir(parents=True)
-    for rel in ("scripts/k8s/deploy-dev.sh", "scripts/site-env.sh"):
+    for rel in (
+        "scripts/k8s/deploy-dev.sh",
+        "scripts/k8s/egress-allowlist.sh",
+        "scripts/site-env.sh",
+    ):
         shutil.copy2(_REPO_ROOT / rel, tmp_path / rel)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -40,7 +44,12 @@ def fake_repo(tmp_path: Path) -> Path:
 
 
 def _run(
-    repo: Path, *args: str, site: bool = True, bws: bool = True, default_bws: bool = False
+    repo: Path,
+    *args: str,
+    site: bool = True,
+    bws: bool = True,
+    default_bws: bool = False,
+    allowlist: bool = True,
 ) -> tuple[int, str, str]:
     site_env = repo / "site.env"
     if site:
@@ -63,6 +72,9 @@ def _run(
     }
     if not default_bws:
         env["BWS_ENV_FILE"] = str(bws_env)
+    if allowlist:
+        # Explicit value wins, so these tests never resolve names (egress-allowlist.sh has its own).
+        env["ALLOWED_TAILNET_HOSTS"] = "192.0.2.1"
     result = subprocess.run(
         ["bash", str(repo / "scripts" / "k8s" / "deploy-dev.sh"), *args],
         capture_output=True, text=True, env=env, cwd=repo,
@@ -99,6 +111,13 @@ def test_refuses_without_site_env_and_touches_nothing(fake_repo: Path) -> None:
     code, stderr, calls = _run(fake_repo, site=False)
     assert code != 0
     assert "site env" in stderr
+    assert "make " not in calls
+
+
+def test_refuses_when_the_egress_allowlist_cannot_be_built(fake_repo: Path) -> None:
+    code, stderr, calls = _run(fake_repo, allowlist=False)
+    assert code == 2
+    assert "TAILNET_NAME" in stderr
     assert "make " not in calls
 
 

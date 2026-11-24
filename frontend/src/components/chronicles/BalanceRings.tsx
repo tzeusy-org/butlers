@@ -153,6 +153,14 @@ export function BalanceRings({ data, isLoading, isError, onRetry }: BalanceRings
 
   if (!data) return null;
 
+  if (data.status === "pending_repair") {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="balance-pending-repair">
+        Balance is temporarily hidden while affected days are repaired.
+      </p>
+    );
+  }
+
   if (data.status === "not_yet_materialized") {
     return (
       <p className="text-sm text-muted-foreground" data-testid="balance-not-settled">

@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
 
+from butlers.testing.migration import load_migration
+
 _MIGRATIONS = (
     Path(__file__).resolve().parents[2] / "src" / "butlers" / "modules" / "whatsapp" / "migrations"
 )
-
-
-def _load_migration(filename: str):
-    path = _MIGRATIONS / filename
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _migration_sql(module, direction: str = "upgrade") -> list[str]:
@@ -33,7 +25,7 @@ def _migration_sql(module, direction: str = "upgrade") -> list[str]:
 
 
 def test_fresh_schema_uses_active_row_uniqueness() -> None:
-    migration = _load_migration("001_whatsapp_sessions.py")
+    migration = load_migration(_MIGRATIONS / "001_whatsapp_sessions.py", "001_whatsapp_sessions")
     sql = "\n".join(_migration_sql(migration))
 
     assert "phone_number  TEXT        NOT NULL UNIQUE" not in sql
@@ -46,7 +38,9 @@ def test_fresh_schema_uses_active_row_uniqueness() -> None:
 async def test_migrated_schema_allows_history_but_only_one_active_session(
     provisioned_postgres_pool,
 ) -> None:
-    migration = _load_migration("002_active_session_rotation.py")
+    migration = load_migration(
+        _MIGRATIONS / "002_active_session_rotation.py", "002_active_session_rotation"
+    )
 
     async with provisioned_postgres_pool() as pool, pool.acquire() as connection:
         async with connection.transaction():

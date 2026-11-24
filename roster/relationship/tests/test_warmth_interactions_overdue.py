@@ -21,6 +21,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import row as _row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -31,14 +32,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime(2026, 5, 11, 12, 0, 0, tzinfo=UTC)
-
-
-def _row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: kwargs[key])
-    row.get = MagicMock(side_effect=lambda key, default=None: kwargs.get(key, default))
-    return row
 
 
 def _wire_app(mock_db: MagicMock) -> FastAPI:

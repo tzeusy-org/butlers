@@ -5,16 +5,15 @@
 The scheduler SHALL distinguish a removed TOML override from an active TOML
 schedule before a module-default registration can recover a row. TOML schedule
 synchronization SHALL establish the current TOML membership before module-default
-recovery is evaluated. A module-default recovery candidate MUST satisfy all of these conditions:
+recovery is evaluated. A module-default recovery candidate MUST satisfy both of these conditions:
 
 - a name explicitly registered by the owning module as one of its defaults; and
 - the same-named `scheduled_tasks` row with `source='toml'` and `enabled=false`
-  after that TOML synchronization; and
-- a name eligible for automatic recovery. `memory_episode_cleanup` MUST NOT be
-  eligible for automatic recovery of an existing disabled TOML-owned row, even
-  when it is a registered module default. This exclusion applies only to
-  reclaiming an existing row; ordinary missing-default creation remains governed
-  by the missing-default contract below.
+  after that TOML synchronization.
+
+No registered default is exempt. `memory_episode_cleanup` is recovered like any
+other registered default, because its handler deletes only reapable expired
+episodes in bounded batches and so cannot perform an unbounded catch-up.
 
 Recovery SHALL set only that candidate's `source` to `db` and `enabled` to
 `true`. It MUST preserve the existing cron, dispatch mode, prompt/job name, job
@@ -23,10 +22,21 @@ re-enabled, rewritten, or audited by module-default recovery, regardless of its
 `enabled` state. The scheduler SHALL NOT infer module ownership from a name
 prefix, a dashboard request, or arbitrary database state.
 
-A stale `next_run_at`, expired episode history, or other retained data MUST NOT
-override the `memory_episode_cleanup` recovery exclusion. Any future cleanup
-recovery policy requires a separate provenance- and owner-gated capability; it
-is not generic module-default recovery.
+Recovery is a control-plane transition only (RFC 0038 D2). It SHALL NOT admit
+a goal, submit an obligation admission, call a job function, or start a
+session. A recovered row's later due occurrences SHALL dispatch through its
+preserved dispatch mode under the Dispatch Modes requirement: a job-mode row
+calls its deterministic job, and a prompt-mode row submits one obligation
+admission for that occurrence. Because `next_run_at` is preserved, recovery
+SHALL NOT admit catch-up occurrences.
+
+Recovery confers no historical-drain authority. A recovered cleanup row runs
+only its ordinary bounded, consolidation-aware sweep at its preserved cadence;
+it is never invoked as an owner-gated historical drain.
+
+ID: REQ-core-scheduler-003
+Source: bu-kqnum.13 module-default TOML-orphan recovery; PR #3565; RFC 0038 D2
+Scope: v1-mandatory
 
 #### Scenario: Active TOML default remains TOML-owned
 
@@ -45,20 +55,26 @@ is not generic module-default recovery.
 - **AND** the row's cron, dispatch payload, complexity, and `next_run_at` SHALL
   remain the values it had before the recovery
 
-#### Scenario: Disabled TOML cleanup cannot be automatically reclaimed or dispatched
+#### Scenario: Recovery admits no goal and dispatches later by preserved mode
+
+- **WHEN** an eligible module default is recovered at daemon startup
+- **THEN** the recovery SHALL admit no goal, submit no obligation admission,
+  call no job function, and start no session
+- **AND** when the recovered row next falls due it SHALL dispatch through its
+  preserved dispatch mode, with no additional occurrence admitted for the time
+  it was disabled
+
+#### Scenario: Disabled TOML cleanup is recovered like any other default
 
 - **WHEN** a memory-enabled butler has no active TOML declaration for
-  `memory_episode_cleanup`, its same-named row is `source='toml'`,
-  `enabled=false`, and has a `next_run_at` in the past
-- **AND** that butler's memory schema contains one or more episodes matching
-  `expires_at < now()`
-- **WHEN** TOML synchronization, generic module-default registration, and a
-  due-schedule evaluation run
-- **THEN** the cleanup row SHALL remain TOML-owned and disabled with its stored
-  `next_run_at` unchanged
-- **AND** no `scheduler.module_default_recovered` audit entry SHALL be appended
-- **AND** no `memory_episode_cleanup` dispatch SHALL occur
-- **AND** no episode SHALL be deleted
+  `memory_episode_cleanup` and, after TOML synchronization, its same-named row
+  is `source='toml'` and `enabled=false`
+- **THEN** module-default recovery SHALL set that row to `source='db'` and
+  `enabled=true` and append one `scheduler.module_default_recovered` audit entry
+- **AND** the row's cron, dispatch payload, complexity, and `next_run_at` SHALL
+  remain the values it had before the recovery
+- **AND** a same-named `source='db'` cleanup row, enabled or disabled, SHALL be
+  left unchanged and unaudited
 
 #### Scenario: Disabled DB-owned schedule remains operator-owned
 

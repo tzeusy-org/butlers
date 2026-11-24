@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
 )
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "telegram_user_client:telegram:user123"
 _PAYLOAD_INDEX = 9
@@ -26,7 +28,10 @@ def connector() -> TelegramUserClientConnector:
     )
     conn = TelegramUserClientConnector(config, cursor_pool=MagicMock())
     conn._flush_and_drain = AsyncMock()
+    conn._db_pool = FilteredEventsPool()  # a park is committed to it
     conn._build_ingestion_envelope = MagicMock(side_effect=RuntimeError("boom"))
+    # Park on the first failure, so the error row is written now (bu-dhloi1.149).
+    conn._ingest_retry = IngestRetryBudget(1)
     return conn
 
 
@@ -45,7 +50,7 @@ async def test_error_row_for_service_sender_withholds_bare_code(
     connector: TelegramUserClientConnector,
 ) -> None:
     await connector._process_message(_message(777000, "482913"))
-    (row,) = connector._filtered_event_buffer._rows
+    (row,) = connector._db_pool.written
     assert row[_SENDER_INDEX] == "777000"
     assert "482913" not in str(row[_PAYLOAD_INDEX])
 
@@ -54,7 +59,7 @@ async def test_error_row_for_other_sender_is_unchanged(
     connector: TelegramUserClientConnector,
 ) -> None:
     await connector._process_message(_message(999, "482913"))
-    (row,) = connector._filtered_event_buffer._rows
+    (row,) = connector._db_pool.written
     assert row[_SENDER_INDEX] == "999"
     assert "482913" in str(row[_PAYLOAD_INDEX])
 
@@ -64,5 +69,5 @@ async def test_error_row_keeps_unknown_when_sender_lookup_fails(
 ) -> None:
     connector._extract_sender_identity = MagicMock(side_effect=RuntimeError("lookup"))
     await connector._process_message(_message(777000, "482913"))
-    (row,) = connector._filtered_event_buffer._rows
+    (row,) = connector._db_pool.written
     assert row[_SENDER_INDEX] == "unknown"

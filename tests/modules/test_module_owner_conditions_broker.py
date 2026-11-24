@@ -15,27 +15,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import FastMCP
+
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("remaining4-owner-conditions-tools")
 
 
 @pytest.fixture
@@ -97,8 +86,8 @@ class TestReconcileOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        assert "reconcile_owner_condition" in mock_mcp._registered_tools
-        tool_fn = mock_mcp._registered_tools["reconcile_owner_condition"]
+        assert "reconcile_owner_condition" in (await registered_tools(mock_mcp))
+        tool_fn = (await registered_tools(mock_mcp))["reconcile_owner_condition"]
         assert callable(tool_fn)
         assert asyncio.iscoroutinefunction(tool_fn)
 
@@ -107,7 +96,7 @@ class TestReconcileOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["reconcile_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["reconcile_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue",
@@ -122,7 +111,7 @@ class TestReconcileOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = AsyncMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["reconcile_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["reconcile_owner_condition"]
 
         result = await tool_fn(source="", observations=[], snapshot_complete=True)
         assert result["status"] == "error"
@@ -153,7 +142,7 @@ class TestReconcileOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["reconcile_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["reconcile_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue",
@@ -196,8 +185,8 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        assert "resolve_owner_condition" in mock_mcp._registered_tools
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        assert "resolve_owner_condition" in (await registered_tools(mock_mcp))
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
         assert callable(tool_fn)
         assert asyncio.iscoroutinefunction(tool_fn)
 
@@ -205,7 +194,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_resolves_active_condition(
         self, module, mock_mcp, monkeypatch
     ):
-        """REQ-005 scenario "Resolving a condition via MCP"."""
+        """REQ-owner-condition-ledger-005 scenario "Resolving a condition via MCP"."""
         from butlers.core import owner_conditions as owner_conditions_module
         from butlers.core.condition_ledger import ConditionTransition
 
@@ -230,7 +219,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue",
@@ -252,7 +241,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_missing_condition_is_not_found(
         self, module, mock_mcp, monkeypatch
     ):
-        """REQ-005 scenario "Resolving a condition that does not exist"."""
+        """REQ-owner-condition-ledger-005 scenario "Resolving a condition that does not exist"."""
         from butlers.core import owner_conditions as owner_conditions_module
 
         async def _fake_resolve(pool, **kwargs):
@@ -263,7 +252,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue",
@@ -279,7 +268,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_invalid_reason_rejected_without_db_write(
         self, module, mock_mcp, bad_reason
     ):
-        """REQ-005 scenario "Invalid resolution reason is rejected".
+        """REQ-owner-condition-ledger-005 scenario "Invalid resolution reason is rejected".
 
         The rejection must happen before any pool access, so the assertion is
         on the pool mock itself rather than on the returned envelope alone.
@@ -287,7 +276,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = AsyncMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue",
@@ -305,7 +294,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_spec_vocabulary_is_accepted(
         self, module, mock_mcp, monkeypatch, reason
     ):
-        """Every reason REQ-005 names is accepted and echoed back."""
+        """Every reason REQ-owner-condition-ledger-005 names is accepted and echoed back."""
         from butlers.core import owner_conditions as owner_conditions_module
 
         async def _fake_resolve(pool, **kwargs):
@@ -316,7 +305,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         result = await tool_fn(
             source="finance:bill-overdue", fingerprint="fp-1", resolution_reason=reason
@@ -345,7 +334,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         token = set_current_runtime_session_id("11111111-2222-3333-4444-555555555555")
         try:
@@ -385,7 +374,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         await tool_fn(
             source="relationship:commitment", fingerprint="fp-1", resolution_reason="expired"
@@ -402,7 +391,7 @@ class TestResolveOwnerConditionTool:
         fake_db = MagicMock()
         fake_db.pool = AsyncMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
-        tool_fn = mock_mcp._registered_tools["resolve_owner_condition"]
+        tool_fn = (await registered_tools(mock_mcp))["resolve_owner_condition"]
 
         result = await tool_fn(source="", fingerprint="fp-1", resolution_reason="satisfied")
         assert result["status"] == "error"

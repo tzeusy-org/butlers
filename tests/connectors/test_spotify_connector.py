@@ -14,7 +14,6 @@ Verifies:
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +39,9 @@ from butlers.connectors.spotify import (
     persist_session_summary,
     persist_spoken_session,
 )
+from butlers.spotify_client import SpotifyClient
+from butlers.testing.fake_pool import AsyncCtx
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "spotify_user_client:spotify:user123"
 _SPOTIFY_USER_ID = "user123"
@@ -49,34 +51,19 @@ _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 
 @pytest.mark.asyncio
 async def test_connector_refresh_persists_only_secured_owner_oauth_rows() -> None:
-    connector = SpotifyConnector(
-        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    connector = _refresh_connector(
+        {
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh",
+            "expires_in": 3600,
+        }
     )
-    conn = MagicMock()
-
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
-
-    conn.transaction = MagicMock(side_effect=_transaction)
-    pool = MagicMock()
-    pool.acquire = _acquire
-    connector._db_pool = pool
-    connector._access_token = "rotated-access"
-    connector._refresh_token = "rotated-refresh"
-    connector._token_expires_at = _NOW
-
     with patch(
-        "butlers.connectors.spotify.upsert_owner_entity_info_on_connection",
+        "butlers.spotify_client.upsert_owner_entity_info_on_connection",
         new_callable=AsyncMock,
         return_value=True,
     ) as upsert:
-        await connector._persist_tokens()
-
+        await _refresh_shared(connector)
     assert [call.args[1] for call in upsert.await_args_list] == [
         "spotify_oauth_access",
         "spotify_oauth_refresh",
@@ -168,16 +155,12 @@ def test_context_start_passes_parse_ingest_envelope(context_start_env: dict[str,
 
 @pytest.mark.asyncio
 async def test_connector_current_playback_requests_episode_items() -> None:
-    connector = SpotifyConnector(
-        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
-    )
-    connector._spotify_get = AsyncMock(return_value={"is_playing": True, "item": {"id": "e"}})
-
+    connector = _refresh_connector({})
+    connector._spotify_client()._expires_at = datetime.now(UTC) + timedelta(hours=1)
+    http = connector._spotify_client()._http_client
+    http.request.return_value = httpx.Response(200, json={"is_playing": True, "item": {"id": "e"}})
     await connector._get_currently_playing()
-
-    assert connector._spotify_get.await_args.kwargs["params"] == {
-        "additional_types": "track,episode"
-    }
+    assert http.request.await_args.kwargs["params"] == {"additional_types": "track,episode"}
 
 
 def test_session_summary_schema_version() -> None:
@@ -823,8 +806,8 @@ async def test_persist_spoken_session_upserts_bounded_metadata_without_raw_paylo
 
 
 @pytest.mark.asyncio
-async def test_spoken_evidence_failure_does_not_block_passive_submission() -> None:
-    from unittest.mock import patch
+async def test_spoken_evidence_failure_holds_the_start_event() -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
@@ -832,7 +815,7 @@ async def test_spoken_evidence_failure_does_not_block_passive_submission() -> No
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
     item = {
         "type": "episode",
         "id": "episode-1",
@@ -842,15 +825,11 @@ async def test_spoken_evidence_failure_does_not_block_passive_submission() -> No
         "show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"},
     }
 
-    with patch(
-        "butlers.connectors.spotify.persist_spoken_session", new_callable=AsyncMock
-    ) as persist:
-        persist.side_effect = RuntimeError("DB unavailable")
-        await connector._handle_spoken_playback(
-            {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
-        )
+    await connector._handle_spoken_playback(
+        {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
+    )
 
-    connector._submit_envelope.assert_awaited_once()
+    assert len(connector._held) == 1
 
 
 @pytest.mark.asyncio
@@ -887,7 +866,7 @@ async def test_current_playback_is_not_duplicated_by_later_recently_played_item(
     connector._persist_in_progress_session = AsyncMock()
     connector._submit_envelope = AsyncMock()
     connector._gap_fill_play_already_observed = AsyncMock(return_value=True)
-    connector._persist_gap_fill_track_play = AsyncMock(return_value=True)
+    connector._persist_gap_fill_track_plays = AsyncMock(return_value=True)
     payload = {
         "is_playing": True,
         "timestamp": 100_000,
@@ -913,7 +892,7 @@ async def test_current_playback_is_not_duplicated_by_later_recently_played_item(
     connector._gap_fill_play_already_observed.assert_awaited_once_with(
         track_uri="spotify:track:track-1", played_at_ms=130_000
     )
-    connector._persist_gap_fill_track_play.assert_not_awaited()
+    connector._persist_gap_fill_track_plays.assert_not_awaited()
     assert connector._last_recently_played_cursor == "130000"
 
 
@@ -954,7 +933,13 @@ async def test_poll_cycle_track_after_spoken_closes_then_resumed_episode_opens_n
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
+
+    async def submit_running_evidence(envelope, *, evidence=None):
+        if evidence is not None:
+            await evidence()
+        return True
+
+    connector._submit_envelope = AsyncMock(side_effect=submit_running_evidence)
     connector._poll_recently_played = AsyncMock()
     connector._last_gap_fill_poll_at = float("inf")
 
@@ -1047,16 +1032,17 @@ async def test_emit_session_summary_persists_to_evidence_table() -> None:
     ) as mock_persist:
         mock_persist.return_value = True
         await connector._emit_session_summary(session, _OBSERVED)
+        connector._submit_envelope.assert_awaited_once()
+        await connector._submit_envelope.await_args.kwargs["evidence"]()
 
     mock_persist.assert_awaited_once()
     assert mock_persist.await_args.kwargs["session"] is session
-    connector._submit_envelope.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_emit_session_summary_evidence_failure_is_non_fatal() -> None:
-    """Persist failure must not abort ingest submission."""
-    from unittest.mock import patch
+async def test_emit_session_summary_holds_the_session_when_evidence_fails() -> None:
+    """A failed evidence write submits nothing and keeps the session for the next poll."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
@@ -1064,44 +1050,31 @@ async def test_emit_session_summary_evidence_failure_is_non_fatal() -> None:
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
-    connector._ingestion_policy = None
-
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
     session = _make_closed_session()
 
-    with patch(
-        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
-    ) as mock_persist:
-        mock_persist.side_effect = RuntimeError("DB is down")
-        await connector._emit_session_summary(session, _OBSERVED)
+    await connector._emit_session_summary(session, _OBSERVED)
 
-    # Ingest submission must still happen despite the persist failure.
-    connector._submit_envelope.assert_awaited_once()
+    assert list(connector._held) == [f"session:{session.started_at.isoformat()}"]
 
 
 @pytest.mark.asyncio
-async def test_emit_session_summary_skips_persist_without_cursor_pool() -> None:
-    """No persist attempt when cursor_pool is None (graceful degradation)."""
-    from unittest.mock import patch
-
+async def test_emit_session_summary_without_cursor_pool_commits_nothing() -> None:
+    """No pool means no evidence: the write refuses and nothing reaches Switchboard."""
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
-    connector._cursor_pool = None  # explicitly no pool
-    connector._submit_envelope = AsyncMock()
+    connector._cursor_pool = None
     connector._ingestion_policy = None
-
+    connector._mcp_client.call_tool = AsyncMock()
     session = _make_closed_session()
 
-    with patch(
-        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
-    ) as mock_persist:
-        await connector._emit_session_summary(session, _OBSERVED)
+    await connector._emit_session_summary(session, _OBSERVED)
 
-    mock_persist.assert_not_awaited()
-    connector._submit_envelope.assert_awaited_once()
+    connector._mcp_client.call_tool.assert_not_awaited()
+    assert len(connector._held) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1149,13 +1122,15 @@ async def test_policy_block_persists_no_raw_payload() -> None:
         ),
     )
 
-    await connector._submit_envelope(_privacy_envelope())
+    await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "filtered"
     assert row[9]["payload"]["raw"] == {}
+    # No evidence row exists for it, so an owner replay must be refused, not submitted.
+    assert row[9]["replay_unavailable"]
 
 
 @pytest.mark.asyncio
@@ -1167,6 +1142,7 @@ async def test_submission_error_retains_raw_payload() -> None:
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
     connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
     connector._ingestion_policy = None
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
 
@@ -1174,13 +1150,35 @@ async def test_submission_error_retains_raw_payload() -> None:
     expected_raw = envelope["payload"]["raw"]
     assert expected_raw, "envelope fixture must carry a non-empty raw payload"
 
-    await connector._submit_envelope(envelope)
+    await connector._submit_envelope(envelope, evidence=AsyncMock())
 
-    rows = connector._filtered_event_buffer._rows
+    rows = pool.written
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == expected_raw
+
+
+async def test_unwritten_error_row_raises_so_the_poll_does_not_move_past_the_item() -> None:
+    """A swallowed submit failure is parked first; unwritten, the poll stops (bu-dhloi1.274)."""
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, ParkNotDurableError
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    pool.fail_writes = True
+    connector._ingestion_policy = None
+    connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with pytest.raises(ParkNotDurableError):
+        await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
+    assert pool.written == []
+
+    pool.fail_writes = False
+    await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
+    assert [row[8] for row in pool.written] == ["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1284,51 +1282,56 @@ def test_spotify_health_omits_unallowlisted_provider_error_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_token_refresh_provider_text_is_absent_from_exception_logs_and_health(
-    caplog,
-) -> None:
+async def test_token_refresh_provider_text_is_absent_from_exception_logs_and_health(caplog) -> None:
     marker = "PROVIDER_CONNECTOR_REFRESH_MARKER"
-    connector = SpotifyConnector(
-        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    connector = _refresh_connector({})
+    connector._spotify_client()._http_client.post.return_value = httpx.Response(
+        400,
+        json={"error": "invalid_grant", "error_description": marker},
+        request=httpx.Request("POST", "https://accounts.spotify.com/api/token"),
     )
-    connector._client_id = "client-id"
-    connector._refresh_token = "refresh-token"
-    connector._http_client = AsyncMock()
-    connector._http_client.post = AsyncMock(
-        return_value=httpx.Response(
-            400,
-            json={"error": "invalid_grant", "error_description": marker},
-            request=httpx.Request("POST", "https://accounts.spotify.com/api/token"),
-        )
-    )
-
     with pytest.raises(SpotifyCredentialError) as exc_info:
-        await connector._refresh_access_token()
-
+        await _refresh_shared(connector)
     assert marker not in str(exc_info.value)
     assert marker not in caplog.text
     assert marker not in str(connector._get_health_state())
 
 
 def _refresh_connector(payload: dict[str, Any]) -> SpotifyConnector:
-    """A connector whose token endpoint returns ``payload`` with HTTP 200."""
+    """A real shared client over a borrowed HTTP fake and the existing owner writer."""
+    conn = MagicMock()
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
+    conn.fetchrow = AsyncMock(return_value={"id": "owner-id"})
+    conn.execute = AsyncMock()
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     connector = SpotifyConnector(
-        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"),
+        db_pool=pool,
     )
-    connector._client_id = "client-id"
-    connector._refresh_token = "prior-refresh-token"
-    connector._access_token = "prior-access-token"
-    connector._token_expires_at = None
-    connector._http_client = AsyncMock()
-    connector._http_client.post = AsyncMock(
-        return_value=httpx.Response(
-            200,
-            json=payload,
-            request=httpx.Request("POST", "https://accounts.spotify.com/api/token"),
-        )
+    http = AsyncMock(spec=httpx.AsyncClient)
+    http.post.return_value = httpx.Response(
+        200,
+        json=payload,
+        request=httpx.Request("POST", "https://accounts.spotify.com/api/token"),
     )
-    connector._persist_tokens = AsyncMock()  # type: ignore[method-assign]
+    connector._spotify = SpotifyClient(
+        credential_store=MagicMock(pool=pool),
+        http_client=http,
+        refresh_when_expiry_unknown=True,
+        token_timeout_s=15,
+        on_api_call=connector._on_spotify_api_call,
+        on_token_refresh=connector._on_spotify_token_refresh,
+    )
+    connector._spotify._client_id = "client-id"
+    connector._spotify._refresh_token = "prior-refresh-token"
+    connector._spotify._access_token = "prior-access-token"
     return connector
+
+
+async def _refresh_shared(connector: SpotifyConnector) -> str | None:
+    await connector._read_spotify(connector._spotify_client()._refresh_access_token())
+    return connector._spotify_client()._access_token
 
 
 @pytest.mark.asyncio
@@ -1341,12 +1344,12 @@ async def test_connector_refresh_rejects_malformed_expires_in(expires_in: Any) -
     connector = _refresh_connector({"access_token": "new-access-token", "expires_in": expires_in})
 
     with pytest.raises(RuntimeError, match="malformed response"):
-        await connector._refresh_access_token()
+        await _refresh_shared(connector)
 
-    connector._persist_tokens.assert_not_awaited()  # type: ignore[attr-defined]
-    assert connector._access_token == "prior-access-token"
-    assert connector._refresh_token == "prior-refresh-token"
-    assert connector._token_expires_at is None
+    connector._db_pool.acquire.assert_not_called()  # type: ignore[attr-defined]
+    assert connector._spotify_client()._access_token == "prior-access-token"
+    assert connector._spotify_client()._refresh_token == "prior-refresh-token"
+    assert connector._spotify_client()._expires_at is None
 
 
 @pytest.mark.asyncio
@@ -1361,11 +1364,11 @@ async def test_connector_refresh_rejects_malformed_rotated_refresh_token(rotated
     )
 
     with pytest.raises(RuntimeError, match="malformed response"):
-        await connector._refresh_access_token()
+        await _refresh_shared(connector)
 
-    connector._persist_tokens.assert_not_awaited()  # type: ignore[attr-defined]
-    assert connector._refresh_token == "prior-refresh-token"
-    assert connector._access_token == "prior-access-token"
+    connector._db_pool.acquire.assert_not_called()  # type: ignore[attr-defined]
+    assert connector._spotify_client()._refresh_token == "prior-refresh-token"
+    assert connector._spotify_client()._access_token == "prior-access-token"
 
 
 @pytest.mark.asyncio
@@ -1376,10 +1379,10 @@ async def test_connector_refresh_rejects_malformed_access_token(access_token: An
     connector = _refresh_connector({"access_token": access_token, "expires_in": 3600})
 
     with pytest.raises(RuntimeError, match="malformed response"):
-        await connector._refresh_access_token()
+        await _refresh_shared(connector)
 
-    connector._persist_tokens.assert_not_awaited()  # type: ignore[attr-defined]
-    assert connector._access_token == "prior-access-token"
+    connector._db_pool.acquire.assert_not_called()  # type: ignore[attr-defined]
+    assert connector._spotify_client()._access_token == "prior-access-token"
 
 
 @pytest.mark.asyncio
@@ -1390,7 +1393,7 @@ async def test_connector_refresh_malformed_payload_discloses_no_provider_text(ca
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        await connector._refresh_access_token()
+        await _refresh_shared(connector)
 
     assert marker not in str(exc_info.value)
     assert marker not in caplog.text
@@ -1401,13 +1404,13 @@ async def test_connector_refresh_malformed_payload_discloses_no_provider_text(ca
 async def test_connector_refresh_accepts_valid_payload_without_rotation() -> None:
     connector = _refresh_connector({"access_token": "new-access-token", "expires_in": 3600})
 
-    token = await connector._refresh_access_token()
+    token = await _refresh_shared(connector)
 
     assert token == "new-access-token"
-    assert connector._access_token == "new-access-token"
-    assert connector._refresh_token == "prior-refresh-token"
-    assert connector._token_expires_at is not None
-    connector._persist_tokens.assert_awaited_once()  # type: ignore[attr-defined]
+    assert connector._spotify_client()._access_token == "new-access-token"
+    assert connector._spotify_client()._refresh_token == "prior-refresh-token"
+    assert connector._spotify_client()._expires_at is not None
+    connector._db_pool.acquire.assert_called_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -1420,10 +1423,10 @@ async def test_connector_refresh_accepts_valid_rotated_refresh_token() -> None:
         }
     )
 
-    await connector._refresh_access_token()
+    await _refresh_shared(connector)
 
-    assert connector._refresh_token == "rotated-refresh-token"
-    connector._persist_tokens.assert_awaited_once()  # type: ignore[attr-defined]
+    assert connector._spotify_client()._refresh_token == "rotated-refresh-token"
+    connector._db_pool.acquire.assert_called_once()  # type: ignore[attr-defined]
 
 
 def test_spotify_startup_health_uses_canonical_degraded_state() -> None:
@@ -1437,34 +1440,20 @@ def test_spotify_startup_health_uses_canonical_degraded_state() -> None:
 @pytest.mark.asyncio
 async def test_spotify_resource_401_after_successful_refresh_stays_degraded() -> None:
     """A resource-API rejection is not token-endpoint proof of revocation."""
-    connector = SpotifyConnector(
-        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
-    )
-    connector._access_token = "old-access-token"
-    connector._token_expires_at = datetime.now(UTC) + timedelta(hours=1)
-
-    request = httpx.Request("GET", "https://api.spotify.com/v1/me/player/currently-playing")
+    connector = _refresh_connector({"access_token": "refreshed-access-token", "expires_in": 3600})
+    client = connector._spotify_client()
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
     response = httpx.Response(
-        401,
-        json={"error": {"status": 401, "message": "The access token expired"}},
-        request=request,
+        401, json={"error": {"status": 401, "message": "The access token expired"}}
     )
-    connector._http_client = AsyncMock()
-    connector._http_client.get = AsyncMock(side_effect=[response, response])
-
-    async def _refresh() -> str:
-        connector._access_token = "refreshed-access-token"
-        connector._token_expires_at = datetime.now(UTC) + timedelta(hours=1)
-        return connector._access_token
-
-    connector._refresh_access_token = AsyncMock(side_effect=_refresh)  # type: ignore[method-assign]
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await connector._spotify_get("/me/player/currently-playing")
-
+    client._http_client.request.side_effect = [response, response]
+    with pytest.raises(RuntimeError, match="http_status=401"):
+        await connector._get_currently_playing()
     state, detail = connector._get_health_state()
     assert state == "degraded"
     assert detail is not None and "401" in detail
+    assert client._http_client.request.await_count == 2
+    client._http_client.post.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1488,7 +1477,7 @@ def _unconfigured_credential_patches() -> tuple[Any, Any]:
     return (
         patch("butlers.connectors.spotify.CredentialStore", return_value=store),
         patch(
-            "butlers.connectors.spotify.resolve_owner_entity_info",
+            "butlers.spotify_client.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -1584,8 +1573,6 @@ async def test_parked_poll_loop_activates_once_credentials_appear() -> None:
     connector._heartbeat = _fake_heartbeat()
 
     async def _reload() -> bool:
-        connector._client_id = "synthetic-client-id"
-        connector._refresh_token = "synthetic-refresh-token"
         return True
 
     async def _resolve_identity() -> None:
@@ -1645,3 +1632,282 @@ async def test_activation_failure_reports_error_not_awaiting_credentials() -> No
     assert connector._credentials_unconfigured is False
     assert connector._auth_error is True
     assert connector._get_health_state()[0] == "error"
+
+
+def test_dead_identity_settings_do_not_erase_spotify_runtime_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("SPOTIFY_POLL_ACTIVE_S", "17")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = SpotifyConnectorConfig.from_env()
+    assert not hasattr(config, "provider")
+    assert not hasattr(config, "channel")
+    assert config.poll_active_s == 17
+    assert config.health_port == 40123
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "code", "state"),
+    [
+        (400, "invalid_grant", "error"),
+        (401, "invalid_client", "error"),
+        (403, "UNTRUSTED_CODE", "degraded"),
+        (503, "server_error", "degraded"),
+        (400, "temporarily_unavailable", "degraded"),
+    ],
+)
+async def test_shared_token_failures_preserve_connector_health_and_safe_details(
+    status, code, state, caplog
+) -> None:
+    connector = _refresh_connector({})
+    client = connector._spotify_client()
+    client._http_client.post.return_value = httpx.Response(
+        status, json={"error": code, "error_description": "PRIVATE_TOKEN_BODY"}
+    )
+    with pytest.raises((SpotifyCredentialError, RuntimeError)) as error:
+        await connector._get_currently_playing()
+    assert connector._get_health_state()[0] == state
+    assert str(status) in connector._get_health_state()[1]
+    assert "PRIVATE_TOKEN_BODY" not in str(error.value) + caplog.text + str(
+        connector._get_health_state()
+    )
+    assert "UNTRUSTED_CODE" not in str(error.value) + caplog.text + str(
+        connector._get_health_state()
+    )
+    connector._db_pool.acquire.assert_not_called()
+    client._http_client.request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["token", "resource"])
+async def test_shared_transport_errors_are_provider_blind_without_an_extra_request(
+    stage, caplog
+) -> None:
+    connector = _refresh_connector({})
+    client = connector._spotify_client()
+    if stage == "token":
+        client._http_client.post.side_effect = httpx.ConnectError("PRIVATE_TRANSPORT_DETAIL")
+    else:
+        client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+        client._http_client.request.side_effect = httpx.ConnectError("PRIVATE_TRANSPORT_DETAIL")
+    with pytest.raises(RuntimeError) as error:
+        await connector._get_currently_playing()
+    assert "PRIVATE_TRANSPORT_DETAIL" not in str(error.value) + caplog.text + str(
+        connector._get_health_state()
+    )
+    assert connector._get_health_state()[0] == "degraded"
+    assert client._http_client.post.await_count == (1 if stage == "token" else 0)
+    assert client._http_client.request.await_count == (0 if stage == "token" else 1)
+
+
+@pytest.mark.asyncio
+async def test_shared_resource_body_is_not_exposed_by_connector_but_module_client_keeps_it(
+    caplog,
+) -> None:
+    from butlers.spotify_client import SpotifyAPIError
+
+    connector = _refresh_connector({})
+    client = connector._spotify_client()
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+    client._http_client.request.return_value = httpx.Response(500, text="PRIVATE_RESOURCE_BODY")
+    with pytest.raises(RuntimeError) as error:
+        await connector._get_currently_playing()
+    assert "PRIVATE_RESOURCE_BODY" not in str(error.value) + caplog.text + str(
+        connector._get_health_state()
+    )
+    with pytest.raises(SpotifyAPIError) as module_error:
+        await client.get_currently_playing()
+    assert module_error.value.body == "PRIVATE_RESOURCE_BODY"
+
+
+@pytest.mark.asyncio
+async def test_shared_context_cache_inline_and_empty_adapters_keep_original_request_counts() -> (
+    None
+):
+    connector = _refresh_connector({})
+    client = connector._spotify_client()
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+    client._http_client.request.side_effect = [
+        httpx.Response(200, json={"name": "Playlist"}),
+        httpx.Response(204),
+        httpx.Response(204),
+    ]
+    assert await connector._resolve_context_name("spotify:playlist:id") == "Playlist"
+    assert await connector._resolve_context_name("spotify:playlist:id") == "Playlist"
+    assert client._http_client.request.await_count == 1
+    assert client._http_client.request.await_args.kwargs["params"] == {"fields": "name"}
+    assert await connector._get_currently_playing() is None
+    assert await connector._get_recently_played("123") == []
+    assert client._http_client.request.await_args.kwargs["params"] == {"limit": 50, "after": "123"}
+    assert client._http_client.request.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_shared_client_retries_once_and_preserves_each_connector_metric_label(
+    monkeypatch,
+) -> None:
+    import butlers.connectors.spotify as source
+
+    connector = _refresh_connector({"access_token": "new", "expires_in": 3600})
+    connector._endpoint_identity = "spotify:owner"
+    connector._metrics = MagicMock()
+    counter = MagicMock()
+    monkeypatch.setattr(source, "spotify_token_refreshes_total", counter)
+    client = connector._spotify_client()
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+    client._http_client.request.side_effect = [
+        httpx.Response(401),
+        httpx.Response(200, json={"item": {"id": "track"}}),
+    ]
+    assert await connector._get_currently_playing() == {"item": {"id": "track"}}
+    assert connector._metrics.record_source_api_call.call_args_list == [
+        (("currently_playing", "401"),),
+        (("currently_playing", "200"),),
+    ]
+    counter.labels.assert_called_once_with(endpoint_identity="spotify:owner", status="success")
+    counter.labels.return_value.inc.assert_called_once()
+    assert client._http_client.post.await_args.kwargs["timeout"] == 15
+    assert connector._source_api_ok is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "expected_ok"), [(204, True), (429, False)])
+async def test_context_empty_and_rate_limit_keep_source_health(status, expected_ok) -> None:
+    connector = _refresh_connector({})
+    client = connector._spotify_client()
+    client._expires_at = datetime.now(UTC) + timedelta(hours=1)
+    connector._source_api_ok = True
+    client._http_client.request.return_value = httpx.Response(status, headers={"Retry-After": "5"})
+    assert await connector._resolve_context_name("spotify:album:id") is None
+    assert connector._source_api_ok is expected_ok
+
+
+async def test_gap_fill_digest_is_rebuilt_after_a_failed_delivery_not_skipped() -> None:
+    """Track-play rows go in only after the digest is delivered (bu-uhbhzq.4)."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._gap_fill_play_already_observed = AsyncMock(return_value=False)
+    connector._persist_gap_fill_track_plays = AsyncMock(return_value=True)
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    track = {"id": "track-1", "uri": "spotify:track:track-1", "name": "Song 1"}
+    played_at = datetime.fromtimestamp(130, tz=UTC).isoformat().replace("+00:00", "Z")
+    connector._get_recently_played = AsyncMock(
+        return_value=[{"track": track, "played_at": played_at}]
+    )
+
+    with pytest.raises(EvidenceNotCommitted):
+        await connector._poll_recently_played(_NOW, _OBSERVED)
+    connector._persist_gap_fill_track_plays.assert_not_awaited()
+    assert connector._last_recently_played_cursor is None
+
+    connector._submit_envelope = AsyncMock(return_value=True)
+    await connector._poll_recently_played(_NOW, _OBSERVED)
+    connector._submit_envelope.assert_awaited_once()
+    connector._persist_gap_fill_track_plays.assert_awaited_once()
+    assert connector._last_recently_played_cursor == "130000"
+
+
+async def test_the_poll_pauses_at_the_held_cap_and_nothing_is_evicted(monkeypatch) -> None:
+    from butlers.connectors import spotify as module
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    monkeypatch.setattr(module, "_HELD_LIMIT", 2)
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    connector._get_currently_playing = AsyncMock(return_value=None)
+    for n in range(2):
+        await connector._deliver(f"k{n}", {}, AsyncMock())
+
+    await connector._execute_poll_cycle()
+
+    assert list(connector._held) == ["k0", "k1"]  # still held, none dropped
+    connector._get_currently_playing.assert_not_awaited()  # polling is paused
+    assert connector._get_health_state() == ("degraded", "held_backpressure")
+
+    connector._submit_envelope = AsyncMock(return_value=True)
+    from datetime import timedelta
+
+    await connector._retry_held_notifications(_NOW + timedelta(minutes=5))
+    assert connector._held == {}
+    await connector._execute_poll_cycle()
+    connector._get_currently_playing.assert_awaited()
+    assert connector._get_health_state()[1] != "held_backpressure"
+
+
+async def test_gap_fill_track_plays_commit_in_one_transaction() -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    log: list[str] = []
+
+    class Conn:
+        async def execute(self, *_args):
+            log.append("insert")
+            if log.count("insert") == 2:
+                raise RuntimeError("synthetic write failure")
+
+        @asynccontextmanager
+        async def transaction(self):
+            log.append("begin")
+            try:
+                yield
+            except Exception:
+                log.append("rollback")
+                raise
+            log.append("commit")
+
+    @asynccontextmanager
+    async def acquire():
+        yield Conn()
+
+    connector._cursor_pool = SimpleNamespace(acquire=acquire)
+    rows = [
+        {
+            "track_uri": f"spotify:track:{n}",
+            "track_name": "t",
+            "duration_ms": None,
+            "played_at_ms": n,
+        }
+        for n in (1, 2)
+    ]
+
+    assert await connector._persist_gap_fill_track_plays(rows) is False
+    assert log == ["begin", "insert", "insert", "rollback"]
+
+
+async def test_the_oldest_held_age_gauge_tracks_a_stuck_item(monkeypatch) -> None:
+    from butlers.connectors import spotify as module
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    connector._get_currently_playing = AsyncMock(return_value=None)
+    await connector._deliver("stuck", {}, AsyncMock())
+
+    clock[0] += 90
+    await connector._execute_poll_cycle()  # retry fails again; the item keeps its first age
+
+    gauge = module.spotify_held_oldest_age_seconds.labels(endpoint_identity=_ENDPOINT)
+    assert gauge._value.get() == 90

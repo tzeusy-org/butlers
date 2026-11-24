@@ -15,6 +15,8 @@ Represent a recognized situation as a durable shared case, so later observations
 
 The storage model permits general ledger references, including another-case references. The shipped S7 tool admits the three explicit ledger kinds whose references its existing contribution, attention and backfill call sites can observe. This distinction preserves the original general model without inventing a fourth tool producer.
 
+Offline backup and restore preserve the complete case/evidence/link family through a fixed table-owner-only INSERT path. This narrow offline exception does not confer runtime execute authority, UPDATE/DELETE, arbitrary relation selection or relaxed constraints; Switchboard remains the sole runtime case/link writer.
+
 Switchboard arbitration is a sole-writer, last-write-wins decision. It does not introduce quorum, decay or per-butler voting. Situation-scoped attention records a deduplicated quiet-window bypass; it is not proof of notification delivery or automatic broker wiring.
 
 ## Rationale And Alternatives
@@ -33,4 +35,4 @@ Other requirements have partial proof: actual registered transport, post-migrati
 
 ## Non-goals
 
-This decision adds no automatic insight-broker producer or provider send, dashboard UI/write surface, joint-objective register, or `delegate_act` mandate; commitment and mandate design remains with RFC 0026. Historical backfill stays closed-only. Native Fleet backup/offline restore adoption, private-schema authority, new grant policy and activation are outside this source translation. Existing backup and capture holds remain unchanged.
+This decision adds no automatic insight-broker producer or provider send, dashboard UI/write surface, joint-objective register, or `delegate_act` mandate; commitment and mandate design remains with RFC 0026. Historical backfill stays closed-only. Private-schema authority, evidence mutation policy and activation remain outside this change. The approved offline Fleet restore exception does not release other backup/capture or runtime-conformance holds.

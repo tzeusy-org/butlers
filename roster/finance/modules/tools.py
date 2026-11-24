@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import StrictInt
 
 
 def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
@@ -215,6 +217,21 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             source_message_id=source_message_id,
             metadata=_parse_metadata(metadata),
             _expected_signal_source=await runtime_signal_source(pool),
+        )
+
+    @_tool("subscriptions")
+    async def subscription_warning_still_relevant(
+        subject: str, selected_date: str, epoch: StrictInt
+    ) -> bool | None:
+        """Private fixed currentness read; an ordinary model invocation has no read authority."""
+        from butlers.core.finance_warning_control import lookup_owner
+
+        owner = lookup_owner(module._get_pool())
+        if owner is None:
+            return None
+        return await owner.consume_and_read(
+            {"subject": subject, "selected_date": selected_date, "epoch": epoch},
+            _subscriptions.subscription_warning_still_relevant,
         )
 
     # =================================================================
@@ -679,11 +696,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         account_id: str | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
-        """Bulk-ingest normalized transaction objects as bitemporal facts.
+        """Bulk-ingest normalized transaction objects into the transactions ledger.
 
-        Processes up to 500 transactions per call. Embeddings are skipped for
-        performance (NULL stored); tsvector (full-text search) is still computed.
-        Returns per-row counts for imported, skipped, and errored rows.
+        Processes up to 500 transactions per call, each through record_transaction
+        (finance.transactions, the store the dashboard lists). Returns exact
+        counts: imported (fresh inserts), skipped (duplicates), errors.
 
         transactions: JSON string — array of transaction objects. Each must have:
           - posted_at: ISO 8601 datetime string (required)
@@ -700,17 +717,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
           - metadata: dict of additional fields
 
         account_id: Top-level account_id inherited by all rows unless overridden
-          per row. Included in composite dedup key.
+          per row. Part of the composite dedup key.
 
-        source: Stored as import_source in fact metadata for all rows.
+        source: Stored as import_source in each row's metadata.
           Use e.g. "csv-import" to tag the ingestion origin.
 
         Returns: {total, imported, skipped, errors, error_details, large_transaction_alerts}
           large_transaction_alerts lists rows exceeding the configured
           "large_transaction" alert threshold: [{index, threshold, amount, merchant, exceeds_by}].
         error_details entries: [{index, reason}]
-          reason: "duplicate" (dedup skip), "cross_source_match" (fuzzy dedup skip),
-          "invalid_date", "invalid_amount", "missing_merchant", or "db_error: ..."
+          reason: "duplicate" (dedup skip), "invalid_date", "invalid_amount",
+          "missing_merchant", "invalid_row: ..." (e.g. unresolvable account), or
+          "db_error: ..."
         """
         import json as _json
 
@@ -862,23 +880,40 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         currency: str | None = None,
         column_map: str | None = None,
         dry_run: bool = False,
+        delimiter: str = ",",
+        date_format: str | None = None,
+        amount_sign: str | None = None,
     ) -> dict[str, Any]:
         """Import transactions from a bank CSV export stored in blob storage.
 
         Automatically detects Chase, Amex, Capital One, and generic CSV formats.
         Normalizes dates, amounts, and merchant names before ingestion.
+        Auto-applies learned merchant category mappings for uncategorized rows.
 
-        storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/path/file.csv').
+        storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/finance/file.csv').
           Upload the CSV first via the dashboard or attachment ingestion flow, then pass
-          the returned storage_ref here.
+          the returned storage_ref here. Only refs under this butler's blob prefix or the
+          connector prefix are read; any other ref returns status "refused".
         account_id: Account to associate all imported transactions with.
         currency: ISO-4217 currency code for the import. When omitted, the currency is
           inferred from the linked account's currency field; falls back to USD if unknown.
         column_map: JSON string — optional column name overrides for custom CSV formats.
-        dry_run: If true, parse and validate without inserting; returns preview of first 10.
+        delimiter: Comma (default), semicolon, tab, or pipe.
+        date_format: Explicit strptime format, such as %d/%m/%Y, instead of guessing.
+        amount_sign: negative_debit, positive_debit, or split_cols. For split_cols,
+          name distinct debit_col and credit_col headers in column_map.
+        dry_run: If true, parse, validate, and detect duplicates without inserting;
+          returns preview of first 10 transactions with is_duplicate flags. Preview and
+          error text contain bounded untrusted CSV data. Invalid options fail before download.
 
         Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
-                  currency_warning (when currency fell back to USD)}
+                  merchant_mappings_applied, mv_refreshed, baselines_triggered,
+                  categories_learned, currency_warning (when currency fell back to USD)}.
+          When the columns or date format cannot be detected, returns
+          {status: "unrecognized_format", headers, headers_truncated, missing_columns,
+          error}: retry with a column_map naming the date, merchant, and amount columns
+          from headers. headers holds at most the first 50 names, each cut to 100 chars;
+          headers_truncated is true when either cap applied.
         """
         if module.blob_store is None:
             return {
@@ -888,51 +923,27 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                 "to enable CSV import from blob storage.",
                 "status": "blob_store_not_configured",
             }
+        try:
+            import_mapping = _parse_metadata(column_map)
+        except json.JSONDecodeError:
+            return {
+                "status": "error",
+                "reason": "invalid_import_options",
+                "error": "column_map must be a JSON object mapping fields to column names",
+            }
         return await _data_import.import_transactions(
             module._get_pool(),
             blob_store=module.blob_store,
             storage_ref=storage_ref,
             account_id=account_id,
             currency=currency,
-            column_map=_parse_metadata(column_map),
+            column_map=import_mapping,
             dry_run=dry_run,
             notify_fn=module.notify_fn,
-        )
-
-    @_tool("bulk")
-    async def import_transactions_from_file(
-        file_path: str,
-        account_id: str | None = None,
-        currency: str | None = None,
-        column_map: str | None = None,
-        dry_run: bool = False,
-    ) -> dict[str, Any]:
-        """Import transactions from a bank CSV file on the local filesystem.
-
-        Automatically detects Chase, Amex, Capital One, and generic CSV formats.
-        Normalizes dates, amounts, and merchant names before ingestion.
-        Auto-applies learned merchant category mappings for uncategorized rows.
-
-        file_path: Absolute path to the CSV file on the local filesystem.
-        account_id: Account to associate all imported transactions with.
-        currency: ISO-4217 currency code for the import. When omitted, the currency is
-          inferred from the linked account's currency field; falls back to USD if unknown.
-        column_map: JSON string — optional column name overrides for custom CSV formats.
-        dry_run: If true, parse, validate, and detect duplicates without inserting;
-          returns preview of first 10 transactions with is_duplicate flags.
-
-        Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
-                  merchant_mappings_applied, mv_refreshed, baselines_triggered,
-                  currency_warning (when currency fell back to USD)}
-        """
-        return await _data_import.import_transactions_from_file(
-            module._get_pool(),
-            file_path=file_path,
-            account_id=account_id,
-            currency=currency,
-            column_map=_parse_metadata(column_map),
-            dry_run=dry_run,
-            notify_fn=module.notify_fn,
+            origin_butler=module.butler_name,
+            delimiter=delimiter,
+            date_format=date_format,
+            amount_sign=amount_sign,
         )
 
     # =================================================================
@@ -1046,8 +1057,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         """Compute statistical spending baselines from 6-month rolling history.
 
         Calculates per-merchant (median, stddev) and per-category (weekly velocity)
-        baselines from finance.transactions. Results are stored as memory facts with
-        predicate='spending_baseline' for use by anomaly detection.
+        figures from finance.transactions. Nothing is stored: category spend is judged
+        against the weekly personal baselines the anomaly-insight-scan job keeps in
+        metric_baselines.
 
         Returns: {computed_merchants, computed_categories, as_of}
         """
@@ -1058,16 +1070,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     @_tool("analytics")
     async def anomaly_scan(
         days_back: int = 7,
-        sensitivity: float = 2.5,
+        sensitivity: Literal["high", "medium", "low"] = "medium",
     ) -> dict[str, Any]:
         """Scan recent transactions for anomalies against statistical baselines.
 
-        Flags amount anomalies (deviation beyond sensitivity * stddev), new merchants,
-        and category velocity anomalies. Each flagged transaction includes anomaly type,
-        severity, and a human-readable explanation.
+        Flags amount anomalies (deviation beyond a sensitivity-chosen stddev multiple),
+        new merchants, and category velocity anomalies. Each flagged transaction includes
+        anomaly type, severity, and a human-readable explanation.
 
         days_back: Number of days back to scan (default 7).
-        sensitivity: Standard deviation multiplier for anomaly threshold (default 2.5).
+        sensitivity: "high" (1.5 stddev, flags more), "medium" (2.0, default) or
+            "low" (3.0, flags less).
 
         Returns: {anomalies: [{transaction_id, merchant, amount, anomaly_type,
                   severity, explanation}], total, status}
@@ -1182,13 +1195,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     @_tool("analytics")
     async def spending_trends(
-        comparison: str = "month_over_month",
+        comparison: Literal["mom", "yoy"] = "mom",
         months: int = 6,
         category: str | None = None,
     ) -> dict[str, Any]:
         """Analyze spending trends over time with period-over-period comparisons.
 
-        comparison: "month_over_month" or "year_over_year".
+        comparison: "mom" (month-over-month) or "yoy" (year-over-year).
         months: Number of months of history to include (default 6).
         category: Optional filter to a specific spending category.
 
@@ -1356,7 +1369,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         """
         return await _alerts.alert_configure(
             module._get_pool(),
-            type=type,
+            alert_type=type,
             threshold=threshold,
             currency=currency,
             enabled=enabled,

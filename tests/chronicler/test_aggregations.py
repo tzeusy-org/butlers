@@ -89,11 +89,11 @@ def test_calendar_has_no_source_category() -> None:
 
 # Maps each source category to the life-balance lane it folds into. Drives a
 # per-lane test so adding/renaming a lane fails loudly.
-_LANE_BY_CATEGORY: dict[str, str] = {
+_LANE_BY_CATEGORY: dict[str, str | None] = {
     # Butler LLM sessions → Butler ops lane (bu-whhll.14), not owner Work.
     "conversations": "butler_ops",
     "tasks": "butler_ops",
-    "music": "play",
+    "music": None,
     "gaming": "play",
     "meal": "eat",
     "home": "rest",
@@ -110,15 +110,15 @@ _LANE_BY_CATEGORY: dict[str, str] = {
 
 
 @pytest.mark.parametrize("category,lane", sorted(_LANE_BY_CATEGORY.items()))
-def test_lane_for_category_per_lane(category: str, lane: str) -> None:
+def test_lane_for_category_per_lane(category: str, lane: str | None) -> None:
     """Every source category folds into its declared Activity lane."""
     assert lane_for_category(category) == lane
-    assert lane in LANES
+    assert lane is None or lane in LANES
 
 
 def test_every_lane_is_covered() -> None:
     """The mapping table must exercise all nine Activity lanes."""
-    assert set(_LANE_BY_CATEGORY.values()) == set(LANES)
+    assert {lane for lane in _LANE_BY_CATEGORY.values() if lane is not None} == set(LANES)
 
 
 def test_lane_for_category_unmapped_is_none() -> None:
@@ -190,7 +190,7 @@ def test_all_supported_episode_adapters_have_non_other_category() -> None:
     point_event_only_sources = {"health.steps", "health.heart_rate", "owner_outbound.messages"}
     # Calendar is the intent layer: shown as a planned block, never counted as
     # lived time, so it has no source category / lane (IEA reframe, §4).
-    intent_only_sources = {"google_calendar.completed"}
+    intent_only_sources = {"google_calendar.completed", "calendar.revisions"}
     d1_source_names = {pair[0] for pair in _D1_PAIRS}
     other_mapped = sorted(
         f"{source_name}/{episode_type}"

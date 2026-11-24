@@ -83,6 +83,7 @@ async def _run(producer: str, database_url: str) -> None:
         min_size=1,
         max_size=1,
         init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"} if producer == "chronicler" else None,
     )
     try:
         if producer == "calendar":

@@ -46,9 +46,13 @@ Connectors run independently from the Switchboard daemon lifecycle. The preferre
 
 ## Transport Model
 
-Connectors submit envelopes via **MCP tool call** (`ingest`) to the Switchboard MCP server. Transport is SSE-based MCP (`fastmcp.Client`), not HTTP POST. The MCP server endpoint is configured via the `SWITCHBOARD_MCP_URL` environment variable.
+Every connector submits envelopes through `butlers.connectors.ingest_submit.submit_ingest()`, which checks the reply to the Switchboard MCP `ingest` tool before the caller records success. Transport is SSE-based MCP (`fastmcp.Client`), not HTTP POST. The MCP server endpoint is configured via the `SWITCHBOARD_MCP_URL` environment variable.
 
 The Switchboard responds with `202 Accepted` semantics: ingest is accepted for async processing, and the response includes a canonical request reference. Duplicate submissions for the same dedupe identity return the same canonical request reference and are treated as success, not error.
+
+Refusals are typed replies. An invalid envelope returns `status: "error"` with `retryable: false`; resubmitting it cannot succeed. So does a valid envelope the database deterministically refuses (SQLSTATE class 22 data, 23 integrity, 42, or any other non-transport error), so a connector logs it and moves on instead of holding its checkpoint on a poison envelope. Only a transport-class persistence failure (connection loss, timeout, serialization failure, deadlock, too many connections, admin shutdown; SQLSTATE classes 08, 40, 53, 57P, and 57014) returns `status: "transient_error"` with `retryable: true`, which `CachedMCPClient` raises as `TransientToolError` (a `ConnectionError`), so a connector holds its checkpoint and retries. A `RuntimeError` from the client is an unexpected tool error, not either refusal kind.
+
+Every MCP call through `CachedMCPClient` has a deadline: 180s per call attempt and 30s per connect attempt. A call that reaches its deadline raises `ToolCallTimeoutError`, a `ConnectionError`, and logs a WARNING. Its outcome is unknown: Switchboard keeps running after the client stops waiting, so the ingest may have committed or may still commit. It is not retried inside the client. A connector that resubmits relies on the dedupe identity above, so resubmit the same `idempotency_key`.
 
 ### Submission Flow
 
@@ -146,6 +150,49 @@ removing readers or propagation.
 | Gmail | A forward marker line marks a `forwarded` span to the end of the text. `-----Original Message-----` and `>` quote runs (with an `On … wrote:` line) mark `quoted` spans. A `Fwd:` subject without a marker marks the whole text, and an attached `message/rfc822` marks the whole text as `embedded`. Selected HTML blockquote/cite structure also survives visible-text and whitespace normalization, HTML escaping and bearer scrubbing. MIME preference is unchanged. Metadata-only envelopes retain known exposure kinds conservatively over their subject-only text without fetching body attachments. |
 | Home Assistant, ActivityWatch, OwnTracks, Steam, Google Health | Register `channel_kind = "feed"` on every heartbeat. |
 
+### Per-entry authorship facts in conversation history
+
+The WhatsApp and Telegram user clients put boolean transport facts on each
+`payload.raw.conversation_history` entry (REQ-connector-base-spec-013):
+
+| Fact | WhatsApp | Telegram user client |
+| --- | --- | --- |
+| `is_from_me` | the bridge's `raw.is_from_me` (whatsmeow `IsFromMe`) | Telethon `Message.out` |
+| `forwarded` | the bridge's `content.is_forwarded`, set only on a forward, so a content mapping without it is `false`. The bridge reads the forward flag from text, media, location, contact, poll and group-invite messages | `Message.fwd_from is not None` |
+| `from_history` | the bridge's `raw.from_history`: `true` for a history-sync replay, `false` for live delivery | not carried |
+| `via_bot` | not carried | `Message.via_bot_id is not None` |
+
+A fact the provider object does not carry is omitted, never guessed; consumers that need it treat
+the entry as not qualifying. An entry's `text` is only that message's own text, and a reply names
+its target in `reply_to`. The connector does not interpret the facts: it detects no commitments,
+resolves no counterparties and writes no butler schema because of them.
+
+Only batched envelopes carry `conversation_history`. Single-message Telegram envelopes (backfill,
+ingest retry, and the fallback when a chat id cannot be read) and the unused WhatsApp
+single-event normalizer carry no history entries, so these facts, and anything that reads them
+such as owner-chat commitment candidates, never cover those messages.
+
+A WhatsApp batch holding only the owner's own entries names its counterparty from
+`payload.raw.peer_identity` (private chats only, never the owner). A self-chat carries no peer,
+except an unmapped owner LID (see the .93 residual at `_private_peer_identity`'s caller in
+`whatsapp_user_client.py`), and a peer that disagrees with the history's non-owner sender names no one, so neither yields a span.
+
+Owner-chat commitment candidates (REQ-butler-switchboard-011) also leave out these cases rather
+than guess at them:
+
+- **WhatsApp history sync.** A history replay can carry text that any linked device sent,
+  including a past bridge device's sends. Live delivery never echoes the bridge's own sends:
+  whatsmeow skips its own device when it encrypts a send (`send.go`,
+  `encryptMessageForDevices`) and dispatches no local event for it. So only `from_history: false`
+  entries count, and entries from an older bridge that sends no marker do not. This assumes one
+  bridge per WhatsApp account: two live-linked bridges would each receive the other's sends as
+  live `is_from_me` messages.
+- **Telegram via an inline bot.** The bot's output is posted under the owner's account but the
+  bot wrote it, so `via_bot: true` entries do not count.
+- **Telegram forward without author.** A copy sent without its author carries no `fwd_from`, so it
+  reads as owner-typed. This gap is accepted. No butler sends from the owner's Telegram account
+  (bu-bup68v), so the account's outgoing messages are the owner's own.
+
 ## Checkpoint Persistence
 
 All connectors persist their resume cursor in the database via the `cursor_store` module (`butlers.connectors.cursor_store`). The canonical storage location is the `switchboard.connector_registry` table, keyed by `(connector_type, endpoint_identity)`.
@@ -168,8 +215,6 @@ Connectors self-register on their first heartbeat -- no manual pre-configuration
 | Variable | Required | Description |
 |---|---|---|
 | `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint URL for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes | Provider name (`telegram`, `gmail`, etc.) |
-| `CONNECTOR_CHANNEL` | Yes | Canonical channel (`telegram`, `email`, `voice`, etc.) |
 | `CONNECTOR_POLL_INTERVAL_S` | For poll connectors | Poll interval in seconds |
 | `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Ingest concurrency cap |
 | `CONNECTOR_HEARTBEAT_INTERVAL_S` | No (default: 120) | Heartbeat interval in seconds |
@@ -182,6 +227,21 @@ Provider-specific credentials must come from environment or secret manager, neve
 Connector authentication uses bearer tokens issued by the Switchboard. Token scope must match the connector's source identity (`channel`, `provider`, `endpoint_identity`). See [API Authentication](../identity_and_secrets/cli-runtime-auth.md) for token lifecycle details.
 
 ## Available Connectors
+
+Static discovery and buffered-preview fallback labels derive from the frozen data
+in `src/butlers/connector_catalog.py`. `GET /api/ingestion/connectors/available`
+returns exactly `connector_type`, `channel`, `provider` and `display_name` for each
+framework-deployable connector, independently of registered instances. Its
+channel/provider fields use the connector's canonical emitted identity, including
+local/Compose Live Listener even though the Helm chart has no Live Listener entry.
+
+Canonical connector identities, legacy safe display labels, accepted ingress
+pairs and deployment targets are distinct projections. A display alias does not
+register a connector or authorize OAuth. The catalog contains no credentials.
+This is the first consolidation slice: connector configuration, OAuth/default
+registries and health/deployment wiring retain their existing mechanisms until
+their own verified slices land. The environment table above still describes the
+current runtime configuration.
 
 - [Telegram Bot](telegram-bot.md) -- Bot API polling/webhook connector
 - [Telegram User Client](telegram-user-client.md) -- MTProto user-client live stream
@@ -234,6 +294,11 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 
 ## Implementation Notes
 
+- WhatsApp socket HTTP is implemented once in `butlers.whatsapp_bridge_client`;
+  the manager remains the connector-owned subprocess supervisor. Module and API
+  callers never acquire bridge ownership. ACK raw-byte limits apply before HTTP
+  parsing; SSE deadlines cover complete lines, not individual network chunks.
+
 - WhatsApp `pair_required` is a waiting state, not a failure. `BridgeSubprocessManager`
   (`src/butlers/connectors/bridge_manager.py`) treats it as startup-ready unconditionally, and
   `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic
@@ -268,7 +333,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row
   per checkpoint). Since sw_031 the role is persisted in `operational_role` (`runtime_instance`,
   `checkpoint`, `unknown`) with `parent_endpoint_identity`; the vocabulary is
-  `butlers.connectors.registry_roles`. Only `runtime_instance` rows carry liveness authority;
+  `butlers.core.connector_registry_roles`. Only `runtime_instance` rows carry liveness authority;
   heartbeat promotion is one-way; `save_cursor` stamps `checkpoint` on INSERT only, never in its
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.
@@ -310,12 +375,70 @@ admission resolves it. Replay removes stored `drop_context` metadata while prese
 envelope fields. Object and legacy-string JSONB rows are both supported. Older rows that never
 stored a marker or reference cannot recover it; there is no historical backfill.
 
-The authorized replay API still queues only under the connector's replay-safety policy. Drains
-retain their `FOR UPDATE SKIP LOCKED`/status transaction: a competing drain skips actively locked
-rows, and a failed submit remains `replay_failed` until an explicit replay request. Submission
-followed by uncertain status persistence may be delivered again with the same event identity for
-existing ingest deduplication. This is not an exactly-once transport guarantee or a live routing
-switch.
+The authorized replay API still queues only under the connector's replay-safety policy. A drain
+never holds a transaction across submission (bu-dhloi1.225). It claims up to 10 rows in one
+`FOR UPDATE SKIP LOCKED` statement that stamps a per-drain `claim_token` and `claimed_at` (core_325),
+so a competing drain skips them. It then submits each row with no transaction or connection held,
+within a deadline (60 s) shorter than the claim lease (300 s), and records the outcome in a second
+short statement that applies only while the row still carries its token. It starts a submission
+only while that deadline still ends inside the lease; otherwise it releases the rows it still holds
+for a later drain, so no other drain can reclaim a row this one may yet submit. A drain that is cancelled
+or fails part-way releases the rows it still holds back to `replay_pending`; a drain that dies
+leaves claims that any later drain reclaims once the lease lapses. Either way a row may be
+submitted again with the same event identity, for existing ingest deduplication. A failed submit
+stays `replay_failed` until an explicit replay request. This is not an exactly-once transport
+guarantee or a live routing switch.
+
+Gmail backfill, Calendar sync, ActivityWatch live polling and the Telegram user client's
+per-message path never move their cursor past an item whose ingest submission failed
+(bu-dhloi1.149, slice 1). Each item gets a bounded number of attempts (`IngestRetryBudget`,
+default 3, held in memory, so a restart resets it). Until the budget is spent the connector holds
+its position: Gmail backfill stops the job at the current page, Calendar keeps its sync token,
+ActivityWatch checkpoints just before the failed event, and the Telegram user client retries from
+its flush loop while capping the checkpoint below the pending message. Once spent, the connector
+writes a replayable `status='error'` filtered-event row whose `full_payload` is the envelope it
+tried to send, including `control.idempotency_key`, and moves on. A Gmail backfill message whose
+fetch kept failing has no envelope, so there is nothing real to replay: its error row stays
+visible with the Gmail message id, thread id and last error, and its `full_payload` carries
+`replay_unavailable`. The replay drain refuses such a row as `replay_failed` with a
+`not replayable: ...` reason instead of submitting a hollow event. Replay never re-fetches a
+message.
+
+The Telegram user client holds only on its per-message path: backfill, the fallback for messages
+without a chat id, and retries. Live messages go through the per-chat batch buffer, and a failed
+batch submit still parks at once with no text; the next successful flush from any chat can then
+advance the checkpoint past it.
+
+Slice 2a (bu-dhloi1.224) covers live sources that used to lose a failed item with no record.
+When a source is released as soon as its item is parked, the parked row is that item's only
+copy, so these sites park with `FilteredEventBuffer.park()`. It writes the row at once and
+raises `ParkNotDurableError` unless the row was committed. `flush()` still drops rows on a
+write failure, which is acceptable only while the source holds the item.
+
+- **OwnTracks** answers the webhook only once the point is ingested or parked. A failure with
+  attempts left answers 503, so the phone keeps the point and sends it again (deduplicated by its
+  `tst`-based key); the wait is bounded (10 s) and never cancels the ingest. A park that is not
+  written (or no database) also answers 503. The replay drain runs in the background, outside
+  the wait. Both apps keep a
+  point queued on a 5xx answer: Android re-queues any non-2xx with backoff, and iOS drops a
+  queued message only on 2xx or 4xx.
+- **Home Assistant live** and the **live listener** are push streams that never re-deliver an
+  item. HA retries a transport failure once after a short pause (bounded, so the event stream is
+  not held), then parks each failed envelope (home_assistant, wellness, automation_triggered)
+  scrubbed; a failed primary no longer stops the wellness emission. The live listener parks a
+  failed utterance at once and now drains replay requests on a 60 s timer. A push stream has
+  nothing to hold, so a park that cannot be written is logged as a lost event. Both
+  store only the exception class as error detail, since transport text can echo content.
+
+Spotify, Telegram bot polling and the batch flushes of the Telegram user and WhatsApp clients keep
+their existing behaviour until later slices.
+
+Google Drive (bu-dhloi1.224) keeps the envelopes a page produced and resends them exactly (same
+key, same event id) under the same budget, then parks them with `FilteredEventBuffer.park()`; a
+park that is not written keeps the envelope unsent. A failed batch digest joins that queue instead
+of escaping the poll loop, and `stop()` sends (or parks) it and flushes the filtered rows. The page token and the metadata cache are committed only when
+nothing read is unsent or batched, so a page is never re-read against a cache that already holds
+its new state. A removed file's key falls back to the change's own time.
 
 The [bearer material custody audit](bearer-material-custody-audit.md) records the exact
 source inventory, connector stores, inbox readers and synthetic seam evidence. Its
@@ -346,9 +469,9 @@ or extended. Backdated rows inserted behind a cursor by an old writer require a 
 A dry run is not a stable-snapshot or applied-repair claim.
 
 Evidence stores follow the same rule: OwnTracks `raw_payload` strings, Google Drive cached file
-names and the ActivityWatch `window_title` column are scrubbed before the write, and a detector
-failure skips that evidence write instead of storing raw text. One gap remains: ActivityWatch
-`raw_payload` still stores the raw window title, URL and tab title until `bu-506glj` lands.
+names, and the ActivityWatch `window_title` column and `raw_payload` (window title, web URL and
+tab title) are scrubbed before the write, and a detector failure skips that evidence write instead
+of storing raw text.
 
 ## Related Pages
 
@@ -374,3 +497,49 @@ existing whole-text rule. Filter/error/replay privacy rewrites collapse retained
 kinds onto their actual replacement text; they do not retain hidden quote bodies.
 Unmarked pasted text remains the RFC 0038 D5 known limit. These normalizers do not
 invoke providers or grant accepted-source authentication (.9 owns that boundary).
+
+
+### Static consumer projections (S2)
+
+The catalog now supplies the unchanged accepted wire pairs, heartbeat types,
+channel-default policy keys, stored-history strategies, OAuth manifests and
+closed public recovery metadata. API scope/auth dataclasses remain adapters;
+status computation, redaction and credential custody are unchanged. Connector,
+provider and channel selectors are distinct: Telegram preserves both connector
+members, email preserves unsupported IMAP, and wellness preserves both sources.
+Auth aliases do not register a connector. Historical Discord remains readable
+without an active registration or recovery surface.
+
+Canonical/legacy WhatsApp point to existing Passport pairing, ActivityWatch is
+local environment configuration with no remote enrollment, and Live Listener
+needs no remote authorization. No expiry or grant is inferred from static data.
+The small frontend recovery file is generated with
+`python scripts/render_connector_catalog.py`; `--check` verifies its exact bytes.
+It is separate from API DTO generation. Google Health remains explicit opt-in;
+all consent sets and manifest versions remain unchanged, including the disclosed
+pre-existing Spotify identity-scope mismatch.
+
+Connector runtimes now obtain their fixed channel/provider/type from a strict
+canonical descriptor lookup. Identity environment variables and their redundant
+Compose leaves are removed; aliases cannot select a runtime row. Home Assistant
+retains its wellness emission, and Live Listener retains its underscore runtime
+type and hyphenated stored-event identity. Endpoint, cursor, event and idempotency
+keys retain their existing spellings. Operational, secret and per-account
+configuration remains with its runtime consumer. Gmail shares parser stages while
+preserving each entrypoint's boolean rules and validation order; per-account
+metadata, DB-resolved credentials and account health port zero are unchanged.
+Spotify no longer carries its two unused identity settings. S4 health-kit,
+service/bind and deployment work remains required and unfinished.
+
+### Google account supervision
+
+Gmail, Calendar and Drive use source adapters over `GoogleAccountFleet` for
+account reconciliation, periodic rescans, SIGHUP/manual reload, and owned
+shutdown. Each adapter retains its scope filter, account configuration, cursor
+and health/heartbeat behavior; Calendar still restarts dead account loops.
+Reconciliation is serialized so manual reload cannot race the timer. Startup
+errors and cancellation close already-owned loops and source resources.
+
+The Gmail, Calendar, Drive and Health processes remain four separate Deployments.
+Combining those Deployments is deferred; shared token or fleet code does not
+change their deployment, consent, database or credential boundaries.

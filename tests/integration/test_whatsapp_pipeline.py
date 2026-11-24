@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 
 from butlers.api.deps import get_db
 from butlers.api.routers.whatsapp import _get_bridge_socket_path
@@ -27,6 +28,7 @@ from butlers.connectors.whatsapp_user_client import (
     normalize_message_text,
 )
 from butlers.modules.whatsapp import WhatsAppModule
+from butlers.testing.mcp import registered_tools
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.integration
@@ -35,39 +37,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_mock_mcp() -> tuple[Any, dict[str, Any]]:
-    """Return (mock_mcp, tools_dict) where tools_dict captures registered tool functions."""
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any) -> None:
-            self.name = name
-            self.fn = fn
-
-        def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            return self.fn(*args, **kwargs)
-
-    class MockMCP:
-        def __init__(self) -> None:
-            self._tools: dict[str, FakeTool] = {}
-
-        def tool(self, *_args: Any, **kwargs: Any) -> Any:
-            declared_name: str | None = kwargs.get("name")
-
-            def decorator(fn: Any) -> Any:
-                tool_name = declared_name or fn.__name__
-                fake = FakeTool(tool_name, fn)
-                self._tools[tool_name] = fake
-                return fn
-
-            return decorator
-
-        async def get_tool(self, name: str) -> FakeTool | None:
-            return self._tools.get(name)
-
-    mcp = MockMCP()
-    return mcp, mcp._tools
 
 
 def _make_bridge_sse_event(
@@ -171,8 +140,12 @@ class TestConnectorBridgeAndIngest:
         assert len(connector._chat_buffers["200@s.whatsapp.net"].messages) == 1
         assert connector._last_event_id == "msg-3"
 
-    async def test_connector_submits_batch_to_switchboard_on_flush(self):
+    async def test_connector_submits_batch_to_switchboard_on_flush(self, monkeypatch):
         """Flushing a buffered chat submits an ingest.v1 envelope to Switchboard."""
+        monkeypatch.setattr(
+            "butlers.connectors.whatsapp_user_client.commit_envelope",
+            AsyncMock(return_value=True),  # the journal has its own tests
+        )
         connector = _make_connector()
         mock_mcp = AsyncMock()
         mock_mcp.call_tool = AsyncMock(return_value={"status": "ok"})
@@ -302,8 +275,9 @@ class TestModuleToolRegistration:
     async def test_no_tools_when_send_tools_false(self):
         """Default (send_tools=false) and explicit false register no tools."""
         module = WhatsAppModule()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
         await module.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
+        tools = await registered_tools(mcp)
         assert len(tools) == 0
 
         await module.register_tools(
@@ -312,18 +286,20 @@ class TestModuleToolRegistration:
             db=None,
             butler_name="test-butler",
         )
+        tools = await registered_tools(mcp)
         assert len(tools) == 0
 
     async def test_tools_registered_when_send_tools_true(self):
         """send_tools=true (disabled/enabled): tools registered; disabled returns error, enabled executes."""
         module = WhatsAppModule()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
         await module.register_tools(
             mcp=mcp,
             config={"send_tools": True, "send_enabled": False},
             db=None,
             butler_name="test-butler",
         )
+        tools = await registered_tools(mcp)
         assert "whatsapp_send_message" in tools and "whatsapp_reply_to_message" in tools
 
         send_result = await tools["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -332,13 +308,14 @@ class TestModuleToolRegistration:
 
         # Re-register with send_enabled=true
         module2 = WhatsAppModule()
-        mcp2, tools2 = _make_mock_mcp()
+        mcp2 = FastMCP("whatsapp-pipeline")
         await module2.register_tools(
             mcp=mcp2,
             config={"send_tools": True, "send_enabled": True},
             db=None,
             butler_name="test-butler",
         )
+        tools2 = await registered_tools(mcp2)
         mock_send = AsyncMock(return_value={"message_id": "wa-msg-123", "status": "sent"})
         module2._send_message = mock_send
         result = await tools2["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -464,7 +441,7 @@ class TestApprovalGateWhatsApp:
                 }
             }
         )
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
 
         @mcp.tool()
         async def whatsapp_send_message(recipient: str, text: str) -> dict:
@@ -475,6 +452,7 @@ class TestApprovalGateWhatsApp:
             gated_tools={"whatsapp_send_message": GatedToolConfig(risk_tier="medium")},
         )
         await apply_approval_gates(mcp=mcp, approval_config=approval_config, pool=pool)
+        tools = await registered_tools(mcp)
         result = await tools["whatsapp_send_message"](recipient=owner_jid, text="hi owner")
         assert result.get("status") not in (None, "pending_approval")
         action = next(iter(pool.pending_actions.values()))
@@ -494,7 +472,7 @@ class TestApprovalGateWhatsApp:
 
         external_jid = "19998887777@s.whatsapp.net"
         pool = _GateTestPool()
-        mcp, tools = _make_mock_mcp()
+        mcp = FastMCP("whatsapp-pipeline")
 
         @mcp.tool()
         async def whatsapp_send_message(recipient: str, text: str) -> dict:
@@ -510,6 +488,7 @@ class TestApprovalGateWhatsApp:
             pool=pool,
             butler_name="messenger",
         )
+        tools = await registered_tools(mcp)
         result = await tools["whatsapp_send_message"](
             recipient=external_jid,
             text="hello",

@@ -17,6 +17,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.service import AuthError, _locator
+from butlers.api.projection_grants import (
+    TOKEN_HEADER,
+    TOKEN_QUERY_PARAM,
+    grant_route,
+    projection_grant_store,
+    resolve_grant,
+)
 from butlers.core.dashboard_stepup import (
     DashboardStepUpProof,
     dashboard_stepup_proof,
@@ -83,6 +90,8 @@ def _single_headers(connection: HTTPConnection) -> None:
         "host",
         "origin",
         "x-api-key",
+        "x-butlers-confirm-callback-token",
+        "x-projection-token",
         "x-dashboard-step-up",
         "x-csrf-token",
         "content-type",
@@ -174,9 +183,12 @@ class OwnerAuthMiddleware:
         connection = HTTPConnection(scope)
         method = scope.get("method", "GET")
         path = scope["path"]
-        public_probe = method == "GET" and path in {"/health", "/api/health"}
+        # Exact GET /ready is the sole semantic-readiness exception (Q4,
+        # REQ-dashboard-api-063); any other method on it is authenticated.
+        public_probe = method == "GET" and path in {"/health", "/api/health", "/ready"}
         if scope["type"] == "http" and (
-            public_probe or not (path == "/api" or path.startswith("/api/") or path == "/health")
+            public_probe
+            or not (path == "/api" or path.startswith("/api/") or path in {"/health", "/ready"})
         ):
             await self.app(scope, receive, send)
             return
@@ -200,6 +212,40 @@ class OwnerAuthMiddleware:
 
                 expected = getattr(scope["app"].state, "approval_callback_connector_token", None)
                 supplied = connection.headers.get(APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER)
+                confirm_token = connection.headers.get("x-butlers-confirm-callback-token")
+                if (
+                    method == "POST"
+                    and path == "/api/confirms/callback"
+                    and expected
+                    and confirm_token
+                    and hmac.compare_digest(confirm_token.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    scope.setdefault("state", {})["confirm_callback_authenticated"] = True
+                    # Informational callback authority never creates an owner principal/session.
+                    await self.app(scope, receive, send)
+                    return
+                if (
+                    method == "POST"
+                    and path == "/api/chronicler/gap-interview/resolve"
+                    and expected
+                    and supplied
+                    and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    # Exact gap-interview tap route (bu-whhll.12); no owner principal.
+                    scope.setdefault("state", {})["gap_interview_callback_authenticated"] = True
+                    await self.app(scope, receive, send)
+                    return
+                if (
+                    method == "POST"
+                    and path == "/api/attention/reach/telegram"
+                    and expected
+                    and supplied
+                    and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    # Narrowing-only Telegram /reach (bu-s11n0s.8); no owner principal or session.
+                    scope.setdefault("state", {})["reach_callback_authenticated"] = True
+                    await self.app(scope, receive, send)
+                    return
                 if (
                     expected
                     and supplied
@@ -232,6 +278,8 @@ class OwnerAuthMiddleware:
                         scope.setdefault("state", {})["oauth_callback_authenticated"] = True
                         await self.app(scope, receive, send)
                         return
+                if await self._projection_grant(connection, scope, receive, send):
+                    return
             if service is None:
                 raise _unavailable()
             key = connection.headers.get("x-api-key")
@@ -310,6 +358,57 @@ class OwnerAuthMiddleware:
             verified_dashboard_session.reset(dashboard_context)
             verified_http_principal.reset(principal_context)
             in_http_request.reset(request_context)
+
+    async def _projection_grant(
+        self, connection: HTTPConnection, scope: Scope, receive: Receive, send: Send
+    ) -> bool:
+        """Serve an exact projection route on a scoped grant; False to fall through.
+
+        A grant is a read capability for one route of one projection. It never
+        becomes an owner principal or session, is refused on every other route
+        (those fall through to owner authentication), admits GET only with no
+        body, and answers 404 for an unknown, revoked or mismatched grant so a
+        grant's existence is not disclosed (REQ-ambient-projections-002).
+        """
+        route = grant_route(scope["path"])
+        if route is None:
+            return False
+        header = connection.headers.get(TOKEN_HEADER)
+        queried = connection.query_params.getlist(TOKEN_QUERY_PARAM)
+        if header is None and not queried:
+            return False
+        if len(queried) > 1 or (header is not None and queried):
+            raise _bad_request()
+        token = header if header is not None else queried[0]
+        if not token or len(token) > 256:
+            raise _bad_request()
+        if scope.get("method") != "GET":
+            await JSONResponse(
+                {"error": {"code": "METHOD_NOT_ALLOWED", "message": "GET only", "butler": None}},
+                status_code=405,
+                headers={**_NO_STORE, "Allow": "GET"},
+            )(scope, receive, send)
+            return True
+        if connection.headers.get("content-length") not in {None, "0"} or connection.headers.get(
+            "transfer-encoding"
+        ):
+            raise _bad_request()
+        projection_id, route_scope = route
+        try:
+            store = projection_grant_store(scope["app"].state)
+            grant = await resolve_grant(store, projection_id, route_scope, token)
+        except Exception:
+            raise _unavailable() from None
+        if grant is None:
+            await JSONResponse(
+                {"error": {"code": "NOT_FOUND", "message": "Not found", "butler": None}},
+                status_code=404,
+                headers=_NO_STORE,
+            )(scope, receive, send)
+            return True
+        scope.setdefault("state", {})["projection_grant"] = grant
+        await self.app(scope, receive, send)
+        return True
 
     async def _ceremony(self, request: Request, service, route: tuple[str, str]) -> JSONResponse:
         method, path = route

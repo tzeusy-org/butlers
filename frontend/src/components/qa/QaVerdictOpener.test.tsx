@@ -105,6 +105,140 @@ describe("QaVerdictOpener -- clauses", () => {
     expect(html).toContain("circuit breaker tripped after 5 consecutive failures");
   });
 
+  it("names the breaker's cause and next probe when the API supplies them", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "circuit_breaker_tripped",
+      circuit_breaker: {
+        tripped: true,
+        consecutive_failures: 5,
+        dominant_cause: "publisher_unconfigured",
+        cause_counts: { publisher_unconfigured: 5 },
+        next_probe_at: "2026-07-05T05:19:00Z",
+      },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("circuit breaker open: no publisher configured");
+    expect(html).toContain("next probe in 15m");
+  });
+
+  it("says the probe is due once its time has passed, not how long ago", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "circuit_breaker_tripped",
+      circuit_breaker: {
+        tripped: true,
+        consecutive_failures: 5,
+        dominant_cause: "publisher_unconfigured",
+        next_probe_at: "2026-07-05T05:01:00Z",
+      },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("probe due");
+    expect(html).not.toContain("ago");
+  });
+
+  it("says mixed causes without naming one", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "circuit_breaker_tripped",
+      circuit_breaker: {
+        tripped: true,
+        consecutive_failures: 5,
+        dominant_cause: "mixed",
+        cause_counts: { execution_failure: 2, publisher_unconfigured: 3 },
+      },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("circuit breaker open: mixed causes");
+  });
+
+  it("links a halted patrol and names its gate", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      last_patrol: {
+        id: "patrol-9",
+        started_at: "2026-07-05T04:50:00Z",
+        completed_at: "2026-07-05T04:54:00Z",
+        status: "halted",
+        findings_count: 3,
+        novel_count: 3,
+        dispatched_count: 0,
+        log_lookback_minutes: 30,
+        sources_polled: [],
+        error_detail: null,
+        halt_reason: "concurrency_cap",
+      },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("last patrol halted: concurrency cap reached");
+    expect(html).toContain('href="/qa/patrols/patrol-9"');
+  });
+
+  it("names an active remediation-loop condition instead of reading healthy", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "degraded",
+      loop_conditions: [
+        {
+          source: "qa_loop_capability",
+          summary: "QA remediation capability is below target: publisher_unconfigured",
+          cause: "publisher_unconfigured",
+          first_detected_at: "2026-11-20T00:00:00Z",
+        },
+      ],
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("below target: publisher_unconfigured");
+  });
+
+  it("says the ledger is unreadable instead of claiming there is no patrol history", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "unknown",
+      last_patrol: null,
+      loop_conditions_known: false,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("can&#x27;t read the QA condition ledger right now");
+    expect(html).not.toContain("no patrol history yet");
+  });
+
+  it("still says no patrol history when the ledger is readable", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "unknown",
+      last_patrol: null,
+      loop_conditions_known: true,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("no patrol history yet");
+    expect(html).not.toContain("condition ledger");
+  });
+
+  it("keeps clause keys unique when one source carries several causes", () => {
+    const condition = (cause: string) => ({
+      source: "qa_loop_capability",
+      summary: `QA remediation capability is below target: ${cause}`,
+      cause,
+      first_detected_at: "2026-11-20T00:00:00Z",
+    });
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "degraded",
+      loop_conditions: [condition("publisher_unconfigured"), condition("proposal_retention_unavailable")],
+    };
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      errors.push(args);
+    });
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    spy.mockRestore();
+    expect(html).toContain("publisher_unconfigured");
+    expect(html).toContain("proposal_retention_unavailable");
+    expect(JSON.stringify(errors)).not.toContain("unique \"key\"");
+  });
+
   it("names a failed last patrol and doors to its patrol detail page", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,

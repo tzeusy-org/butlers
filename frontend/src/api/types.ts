@@ -138,9 +138,15 @@ export interface BoardRow {
   heartbeat_age_seconds: number | null;
   heartbeat_unavailable: boolean;
   schema_unreachable: boolean;
-  hourly_stripe: number[];
-  hourly_total: number;
-  /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
+  /**
+   * Session counts for the last 24 UTC hours, keyed by bucket start
+   * (bu-s11n0s.5.1). Dense on success (a measured zero is a row); empty when
+   * the hourly query failed, so no hour is ever drawn as a fabricated zero.
+   */
+  hourly_buckets: { hour_start: string; sessions_count: number }[];
+  /** Sum of hourly_buckets; null when the hourly query failed. */
+  hourly_total: number | null;
+  /** True when this row's hourly-activity query failed -- hourly_buckets is empty and hourly_total null. */
   stripe_source_error?: boolean;
   cadence_seconds: number | null;
   cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
@@ -254,6 +260,46 @@ export interface SessionSummary {
   cost_usd?: number | null;
 }
 
+export interface ServedAttempt {
+  attempt_id: number;
+  attempt_index: number;
+  outcome: string;
+  requested_model_id: string | null;
+  served_identity: {
+    schema_version: number;
+    runtime_type: string;
+    observation_state: string;
+    finding_codes: string[];
+    expected_toolchain: { state: string; versions?: Record<string, string> };
+    executions: {
+      execution_index: number;
+      configured_model_id?: string | null;
+      completion_state: string;
+      served_models: string[];
+      reported_models: { model_id: string; provenance: string; source: string }[];
+      identity_authority: string;
+      cli_version_reported: string | null;
+      models_truncated?: boolean;
+    }[];
+  } | null;
+}
+
+/** One windowed (model, authority, provenance) group; only compared executions are summed. */
+export interface ServedCostComparison {
+  model_id: string;
+  identity_authority: string;
+  provenance: string;
+  attempt_count: number;
+  execution_count: number;
+  compared_execution_count: number;
+  reported_cost_usd: number | null;
+  computed_served_cost_usd: number | null;
+  difference_usd: number | null;
+  comparison_state: "comparable" | "unpriced" | "unknown";
+  cost_source: "cli_estimate";
+  finding: "provider_vs_computed_cost" | null;
+}
+
 /** Full session detail returned by the single-session endpoint. */
 export interface SessionDetail {
   id: string;
@@ -279,6 +325,8 @@ export interface SessionDetail {
   purpose_lane?: "standard" | "private_content" | null;
   /** Durable, prompt-free explanation of the model selected for this attempt. */
   resolution_receipt?: ModelResolutionReceipt | null;
+  served_source_state?: "observed" | "historical" | "unavailable";
+  served_attempts?: ServedAttempt[];
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -559,6 +607,36 @@ export interface AttentionLedgerSummaryResponse {
   /** Convenience projection of by_source's flagged origin_butler names. */
   flagged_sources: string[];
   /** False when the ledger's DB pool was unreachable -- all counts above are empty in that case. */
+  source_available?: boolean;
+}
+
+/**
+ * One insight class's latest verdict (bu-s11n0s.15 S2). Natural arms, not a
+ * controlled trial: treated = delivered/coalesced, holdout = held by budget or
+ * context, compared only within one priority band.
+ */
+export interface InsightClassEfficacy {
+  origin_butler: string;
+  category: string;
+  priority_band: "low" | "normal" | "urgent";
+  bucket_date: string;
+  n_treated: number;
+  n_holdout: number;
+  treated_resolved: number;
+  holdout_resolved: number;
+  treated_median_resolve_s: number | null;
+  holdout_median_resolve_s: number | null;
+  verdict: "effective" | "self_resolving" | "ignored" | "unmeasured";
+  evidence: Record<string, unknown>;
+  computed_at: string;
+}
+
+/** Response for GET /api/attention/efficacy. */
+export interface InsightEfficacyResponse {
+  data: InsightClassEfficacy[];
+  /** Always true: the verdicts are observational. */
+  observational: boolean;
+  /** False when the Switchboard pool was unreachable -- an empty list is then not "no verdicts". */
   source_available?: boolean;
 }
 
@@ -858,6 +936,18 @@ export interface SpendDivergence {
 
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
+  served_source_error?: boolean;
+  reported_cost_comparisons?: ServedCostComparison[];
+  served_breakdown?: {
+    model_id: string;
+    identity_authority: string;
+    provenance: string;
+    attempt_count: number;
+    execution_count: number;
+    complete_execution_count: number;
+  }[];
+  /** True when more serving-evidence groups existed than the server cap returned. */
+  served_evidence_truncated?: boolean;
   total_cost_usd: number;
   /** Priced subtotal from attempts with parseable provider usage. */
   measured_usd?: number;
@@ -1102,6 +1192,9 @@ export interface Schedule {
   complexity?: string | null;
   source: string;
   enabled: boolean;
+  /** Id of the deadline that replaced this one; null unless superseded. */
+  superseded_by?: string | null;
+  superseded_at?: string | null;
   next_run_at: string | null;
   last_run_at: string | null;
   created_at: string;
@@ -1354,6 +1447,16 @@ export interface CalendarWorkspaceSourceFreshness {
    * failed) and is skipped by the sync loop. Defaults to `true`.
    */
   sync_enabled: boolean;
+  /**
+   * Whether a sync verdict applies. Only provider sources sync; internal
+   * sources (schedules, reminders) are projected locally and never get a
+   * cursor, so their null `last_synced_at` is normal, not "never synced".
+   */
+  sync_applicable: boolean;
+  /** Whose time this calendar's events are; `unclassified` until inferred or the owner says. */
+  time_role?: CalendarSourceRole;
+  /** `owner_confirmed` once the owner set it; discovery never overwrites that. */
+  role_basis?: "provider_inferred" | "owner_confirmed";
 }
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */
@@ -1445,6 +1548,9 @@ export interface ConflictScanResponse {
   issues: ConflictIssue[];
   scan_window: { start: string; end: string };
   issues_available: boolean;
+  /** Calendars/events skipped because their source role is unclassified and the owner is not invited. */
+  unclassified_sources?: number;
+  unclassified_events?: number;
 }
 
 /** Query params for GET /api/calendar/workspace/conflicts. */
@@ -1486,8 +1592,36 @@ export interface CalendarResponseReceipt {
   reason: string | null;
 }
 
+/** An unanswered invitation from an untrusted organizer: time and verdict only, no text. */
+export interface CalendarQuarantinedInvitation {
+  entry_id: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  verdict: "first_contact" | "blocked" | "unknown";
+  lure_badges: string[];
+}
+
+export type CalendarOrganizerVerb = "vouch" | "block";
+
+/** The body names the entry and the verb only; the server reads the organizer from the row. */
+export interface CalendarOrganizerDecisionRequest {
+  entry_id: string;
+  verb: CalendarOrganizerVerb;
+}
+
+export interface CalendarOrganizerDecisionResponse {
+  verb: CalendarOrganizerVerb;
+  endpoints: number;
+  rules_written: number;
+  rules_removed: number;
+  events_restamped: number;
+  restamp_degraded: boolean;
+}
+
 export interface CalendarInvitationsResponse {
   entries: CalendarInvitationEntry[];
+  quarantined?: CalendarQuarantinedInvitation[];
   issues_available: boolean;
   conflicts_available: boolean;
   sources_degraded: string[];
@@ -1539,6 +1673,49 @@ export interface CalendarDayBriefingResponse {
   groups: DayBriefingButlerGroup[];
   /** Flat, chip-ready list of every overlay entry on the date. */
   entries: UnifiedCalendarEntry[];
+}
+
+/** One item on the owner's day sheet (GET /api/calendar/workspace/day-sheet). */
+export interface DaySheetItem {
+  ref: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  kind: "attended" | "tentative" | "butler";
+  title: string;
+  label_class: "owner_authored" | "third_party";
+  people_count: number;
+  conflict_ref: string | null;
+  door: string;
+}
+
+export interface DaySheetGap {
+  start: string;
+  end: string;
+}
+
+export interface DaySheetFreshness {
+  state: "current" | "stale" | "unreadable";
+  as_of: string | null;
+  sources_unreadable: string[];
+  sources_total: number;
+}
+
+/**
+ * The one projection of an owner-local day. `freshness.state` is explicit: an `unreadable` or
+ * `stale` sheet is never to be shown as a clear day, whatever `items` holds.
+ */
+export interface DaySheetResponse {
+  date: string;
+  zone: string;
+  freshness: DaySheetFreshness;
+  items: DaySheetItem[];
+  gaps: DaySheetGap[];
+  attended_minutes: number;
+  attended_count: number;
+  longest_gap: DaySheetGap | null;
+  digest: string;
+  text: string;
 }
 
 /** A single durable relationship note surfaced on the meeting-prep rail. */
@@ -1712,6 +1889,34 @@ export interface CalendarAccountsResponse {
   accounts: CalendarAccountEntry[];
   /** `false` when the connector health surface could not be reached. */
   health_available: boolean;
+}
+
+/** The closed set of calendar source roles (REQ-module-calendar-034). */
+export type CalendarSourceRole =
+  | "owner"
+  | "household_member"
+  | "other_person"
+  | "team"
+  | "subscription"
+  | "holidays"
+  | "birthdays"
+  | "butler"
+  | "unclassified";
+
+/** Request payload for POST /api/calendar/sources/role; `role: null` clears the confirmation. */
+export interface CalendarSourceRoleRequest {
+  source_key: string;
+  role: CalendarSourceRole | null;
+}
+
+/** Response payload for POST /api/calendar/sources/role. */
+export interface CalendarSourceRoleResponse {
+  source_key: string;
+  role: CalendarSourceRole;
+  role_basis: "provider_inferred" | "owner_confirmed";
+  updated_butlers: string[];
+  /** Schemas whose write failed: non-empty means the role is not the same everywhere yet. */
+  failed_butlers: string[];
 }
 
 /** Request payload for POST /api/calendar/sources. */
@@ -2382,6 +2587,96 @@ export interface GeneralStats {
 }
 
 // ---------------------------------------------------------------------------
+// General butler — owner projects (bu-jv1moa.12)
+// ---------------------------------------------------------------------------
+
+export type GeneralProjectKind = "project" | "responsibility" | "decision";
+/** Effective state: a draft past its horizon reads as expired. */
+export type GeneralProjectState = "draft" | "closed" | "expired";
+export type GeneralProjectLinkKind =
+  | "deadline"
+  | "owner_condition"
+  | "trip"
+  | "drive_file"
+  | "calendar_event";
+
+export interface GeneralProjectConstraints {
+  /** Descriptive only: a stated budget authorises no spend. */
+  budget: { amount: string; currency: string } | null;
+  must_keep: string[];
+}
+
+export interface GeneralProjectCharterInput {
+  title: string;
+  horizon_end: string;
+  objective: string;
+  done_condition: string;
+  constraints: GeneralProjectConstraints;
+}
+
+export interface GeneralProjectCharter extends GeneralProjectCharterInput {
+  version: number;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GeneralProjectLink {
+  id: string;
+  ref_kind: GeneralProjectLinkKind;
+  ref_id: string;
+  created_at: string;
+}
+
+export interface GeneralProjectSummary {
+  id: string;
+  kind: GeneralProjectKind;
+  title: string;
+  state: GeneralProjectState;
+  current_charter_version: number;
+  horizon_end: string;
+  closed_at: string | null;
+  link_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GeneralProjectDetail extends GeneralProjectSummary {
+  charter: GeneralProjectCharter;
+  links: GeneralProjectLink[];
+}
+
+export interface GeneralProjectCreateRequest extends GeneralProjectCharterInput {
+  kind: GeneralProjectKind;
+  idempotency_key: string;
+}
+
+/** GET /api/butlers/{name}/deadlines/{id} — one deadline's identity and status (owner only). */
+export interface DeadlineRecord {
+  id: string;
+  butler: string;
+  name: string;
+  display_title: string | null;
+  target_date: string;
+  deadline_status: string | null;
+  enabled: boolean;
+}
+
+interface GeneralDriveFileRecord {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  modified_time: string | null;
+}
+
+/**
+ * GET /api/general/drive-files/{id} — one Drive file's name and type (owner only).
+ * `not_connected`: General runs without Drive; a calm state, not a failed reader.
+ */
+export type GeneralDriveFile =
+  | { state: "resolved"; file: GeneralDriveFileRecord }
+  | { state: "not_connected"; file: null };
+
+// ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
 // ---------------------------------------------------------------------------
 
@@ -2500,6 +2795,26 @@ export interface ExpectedSignal {
   measurability: "present" | "absent" | "unmeasurable";
   unmeasurable_reason: string | null;
   evaluated_at: string;
+}
+
+export interface HealthBaseline {
+  metric_key: string;
+  state: "ready" | "insufficient_history" | "unmeasurable" | "stale" | "no_baseline";
+  band: { low: number; high: number } | null;
+  center: number | null;
+  unit: string | null;
+  n_observed: number;
+  n_expected: number;
+  coverage: number;
+  computed_at: string | null;
+  stale: boolean;
+  method_version: string | null;
+}
+
+export interface HealthBaselinesResponse {
+  baselines: HealthBaseline[] | null;
+  available: boolean;
+  degraded_reason: string | null;
 }
 
 export interface ExpectedSignalsResponse {
@@ -2883,6 +3198,41 @@ export interface Fact {
   last_confirmed_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Owner vouch (bu-jv1moa.14): when the owner stood behind a reported fact. */
+  endorsed_at?: string | null;
+  endorsed_by?: string | null;
+  /** True while a live fact is a non-owner report the owner has not vouched for. */
+  held?: boolean;
+}
+
+/** Receipt for an owner vouch of a held fact (idempotent). */
+export interface FactVouch {
+  fact_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
+}
+
+export interface RuleEndorsement {
+  rule_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
+}
+
+export interface LegacyRuleEndorsementPreview {
+  confirmation_digest: string;
+  rules: Array<{
+    rule_id: string;
+    content: string;
+    scope: string;
+    content_authority: null;
+    source_butler: string | null;
+    source_episode_id: string | null;
+    created_at: string;
+  }>;
 }
 
 /** A behavioral rule from the long-term memory tier. */
@@ -2902,6 +3252,7 @@ export interface MemoryRule {
   /** Whether a source episode is still available, expired, or cannot be resolved. */
   source_episode_status?: EpisodeSourceStatus | null;
   source_butler: string | null;
+  owning_source?: string | null;
   created_at: string;
   last_applied_at: string | null;
   last_evaluated_at: string | null;
@@ -3145,6 +3496,8 @@ export interface FactParams {
    * to list the facts derived from that episode (the reverse provenance link).
    */
   source_episode_id?: string;
+  /** true: only held facts (reported, not vouched for); false: everything else. */
+  held?: boolean;
   offset?: number;
   limit?: number;
 }
@@ -3243,7 +3596,7 @@ export interface EntityRebindReceipt {
   rebind_id: string;
   target_schema: string;
   references_rebound: number;
-  status: "active" | "failed" | "pending" | "skipped_no_table";
+  status: "active" | "failed" | "pending" | "skipped_no_table" | "skipped_forgotten";
   error_class: string | null;
   completed_at: string | null;
 }
@@ -3377,6 +3730,23 @@ export interface ApprovalAction {
    */
   push_failed?: boolean;
   delivery?: ApprovalDeliveryTruth | null;
+  /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
+  goal?: ApprovalGoalLineage | null;
+}
+
+/** The goal, invocation, depth, exposure and origin that parked an action. */
+export interface ApprovalGoalLineage {
+  goal_id: string;
+  invocation_id: string;
+  depth: number;
+  exposed: boolean;
+  origin: "owner" | "obligation" | "third_party" | "staffer";
+  /** Why it was exposed (closed S1 cause); null when unknown. */
+  exposure_cause: string | null;
+  /** Whether a standing rule could ever match the call; explanation only. Null when unknown. */
+  rule_possible: boolean | null;
+  /** The labelled lines the Telegram card shows too, built once on the server. */
+  facts: { label: string; value: string }[];
 }
 
 /**
@@ -3485,8 +3855,63 @@ export interface ApprovalCallPreview {
   displayed_call: DisplayedApprovalCall;
 }
 
+/** One entity an external MCP proposal names, as it stands now. */
+export interface ExternalProposalEntity {
+  id: string;
+  name?: string | null;
+  entity_type?: string | null;
+  status: "live" | "missing" | "merged" | "deleted";
+}
+
+/**
+ * Typed review of an external MCP fact proposal (REQ-dashboard-approvals-904).
+ * `note` and `evidence_url` are outside-authored text: render them as inert plain
+ * text, never a link. `displayed_call` is null whenever approval is unavailable,
+ * and `approve_unavailable_reason` then says why.
+ */
+export interface ExternalProposalReview {
+  proposal_id?: string | null;
+  client_label?: string | null;
+  subject?: ExternalProposalEntity | null;
+  predicate?: string | null;
+  object?: ExternalProposalEntity | null;
+  note?: string | null;
+  evidence_url?: string | null;
+  authority_statement: string;
+  unresolvable_entity: boolean;
+  approve_unavailable_reason?: string | null;
+  displayed_call?: DisplayedApprovalCall | null;
+}
+
+/** One dashboard presentation of an owner-delivery subject; its tokens are single-use. */
+export interface OwnerDeliveryCard {
+  subject_id: string;
+  generation: number;
+  approve_token: string;
+  reject_token: string;
+}
+
+export interface OwnerDeliveryActionRequest {
+  token: string;
+  displayed_call?: DisplayedApprovalCall | null;
+  reason?: string | null;
+}
+
+/** Content-free reason an approved outbound send failed or was rejected (never provider text). */
+export interface ApprovalExecutionFailure {
+  code: string;
+  label: string;
+  /** True when the provider proved it rejected the send: not retryable. */
+  terminal?: boolean;
+}
+
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  /** Present only for an external MCP proposal; its proposed_action has no tool_args. */
+  external_proposal_review?: ExternalProposalReview | null;
+  /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
+  goal?: ApprovalGoalLineage | null;
+  owner_delivery?: OwnerDeliveryCard | null;
   id: string;
   title: string;
   butler: string;
@@ -3500,7 +3925,8 @@ export interface ApprovalDetail {
   reversibility?: ApprovalReversibility | null;
   proposed_action: {
     tool_name: string;
-    tool_args: Record<string, unknown>;
+    /** Absent for an external MCP proposal, which is reviewed only through its typed review. */
+    tool_args?: Record<string, unknown>;
     agent_summary?: string | null;
   };
   status: string;
@@ -3510,6 +3936,8 @@ export interface ApprovalDetail {
   denial_reason?: string | null;
   /** Already redacted by the approval-detail API before dashboard presentation. */
   execution_result?: Record<string, unknown> | null;
+  /** Why an approved send failed or was provider-rejected; null when it did not. */
+  execution_failure?: ApprovalExecutionFailure | null;
   target_contact?: TargetContact | null;
   /**
    * Originating session UUID that produced this action, when known. Lets the
@@ -3543,6 +3971,59 @@ export interface ApprovalsPolicy {
   quiet_start_hour?: number | null;
   quiet_end_hour?: number | null;
   timezone: string;
+}
+
+/**
+ * An inactive standing-reply template draft (`/approvals/reply-templates`).
+ * `state` is `draft` or `revoked`, never active: drafts carry no authority.
+ */
+export interface StandingReplyTemplateDraft {
+  id: string;
+  butler: string;
+  tool_name: string;
+  /** Content argument name -> template source, e.g. `"Running {mins:duration} late"`. */
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  state: "draft" | "revoked";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string | null;
+}
+
+export interface StandingReplyTemplateDraftCreateRequest {
+  butler: string;
+  tool_name: string;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  idempotency_key: string;
+}
+
+export interface StandingReplyTemplateDraftEditRequest {
+  expected_revision: number;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+}
+
+/** A hypothetical send call to test against a draft. Nothing is sent or approved. */
+export interface StandingReplyTemplatePreviewRequest {
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+}
+
+/** Preview-only match result; `authority` is always `none`. */
+export interface StandingReplyTemplatePreview {
+  draft_id: string;
+  revision: number;
+  matched: boolean;
+  eligible: boolean;
+  reasons: string[];
+  /** Content argument name -> slot name -> captured value. */
+  slots: Record<string, Record<string, string>>;
+  authority: "none";
 }
 
 export interface ApprovalApproveRequest {
@@ -3615,6 +4096,7 @@ export interface ApprovalMetrics {
   delivery_by_state?: Record<string, number>;
   delivery_by_reason?: Record<string, number>;
   delivery_sources_complete?: boolean;
+  owner_delivery_retractions_given_up?: number;
 }
 
 /** Availability metadata for the independently aggregated approvals metric families. */
@@ -3636,6 +4118,8 @@ export interface ApprovalActionParams {
   tool_name?: string;
   status?: string;
   butler?: string;
+  /** Only actions this capability-broker goal parked. */
+  goal_id?: string;
   offset?: number;
   limit?: number;
 }
@@ -3854,7 +4338,8 @@ export type IngestionPeriod = "24h" | "7d" | "30d";
 
 /** Today's ingestion summary attached to a connector list entry. */
 export interface ConnectorDaySummary {
-  messages_ingested: number;
+  /** Last-24h ingested total; null when the hourly count read failed (bu-s11n0s.5.1). */
+  messages_ingested: number | null;
   messages_failed: number;
   uptime_pct: number | null;
 }
@@ -3901,6 +4386,14 @@ export interface ConnectorCheckpointRecord {
 }
 
 /** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
+/**
+ * Per-bucket listening state, derived from the endpoint's own heartbeat
+ * history (bu-s11n0s.5). `live`: a heartbeat was recorded in the bucket.
+ * `deaf`: none was, in a closed bucket after recording began and with no
+ * traffic; rendered "not listening". `unknown`: the history cannot say.
+ */
+export type ListeningState = "live" | "deaf" | "unknown";
+
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -3920,8 +4413,9 @@ export interface ConnectorSummary {
   today: ConnectorDaySummary | null;
   /**
    * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
-   * newest last). Sourced from ingestion_events — always present, never null.
-   * Zero-filled for hours with no events.
+   * newest last). Sourced from ingestion_events; a measured zero is a 0.
+   * Empty when the payload carried no counts (bu-s11n0s.5.1): consumers draw
+   * that as unreported, never as 24 zeros.
    */
   hourly_events: number[];
   /**
@@ -3934,6 +4428,12 @@ export interface ConnectorSummary {
    * responses — treat as all-zero when missing.
    */
   hourly_filtered_events?: number[];
+  /**
+   * Listening state per slot of `hourly_events`, same window and order
+   * (bu-s11n0s.5). Optional/additive: absent on older responses, which draw
+   * no listening marks.
+   */
+  hourly_listening?: ListeningState[];
   /**
    * Per-device liveness rows, most-recent-device first. Null for single-device
    * connector_types (the roster row's own liveness already covers them); present
@@ -4063,9 +4563,8 @@ export interface ConnectorStatsBucket {
    * on the detail histogram. 0 when the connector self-persists no skips.
    */
   messages_filtered: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Whether the endpoint was heard in this bucket (see `ListeningState`). */
+  listening: ListeningState;
 }
 
 export interface ConnectorStatsSummary {
@@ -4091,6 +4590,11 @@ export interface ConnectorStats {
    * honest quiet window. Absent/`true` means the series is trustworthy.
    */
   hourly_events_available: boolean;
+  /**
+   * From `meta.listening_available`: `false` only when the heartbeat-history
+   * read failed, leaving every bucket's `listening` as `unknown`.
+   */
+  listening_available: boolean;
 }
 
 /**
@@ -4186,6 +4690,17 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+  /**
+   * UTC hour starts (oldest first) that every connector's hourly series is
+   * keyed to (bu-s11n0s.5.1). Clients place each slot by this instant, never
+   * by array position. Optional/additive: absent on older responses.
+   */
+  hourly_bucket_starts?: string[];
+  /**
+   * False only if the heartbeat-history read failed (bu-s11n0s.5); every
+   * `hourly_listening` slot is then `unknown`. Optional/additive.
+   */
+  listening_available?: boolean;
   /**
    * False only if the OwnTracks durable-point cadence query itself failed.
    * Optional/additive; absent on older cached responses is treated as available.
@@ -5684,6 +6199,10 @@ export interface Message {
   page_context?: PageContext | null;
   /** When `page_context` was captured; null whenever `page_context` is null. */
   captured_at?: string | null;
+  /** RFC 0038 D6: the exposed goal that wrote this message; null otherwise. */
+  taint_goal_id?: string | null;
+  /** RFC 0038 D6: the exposed goal invocation that wrote this message. */
+  taint_invocation_id?: string | null;
 }
 
 /** Summary of a dashboard conversation (list view). */
@@ -5792,6 +6311,16 @@ export interface PageContext {
   visible_summary?: string | null;
   /** Server-set: true when the payload exceeded the size budget and was trimmed. */
   truncated?: boolean;
+}
+
+/**
+ * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
+ * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
+ * changed: a title-only rename or a status-only archive/unarchive.
+ */
+export interface ConversationUpdateRequest {
+  title?: string;
+  status?: "active" | "archived";
 }
 
 /** Request body for POST /api/butlers/{name}/conversations. */
@@ -6028,7 +6557,8 @@ export type QaPatrolStatus =
   | "findings_dispatched"
   | "error"
   | "skipped_overlap"
-  | "suppressed";
+  | "suppressed"
+  | "halted";
 
 /**
  * Patrol reads stay open to a malformed or future database value so the UI can
@@ -6049,6 +6579,8 @@ export interface QaPatrolSummary {
   log_lookback_minutes: number;
   sources_polled: string[];
   error_detail: string | null;
+  /** The gate that stopped dispatch when status is "halted"; null otherwise. */
+  halt_reason?: string | null;
 }
 
 /** A single finding record from a patrol — GET /api/qa/patrols/:id/findings */
@@ -6152,8 +6684,18 @@ export interface QaActiveBreakdown {
 }
 
 /** QA staffer summary — GET /api/qa/summary */
+export interface QaLoopCondition {
+  source: string;
+  summary: string | null;
+  cause: string | null;
+  first_detected_at: string | null;
+}
+
 export interface QaSummary {
   staffer_status: string;
+  /** Active remediation-loop liveness conditions; non-empty means never "healthy". */
+  loop_conditions?: QaLoopCondition[];
+  loop_conditions_known?: boolean;
   last_patrol_at: string | null;
   next_patrol_at: string | null;
   last_patrol: QaPatrolSummary | null;
@@ -6168,9 +6710,15 @@ export interface QaSummary {
     /** Consecutive-failure threshold that trips the breaker. Optional for
      * fixture back-compat; the real endpoint always sets it (default 5). */
     threshold?: number;
+    /** Why it tripped (a cause code, or "mixed"); null while closed. */
+    dominant_cause?: string | null;
+    cause_counts?: Record<string, number>;
+    /** When the next half-open probe is admitted; null while closed. */
+    next_probe_at?: string | null;
   };
   credentials_status: {
     gh_token_present: boolean | null;
+    gh_write_token_present?: boolean | null;
     git_author_name_present: boolean | null;
     git_author_email_present: boolean | null;
     provisioning_hint: string | null;
@@ -6242,7 +6790,8 @@ export interface QaInvestigationNotes {
 /** Pull request summary embedded in a QA case dossier. */
 export interface QaPrSummary {
   number: number;
-  state: "drafted" | "open" | "merged" | "closed";
+  /** Null means known PR identity with unavailable lifecycle, not absence. */
+  state: "drafted" | "open" | "merged" | "closed" | null;
   title: string;
   branch: string;
   ci_status: "passing" | "failing" | "pending" | "unknown" | null;
@@ -6278,8 +6827,11 @@ export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage:
     "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
-  /** Whether a committed proposal was published as a PR, retained locally after publication failure, or absent. */
-  proposal_state: "none" | "unpublished" | "published";
+  /**
+   * Whether a committed proposal was published as a PR, retained locally with ledger proof that no
+   * PR exists ("unpublished"), retained with an unresolved publication outcome ("ambiguous"), or absent.
+   */
+  proposal_state: "none" | "unpublished" | "ambiguous" | "published";
   /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
   proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
@@ -6361,6 +6913,9 @@ export interface CircuitBreakerAttempt {
   id: string;
   status: string;
   closed_at: string;
+  /** Cause code and the first line of the attempt's own error text. */
+  reason_class?: string | null;
+  reason_text?: string | null;
 }
 
 /** Current state of the QA dispatch circuit breaker — GET /api/qa/circuit-breaker */
@@ -6369,12 +6924,17 @@ export interface CircuitBreakerStatus {
   threshold: number;
   recent_statuses: string[];
   recent_attempts: CircuitBreakerAttempt[];
+  dominant_cause?: string | null;
+  cause_counts?: Record<string, number>;
+  opened_at?: string | null;
+  next_probe_at?: string | null;
 }
 
 /** Response from POST /api/qa/circuit-breaker/reset */
 export interface CircuitBreakerResetResponse {
   reset: boolean;
   message: string;
+  refusal_reason?: string | null;
 }
 
 /** QA repository configuration — GET /api/qa/settings/repo */
@@ -6676,21 +7236,26 @@ export interface ChroniclerSourceStateRow {
 
 /**
  * One lane's balance for the target day, from GET /api/chronicler/balance.
- * Baseline is a trailing rolling-window mean over the same materialized
- * per-day rollups the backend's daily rollup job writes.
+ * Baseline is the owner's personal band (median and MAD over the lookback) of the same
+ * materialized per-day rollups the backend's daily rollup job writes.
  */
 export interface ChroniclerBalanceLaneRow {
   lane: string;
   seconds: number;
   /**
-   * Trailing rolling-window mean seconds for this lane, or null when there is
-   * no materialized rollup history yet within the lookback window — NOT the
-   * same as a real 0 baseline.
+   * Band center (median seconds) for this lane, or null when there is too
+   * little materialized rollup history in the lookback window — NOT the same
+   * as a real 0 baseline.
    */
   baseline_seconds: number | null;
   /** `seconds - baseline_seconds`. Null whenever `baseline_seconds` is null. */
   delta_seconds: number | null;
   baseline_sample_days: number;
+  /** Scorer state: `within` / `above` / `below` / `insufficient_history`. */
+  state?: string | null;
+  /** Personal-baseline band edges in seconds; null without a ready band. */
+  band_low?: number | null;
+  band_high?: number | null;
   /**
    * True when a source contributing to this lane is `feeder_dark` for the
    * target day. Render as "data unavailable" — never as a truthful zero/delta.
@@ -6708,7 +7273,7 @@ export interface ChroniclerBalanceResponse {
    * - `"not_yet_materialized"` — no rows yet (legitimate absence, not error);
    * - `"unknown"` — the query failed (see `balance_source_error`).
    */
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   baseline_lookback_days: number;
   /** Empty when `status !== "materialized"`; one entry per lane otherwise. */
   lanes: ChroniclerBalanceLaneRow[];
@@ -6733,10 +7298,15 @@ export interface ChroniclerBalanceParams {
 /** One lane's balance for one day within a trends window. */
 export interface ChroniclerTrendLaneDay {
   local_date: string;
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   seconds: number;
   baseline_seconds: number | null;
   delta_seconds: number | null;
+  /** Scorer state for a materialized day; null otherwise. */
+  state?: string | null;
+  band_low?: number | null;
+  band_high?: number | null;
+  baseline_sample_days?: number;
   unavailable: boolean;
 }
 
@@ -6745,8 +7315,8 @@ export interface ChroniclerTrendLaneSeries {
   lane: string;
   /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
   days: ChroniclerTrendLaneDay[];
-  /** Trailing run of consecutive non-zero-activity days ending at end_date. */
-  streak_days: number;
+  /** Null while a visible day is pending repair; otherwise trailing non-zero run. */
+  streak_days: number | null;
 }
 
 /** One day where a lane's total deviated sharply from its baseline. */
@@ -6834,7 +7404,7 @@ export interface ChroniclerRollupDay {
    *   {@link ChroniclerRollupsResponse.rollups_source_error}); this day's
    *   `lanes`/`flags` are empty because nothing could be read.
    */
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   lanes: ChroniclerRollupLaneRow[];
   flags: ChroniclerRollupFlagRow[];
   /**
@@ -7664,6 +8234,21 @@ export interface BackupRunFacts {
   reason: string | null;
 }
 
+/** Most recent off-node restic copy of the dump directory (bu-ivuf9u).
+ *
+ * `"disabled"` means this deployment runs no copy job; `"unknown"` means it
+ * should but no readable receipt exists. `stale` is true when an enabled copy
+ * has not reported any run within 36 hours. `reason` is a fixed vocabulary
+ * (or "unrecognized reason"), and `snapshot_id` is hex or null.
+ */
+export interface OffsiteCopyFacts {
+  result: "success" | "failed" | "unknown" | "disabled";
+  finished_at: string | null;
+  reason: string | null;
+  snapshot_id: string | null;
+  stale: boolean;
+}
+
 /** Backup recency, verified artifact health, run outcome, and drill facts.
  *
  * `last_backup_status`/`backup_stale`/`restore_drill`/`last_run` are optional
@@ -7681,6 +8266,8 @@ export interface BackupFacts {
   backup_stale?: boolean;
   last_run?: BackupRunFacts;
   restore_drill?: RestoreDrillFacts;
+  /** Absent on older backends; rendered as "not configured". */
+  offsite_copy?: OffsiteCopyFacts;
 }
 
 /** A single external actor that has received data from this instance. */
@@ -7698,13 +8285,25 @@ export interface EgressCatalog {
   catalog_covers_from: string | null;
 }
 
-/** Per-butler liveness and session snapshot. */
+/**
+ * Per-butler liveness and session snapshot (REQ-system-overview-page-007).
+ *
+ * `last_heartbeat_at` / `heartbeat_age_seconds` are the last successfully
+ * verified healthy receiver observation; `last_probe_at` is the latest attempt
+ * and implies nothing about health. Classify availability from
+ * `observation_state` and `effective_eligibility`, never from age alone.
+ */
 export interface ButlerHeartbeat {
   name: string;
   last_heartbeat_at: string | null;
+  last_probe_at: string | null;
   last_session_at: string | null;
   active_session_count: number;
   heartbeat_age_seconds: number | null;
+  observation_state: "healthy" | "stale" | "unavailable" | "observer_unknown";
+  administrative_policy: "active" | "paused" | "quarantined" | "review_required" | "unknown";
+  route_compatibility: "compatible" | "incompatible" | "unknown";
+  effective_eligibility: "eligible" | "paused" | "ineligible" | "unknown";
   error?: string | null;
 }
 
@@ -9189,6 +9788,32 @@ export interface EntityActivityResponse {
   offset: number;
   degraded: boolean;
   degraded_reason: "chronicler_activity_unavailable" | null;
+  /** True when the Chronicler read hit its 500-episode cap; total and bins are lower bounds. */
+  chronicler_truncated: boolean;
+}
+
+/** Contribution selector for GET /api/relationship/entities/{id}/activity. */
+export type EntityActivitySource = "all" | "relationship" | "chronicler";
+
+/** One active commitment between the owner and an entity (safe projection). */
+export interface EntityCommitment {
+  kind: "promise" | "waiting_for" | "follow_up" | "obligation" | "decision";
+  direction: "owner_to_other" | "other_to_owner";
+  summary: string;
+  deadline: string | null;
+  escalation_level: "L0" | "L1" | "L2" | "L3";
+  fingerprint: string;
+}
+
+/** Response for GET /api/relationship/entities/{id}/commitments. */
+export interface EntityCommitmentsResponse {
+  items: EntityCommitment[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** True only when the commitment source could not be read; items are then empty. */
+  degraded: boolean;
+  degraded_reason: "commitment_source_unavailable" | null;
 }
 
 /**
@@ -9205,6 +9830,8 @@ export interface ActivityBinsResponse {
   degraded: boolean;
   /** Fixed content-blind failure discriminator; never an upstream error message. */
   degraded_reason: "chronicler_activity_unavailable" | null;
+  /** True when the Chronicler read hit its 500-episode cap; counts are lower bounds. */
+  chronicler_truncated: boolean;
 }
 
 /** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */
@@ -10081,6 +10708,9 @@ export interface InsightCandidate {
   status: string;
   delivered_at: string | null;
   delivery_attempt_count: number;
+  /** RFC 0038 D6: the exposed goal that proposed this candidate; null otherwise. */
+  taint_goal_id?: string | null;
+  taint_invocation_id?: string | null;
 }
 
 /** Query parameters for GET /api/switchboard/insights. */
@@ -10377,4 +11007,26 @@ export interface FactAttribution {
 
 export interface CandidateIdentityFact extends ContactFact {
   validity: "candidate";
+}
+
+/** Persisted work evidence for the dashboard API's supervised background loops. */
+export interface BackgroundJobTransition {
+  state: string;
+  reason: string;
+  occurred_at: string;
+}
+export interface BackgroundJob {
+  name: string;
+  job_class: "periodic" | "continuous";
+  state: "starting" | "ok" | "degraded" | "error" | "disabled" | "unknown" | "stale";
+  reason: string | null;
+  last_success_at: string | null;
+  last_progress_at: string | null;
+  error_count: number;
+  consecutive_failures: number;
+  transitions: BackgroundJobTransition[];
+}
+export interface BackgroundJobFacts {
+  jobs_available: boolean;
+  jobs: BackgroundJob[];
 }

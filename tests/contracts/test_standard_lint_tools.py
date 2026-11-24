@@ -270,6 +270,24 @@ def test_install_refuses_unverified_or_unsafe_archives(
             lint_tools.extract_binary(archive, "actionlint")
             pytest.fail(f"accepted a {label} archive")
 
+    # A pin that names an exact in-archive path (promtool ships in a versioned directory) reads
+    # only that member; the path must end in the binary and stay inside the archive.
+    wrapped = _tar_gz(_file("prom-1.0/promtool", b"tool"), _file("prom-1.0/prometheus", b"other"))
+    assert lint_tools.extract_binary(wrapped, "promtool", "prom-1.0/promtool") == b"tool"
+    for bad_member in ("prom-1.0/prometheus", "../prom-1.0/promtool", "/prom-1.0/promtool"):
+        with pytest.raises(lint_tools.ToolError):
+            lint_tools.extract_binary(wrapped, "promtool", bad_member)
+    with pytest.raises(lint_tools.ToolError):  # a nested file is not top-level without its pin
+        lint_tools.extract_binary(wrapped, "promtool")
+    for tool in ("gitleaks", "actionlint", "promtool"):
+        assert tool in lint_tools.load_pins()
+    # Size bounds are global unless a pin names its own; only promtool does.
+    with pytest.raises(lint_tools.ToolError, match="exceeds 3 bytes"):
+        lint_tools.extract_binary(wrapped, "promtool", "prom-1.0/promtool", 3)
+    all_pins = lint_tools.load_pins()
+    assert "max_archive_bytes" not in all_pins["gitleaks"]
+    assert all_pins["promtool"]["max_archive_bytes"] > lint_tools.MAX_ARCHIVE_BYTES
+
     # Exercise the actual installer and download digest check with disposable
     # release bytes; a restored cache is advisory, never installation authority.
     pins = lint_tools.load_pins()
@@ -427,7 +445,7 @@ def test_every_secret_allowance_is_rule_scoped_to_exact_paths(
     # The reviewed config: every allowance names exact files, so the self-test can plant a
     # real-shaped value in each one and require gitleaks to catch it.
     paths = lint_tools.allowance_paths()
-    assert ".github/actions/ci-shard-watchdog-capture/dist/index.js" in paths
+    assert "scripts/requirement-trace-baseline.json" in paths
     assert all((REPO_ROOT / path).is_file() for path in paths)
 
     config = tmp_path / "gitleaks.toml"

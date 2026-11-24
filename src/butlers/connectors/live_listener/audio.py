@@ -241,43 +241,6 @@ def resolve_device(spec: MicDeviceSpec) -> DeviceInfo:
     )
 
 
-def validate_devices(
-    config: LiveListenerConfig,
-) -> tuple[list[tuple[MicDeviceSpec, DeviceInfo]], list[tuple[MicDeviceSpec, str]]]:
-    """Validate all configured devices against PortAudio.
-
-    Args:
-        config: Full connector configuration.
-
-    Returns:
-        A tuple of (valid_devices, errors) where:
-        - valid_devices is a list of (spec, DeviceInfo) pairs
-        - errors is a list of (spec, error_message) pairs for failures
-    """
-    valid: list[tuple[MicDeviceSpec, DeviceInfo]] = []
-    errors: list[tuple[MicDeviceSpec, str]] = []
-
-    for spec in config.devices:
-        try:
-            info = resolve_device(spec)
-            valid.append((spec, info))
-            logger.info(
-                "Validated mic device '%s': PortAudio index=%d name='%s'",
-                spec.name,
-                info.index,
-                info.name,
-            )
-        except (DeviceError, RuntimeError) as exc:
-            logger.error(
-                "Mic device '%s' not found: %s",
-                spec.name,
-                exc,
-            )
-            errors.append((spec, str(exc)))
-
-    return valid, errors
-
-
 # ---------------------------------------------------------------------------
 # MicPipeline
 # ---------------------------------------------------------------------------
@@ -566,42 +529,6 @@ class MicPipeline:
                 )
             self._stream = None
             self._state.connected = False
-
-
-# ---------------------------------------------------------------------------
-# Convenience: build pipelines from config
-# ---------------------------------------------------------------------------
-
-
-def build_pipelines(
-    config: LiveListenerConfig,
-    on_frame_factory: Callable[[str], Callable[[bytes], None]] | None = None,
-) -> tuple[list[MicPipeline], list[str]]:
-    """Enumerate and validate devices, return ready MicPipeline instances.
-
-    Args:
-        config: Full connector configuration.
-        on_frame_factory: Optional factory that receives a mic name and
-            returns an ``on_frame`` callback for that mic.  If ``None``,
-            pipelines are created without a frame callback.
-
-    Returns:
-        A tuple of (pipelines, error_messages) where:
-        - pipelines: list of ready-to-start MicPipeline objects.
-        - error_messages: list of device-resolution error strings for failed
-          devices.
-    """
-    valid_devices, errors = validate_devices(config)
-    error_messages = [f"mic '{s.name}': {msg}" for s, msg in errors]
-
-    pipelines: list[MicPipeline] = []
-    for spec, _info in valid_devices:
-        on_frame: Callable[[bytes], None] | None = None
-        if on_frame_factory is not None:
-            on_frame = on_frame_factory(spec.name)
-        pipelines.append(MicPipeline(spec=spec, config=config, on_frame=on_frame))
-
-    return pipelines, error_messages
 
 
 # ---------------------------------------------------------------------------

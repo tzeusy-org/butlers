@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 from butlers.calendar_action_result import reconstruct_action_result as reconstruct_action_result
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION
+from butlers.core.temporal.calendar_source_roles import classify_calendar_source
 from butlers.core.tool_catalog import RecipientParameters
+from butlers.core.tool_presentation_inventory import ALL_CATEGORIES
 from butlers.modules.base import Module, ToolMeta, group_enabled, tool_registrar
 from butlers.modules.calendar_response import CalendarResponseCoordinator, CalendarResponseError
 from butlers.modules.calendar_response_fence import RESPONSE_FENCE_OWNERS, CalendarResponseFence
@@ -151,7 +153,6 @@ from .models import _normalize_recurrence_rule as _normalize_recurrence_rule
 from .models import _resolve_all_day_flag as _resolve_all_day_flag
 from .mutations import MutationsMixin
 from .oauth import _extract_google_credential_value as _extract_google_credential_value
-from .oauth import _GoogleOAuthClient as _GoogleOAuthClient
 from .oauth import _GoogleOAuthCredentials as _GoogleOAuthCredentials
 from .projection import ProjectionMixin
 from .provider import CalendarProvider as CalendarProvider
@@ -275,6 +276,7 @@ class CalendarModule(
             metadata["calendar_response_fence_status"] = ToolMeta(
                 arg_sensitivities={"request": True},
                 canonical_name="calendar_response_fence_status",
+                approval_policy={"mode": "default"},
                 module_name="calendar",
                 group_name="direct",
                 namespace="calendar.response",
@@ -289,6 +291,8 @@ class CalendarModule(
                 idempotency="none",
                 owner_authority=False,
                 recipient_params=RecipientParameters(),
+                # Calendar event text can carry any S1 category (module-calendar).
+                categories=ALL_CATEGORIES,
             )
         if not self.canonical_approval_preparers():
             return metadata
@@ -303,6 +307,7 @@ class CalendarModule(
                 "_command_digest": True,
             },
             canonical_name="calendar_respond",
+            approval_policy={"mode": "always_per_event"},
             module_name="calendar",
             group_name="response",
             namespace="calendar.response",
@@ -325,6 +330,7 @@ class CalendarModule(
             ),
             read_stores=("calendar_events", "calendar_event_instances", "external:calendar"),
             write_stores=("calendar_action_log", "calendar_events", "external:calendar"),
+            categories=ALL_CATEGORIES,
         )
         return metadata
 
@@ -619,6 +625,19 @@ class CalendarModule(
             }
             if account_email:
                 metadata["account_email"] = account_email
+            # The role comes from calendarList facts only (REQ-module-calendar-034); the facts
+            # are kept so the migration's backfill and a later reclassification can see them.
+            primary = cal.get("primary") is True
+            access_role = cal.get("accessRole")
+            time_role, _basis = classify_calendar_source(
+                calendar_id=cal_id,
+                primary=primary,
+                access_role=access_role if isinstance(access_role, str) else None,
+                is_butlers_calendar=is_butlers_cal,
+            )
+            metadata["primary"] = primary
+            if isinstance(access_role, str):
+                metadata["access_role"] = access_role
             try:
                 await self._ensure_calendar_source(
                     source_key=source_key,
@@ -630,6 +649,7 @@ class CalendarModule(
                     display_name=display_name,
                     writable=writable,
                     metadata=metadata,
+                    time_role=time_role,
                 )
             except Exception as exc:
                 logger.debug("Failed to register calendar source '%s': %s", source_key, exc)

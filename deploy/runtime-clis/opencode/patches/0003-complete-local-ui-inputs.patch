@@ -1,0 +1,99 @@
+--- /dev/null
++++ b/packages/ui/script/provider-icons.test.ts
+@@ -0,0 +1,28 @@
++import { expect, test } from "bun:test"
++import fs from "node:fs/promises"
++import os from "node:os"
++import path from "node:path"
++import { writeProviderIcons } from "./provider-icons"
++
++test("explicit local full catalogue and logos do not contact the network", async () => {
++  const root = await fs.mkdtemp(path.join(os.tmpdir(), "provider-icons-"))
++  try {
++    const catalogue = path.join(root, "api.json")
++    const logos = path.join(root, "logos")
++    const output = path.join(root, "output")
++    await fs.mkdir(logos); await fs.mkdir(output)
++    await fs.writeFile(catalogue, JSON.stringify({ alpha: { models: { retained: {} } }, beta: { models: {} } }))
++    await fs.writeFile(path.join(logos, "alpha.svg"), "<svg>alpha</svg>")
++    await fs.writeFile(path.join(logos, "beta.svg"), "<svg>beta</svg>")
++    const input = { catalogue, logos, output, baseURL: "http://127.0.0.1:1/no-fallback" }
++    expect(await writeProviderIcons(input)).toBe(2)
++    expect(await fs.readFile(path.join(output, "alpha.svg"), "utf8")).toBe("<svg>alpha</svg>")
++    await expect(writeProviderIcons({ ...input, logos: undefined })).rejects.toThrow("supplied together")
++    await fs.unlink(path.join(logos, "beta.svg"))
++    await expect(writeProviderIcons(input)).rejects.toThrow()
++    await fs.writeFile(path.join(logos, "beta.svg"), "  ")
++    await expect(writeProviderIcons(input)).rejects.toThrow("Empty provider logo")
++    await fs.writeFile(catalogue, JSON.stringify({ "../foreign": {} }))
++    await expect(writeProviderIcons(input)).rejects.toThrow("Invalid models.dev")
++  } finally { await fs.rm(root, { recursive: true, force: true }) }
++})
+--- /dev/null
++++ b/packages/ui/script/provider-icons.ts
+@@ -0,0 +1,37 @@
++import fs from "node:fs/promises"
++import path from "node:path"
++
++/** Explicit complete offline inputs never fall back to a live catalogue or logo. */
++export async function writeProviderIcons(input: {
++  catalogue?: string
++  logos?: string
++  baseURL: string
++  output: string
++}) {
++  if (Boolean(input.catalogue) !== Boolean(input.logos))
++    throw new Error("Local models catalogue and complete logo directory must be supplied together")
++  const catalogue = input.catalogue
++    ? JSON.parse(await fs.readFile(input.catalogue, "utf8"))
++    : await fetch(`${input.baseURL}/api.json`).then((response) => {
++        if (!response.ok) throw new Error("models.dev catalogue request failed")
++        return response.json()
++      })
++  if (catalogue === null || typeof catalogue !== "object" || Array.isArray(catalogue))
++    throw new Error("Invalid models.dev provider catalogue")
++  const providers = Object.keys(catalogue)
++  if (providers.length === 0 || providers.some((provider) => !/^[a-zA-Z0-9._-]+$/.test(provider)))
++    throw new Error("Invalid models.dev provider catalogue")
++  // Read every input before writing; a partial set is not a full UI population.
++  const logos = await Promise.all(providers.map(async (provider) => {
++    const svg = input.logos
++      ? await fs.readFile(path.join(input.logos, `${provider}.svg`), "utf8")
++      : await fetch(`${input.baseURL}/logos/${provider}.svg`).then((response) => {
++          if (!response.ok) throw new Error(`models.dev logo request failed for ${provider}`)
++          return response.text()
++        })
++    if (!svg.trim()) throw new Error(`Empty provider logo: ${provider}`)
++    return { provider, svg }
++  }))
++  await Promise.all(logos.map(({ provider, svg }) => fs.writeFile(path.join(input.output, `${provider}.svg`), svg)))
++  return providers.length
++}
+--- a/packages/ui/vite.config.ts
++++ b/packages/ui/vite.config.ts
+@@ -4 +4 @@
+-import fs from "fs"
++import { writeProviderIcons } from "./script/provider-icons"
+@@ -42 +42 @@
+-      void fetchProviderIcons()
++      return fetchProviderIcons()
+@@ -47,12 +47,7 @@
+-async function fetchProviderIcons() {
+-  const url = process.env.OPENCODE_MODELS_URL || "https://models.dev"
+-  const providers = await fetch(`${url}/api.json`)
+-    .then((res) => res.json())
+-    .then((json) => Object.keys(json))
+-  await Promise.all(
+-    providers.map((provider) =>
+-      fetch(`${url}/logos/${provider}.svg`)
+-        .then((res) => res.text())
+-        .then((svg) => fs.writeFileSync(`./src/assets/icons/provider/${provider}.svg`, svg)),
+-    ),
+-  )
++function fetchProviderIcons() {
++  return writeProviderIcons({
++    catalogue: process.env.MODELS_DEV_API_JSON,
++    logos: process.env.OPENCODE_MODELS_LOGOS,
++    baseURL: process.env.OPENCODE_MODELS_URL || "https://models.dev",
++    output: "./src/assets/icons/provider",
++  })

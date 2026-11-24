@@ -2,6 +2,13 @@
 
 Every connector must implement ALL of these. Read `openspec/specs/connector-base-spec/spec.md` for the canonical source. This is a quick-reference checklist of what's easy to miss.
 
+Static type, primary/secondary source pairs and any stored-event spelling belong
+to one canonical frozen descriptor row. Use `connector_descriptor()` in runtime
+configuration and emitters; never reintroduce identity environment variables.
+The row must match existing wire contracts and cannot authorize a new pair,
+credential source or registration. Endpoint discovery, operational variables,
+per-account configuration and secret custody remain runtime obligations.
+
 ## Obligations Checklist
 
 ### 1. ingest.v1 Envelope (every event)

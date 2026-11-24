@@ -1,14 +1,4 @@
-"""Tests for infra default-credential detection (check_infra_default_creds).
-
-The function lives in butlers.db alongside is_hardened_posture().
-
-Scenarios covered:
-1. Known-default credentials in dev posture → warns, does NOT raise.
-2. Known-default credentials in hardened posture → raises RuntimeError.
-3. All credentials set to non-default values → neither warns nor raises.
-4. Partial defaults (some set, some absent) → appropriate behaviour per posture.
-5. Absent env vars are treated as defaults (mirrors docker-compose :-fallback).
-"""
+"""Known-default diagnostics remain independent of runtime role authority."""
 
 from __future__ import annotations
 
@@ -68,10 +58,9 @@ def _own_warning_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
 def test_known_defaults_dev_posture_warns_not_raises(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Known-default infra creds under dev posture must warn, never raise."""
+    """Known-default infra creds under the retained diagnostic must warn, never raise."""
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
     _clear_infra_creds(monkeypatch)  # absent → treated as default
 
     with caplog.at_level(logging.WARNING, logger="butlers.db"):
@@ -93,7 +82,6 @@ def test_explicit_known_default_values_dev_posture_warns(
     """Explicitly setting credentials to known-default values also triggers warning in dev."""
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
     monkeypatch.setenv("MINIO_ROOT_USER", "minioadmin")
     monkeypatch.setenv("MINIO_ROOT_PASSWORD", "minioadmin")
     monkeypatch.setenv("GF_SECURITY_ADMIN_USER", "admin")
@@ -113,40 +101,31 @@ def test_explicit_known_default_values_dev_posture_warns(
 # ---------------------------------------------------------------------------
 
 
-def test_known_defaults_hardened_posture_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Known-default infra creds under hardened posture must raise RuntimeError."""
+def test_known_defaults_warn_without_role_posture(monkeypatch, caplog) -> None:
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
     _clear_infra_creds(monkeypatch)
-
-    with pytest.raises(RuntimeError, match="known-default"):
+    with caplog.at_level(logging.WARNING, logger="butlers.db"):
         check_infra_default_creds()
+    assert len(_own_warning_messages(caplog)) == 4
 
 
-def test_known_defaults_hardened_posture_error_names_offenders(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The RuntimeError message must identify the offending credentials."""
+def test_default_warning_names_only_offending_service_keys(monkeypatch, caplog) -> None:
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
-    monkeypatch.setenv("MINIO_ROOT_USER", "minioadmin")  # default
-    monkeypatch.setenv("MINIO_ROOT_PASSWORD", "minioadmin")  # default
-    monkeypatch.setenv("GF_SECURITY_ADMIN_USER", "grafana-ops")  # non-default
-    monkeypatch.setenv("GF_SECURITY_ADMIN_PASSWORD", "grafana-ops")  # non-default
-
-    with pytest.raises(RuntimeError) as exc_info:
+    monkeypatch.setenv("MINIO_ROOT_USER", "minioadmin")
+    monkeypatch.setenv("MINIO_ROOT_PASSWORD", "minioadmin")
+    monkeypatch.setenv("GF_SECURITY_ADMIN_USER", "grafana-ops")
+    monkeypatch.setenv("GF_SECURITY_ADMIN_PASSWORD", "synthetic-private-password")
+    with caplog.at_level(logging.WARNING, logger="butlers.db"):
         check_infra_default_creds()
-
-    msg = str(exc_info.value)
+    msg = "\n".join(_own_warning_messages(caplog))
     assert "MINIO_ROOT_USER" in msg
     assert "MINIO_ROOT_PASSWORD" in msg
-    # Non-default credentials must NOT appear in the error message.
     assert "GF_SECURITY_ADMIN_USER" not in msg
     assert "GF_SECURITY_ADMIN_PASSWORD" not in msg
+    assert "minioadmin" not in msg
+    assert "synthetic-private-password" not in msg
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +136,9 @@ def test_known_defaults_hardened_posture_error_names_offenders(
 def test_strong_creds_dev_posture_no_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Non-default credentials in dev posture must not trigger any warning."""
+    """Non-default credentials in the retained diagnostic must not trigger any warning."""
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.delenv("BUTLERS_POSTURE", raising=False)
     _set_strong_infra_creds(monkeypatch)
 
     with caplog.at_level(logging.WARNING, logger="butlers.db"):
@@ -173,10 +151,9 @@ def test_strong_creds_dev_posture_no_warning(
 def test_strong_creds_hardened_posture_no_raise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Non-default credentials in hardened posture must not raise."""
+    """Non-default credentials in the retained diagnostic must not raise."""
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
     _set_strong_infra_creds(monkeypatch)
 
     check_infra_default_creds()  # must NOT raise
@@ -187,18 +164,13 @@ def test_strong_creds_hardened_posture_no_raise(
 # ---------------------------------------------------------------------------
 
 
-def test_absent_cred_treated_as_default_in_hardened(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Absent env var is treated as the known default (mirrors docker-compose :-fallback)."""
+def test_absent_compose_credential_retains_default_diagnostic(monkeypatch, caplog) -> None:
     from butlers.db import check_infra_default_creds
 
-    monkeypatch.setenv("BUTLERS_POSTURE", "hardened")
-    # Set all to strong except one absent — should still raise.
-    monkeypatch.setenv("MINIO_ROOT_USER", "strong-user")
-    monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)  # absent → default
-    monkeypatch.setenv("GF_SECURITY_ADMIN_USER", "grafana-ops")
-    monkeypatch.setenv("GF_SECURITY_ADMIN_PASSWORD", "str0ng-grafana-pw")
-
-    with pytest.raises(RuntimeError, match="MINIO_ROOT_PASSWORD"):
+    _set_strong_infra_creds(monkeypatch)
+    monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)
+    with caplog.at_level(logging.WARNING, logger="butlers.db"):
         check_infra_default_creds()
+    messages = _own_warning_messages(caplog)
+    assert len(messages) == 1
+    assert "MINIO_ROOT_PASSWORD" in messages[0]

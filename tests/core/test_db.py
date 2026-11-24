@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 import uuid
 
 import asyncpg
@@ -67,6 +68,25 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
     # connect() returns usable pool
     pool = await db.connect()
     assert pool is not None and db.pool is pool and isinstance(pool, asyncpg.Pool)
+    async with pool.acquire() as live:  # bu-dhloi1.58: a partitioned peer is detected
+        sock = live._transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT) == 60_000
+        shown = {
+            name: await live.fetchval(f"SHOW {name}")
+            for name in (
+                "tcp_keepalives_idle",
+                "tcp_keepalives_interval",
+                "tcp_keepalives_count",
+                "tcp_user_timeout",
+            )
+        }
+        assert shown == {
+            "tcp_keepalives_idle": "30",
+            "tcp_keepalives_interval": "10",
+            "tcp_keepalives_count": "3",
+            "tcp_user_timeout": "60000",
+        }
 
     # Pool executes queries
     assert await db.pool.fetchval("SELECT 1 + 1") == 2
@@ -92,7 +112,11 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
         await asyncpg.connect(
             dsn="postgresql://unreachable:synthetic@127.0.0.1:1/absent", timeout=1
         )
-    migrated = await create_migrated_test_pool(postgres_container, chains=["core"])
+    # The core chain lives in the butler schema, as in production: public.state is
+    # dashboard-owned and read-only to runtime roles (core_306).
+    migrated = await create_migrated_test_pool(
+        postgres_container, chains=["core"], schemas={"core": "general"}, pool_schema="general"
+    )
     try:
         async with migrated.acquire() as connection, connection.transaction():
             await connection.execute('SET LOCAL ROLE "butler_general_rw"')
@@ -100,13 +124,13 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
             assert int(await connection.fetchval("SHOW server_version_num")) >= 170000
             assert await connection.fetchval("SELECT vector_dims('[1,2,3]'::vector)") == 3
             await connection.execute(
-                "INSERT INTO public.state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
+                "INSERT INTO state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
                 {"probe": "committed"},
             )
         async with migrated.acquire() as readback, readback.transaction():
             await readback.execute('SET LOCAL ROLE "butler_general_rw"')
             assert await readback.fetchval(
-                "SELECT value FROM public.state WHERE key = 'ci_service_retirement'"
+                "SELECT value FROM general.state WHERE key = 'ci_service_retirement'"
             ) == {"probe": "committed"}
     finally:
         await migrated.close()

@@ -50,7 +50,13 @@ CHAIN_TABLES: dict[str, set[str]] = {
     # the chain ran without inventing a table expectation.
     "concierge": set(),
     "finance": {"accounts", "bills", "subscriptions", "transactions"},
-    "general": {"collections", "collection_items"},
+    "general": {
+        "collections",
+        "collection_items",
+        "projects",
+        "project_charter_versions",
+        "project_links",
+    },
     "health": {
         "conditions",
         # measurements created by health_001, dropped by health_002
@@ -107,6 +113,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "approval_events",
         "approval_rules",
         "pending_actions",
+        "standing_reply_template_drafts",
     },
     # contacts_source_accounts dropped by contacts_002 (verified-dead feature table)
     "contacts": {"contacts_source_links", "contacts_sync_state"},

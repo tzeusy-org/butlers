@@ -4,6 +4,7 @@
 
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value. Connector-side triage actions SHALL choose only the ingestion tier; they SHALL NOT select a target butler, and Tier 1 mail SHALL reach goal admission without classification or routing.
 
+ID: REQ-connector-gmail-005
 Source: RFC 0038 D1, D5; RFC 0003 disposition
 Scope: v1-mandatory
 
@@ -24,6 +25,15 @@ Scope: v1-mandatory
 - **THEN** the connector assigns Tier 2 with reason `bounce` or `auto_reply` on `butlers_connector_gmail_tier_assigned_total`, and the slim envelope carries `control.automated_kind` with the same value
 - **AND** a global rule resolving to `skip` still skips the message, while `route_to`, `low_priority_queue` and `pass_through` do not raise it to Tier 1
 - **AND** `Auto-Submitted: auto-generated` or `no`, `Precedence: bulk` or `list`, list mail, and missing or malformed headers are ordinary mail, so detection never drops a message
+
+#### Scenario: Automated replies and bounces carry bound, typed evidence
+- **WHEN** the connector submits an envelope with `control.automated_kind`
+- **THEN** it also carries `control.automated_evidence` with `original_sent`, `sender_was_recipient`, `sender_authenticated`, `away_until` and `failed_recipients`, and no other field
+- **AND** `original_sent` is true only when a Message-ID the message names (a bounce's attached original, `In-Reply-To` or `References`) is found by a live lookup in the owner's SENT mailbox; a lookup error or no match leaves it false
+- **AND** `sender_authenticated` reads only the topmost `Authentication-Results` header, only when its authserv-id is `mx.google.com`, and is true for a `dmarc=pass` whose own `header.from` is the From domain or a `dkim=pass` whose own `header.d` is the From domain or a parent of it, read per RFC 8601 (comments and quoted strings never carry a verdict) and never when DMARC failed or the header does not parse
+- **AND** an auto-reply's `away_until` is the one calendar date its subject or plain body states after a return cue (`until`, `back on`, `returning`…), set only when the sender was a recipient of the sent original and is authenticated, and only within 180 days after receipt; an ambiguous numeric date or two different dates yield none
+- **AND** a bounce's `failed_recipients` lists only `Final-Recipient` addresses with `Action: failed` and a `5.x.x` status that the sent original was addressed to, and only when the DSN sender is authenticated and is either `mailer-daemon@googlemail.com` or a sender whose domain equals, or is a subdomain of, the failed address's domain (a co-recipient's own signed DSN naming another address lists nobody); delays, `4.x.x` statuses and DSNs for mail the owner never sent (backscatter) list nobody
+- **AND** no subject, body or diagnostic text of the automated message leaves the connector in the evidence, and the envelope stays metadata-only
 
 #### Scenario: Tier 3 — skip
 - **WHEN** a message's triage action is `skip` or label exclusion matched

@@ -12,11 +12,16 @@ Issue: bu-44my
 
 from __future__ import annotations
 
+import importlib
 import inspect
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp import FastMCP
+
+from butlers.roster_imports import roster_module
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -48,6 +53,14 @@ class TestFinanceModuleLifecycle:
         await mod.on_startup(config=None, db=fake_db, blob_store=fake_blob_store)
 
         assert mod.blob_store is fake_blob_store
+
+    async def test_register_tools_records_daemon_butler_name(self):
+        """register_tools keeps the daemon's butler name as the blob-prefix origin."""
+        mod = importlib.import_module("butlers.modules._roster_finance").FinanceModule()
+        assert mod.butler_name == ""  # fails closed: an empty origin matches no prefix
+        await mod.register_tools(FastMCP(), config=None, db=MagicMock(), butler_name="finance")
+
+        assert mod.butler_name == "finance"
 
     async def test_blob_store_none_when_not_provided(self):
         """on_startup without blob_store leaves blob_store as None."""
@@ -91,22 +104,6 @@ class TestFinanceModuleLifecycle:
 # ---------------------------------------------------------------------------
 
 
-class _FakeMCP:
-    """Minimal MCP mock that collects registered tool callables."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, Any] = {}
-
-    def tool(self):
-        """Return a decorator that registers the wrapped function."""
-
-        def decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-
-        return decorator
-
-
 class _FakeModule:
     """Minimal FinanceModule stand-in for tools.register_tools."""
 
@@ -114,6 +111,7 @@ class _FakeModule:
         self._pool = pool
         self.blob_store = blob_store
         self.notify_fn = None  # matches FinanceModule.notify_fn
+        self.butler_name = "finance"  # set by FinanceModule.register_tools from the daemon
 
     def _get_pool(self):
         return self._pool
@@ -129,13 +127,13 @@ def _make_fake_data_import(import_fn=None) -> MagicMock:
 class TestImportTransactionsToolRegistration:
     """Tests for the import_transactions MCP tool registration."""
 
-    def _register_with_data_import(self, blob_store=None, import_fn=None):
+    async def _register_with_data_import(self, blob_store=None, import_fn=None):
         """Helper: register tools with a fake data_import module injected into sys.modules."""
         import sys
 
         from butlers.modules._roster_finance.tools import register_tools
 
-        mcp = _FakeMCP()
+        mcp = FastMCP()
         module = _FakeModule(blob_store=blob_store)
         fake_data_import = _make_fake_data_import(import_fn)
 
@@ -157,18 +155,32 @@ class TestImportTransactionsToolRegistration:
             else:
                 sys.modules[data_import_key] = original
 
-        return mcp, module, fake_data_import
+        return await registered_tools(mcp), module, fake_data_import
 
-    def test_import_transactions_tool_uses_storage_ref_not_file_path(self):
+    @pytest.mark.parametrize("column_map", ["{", "[]", '{"date": 1}'])
+    async def test_invalid_column_mapping_never_reads_blob(self, column_map):
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
+
+        blob_store = AsyncMock()
+        tools, _, _ = await self._register_with_data_import(
+            blob_store=blob_store, import_fn=import_transactions
+        )
+        result = await tools["import_transactions"](
+            storage_ref="s3://bucket/finance/file.csv", column_map=column_map
+        )
+        assert result["reason"] == "invalid_import_options"
+        blob_store.get.assert_not_awaited()
+
+    async def test_import_transactions_tool_uses_storage_ref_not_file_path(self):
         """import_transactions MCP tool parameter is storage_ref, not file_path."""
-        mcp, _, _ = self._register_with_data_import()
+        tools, _, _ = await self._register_with_data_import()
 
-        assert "import_transactions" in mcp.tools, (
+        assert "import_transactions" in tools, (
             "import_transactions tool was not registered — "
             "check that the fake data_import module is injected correctly"
         )
 
-        sig = inspect.signature(mcp.tools["import_transactions"])
+        sig = inspect.signature(tools["import_transactions"])
         params = list(sig.parameters.keys())
 
         assert "storage_ref" in params, f"Expected 'storage_ref' parameter, got: {params}"
@@ -176,19 +188,29 @@ class TestImportTransactionsToolRegistration:
             f"Old 'file_path' parameter should be removed, found it in: {params}"
         )
 
-    def test_import_transactions_storage_ref_is_required(self):
-        """storage_ref is a required (no default) parameter."""
-        mcp, _, _ = self._register_with_data_import()
+    async def test_no_finance_tool_reads_a_caller_supplied_local_path(self):
+        """CSV import is storage_ref-only: no registered tool accepts a filesystem path."""
+        tools, _, _ = await self._register_with_data_import()
 
-        sig = inspect.signature(mcp.tools["import_transactions"])
+        path_tools = sorted(
+            name for name, fn in tools.items() if "file_path" in inspect.signature(fn).parameters
+        )
+        assert path_tools == []
+        assert "import_transactions_from_file" not in tools
+
+    async def test_import_transactions_storage_ref_is_required(self):
+        """storage_ref is a required (no default) parameter."""
+        tools, _, _ = await self._register_with_data_import()
+
+        sig = inspect.signature(tools["import_transactions"])
         param = sig.parameters["storage_ref"]
         assert param.default is inspect.Parameter.empty
 
     async def test_import_transactions_returns_error_when_blob_store_none(self):
         """Returns a structured error dict when blob_store is not configured."""
-        mcp, _, _ = self._register_with_data_import(blob_store=None)
+        tools, _, _ = await self._register_with_data_import(blob_store=None)
 
-        result = await mcp.tools["import_transactions"](storage_ref="s3://bucket/file.csv")
+        result = await tools["import_transactions"](storage_ref="s3://bucket/file.csv")
 
         assert result["status"] == "blob_store_not_configured"
         assert "error" in result
@@ -198,36 +220,45 @@ class TestImportTransactionsToolRegistration:
         """When blob_store is configured, passes it to data_import.import_transactions."""
         fake_blob = MagicMock()
         import_fn = AsyncMock(return_value={"total": 5, "imported": 5, "skipped": 0})
-        mcp, _, fake_data_import = self._register_with_data_import(
+        tools, _, fake_data_import = await self._register_with_data_import(
             blob_store=fake_blob, import_fn=import_fn
         )
 
-        await mcp.tools["import_transactions"](storage_ref="s3://bucket/my-export.csv")
+        await tools["import_transactions"](storage_ref="s3://bucket/my-export.csv")
 
         fake_data_import.import_transactions.assert_awaited_once()
         call_kwargs = fake_data_import.import_transactions.call_args.kwargs
         assert call_kwargs.get("blob_store") is fake_blob
         assert call_kwargs.get("storage_ref") == "s3://bucket/my-export.csv"
+        # The blob-prefix origin is the daemon-provided butler name, never a tool argument.
+        assert call_kwargs.get("origin_butler") == "finance"
+        assert "origin_butler" not in inspect.signature(tools["import_transactions"]).parameters
 
     async def test_import_transactions_passes_optional_params_to_impl(self):
-        """Optional parameters (account_id, currency, dry_run) are forwarded."""
+        """Optional import and parsing parameters are forwarded."""
         fake_blob = MagicMock()
         import_fn = AsyncMock(return_value={"total": 3, "imported": 3})
-        mcp, _, fake_data_import = self._register_with_data_import(
+        tools, _, fake_data_import = await self._register_with_data_import(
             blob_store=fake_blob, import_fn=import_fn
         )
 
-        await mcp.tools["import_transactions"](
+        await tools["import_transactions"](
             storage_ref="s3://bucket/chase-export.csv",
             account_id="acct-123",
             currency="EUR",
             dry_run=True,
+            delimiter=";",
+            date_format="%d/%m/%Y",
+            amount_sign="positive_debit",
         )
 
         call_kwargs = fake_data_import.import_transactions.call_args.kwargs
         assert call_kwargs.get("account_id") == "acct-123"
         assert call_kwargs.get("currency") == "EUR"
         assert call_kwargs.get("dry_run") is True
+        assert call_kwargs.get("delimiter") == ";"
+        assert call_kwargs.get("date_format") == "%d/%m/%Y"
+        assert call_kwargs.get("amount_sign") == "positive_debit"
 
     async def test_import_transactions_column_map_parsed_from_json(self):
         """column_map JSON string is parsed to dict before forwarding."""
@@ -235,12 +266,12 @@ class TestImportTransactionsToolRegistration:
 
         fake_blob = MagicMock()
         import_fn = AsyncMock(return_value={"total": 1, "imported": 1})
-        mcp, _, fake_data_import = self._register_with_data_import(
+        tools, _, fake_data_import = await self._register_with_data_import(
             blob_store=fake_blob, import_fn=import_fn
         )
 
         col_map = json.dumps({"date": "Date", "merchant": "Description", "amount": "Amount"})
-        await mcp.tools["import_transactions"](
+        await tools["import_transactions"](
             storage_ref="s3://bucket/generic.csv",
             column_map=col_map,
         )
@@ -249,14 +280,117 @@ class TestImportTransactionsToolRegistration:
         assert isinstance(call_kwargs.get("column_map"), dict)
         assert call_kwargs["column_map"]["date"] == "Date"
 
-    def test_import_transactions_registered_when_data_import_module_present(self):
+    async def test_import_transactions_registered_when_data_import_module_present(self):
         """import_transactions IS registered when data_import module is importable.
 
         The data_import module has been implemented (bu-w5dv); this test verifies
         that the registration path works end-to-end when the module is present.
         """
-        mcp, _, _ = self._register_with_data_import(blob_store=MagicMock())
-        assert "import_transactions" in mcp.tools
+        tools, _, _ = await self._register_with_data_import(blob_store=MagicMock())
+        assert "import_transactions" in tools
+
+
+class TestCsvParsingOptions:
+    @pytest.mark.parametrize(
+        ("csv", "options", "expected"),
+        [
+            (
+                "Date;Payee;Amount\n17/01/2026;Bookshop;12.34\n18/01/2026;Refund;-2.00\n",
+                {"delimiter": ";", "date_format": "%d/%m/%Y", "amount_sign": "positive_debit"},
+                [
+                    ("2026-01-17T00:00:00+00:00", "debit", "12.34"),
+                    ("2026-01-18T00:00:00+00:00", "credit", "2.00"),
+                ],
+            ),
+            (
+                "Date|Payee|Charge|Return\n2026-01-17|Bookshop|12.34|\n2026-01-18|Refund||2.00\n",
+                {
+                    "delimiter": "|",
+                    "amount_sign": "split_cols",
+                    "column_map": {"debit_col": "Charge", "credit_col": "Return"},
+                },
+                [
+                    ("2026-01-17T00:00:00+00:00", "debit", "12.34"),
+                    ("2026-01-18T00:00:00+00:00", "credit", "2.00"),
+                ],
+            ),
+            (
+                "Date\tPayee\tAmount\tDebit\tCredit\n2026-01-17 09:30 +0200\tBookshop\t12.34\t\t99.00\n",
+                {
+                    "delimiter": "\t",
+                    "date_format": "%Y-%m-%d %H:%M %z",
+                    "amount_sign": "positive_debit",
+                },
+                [("2026-01-17T07:30:00+00:00", "debit", "12.34")],
+            ),
+        ],
+        ids=["semicolon-day-first", "pipe-split-columns", "tab-signed-over-automatic-split"],
+    )
+    async def test_blob_preview_uses_explicit_options(self, csv, options, expected):
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
+
+        blob = AsyncMock(scheme="s3", bucket="bucket")
+        blob.get.return_value = csv.encode()
+        result = await import_transactions(
+            fake_pool(fetch=[], fetchrow=None, fetchval=None),
+            blob,
+            "s3://bucket/finance/statement.csv",
+            origin_butler="finance",
+            dry_run=True,
+            **options,
+        )
+        assert result["parse_errors"] == 0
+        assert [
+            (row["posted_at"], row["direction"], row["amount"]) for row in result["preview"]
+        ] == expected
+        assert all(row["is_duplicate"] is False for row in result["preview"])
+        blob.get.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [
+            ("delimiter", "ab"),
+            ("amount_sign", "unknown"),
+            ("amount_sign", "split_cols"),
+            ("date_format", "%Q"),
+            ("date_format", "%Y%Y"),
+            ("date_format", "   "),
+        ],
+    )
+    async def test_invalid_options_refuse_before_blob_read(self, option, value):
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
+
+        blob = AsyncMock(scheme="s3", bucket="bucket")
+        result = await import_transactions(
+            fake_pool(),
+            blob,
+            "s3://bucket/finance/statement.csv",
+            origin_butler="finance",
+            **{option: value},
+        )
+        assert result["status"] == "error"
+        assert result["reason"] == "invalid_import_options"
+        assert option in result["error"]
+        blob.get.assert_not_awaited()
+
+    async def test_preview_and_row_errors_bound_untrusted_csv_values(self):
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
+
+        long_value = "q" * 20_000
+        csv = f"Date,Payee,Amount\n2026-01-17,{long_value},1.00\n2026-01-18,Refund,{long_value}\n"
+        blob = AsyncMock(scheme="s3", bucket="bucket")
+        blob.get.return_value = csv.encode()
+        result = await import_transactions(
+            fake_pool(fetch=[], fetchrow=None, fetchval=None),
+            blob,
+            "s3://bucket/finance/statement.csv",
+            origin_butler="finance",
+            dry_run=True,
+        )
+        assert result["parsed"] == result["parse_errors"] == 1
+        assert result["preview"][0]["merchant"].lower().startswith("qqq")
+        assert "amount" in result["error_details"][0]["reason"].lower()
+        assert len(str(result)) < 2_000
 
 
 # ---------------------------------------------------------------------------

@@ -51,9 +51,43 @@ def _serialise_dropped_intents(dropped_intents: Any) -> list[dict[str, Any]]:
             ),
             "reason": dropped.reason,
             "overlap_fraction": round(dropped.overlap_fraction, 2),
+            "evidence": dropped.evidence_kind,
+            **(
+                {"plan_producer": dropped.intent["reconciliation"]["plan_producer"]}
+                if "plan_producer" in (dropped.intent.get("reconciliation") or {})
+                else {}
+            ),
         }
         for dropped in dropped_intents
     ]
+
+
+def _travel_fix_window(episodes: list[dict[str, Any]]) -> tuple[Any, Any] | None:
+    """UTC span of OwnTracks fixes the travel location check needs, or None.
+
+    Covers every travel ``intent`` episode's window plus the anchor lookback on each side,
+    so a flight that crosses the closed day's local midnight still sees its
+    origin and destination fixes from the neighbouring day.
+    """
+    from butlers.chronicler.travel_location import ANCHOR_LOOKBACK, is_travel_intent
+
+    spans = []
+    for intent in episodes:
+        if str(getattr(intent.get("layer"), "value", intent.get("layer"))) != "intent":
+            continue
+        start = intent.get("canonical_start_at") or intent.get("start_at")
+        end = intent.get("canonical_end_at") or intent.get("end_at")
+        if start is None or end is None or not is_travel_intent(intent, start, end):
+            continue
+        spans.append((start - ANCHOR_LOOKBACK, end + ANCHOR_LOOKBACK))
+    if not spans:
+        return None
+    return min(s for s, _ in spans), max(e for _, e in spans)
+
+
+# Cap on OwnTracks fixes read for travel location checks: a busy trail is
+# ~1,000 fixes a day and the window spans at most 24 h plus 12 h of lookback.
+_TRAVEL_FIX_LIMIT = 5000
 
 
 class ChroniclerModuleConfig(BaseModel):
@@ -93,6 +127,13 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "job_name": "chronicler_rollup_daily",
     },
     {
+        # Every 15 minutes (RFC 0039 D2): adds new episodes to the public projection tables and
+        # repairs drift. Overrides update them in their own transaction. No LLM.
+        "name": "chronicler_public_projection_sweep",
+        "cron": "*/15 * * * *",
+        "job_name": "chronicler_public_projection_sweep",
+    },
+    {
         # Daily, 01:20 (bu-v9y18, telemetry-distillation bead 6): the one
         # optional, bounded LLM call per local day, labeling the already-
         # materialized `daily_rollups`/`daily_rollup_flags` rows for
@@ -119,6 +160,7 @@ class ChroniclerModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._credential_store: Any = None
 
     name = "chronicler"
 
@@ -134,6 +176,8 @@ class ChroniclerModule(Module):
         blob_store: Any = None,
     ) -> None:
         self._db = db
+        # Borrow the daemon-selected store; its pools remain owned by the daemon.
+        self._credential_store = credential_store
         await self._register_default_schedules(db)
 
     async def _register_default_schedules(self, db: Any) -> None:
@@ -147,7 +191,7 @@ class ChroniclerModule(Module):
         """
         if db is None:
             return
-        from butlers.core.scheduler import ensure_module_default_schedule
+        from butlers.core.scheduler.crud import ensure_module_default_schedule
 
         owner_butler = getattr(db, "owner_butler", None) or getattr(db, "schema", None)
         # Legacy per-butler databases use their unqualified public schema.
@@ -172,6 +216,7 @@ class ChroniclerModule(Module):
                 )
 
     async def on_shutdown(self) -> None:
+        self._credential_store = None
         self._db = None
 
     def _get_pool(self) -> Any:
@@ -431,10 +476,12 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Deterministic ask-side of bu-whhll.12. When the closed day left more than
         two hours of waking time unaccounted, or carries a low-confidence
         ``occupation_block`` the pipeline was never sure about, the owner is
-        worth **one** confirmation prompt. This tool does the whole ask:
+        worth **one** prompt. This tool does the whole ask:
         evaluate → max-one-per-day dedupe (KV state) → quiet-hours /
         delivery-preferences gate → deliver a Telegram inline-button message
-        (✅ Work day / ✏️ Not work / 🚫 Dismiss) whose taps route back to
+        (an occupation block: ✅ Work day / ✏️ Not work / 🚫 Dismiss; otherwise the
+        longest unexplained block with Work / Social / Play / Eat / Rest /
+        Dismiss) whose taps route back to
         :func:`chronicler_resolve_gap_interview`. The 09:00 ``chronicler_gap_interview``
         job-mode schedule calls the same service,
         :func:`butlers.chronicler.gap_interview_job.ask_gap_interview`.
@@ -449,7 +496,14 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         """
         from butlers.chronicler.gap_interview_job import ask_gap_interview
 
-        return await ask_gap_interview(module._get_pool(), date_label=date_label, timezone=timezone)
+        store_kwargs = (
+            {"credential_store": module._credential_store}
+            if module._credential_store is not None
+            else {}
+        )
+        return await ask_gap_interview(
+            module._get_pool(), date_label=date_label, timezone=timezone, **store_kwargs
+        )
 
     # ------------------------------------------------------------------
     # chronicler_resolve_gap_interview  — day-close gap interview ANSWER
@@ -465,13 +519,15 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         The deterministic answer-side: turns ``confirm`` / ``correct`` /
         ``dismiss`` into a durable ``chronicler.overrides`` row (the first real
         tenant of the corrections machinery) and a reinforce/decay nudge on the
-        matching routine, idempotently. This is the seam the telegram
+        matching routine, and a lane answer (``work`` / ``social`` / ``play`` /
+        ``eat`` / ``rest``) into one owner-attested activity block over the
+        interviewed interval, idempotently. This is the seam the telegram
         inline-button callback (via the ``telegram_bot`` connector) and the
         future decision-loop transport (RFC 0021) both call.
 
         Args:
             interview_id: The id handed out by ``chronicler_gap_interview``.
-            answer: One of ``confirm`` / ``correct`` / ``dismiss``.
+            answer: One of the interview's offered answers.
 
         Returns the apply summary, or ``{"status": "error"|"already_answered"}``.
         """
@@ -485,6 +541,26 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             answer=answer,
             now=datetime.now(UTC),
         )
+
+    # ------------------------------------------------------------------
+    # location_retention_grants_ready_service  — relay-only grant read
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def location_retention_grants_ready_service() -> dict[str, Any]:
+        """Service-only: the location retention grants the OwnTracks connector may execute.
+
+        The target of the ``location_retention.grants_ready`` named relay (RFC 0038 D7,
+        bu-s11n0s.7 S4b-3b), whose only allowed caller is the OwnTracks connector workload.
+        Declared ``presentable=False``. Returns ``{"grants": [...]}``: for each ready,
+        unsettled grant only its id, cutoff, and each granted raw row's id, logical key and
+        content digest. The caller chooses nothing.
+        """
+        from butlers.chronicler import location_retention_handoff
+
+        async with module._get_pool().acquire() as conn:
+            grants = await location_retention_handoff.ready_grant_payloads(conn)
+        return {"grants": grants}
 
     # ------------------------------------------------------------------
     # chronicler_day_close_bundle  — Tier-2 bounded assembler
@@ -504,14 +580,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Fetches all non-tombstoned episodes and events for *date_label*
         (``YYYY-MM-DD`` in *timezone*), then applies:
 
-        1. **Sensitive masking** — ``canonical_privacy='sensitive'`` rows
-           are excluded from the bundle unconditionally.
+        1. **Sensitive masking** — sensitive payloads are excluded; only
+           bounded time/category envelopes survive. Restricted rows are absent.
         2. **Field stripping** — low-signal payload keys are removed.
         3. **Per-source roll-up** — sources emitting > *rollup_threshold*
            items are collapsed to a count/time-range/subjects summary.
         4. **Hard cap** — episode and event counts are capped at
            *max_episodes* / *max_events*; the total bundle characters are
            capped at *max_total_chars*.
+        5. **Owner-day composition** — representative supported observations
+           carry local timestamps, uncertainty and provenance separately from
+           raw source inventories and diagnostic counts. Producers are unchanged.
 
         The result is structured JSON suitable as-is for the
         ``chronicler_day_close`` interpretation prompt.
@@ -535,7 +614,13 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from datetime import UTC, datetime
         from zoneinfo import ZoneInfo
 
-        from butlers.chronicler.bundle_assembler import BundleConfig, assemble_day_close_bundle
+        from butlers.chronicler.adapters.owntracks import EVENT_TYPE_LOCATION
+        from butlers.chronicler.bundle_assembler import (
+            BundleConfig,
+            assemble_day_close_bundle,
+            partition_day_close_rows,
+        )
+        from butlers.chronicler.flags import load_uncaptured_with_streaks
         from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
@@ -571,12 +656,32 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         episode_dicts = [asdict(ep) for ep in episodes]
         event_dicts = [asdict(ev) for ev in events]
 
+        # Partition before reconciliation can select titles, merge source refs,
+        # or derive contradictions. Private rows cannot affect normal narration.
+        normal_episodes, sensitive_episodes = partition_day_close_rows(episode_dicts)
+        normal_events, sensitive_events = partition_day_close_rows(event_dicts)
+
+        # Travel intents are checked against the owner's OwnTracks fixes
+        # (bu-2tsgqb.7). Fetch them only when a travel block exists, over its
+        # window plus lookback, and only normal-privacy rows.
+        location_fixes: list[dict[str, Any]] = []
+        fix_window = _travel_fix_window(normal_episodes)
+        if fix_window is not None:
+            fix_rows = await list_point_events(
+                pool,
+                occurred_from=fix_window[0],
+                occurred_to=fix_window[1],
+                event_type=EVENT_TYPE_LOCATION,
+                limit=_TRAVEL_FIX_LIMIT,
+            )
+            location_fixes, _ = partition_day_close_rows([asdict(row) for row in fix_rows])
+
         # Deterministic reconciliation core (tasks.md §7): merge duplicate
         # same-lane activity candidates and drop calendar intents contradicted
         # by activity evidence, BEFORE the LLM ever sees this bundle. Aggregate
         # correctness (what counts, what's dropped) is decided entirely here;
         # the day-close LLM only narrates over the result.
-        reconciled = reconcile_day(episode_dicts)
+        reconciled = reconcile_day(normal_episodes, location_fixes=location_fixes)
         reconciled_episodes = [
             *reconciled.activities,
             *reconciled.kept_intents,
@@ -590,13 +695,26 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             rollup_threshold=rollup_threshold,
             max_total_chars=max_total_chars,
         )
+        # Frozen per-day source availability (bu-uhbhzq.2): uncaptured lanes become unknowns,
+        # and their streaks decide what the delivered recap may mention. An unreadable
+        # snapshot adds no lines and never claims an all-clear.
+        try:
+            async with pool.acquire() as availability_conn:
+                uncaptured, uncaptured_streaks = await load_uncaptured_with_streaks(
+                    availability_conn, local_date=day, timezone=timezone
+                )
+        except Exception:
+            uncaptured, uncaptured_streaks = [], {}
+
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
-            episodes=reconciled_episodes,
-            events=event_dicts,
+            episodes=[*reconciled_episodes, *sensitive_episodes],
+            events=[*normal_events, *sensitive_events],
             timezone=timezone,
             config=cfg,
             dropped_intents=dropped_intents_payload,
+            uncaptured=uncaptured,
+            uncaptured_streaks=uncaptured_streaks,
         )
 
         return {

@@ -9,6 +9,7 @@ Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor`
 
 Each butler schema SHALL contain a `runtime_config` table with typed columns for all operational config fields. The table holds exactly one row per butler, keyed by `butler_name`.
 
+ID: REQ-runtime-config-table-001
 Source: RFC 0006 §Database Schema, RFC 0001 §Startup Phases
 Scope: v1-mandatory
 
@@ -19,6 +20,7 @@ Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and 
 - `catalog_read_sensitivity text NOT NULL DEFAULT 'normal'` (one of `normal`, `internal`, `confidential`)
 - `max_concurrent int NOT NULL DEFAULT 3`
 - `max_queued int NOT NULL DEFAULT 10`
+- `tool_exposure_policy text NOT NULL DEFAULT 'eager_filtered'` (constrained to `eager_filtered` or `auto`)
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
 
@@ -31,6 +33,12 @@ The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors the
 #### Scenario: Table has at most one row
 - **WHEN** the daemon seeds the table
 - **THEN** there SHALL be exactly one row keyed by the butler's name
+
+#### Scenario: Existing rows receive the conservative policy
+
+- **WHEN** migration `core_224` adds the exposure policy column to an existing runtime-config table
+- **THEN** existing rows SHALL receive `eager_filtered`
+- **AND** applying the migration SHALL NOT activate native tool search
 
 ### Requirement: RuntimeConfigAccessor provides cached read access
 

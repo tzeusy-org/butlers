@@ -117,8 +117,16 @@ class TestExplicitSensitivityFilterAuthorization:
 class TestDirectMemoryGetUsesHeldPolicy:
     """A UUID must not become a local read-ceiling bypass."""
 
+    @pytest.mark.parametrize(
+        ("schema_kwargs", "expected_schema"),
+        [({}, None), ({"memory_schema": "chronicler_mem"}, "chronicler_mem")],
+        ids=["default-schema", "configured-private-schema"],
+    )
     async def test_forwards_the_server_held_policy_to_atomic_retrieval(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        schema_kwargs: dict[str, str],
+        expected_schema: str | None,
     ) -> None:
         pool = AsyncMock()
         memory_id = uuid.uuid4()
@@ -131,6 +139,7 @@ class TestDirectMemoryGetUsesHeldPolicy:
             "fact",
             str(memory_id),
             read_policy=policy,
+            **schema_kwargs,
         )
 
         assert result is None
@@ -139,6 +148,7 @@ class TestDirectMemoryGetUsesHeldPolicy:
             "fact",
             memory_id,
             allowed_sensitivities=policy.allowed_sensitivities,
+            memory_schema=expected_schema,
         )
         pool.fetchval.assert_not_awaited()
 
@@ -147,19 +157,29 @@ class TestMemoryContextAssemblyUsesOnePolicy:
     """Profile Facts and recall must agree on exactly one read_policy per
     memory_context assembly -- pinned by capturing what each fetch receives."""
 
+    @pytest.mark.parametrize(
+        ("schema_kwargs", "expected_schema"),
+        [({}, None), ({"memory_schema": "chronicler_mem"}, "chronicler_mem")],
+        ids=["default-schema", "configured-private-schema"],
+    )
     async def test_profile_facts_and_recall_receive_the_same_policy(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        schema_kwargs: dict[str, str],
+        expected_schema: str | None,
     ) -> None:
         captured: dict[str, object] = {}
 
         async def fake_fetch_profile_facts(
-            pool, tenant_id, *, limit=50, allowed_sensitivities=None
+            pool, tenant_id, *, limit=50, allowed_sensitivities=None, memory_schema=None
         ):
             captured["profile_allowed"] = allowed_sensitivities
+            captured["profile_schema"] = memory_schema
             return [], 0
 
         async def fake_recall(*args, **kwargs):
             captured["recall_policy"] = kwargs.get("read_policy")
+            captured["recall_schema"] = kwargs.get("memory_schema")
             return []
 
         monkeypatch.setattr(_context, "_fetch_profile_facts", fake_fetch_profile_facts)
@@ -175,10 +195,13 @@ class TestMemoryContextAssemblyUsesOnePolicy:
             "prompt",
             "health",
             catalog_read_policy=policy,
+            **schema_kwargs,
         )
 
         assert captured["profile_allowed"] == policy.allowed_sensitivities
         assert captured["recall_policy"] is policy
+        assert captured["profile_schema"] == expected_schema
+        assert captured["recall_schema"] == expected_schema
 
 
 class TestWithheldMarkerBudget:

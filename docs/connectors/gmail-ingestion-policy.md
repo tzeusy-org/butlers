@@ -88,6 +88,26 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
   malformed headers are ordinary mail.
 - `automated_kind` is asserted by the sender's headers: a hint for admission, not evidence.
   Anything that acts on it must authenticate and bind the message first.
+- The connector does that binding (`src/butlers/connectors/automated_evidence.py`, bu-s11n0s.14)
+  and adds `control.automated_evidence`. It holds typed values only:
+  - `original_sent`: a live `rfc822msgid:` lookup found the message the bounce or auto-reply
+    names (attached original, `In-Reply-To`, `References`) in the owner's SENT mailbox.
+  - `sender_was_recipient`: the auto-reply's sender was a To/Cc/Bcc recipient of that original.
+  - `sender_authenticated`: Gmail's own topmost `Authentication-Results`
+    (`mx.google.com`) shows `dmarc=pass`, or `dkim=pass` for the From domain.
+  - `away_until`: an auto-reply's single stated return date, read deterministically after a
+    return cue, at most 180 days out, and only when the three checks above hold.
+  - `failed_recipients`: a bounce's permanently failed (`Action: failed`, `5.x.x`) recipients that
+    the original was addressed to, and only when the DSN sender is authenticated and speaks for the
+    address: Gmail's own bouncer (`mailer-daemon@googlemail.com`) or a sender whose domain is equal
+    to, or a subdomain of, the failed address's domain. A co-recipient's own signed DSN naming
+    someone else, backscatter and delays name nobody.
+
+  Relationship's hourly `automated_evidence_sync` job turns the evidence into `away-until` and
+  `undeliverable-email` facts (see [Relationship](../butlers/relationship.md#automated-email-evidence)).
+  Two consumers read them: the weekly reconnect suggestion skips a contact who is away, and
+  `notify()` skips a dead email address (see the Relationship page for the exact rules). The
+  owner's door to replace a dead address is not built.
 
 ### Tier 3
 
@@ -117,12 +137,34 @@ Switchboard ingest tool publishes one `switchboard.security_event` regardless of
 decision. The sensor never reads a body, code or link. See `openspec/specs/account-security-perception`
 once the change is archived.
 
+## Owner Break-Through Sensor
+
+After an inbound message is accepted, the Switchboard ingest tool starts a background observation
+(ingest never waits for it) that asks the private clause evaluator whether the message matches an
+owner-declared break-through clause (a person, an authenticated sender domain, a channel or an
+account-security kind). The check reads only the resolved sender, channel and account
+classification, so an ingestion rule, including a promoted `skip`, cannot hide a hit, and the
+owner's own messages are never hits. A match is recorded once in `switchboard.break_through_hits`
+(keyed by clause and source request, so a replay is silent) and announced: a metadata-only
+`switchboard.break_through_hit` event, then one urgent insight candidate (priority 95, category
+`break_through`) that the broker delivers at once through the normal Telegram path. The hit carries
+an announcement lease (`claimed_at`, `published_at`): a crash after the insert leaves it unpublished
+and the hourly urgent cycle announces it, so a lost announcement is retried and a published one is
+never repeated.
+
+Per clause, the first 3 hits in a rolling hour each get a line; any more fold into one pending "and N more" line that the next hourly urgent cycle delivers. The line names the sender and channel only. It is withdrawn unsent when the owner has replied in the
+thread (`switchboard`/`inbound_still_unanswered` probe) or the clause was revoked. The total
+disengagement ratchet writes `verbosity = 'auto_off'` instead of `'off'`: that mutes routine speech
+but not this line, while an explicit `off` stops everything. An unavailable evaluator counts as "no
+match" and never fails ingest. See `openspec/specs/proactive-insight-engine`
+(Owner-Declared Break-Through Hits Are Observed At Ingest).
+
 ## Retention by Tier
 
 | Tier | Retention |
 |---|---|
 | Tier 1 | Butler/domain retention policy (e.g., finance multi-year, health indefinite) |
-| Tier 2 | `switchboard.message_inbox` retention (monthly partitions; the row expires with its partition) |
+| Tier 2 | `connectors.evidence_journal` (headers and ids only, the envelope's tier, kept until a per-source retention contract exists, bu-uhbhzq.7). `switchboard.message_inbox` is a routing buffer, not the evidence copy |
 | Tier 3 | No message-level storage beyond the bounded filtered-event preview; metrics only |
 
 ## Dashboard Management

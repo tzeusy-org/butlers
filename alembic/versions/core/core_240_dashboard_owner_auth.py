@@ -57,7 +57,7 @@ def _prior_installation_recorded(bind) -> bool:
         text("""
         SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE c.relname='alembic_version' AND c.relkind IN ('r','p')
-          AND n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'
+          AND left(n.nspname, 3) <> 'pg_' AND n.nspname<>'information_schema'
     """)
     ).scalars()
     quote = bind.dialect.identifier_preparer.quote

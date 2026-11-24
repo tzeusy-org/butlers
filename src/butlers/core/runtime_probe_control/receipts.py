@@ -25,9 +25,14 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from butlers.core.runtime_probe_control.keys import CONTROL_AUDIENCE
+from butlers.core.runtime_probe_control.keys import CONTROL_AUDIENCE, SERVICE_CALL_AUDIENCE
 
 RECEIPTS_TABLE: Final = "public.runtime_probe_control_receipts"
+
+#: The audiences this keyring signs, each consuming its own nonces here: the
+#: runtime-probe plane and, since core_327, the dashboard service call
+#: (RFC 0038 D7). The table's audience CHECK admits exactly these.
+RECEIPT_AUDIENCES: Final = frozenset({CONTROL_AUDIENCE, SERVICE_CALL_AUDIENCE})
 
 #: A receipt is retained through ``exp`` plus the accepted clock skew, so a
 #: cleanup can never reopen a replay window that is still live.
@@ -49,8 +54,11 @@ class RuntimeProbeControlReceipts:
     durable before any lookup, launch, or persistence can observe it.
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: Any, *, audience: str = CONTROL_AUDIENCE) -> None:
+        if audience not in RECEIPT_AUDIENCES:
+            raise ValueError("not a control-plane receipt audience")
         self._pool = pool
+        self._audience = audience
 
     async def claim(self, *, nonce: bytes, kid: str, expires_at: datetime) -> bool:
         """Insert and commit one receipt; ``False`` means the nonce was replayed.
@@ -65,7 +73,7 @@ class RuntimeProbeControlReceipts:
             ON CONFLICT (audience, nonce_digest) DO NOTHING
             RETURNING true
             """,
-            CONTROL_AUDIENCE,
+            self._audience,
             nonce_digest(nonce),
             kid,
             expires_at,
@@ -76,7 +84,7 @@ class RuntimeProbeControlReceipts:
         """Whether this nonce already has a receipt (replay inspection only)."""
         found = await self._pool.fetchval(
             f"SELECT true FROM {RECEIPTS_TABLE} WHERE audience = $1 AND nonce_digest = $2",
-            CONTROL_AUDIENCE,
+            self._audience,
             nonce_digest(nonce),
         )
         return bool(found)

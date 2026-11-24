@@ -47,14 +47,17 @@ After finalization consumes one-shot installer privileges, repeat migrations,
 second-schema replay and mixed-chain tracking do not demand those grants back.
 The stable prerequisite profile excludes the ordinary Relationship SELECT default
 on Switchboard: immutable `core_001` revokes cross-schema defaults during bounded
-replay and `core_077` repairs this one. Requiring it before that continuation would
-prevent the repair itself. This exclusion grants no runtime access and does not
-waive required own-schema/base ACLs or protected authority. Its absence is not a
-bootstrap failure, nor proof of working Relationship reads: actual default-ACL
-and effective `SET ROLE` readback separately witness the repair. No revision or
+replay. `core_077` used to restore it; head (`core_339`) now leaves the relationship,
+messenger and travel roles with SELECT on `switchboard.message_inbox` only and no
+Switchboard default, so there is no read default to require. Rerunning the bootstrap grants
+these three roles `USAGE` on the schema only and does not restore either. This exclusion grants no
+runtime access and does not waive required own-schema/base ACLs or protected
+authority. Its absence is not a bootstrap failure, nor proof of working Relationship
+reads: actual catalog and effective `SET ROLE` readback separately witness the
+`message_inbox` grant. No revision or
 completion marker supplies bootstrap provenance.
 
-The applied `core_196`, `core_197` and `core_198` point-of-use guards remain
+The applied `core_196`, `core_197`, `core_198` and `core_322` point-of-use guards remain
 independent. Existing managed privileged downgrade authorization and its data
 constraints remain; catalog admission grants no downgrade authority to a normal
 login. Managed privileged operations use their existing private-config read
@@ -66,6 +69,21 @@ history, all feature integrity or resistance to a malicious trusted superuser.
 When the managed bootstrap surface changes, update the finite profile and this
 operator instruction in the same change. A partial profile cannot be waived by
 an unrelated migrated revision or an old completion comment.
+
+The planned public MCP projection (RFC 0039, not yet built) adds to this script
+the grants for the CNPG-managed projection roles: the publisher's `CONNECT` and
+publication-table grants on `butlers`, and `statement_timeout` for
+`mcp_public_ro`. Those statements will do nothing where the roles are absent.
+They are not the whole setup: the second database `butlers_public`, the roles
+and `pg_hba` come from homelab, and the subscription comes from a separate owner
+step, which on dev `make deploy-dev` runs after the migrations, never before
+them. See [Public MCP Read Surface](../operations/public-mcp-read-surface.md).
+
+The script also grants `CONNECT` on the database, and nothing else, to CNPG's
+metrics-exporter role `cnpg_metrics_exporter` when it exists. `core_001` revokes
+`CONNECT` from `PUBLIC`, which otherwise denies every exporter query there,
+including the replication-slot series the public MCP slot alerts read. Where the
+role is absent (local and Docker Postgres) the statement does nothing.
 
 Bootstrap reserves the recovery role and installs its privileged control plane;
 it does not enable the restore executor, provide its secret or activate a drill.
@@ -91,3 +109,11 @@ verification retain their fail-closed boundaries. See
   files live outside current production source identity so coverage does not
   attribute old code to the current source population. Software ordering or
   collection alone is not PostgreSQL proof.
+
+The fourth managed boundary is dark perception (`perception_admin`, `core_322`).
+Its ordinary installer grant does not grant private-table reads or service-role
+membership. Installed partial namespaces/functions must pass the finalized
+catalog proof; absence permits only the genuine superuser-owned staged installer.
+The admission predicate reads catalog rows and fixed function-source hashes without
+requiring schema USAGE on private data. Actual-role authority and complete backup
+capabilities remain separate checks. See [perception](perception.md).

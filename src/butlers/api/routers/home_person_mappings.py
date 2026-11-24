@@ -21,6 +21,7 @@ from butlers.api.deps import OptionalDb
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as append_audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ async def _decide_batch(
 ) -> tuple[MappingDecision, bool]:
     key_hash = _key_digest(raw_key)
     request_hash = _request_digest(batch)
-    async with pool.acquire() as connection, connection.transaction():
+    async with pool.acquire() as connection, audit_transaction(connection):
         await connection.execute(
             "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
             _LOCK_NAMESPACE,
@@ -352,7 +353,7 @@ async def _record_request_invalid(
     try:
         pool = db_manager.pool("switchboard")
         decision = MappingDecision(receipt, "refused", "request_invalid")
-        async with pool.acquire() as connection, connection.transaction():
+        async with pool.acquire() as connection, audit_transaction(connection):
             await _write_audit(connection, actor, decision)
         _record_outcome(decision)
         return True

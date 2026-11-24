@@ -70,21 +70,121 @@ taken from tool arguments or from text inside content, so a forged
 `[Source: Owner ...]` line in a stranger's email grants nothing. Sessions with
 no routing context stamp `system`, not `owner`.
 
-Consolidation gives each derived fact and rule the weakest authority among its
-evidence episodes (differing or unknown authority yields `mixed`). Steering
-memory is gated on that stamp:
+A session routed from the owner through a held or unreadable-custody endpoint
+(REQ-endpoint-custody-holds-005) stamps `third_party` with the owner entity kept as
+`authority_entity_id` and `custody_reason: endpoint_held` in the row's metadata. Its
+rules are held and its facts render as reports; releasing the hold changes no stored
+row. Only Switchboard's server-side custody read sets the routing flag
+(`source_custody`, carried as `source_sender_custody` in the route envelope). The write
+itself also rechecks: before stamping `owner`, `resolve_content_authority` reads the
+custody of the session's `source_endpoint`, so a hold that commits after ingress demotes
+the write. A sender-naming context with no endpoint, or unreadable custody, demotes too.
+
+Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
+partition (`owner`, `owner_device`), a `system` partition and a non-owner
+partition (`third_party`, `mixed` and unstamped NULL), each with its own runtime
+session, request ID and episode set; see [Consolidation](#consolidation). It gives each derived
+fact and rule the weakest authority among its evidence episodes (differing or
+unknown authority yields `mixed`).
+
+A tool that edits a fact by writing a successor keeps the old text or metadata, so the
+successor's authority depends on its source as well as its writer: the one exception to
+deriving authority only from the routing context. This applies to
+`gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
+`medication_update`, `medication_log_dose` and `research_update`, and to any session:
+
+| Writer | Source | Stored | What the owner sees |
+| --- | --- | --- | --- |
+| owner-class | owner-class | the writer's class | a normal fact |
+| owner-class or `system` | `third_party`, `mixed` | `mixed`, same sender | "partly reported by" the sender, held, with a Vouch action |
+| owner-class or `system` | NULL | `mixed` | "partly reported by a third party", held, with a Vouch action |
+| owner-class | `system` | `system` | unlabelled, not held, not a Profile Fact |
+| `system` | owner-class, `system` | `system` | unlabelled, not held, not a Profile Fact |
+
+The label on a successor of a NULL row may overstate it, because a legacy row's source is
+unknown; a vouch resolves the hold. A dashboard edit is a `system` writer, so a dashboard edit
+of a legacy NULL row is held too. "Not held" in the rules below describes NULL and `system`
+rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
+has no `endorsed_at`, so it is held again after the next edit.
+
+The seven copying tools refuse a fact id that is no longer current, so a stale read cannot replace a
+newer fact or add a second live row. `research_update` and `loan_settle` accept only `active`
+rows, and the other five accept `active` or `fading`. `condition_update`, `medication_update`
+and `task_complete` also pass `expected_supersedes_id` to `store_fact`, which catches a row
+superseded after the read.
+
+A live legacy row with `entity_id` or `valid_at` set is not found by that subject-only store.
+Its first edit writes a successor beside it, and it stays active. Any later edit through its
+id is refused, and the error names the current row, so the edit can go there instead. Today
+the owner sees both rows until the legacy one is deleted. A refused superseded id also names
+the current row, so a session holding an old id can retry against it. `medication_log_dose` is not
+refused, because a dose replaces nothing.
+
+Steering memory is gated on that stamp:
 
 - **Rules** from non-owner authority are *held*: stored, but absent from recall,
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
-- **Profile Facts** admit only owner-class facts. An owner-anchored fact written
-  from someone else's session surfaces only as a Task-Relevant Fact labelled
-  `reported by <sender>`.
+  **Guidance waiting for you** in the Rules register shows persisted provenance
+  and individual endorsement. To endorse a legacy batch, the owner explicitly
+  selects up to 100 rows in one source, previews the exact stored guidance, then
+  confirms. The preview digest binds source, ordered IDs, content, and provenance.
+  Confirmation locks and validates the whole selection before writing. A stale,
+  ineligible, or unavailable selection changes nothing. Repeating an accepted
+  selection returns original receipts without writing new stamps or audit rows.
+- **Facts** from `third_party` or `mixed` authority are *held* while live and not
+  vouched for: they stay recallable as attributed reports (never Profile Facts), and
+  the owner can vouch for one from the dashboard (fact detail, **Vouch**) or with
+  `POST /api/memory/facts/{id}/vouch`; `GET /api/memory/facts?held=true` lists them.
+  Vouching is owner-only and is not an MCP tool, so a session cannot do it. It is
+  additive: `endorsed_at`/`endorsed_by` are set and authority and taint are unchanged,
+  so clearing `endorsed_at` restores the prior state. A retracted or superseded fact
+  returns 409; a repeat returns the same receipt and writes one audit event
+  (`fact_vouched`) in total. Vouch uses the shared `is_fact_held` predicate: live
+  legacy (NULL), `system`, and owner-class facts return the unchanged receipt without
+  changing endorsement stamps, audit events, or catalog rows. The
+  dashboard Confirm action records `owner` as its actor in `memory_events`; the MCP
+  `memory_confirm` tool records `session`. The re-asserted catalog entry keeps the
+  fact's original `content_authority`, so catalog readers still attribute it. Rollback:
+  withdraw the route and the dashboard action; `fact_vouched` events stay in
+  `memory_events`. Un-vouching one fact is clearing its two stamps; downgrading
+  `mem_016` drops both columns (every vouch is lost, the audit trail is kept). Neither
+  path touches authority or promotes a fact to owner-class. Not yet built: Telegram vouch cards and
+  vouched facts joining Profile Facts, which wait on the goal-runtime work (RFC 0038).
+- **Profile Facts** admit only owner-class, durable facts. Event and transaction
+  predicates (purchases, doses, meals, sleep sessions, interactions) are excluded
+  even when owner-authored; they stay stored and recallable. A fact is event-class
+  when its predicate is registered `predicate_registry.is_temporal` (seeded, and
+  set automatically for any predicate first stored with `valid_at`), so legacy rows
+  need no backfill and no second list exists. A predicate missing from the registry
+  is treated as durable.
+  Every other rendered fact,
+  whoever it is about (the owner or Bob), is a Task-Relevant Fact qualified as
+  `reported by <sender>` (`third_party`), `partly reported by <sender>` (`mixed`)
+  or `source unverified` (NULL). An unresolvable sender name renders as
+  `a third party`; the qualification never depends on the lookup. `system` facts
+  carry no label, and `source_butler` names the curating butler, never the reporter.
 - A non-owner write cannot supersede an owner-authored fact.
 - **Legacy rows** (written before `mem_013`) have no stamp and fail closed: legacy
   rules are held and legacy owner facts are not Profile Facts. They are never
   backfilled by guessing; the migration reports the counts it left unclassified.
+
+### Goal lineage and taint (RFC 0038 D6, dark)
+
+A write made inside a broker-verified call (see
+[Capability Broker](../architecture/capability-broker.md#forwarding-and-domain-verification-d7-bu-pkuny2))
+derives `content_authority` from the call's verified goal lineage, never from
+the routing context: exposed or third-party lineage is `third_party`, unexposed
+owner lineage is `owner`, obligation and staffer lineage is `system`. An explicit
+owner-class authority under an exposed lineage is refused. When the lineage is
+exposed the episode, fact or rule also stamps `taint_goal_id` and
+`taint_invocation_id` (`mem_017`), a pointer to the goal and invocation whose
+exposure wrote it rather than a boolean, so containment can find every row one
+goal wrote; an episode update keeps an existing stamp. Contact notes and decision
+memory are facts and carry the same stamp. Reads return both columns with the
+row. NULL means written outside a verified call; until the M6 switch every row is
+NULL. Rollback: downgrading `mem_017` drops both columns.
 
 ### Owner knowledge gaps
 
@@ -100,6 +200,11 @@ A later write of a matching active fact -- `store_fact`, or the relationship but
 recording the fact reference, a value excerpt and the fact's server-stamped authority. A gap
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
+A closure that raises never fails the fact write: the write commits, the gap stays open, and
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, or `stage=reservation` when the pair
+reservation fails; per `butler`) is
+incremented after a warning log; a failure to record the counter is logged and never fails
+the write.
 
 When `store_fact` creates a registered inverse or symmetric narrative edge, the generated
 active row also answers the original object's gap. Its citation is the inverse row's own UUID,
@@ -112,7 +217,7 @@ projections. Identity and registry-relational predicates still belong to the Rel
 Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
 failure skips both closures, while an individual closure failure leaves that gap open without
 discarding a successful sibling. Savepoints protect the canonical fact transaction, and failures
-use the existing warning/count. Cancellation or a canonical write/projection error still rolls
+use the warning and the counter above. Cancellation or a canonical write/projection error still rolls
 back the enclosing write. Temporal replay and an already-existing inverse key create no new
 answer; inactive retained rows are never reactivated. There is no historical repair scan, and
 later retraction retains the existing answer snapshot. Gaps retain the local single-owner contract:
@@ -133,8 +238,16 @@ delivery and fact replay do not post it again.
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
-captures gaps today; the Telegram answer path, an entity-detail "Still unknown" section and
-per-predicate demand counts are a later slice.
+captures gaps today; the Telegram answer path and an entity-detail "Still unknown" section are a
+later slice.
+
+The dashboard's `/memory` page has a Questions register (`register=questions`, also reachable from
+the "Open questions" command-palette verb). It lists open and answerable gaps with their coverage
+in words ("never looked", "looked, nothing there", "unavailable", "answered"), asked date and
+thread count, and offers dismiss with a confirm. Above the rows, a per-predicate demand summary
+reads `GET /api/memory/gaps/demand`: open gaps and asking threads per predicate, open gaps only,
+aggregated per pool in SQL and summed across memory pools, so the count is right whatever the
+page size, with failing pools named in `meta.sources_degraded`.
 
 ## Tools Provided
 
@@ -147,7 +260,8 @@ families:
 - **Writing** (`memory_store_episode`, `memory_store_fact`, `memory_store_rule`) -- store raw
   episodes, entity-anchored facts with predicate validation, and behavioural rules.
 - **Reading and context** (`memory_search`, `memory_recall`, `memory_get`, `memory_context`) --
-  retrieval (below) and token-budgeted, sectioned context assembly.
+  retrieval (below) and token-budgeted, sectioned context assembly. `memory_get_service` is
+  `memory_get`'s service-only twin, the `memory.catalog_fetch` relay target (below).
 - **Feedback** (`memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`) -- reset decay and
   drive rule maturity.
 - **Management** (`memory_forget`, `memory_stats`) -- retraction and statistics.
@@ -217,7 +331,68 @@ retired design from maintained requirements and outstanding delivery work.
 
 ## Consolidation
 
-A background worker consumes unconsolidated episodes in deterministic batches and emits new facts, rules, supersessions, confirmations, and provenance links. Every episode reaches exactly one terminal state: `consolidated`, `failed`, or `dead_letter`. Consolidation output is schema-validated before persistence.
+A background worker consumes eligible episodes in deterministic batches and emits
+new facts, rules, supersessions, confirmations, and provenance links. Successful
+episodes become `consolidated`; failures are retried after bounded backoff or
+become `dead_letter` when the retry budget is exhausted. Consolidation output is
+schema-validated before persistence.
+
+**Authority partitions (bu-dhloi1.1, bu-dhloi1.26).** After the fenced claim,
+each `(tenant_id, butler)` group is split by the episodes' persisted
+`content_authority` into an owner-class partition, a `system` partition and a
+non-owner partition (`third_party`, `mixed` and NULL). `system` is kept apart
+from third-party content because a `system` fact renders without attribution: a
+shared session could restate a stranger's words citing only a system episode and
+the fact would lose its label. Each nonempty partition gets its own runtime
+session, request ID and allowed episode set, and its dedup context lists only
+facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
+dedup context is the only stored memory the session sees: the spawner skips
+recall-based memory-context injection for `schedule:consolidation` sessions, and
+the MCP wrappers suppress every tool call such a session makes
+(`consolidation_session_tool_policy`), reads and writes alike, since consolidation
+is output-only. The owner and system sessions therefore have no path to
+third-party content they could restate under their own authority. The suppression keys on the session's
+`trigger_source` parameter the spawner writes into the session's MCP server URL.
+Inside the persistence fence the executor revalidates every source episode's stamp
+against its partition and admits `updated_facts` targets and confirmations only
+within the same tenant, source butler and partition. Evidence citing an episode
+outside the partition fails that partition through the ordinary failed/dead-letter
+path before any fact, rule, link or completion write; the sibling partitions still
+commit independently, and valid third-party evidence stays `third_party`. Each
+successful partition writes its own `public.consolidation_runs` row, and the run's
+`groups_consolidated` counts partitions.
+The row is inserted as the daemon's own `butler_<name>_rw` role; the table is
+append-only for runtime roles (SELECT and INSERT, no UPDATE or DELETE; core_308).
+
+The partitions stop new laundering; they do not reclassify facts consolidated
+before this change. The historical demotion the owner adopted (bu-7ry1sy q1) is an
+operator-only job, `scripts/memory_authority_demotion.py` over
+`butlers.modules.memory.authority_demotion`. It is never scheduled or exposed as a
+tool or API. It reads one memory schema plus an operator-supplied evidence manifest,
+classifies owner-class facts and rules as candidate, excluded, unchanged, UNKNOWN or
+endorsement anomaly, and by default writes nothing. An apply bound to an exact
+approved dry run changes only `content_authority` to `mixed`, disowns the catalog row
+and appends a `content_authority_demoted` receipt per row, atomically per schema.
+Missing historical evidence is UNKNOWN and blocks apply. No live dry-run, demotion or
+restore has been run or authorized; see the
+[authority demotion runbook](../operations/memory-authority-demotion.md).
+
+The dashboard owner can recover an eligible dead-letter episode with
+`POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF
+checks run before target resolution. Recovery is confined to the owning source's
+memory schema; Chronicler's private `chronicler_mem` schema is excluded. One
+conditional transaction changes `dead_letter` to `pending`, resets
+`consolidation_attempts` to `0`, clears error, retry, terminal-reason and lease
+fields, and records one sanitized lifecycle event. A competing request or a
+non-dead-letter episode receives a conflict without a second recovery event.
+The response means queued for a later ordinary schedule: it does not execute
+consolidation, run a schedule immediately, or expose bulk replay or an MCP
+recovery tool.
+
+The active [memory honesty change](../../openspec/changes/memory-honesty-last-mile/tasks.md)
+also requires a future partitioned obligation-goal implementation. That conversion
+and its switch remain open; the recovery and dashboard changes do not establish
+goal-runtime delivery.
 
 ## Decay and Hygiene
 
@@ -312,9 +487,47 @@ resolves the catalog row's owning butler, and asks that butler's existing
 database access. Inactive or missing pointers return `{"status":"not_found"}`.
 Both tools are read-only and idempotent.
 
+With `BUTLERS_SERVICE_PLANE_AUTH` on (RFC 0038 D7, dark until the switch), a
+domain butler instead calls the `memory.catalog_fetch` named relay with only
+the pointer. Switchboard reads the owner and memory type from its own
+`public.memory_catalog` row (live and visible, as above) and reaches that
+butler's `memory_get_service`, a service-only twin of `memory_get` in the
+`core` group (`presentable=False`) that reads under the owner's own held
+ceiling. The caller's held ceiling still withholds before anything is sent. A
+pointer Switchboard no longer finds is `not_found`; a failure is the same
+content-blind `unavailable` marker, retryable unless the relay refused with
+403. Switchboard itself keeps the in-process route.
+
+**Content authority.** Each catalog row carries the `content_authority` class of its source fact or rule (`owner`, `owner_device`, `third_party`, `system`, `mixed`, or NULL for unstamped legacy rows; core_299, REQ-module-memory-013). Only the class is public — the sender entity stays in the owning schema. Every catalog write (`store_fact`/`store_rule` write-behind, rule endorsement, the backfill) copies it in the same statement as the rest of the row, and `run_memory_catalog_backfill` re-copies it onto rows whose value drifted (for example rows cataloged before the column existed); a NULL source stays NULL. `search_catalog` and `GET /api/memory/catalog/search` return it per row; `memory_catalog_search` adds an `attribution` (`from a third party`, `partly from a third party`, or `source unverified`; none for owner/system content), and Fleet Knowledge lines show the same label.
+
+#### Restore the rule index after a Memory downgrade
+
+After the owning Memory schema has finished downgrading to `mem_012`, use
+[`RESTORE_LEGACY_RULE_CATALOG_SQL`](../../src/butlers/modules/memory/catalog_recovery.py)
+to restore discovery for active legacy rules that `mem_013` invalidated. The
+statement matches the original migration receipt and copies confidence from
+the owning rule. Retired, forgotten, previously invalid and other-schema rows
+keep their stored values. Rules and catalog copies marked `pii` or
+`confidential` stay excluded. The statement refuses to run while `mem_013` or a
+later Memory revision is applied and reports the number of rows restored. A
+repeat run reports zero unless a new migration invalidated more eligible rows.
+
+Use the migration login and its configured libpq target for the downgraded
+database. Set `memory_schema` to the affected schema. This example uses
+`general`.
+
+```bash
+restore_sql=$(uv run --no-sync python -c 'from butlers.modules.memory.catalog_recovery import RESTORE_LEGACY_RULE_CATALOG_SQL; print(RESTORE_LEGACY_RULE_CATALOG_SQL)') &&
+  printf '%s\n' 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED;' 'SET LOCAL search_path TO :"memory_schema";' \
+    "SET LOCAL lock_timeout = '5s';" "$restore_sql" |
+  psql -X --single-transaction --set=ON_ERROR_STOP=1 --set=memory_schema=general --file=-
+```
+
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 
-The owning `source_schema` for a disownment cascade is resolved from the connection's own `current_schema()` rather than threaded through every caller — butler pools connect with `search_path = <schema>, public`, so this reliably matches whatever schema the row was originally cataloged under.
+Unqualified daemon disownment cascades resolve `source_schema` from the caller connection's own `current_schema()`; butler pools connect with `search_path = <schema>, public`, so this matches the schema where the row was cataloged. Dashboard callers that qualify a private memory relation pass that owning schema explicitly through the canonical write, correction event, and projection cascade; the shared function never infers it from its pinned search path.
+
+**Superseded facts are kept.** A superseded fact is a closed validity interval: its `invalid_at` (or `dropped_at` when a writer set only that) says when it stopped being true, and `storage.facts_as_of(pool, subject=..., predicate=..., at=..., entity_id=...)` returns the facts whose interval contains a timestamp (retracted facts never). Default retrieval, search and the catalog still leave superseded rows out. The nightly `memory_purge_superseded` job deletes a superseded fact only when `public.memory_retention_policies` holds a finite `kind='fact'` `ttl_days` that it read successfully (the seeded 7 became NULL, keep forever, in core_358), and then only for a class whose per-schema `memory_policies` row has `archive_before_delete = false` and a non-NULL `ttl_days`; `personal_profile`, `health_log`, `financial_log` and any unknown class are always kept. An unreadable policy table, a missing row or a NULL horizon keeps everything, and `job_args.older_than_days` can only lengthen a finite horizon. The horizon runs from `dropped_at`/`invalid_at`, not from when the fact was written. A finite horizon still nulls the successor's `supersedes_id` for each deleted fact. The orphaned `ha_state` purge (`purge_ha_state_facts`) is separate and always runs. Owner-initiated `memory_forget` is unchanged.
 
 **Purge semantics.** A purged fact's catalog row is marked stale, not deleted — butler roles hold no `DELETE` grant on `public.memory_catalog` (catalog GC is centralised), so a purge-triggered delete isn't even possible from a butler's own role.
 
@@ -351,6 +564,8 @@ references are rebound from `public.entity_rebind_log`; each memory-enabled
 daemon handles only its own schema, reacts to live `entity.rebound.v1` events,
 establishes its listener before replaying pending receipts on startup, and
 re-establishes the listener plus replay after a retained connection failure.
+While idle it sweeps for pending receipts about once a minute, and it retries a
+failed receipt once 15 minutes have passed since its last attempt.
 
 ## Database Tables
 
@@ -438,3 +653,51 @@ None. The memory module is a leaf module with no dependencies on other modules.
 - [Module System](module-system.md)
 - [Knowledge Base](knowledge-base.md) -- entity data model and predicate vocabulary
 - [Approvals Module](approvals.md) -- approval gates for memory mutations
+
+### Explicit private-schema disownment
+
+Dashboard callers can use a domain pool while passing `memory_schema` for an
+owned private memory namespace. Forget and rule retirement carry that explicit
+schema through canonical writes and catalog/graph provenance. Correction audit
+rows are inserted into that same private namespace. The additive keyword-only
+`source_schema` argument to `cascade_fact_retraction` provides the same contract
+for external callers with qualified canonical SQL. Only omitted schemas resolve
+`current_schema()` on the caller connection; an explicit schema never falls
+back to its pool's search path. Canonical, audit and mandatory projection changes
+remain in the same transaction, so a projection failure rolls them all back.
+
+The mandatory cascade and catalog-only supersession write-behind use the shared
+`public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)`
+function installed by core_315. Its invoker authority preserves the caller's
+transaction and underlying table privileges. Graph invalidation is mandatory for
+disownment; postcommit supersession remains catalog-only and best effort. The
+optional final redaction flag additionally clears copied catalog summary, title,
+embedding and search data; it requires graph invalidation. The primitive never
+changes canonical memories or deletes catalog rows. Ordinary retraction retains
+historical text. Exact provenance prevents changes to other source schemas or tables.
+
+Core_314 supports managed-bootstrap and migration-only installs using explicit
+public schema usage, catalog SELECT/UPDATE, graph SELECT/DELETE and exact function
+EXECUTE grants for existing canonical runtime roles. PUBLIC and connector execution
+are not granted. Bootstrap replay applies those grants when a canonical role is
+created later; managed bootstrap's existing broader public-table grants remain a
+separate deployment property. Missing permissions fail the mandatory transaction.
+A schema-local downgrade retains this shared boundary and additive grants for
+other schema/runtime consumers. No deployment can run the new helper before the
+core revision is installed.
+
+
+### Lifecycle transition timestamps
+
+`facts.dropped_at` records entry into superseded/expired; `rules.forgotten_at`
+records entry into the existing forgotten=true state. These nullable fields
+have no default or legacy backfill. Duplicate terminal writes preserve the old
+time, including NULL; initial forgotten rules use their insertion time. They do
+not replace bitemporal `invalid_at` or rule-retirement `retired_at`.
+
+The memory-access seven-day integer counts those two timestamps plus episode
+`expires_at` inside one database-clock inclusive seven-day window. Future/NULL
+times are excluded, so legacy terminal history can be undercounted. Existing
+canonical/catalog/graph rollback boundaries remain; store_fact catalog
+write-behind and quick-fact/gift separate pool calls do not acquire broader
+atomicity from these fields.

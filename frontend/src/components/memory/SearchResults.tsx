@@ -30,7 +30,7 @@
 
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Voice } from "@/components/ui/Voice";
-import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { QueryBoundary } from "@/components/ui/query-boundary";
 import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
 import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { LedgerRow } from "@/components/memory/FactsRegister";
@@ -43,7 +43,7 @@ import {
   inspectResultToRule,
 } from "@/lib/memory-derived";
 import { formatNumeral } from "@/lib/memory-overture";
-import type { MemoryInspectResult } from "@/api/types.ts";
+import type { MemoryInspectResult, MemoryPaginatedResponse } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -150,32 +150,44 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
     limit: SEARCH_LIMIT,
   });
 
-  if (isError && (!response || response.data.length === 0)) {
-    // A failed search must not render "Nothing in the books." — a down inspect
-    // endpoint would read as a genuine no-match result (bu-mkd5r), including
-    // after a refetch failure retains a previously empty response in the cache.
-    return (
-      <MemoryLoadError
-        label="search results"
-        onRetry={() => void refetch()}
-        testId="memory-search-error"
-      />
-    );
-  }
+  return (
+    <QueryBoundary
+      // A paused first read is pending without fetching. It has no empty verdict.
+      isLoading={isPending || (!response && !isError)}
+      isError={isError}
+      isEmpty={false}
+      sourceLabel="search results"
+      onRetry={() => void refetch()}
+      loadingFallback={
+        <div role="status" data-testid="memory-search-loading">
+          <Voice variant="italic" className="py-6">
+            Searching the books…
+          </Voice>
+        </div>
+      }
+      emptyFallback={null}
+    >
+      {response && (
+        <SearchResultRows
+          response={response}
+          now={now}
+          offset={offset}
+          onOffset={onOffset}
+          onRetry={() => void refetch()}
+        />
+      )}
+    </QueryBoundary>
+  );
+}
 
-  if (isPending || !response) {
-    // No verdict yet (in flight, or paused offline): never render the empty
-    // line. `isPending`, not `isLoading`: a paused query is not fetching.
-    return (
-      <div role="status" data-testid="memory-search-loading">
-        <Voice variant="italic" className="py-6">
-          Searching the books…
-        </Voice>
-      </div>
-    );
-  }
-
-  // Read only from a response that is known to be present.
+/** Only the boundary's success branch renders rows or an empty verdict. */
+function SearchResultRows({
+  response, now, offset, onOffset, onRetry,
+}: Pick<SearchResultsProps, "now" | "onOffset"> & {
+  response: MemoryPaginatedResponse<MemoryInspectResult>;
+  offset: number;
+  onRetry: () => void;
+}) {
   const { total, has_more: hasMore, pools_failed: poolsFailedMeta } = response.meta;
   const poolsFailed = poolsFailedMeta ?? [];
 
@@ -197,7 +209,7 @@ export default function SearchResults({ q, kind, now, offset = 0, onOffset }: Se
     <PoolsDegradedNote
       label="Search results"
       poolsFailed={poolsFailed}
-      onRetry={() => void refetch()}
+      onRetry={onRetry}
       testId="memory-search-degraded"
     />
   );

@@ -41,7 +41,8 @@ Scope: v1-mandatory
 
 #### Scenario: AGENTS.md composes shared instructions
 - **WHEN** a butler's `AGENTS.md` is authored
-- **THEN** its first line is `@../shared/AGENTS.md` and resolution returns shared instructions before the domain-specific remainder
+- **THEN** its first line is `@../shared/AGENTS.md` — pulling shared butler instructions (tool execution contract, calendar usage, notification references); resolution returns them before the domain-specific remainder
+- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles
 - **AND** Travel is a conforming domain butler, not an exception
 - **AND** this shared guidance is not automatically injected into a goal system prompt
 

@@ -45,9 +45,14 @@ function render() {
   });
 }
 
-function mockBins(bins: ActivityBin[]) {
+function mockBins(bins: ActivityBin[], chroniclerTruncated = false) {
   vi.mocked(useEntityActivityBins).mockReturnValue({
-    data: { bins, degraded: false, degraded_reason: null },
+    data: {
+      bins,
+      degraded: false,
+      degraded_reason: null,
+      chronicler_truncated: chroniclerTruncated,
+    },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useEntityActivityBins>);
@@ -97,6 +102,18 @@ describe("ActivitySparkline", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("3 events");
     expect(text).toContain("3 active days");
+    expect(text).not.toContain("at least");
+  });
+
+  it("labels counts as a lower bound when the Chronicler read was capped", () => {
+    mockBins(denseSeries([0, 45, 89]), true);
+    render();
+    const text = container.textContent ?? "";
+    expect(text).toContain("at least 3 events");
+    expect(text).toContain("at least 3 active days");
+    expect(container.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
+      "at least 3 events",
+    );
   });
 
   it("renders the canned serif line when there is no activity", () => {

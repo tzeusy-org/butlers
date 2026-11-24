@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -22,6 +21,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _THIS_FILE = Path(__file__).resolve()
@@ -32,23 +32,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record (attribute + item access)."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_rows=None, fetchrow_result=None, fetchval_result=0):
@@ -98,7 +81,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_weight",
                     "valid_at": now,
@@ -171,7 +154,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_blood_pressure",
                     "valid_at": now,
@@ -198,7 +181,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_heart_rate",
                     "valid_at": now,
@@ -226,7 +209,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_weight",
                     "valid_at": now,
@@ -292,7 +275,7 @@ class TestSleepLatest:
             "end_time": "2026-05-11T06:00:00+00:00",
             "stages": {"deep": 90, "light": 210, "rem": 120, "awake": 60},
         }
-        row = _row(
+        row = Record(
             {
                 "id": uuid.uuid4(),
                 "valid_at": start,
@@ -333,7 +316,7 @@ class TestSleepLatest:
 
         start = datetime(2026, 5, 10, 22, 0, 0, tzinfo=UTC)
         meta = {"duration_ms": 25_200_000, "end_time": "2026-05-11T05:00:00+00:00"}
-        row = _row({"id": uuid.uuid4(), "valid_at": start, "metadata": meta})
+        row = Record({"id": uuid.uuid4(), "valid_at": start, "metadata": meta})
         pool = _mock_pool(fetchrow_result=row)
         app = _build_app(pool)
 
@@ -353,7 +336,7 @@ class TestSleepLatest:
 
         start = datetime(2026, 5, 10, 22, 0, 0, tzinfo=UTC)
         meta_str = json.dumps({"duration_ms": 21_600_000})
-        row = _row({"id": uuid.uuid4(), "valid_at": start, "metadata": meta_str})
+        row = Record({"id": uuid.uuid4(), "valid_at": start, "metadata": meta_str})
         pool = _mock_pool(fetchrow_result=row)
         app = _build_app(pool)
 
@@ -378,8 +361,8 @@ class TestMeasurementSources:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row({"name": "google_health", "last_sample_at": now, "sample_count": 42}),
-            _row({"name": "manual", "last_sample_at": now, "sample_count": 7}),
+            Record({"name": "google_health", "last_sample_at": now, "sample_count": 42}),
+            Record({"name": "manual", "last_sample_at": now, "sample_count": 7}),
         ]
         pool = _mock_pool(fetch_rows=rows)
         app = _build_app(pool)
@@ -415,7 +398,7 @@ class TestMeasurementSources:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row({"name": "fitbit", "last_sample_at": now, "sample_count": 10}),
+            Record({"name": "fitbit", "last_sample_at": now, "sample_count": 10}),
         ]
         pool = _mock_pool(fetch_rows=rows)
         app = _build_app(pool)
@@ -459,7 +442,7 @@ class TestExpectedSignals:
         now = datetime.now(tz=UTC)
         pool = _mock_pool(
             fetch_rows=[
-                _row(
+                Record(
                     {
                         "signal_key": "health:measurement-gap:weight",
                         "producer": "connector:google_health",

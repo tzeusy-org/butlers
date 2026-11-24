@@ -35,12 +35,13 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
 
 from butlers.core.attention_ledger import record_attention_event
+from butlers.core.attention_urgency import home_safety_decision
 from butlers.core.owner_conditions import (
     Observation,
     compute_fingerprint,
@@ -61,8 +62,18 @@ ESCALATION_GRACE_SECONDS = 900.0
 #: A condition whose delivery never succeeded is retried by later runs after this long, so the
 #: edge hook and the reconcile job do not both send for the one condition they just opened.
 RETRY_AFTER_SECONDS = 120.0
+#: Re-escalation ladder for a still-active alarm, as gaps between re-sends: the 15-minute grace
+#: above, then 1 hour, 4 hours, and daily from there while the sensor stays on.  The shared
+#: ledger default (1 day, 3 days, 7 days) is too slow for a live leak, smoke, CO or gas alarm.
+ESCALATION_ADVANCE: dict[str, tuple[str, timedelta]] = {
+    "L0": ("L1", timedelta(hours=1)),
+    "L1": ("L2", timedelta(hours=4)),
+    "L2": ("L3", timedelta(days=1)),
+    "L3": ("L3", timedelta(days=1)),
+}
+#: Metadata the delivery path writes after a send; a concurrent confirm must not drop it.
+_PRESERVED_METADATA: tuple[str, ...] = ("notified_at",)
 _FINGERPRINT_VERSION = 1
-_DELIVER_TIMEOUT_S = 30
 _ORIGIN = "home"
 
 _HAZARD_PHRASE: dict[str, str] = {
@@ -223,6 +234,8 @@ async def reconcile_safety(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=ESCALATION_GRACE_SECONDS,
+        escalation_advance=ESCALATION_ADVANCE,
+        preserve_metadata_keys=_PRESERVED_METADATA,
     )
     resolved = sum(1 for t in transitions if t.transition == "resolved")
 
@@ -281,6 +294,8 @@ async def reconcile_safety(
             ],
             snapshot_complete=False,
             initial_grace_seconds=ESCALATION_GRACE_SECONDS,
+            escalation_advance=ESCALATION_ADVANCE,
+            preserve_metadata_keys=_PRESERVED_METADATA,
         )
 
     return SafetyRunResult(
@@ -302,58 +317,29 @@ async def send_urgent_notify(pool: asyncpg.Pool, message: str) -> bool:
     hook) binds for the duration of the call.
     """
 
-    async def _record(outcome: str, reason: str | None = None, ref: str | None = None) -> None:
-        await record_attention_event(
-            pool,
-            origin_butler=_ORIGIN,
-            source="notify",
-            outcome=outcome,
-            channel="telegram",
-            intent="send",
-            priority="high",
-            reason=reason,
-            notification_ref=ref,
-        )
+    from butlers.jobs.owner_notify import DELIVERED, OwnerNotifyBoundary, send_owner_telegram
 
-    recipient = await resolve_owner_telegram_recipient(pool)
-    if not recipient:
-        logger.warning("home safety: no owner telegram recipient configured")
-        await _record("failed", "no_recipient_configured")
-        return False
-    client = get_current_switchboard_client()
-    if client is None:
-        logger.warning("home safety: switchboard client unavailable")
-        await _record("failed", "switchboard_client_unavailable")
-        return False
-    request = {
-        "schema_version": "notify.v1",
-        "origin_butler": _ORIGIN,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool("deliver", {"source_butler": _ORIGIN, "notify_request": request}),
-            timeout=_DELIVER_TIMEOUT_S,
-        )
-    except Exception as exc:
-        logger.warning("home safety: deliver() failed: %s", exc, exc_info=True)
-        await _record("failed", f"delivery_error:{exc}")
-        return False
-    if result.is_error:
-        text = str(result.content[0].text) if result.content else "Unknown error"
-        await _record("failed", f"delivery_error:{text}")
-        return False
-    data = result.data
-    if isinstance(data, dict) and data.get("status") == "failed":
-        await _record("failed", f"delivery_error:{data.get('error', 'Delivery failed')}")
-        return False
-    await _record("delivered", ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return True
+    cause = home_safety_decision()
+    outcome = await send_owner_telegram(
+        pool,
+        origin_butler=_ORIGIN,
+        message=message,
+        log_context="home_safety",
+        priority="high",
+        metadata={"attention_cause": cause.cause, "producer": cause.ref},
+        boundary=OwnerNotifyBoundary(
+            None,
+            resolve_owner_telegram_recipient,
+            get_current_switchboard_client,
+            record_attention_event,
+            lambda result: (
+                "delivery_error:remote_refusal"
+                if result.reason == "delivery_error"
+                else result.reason
+            ),
+        ),
+    )
+    return outcome == DELIVERED
 
 
 async def load_watch(pool: asyncpg.Pool) -> list[WatchEntry]:
@@ -428,16 +414,19 @@ async def run_safety_sentinel(
         return {"status": "source_unmeasurable"}
 
     rows = await pool.fetch(
-        "SELECT entity_id, state, last_updated FROM ha_entity_snapshot WHERE entity_id = ANY($1)",
+        "SELECT entity_id, state, last_changed, last_updated FROM ha_entity_snapshot "
+        "WHERE entity_id = ANY($1)",
         [e.entity_id for e in entries],
     )
-    readings = {
-        r["entity_id"]: SensorReading(
-            state=r["state"],
-            since=r["last_updated"].astimezone(UTC) if r["last_updated"] else None,
+    readings = {}
+    for r in rows:
+        # last_changed moves only on a state change, as the edge path judges; last_updated moves
+        # on any attribute update too.  A row written before last_changed existed has no value
+        # until the module's next persist, so it falls back to last_updated for that one cycle.
+        since = r["last_changed"] or r["last_updated"]
+        readings[r["entity_id"]] = SensorReading(
+            state=r["state"], since=since.astimezone(UTC) if since else None
         )
-        for r in rows
-    }
     result = await reconcile_safety(
         pool,
         entries,

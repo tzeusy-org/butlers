@@ -27,6 +27,8 @@
 - [ ] 2.12 Domain conversion: obligation declarations and admissions for every scheduled prompt, session-waking subscription and model-backed job (memory consolidation, teaching and review flows, briefings), goal-outcome episode capture, the lead policy (`LEAD.md`), the domain guidance corpus and its `owner_authority` guidance-notes capability, and the feed path for device and telemetry channels.
 - [ ] 2.13 Non-owner communication coverage: `recipient_params` on every party-reaching capability (calendar, Home Assistant messaging services, shares), Messenger's `render_links_inert` handling, and the refusal path for party-reaching calendar writes on butlers without an approvals module.
 
+- [ ] 2.14 Brokered web research (D20): after owner approval and merge of the amendment PR and the existing session-host prerequisites, build the credential-agnostic separate research host and Codex profile, broker-owned catalog capability, origin ceilings, exposure-selected live/cached mode, transactional reservations, finite per-call and fleet caps, event-derived audit, lineage/taint and adversarial cases. Build and hermetic or other no-real-credential proofs may proceed without actual research credential provisioning; bu-6qaju2.2 is closed (2026-10-15), answer B: reuse the existing Codex ChatGPT-subscription login. Actual research credential provisioning or use and live research proof still require the corresponding provisioning and spend conditions. Keep implementation dark behind the default-off program switch; the switch release remains dependent on the broker capability and the existing cutover gate.
+
 ## 3. Cutover gate (dev namespace, release candidate)
 
 - [ ] 3.1 All goal-orchestration and capability-authorization scenarios, and every scenario of the signed D19 dashboard change, pass.
@@ -35,6 +37,8 @@
 - [ ] 3.4 Stop, lease-loss, runner-crash, escalation and `GOAL_BROKER_SIGNING_KEY` rotation drills pass.
 
 ## 4. Switch
+
+The [deletion inventory](deletion-inventory.md) lists every path, symbol, route, frontend surface, test and config entry 4.1 deletes, and the invariants that must survive. Refresh it on the release branch; the release deletes that list and nothing else.
 
 - [ ] 4.1 One release routes all ingress and obligations through admission, deletes classification, route dispatch, per-butler spawning and cross-butler delegation, enables domain verification, and switches the dashboard to the D19 owner surface, removing the butler-unit views it replaces.
 - [ ] 4.2 Apply baseline deltas, archive this change, update RFC statuses, topology, operational docs, `CLAUDE.md` and the Switchboard manifesto. Every active change that modifies or adds requirements in a capability this change modifies or removes (listed in design.md, "Cross-change collisions") archives first, is re-scoped against the goal runtime, or has its overlapping deltas folded into this change before it archives. Capabilities this change empties (`cross-butler-delegation`, `conversation-decomposition`, `routing-scorecard`) are removed by hand, because archive refuses an empty spec.

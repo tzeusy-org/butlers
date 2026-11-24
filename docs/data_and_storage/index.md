@@ -6,6 +6,8 @@
 
 - [Schema Topology](schema-topology.md) — shared vs per-butler schemas, PostgreSQL setup
 - [Migration Patterns](migration-patterns.md) — Alembic conventions, module migration branching
+- [Migrator Login](migrator-login.md) — splitting the migrating login from the runtime login: ownership transfer and activation (dark)
 - [State Store](state-store.md) — KV JSONB state store design
 - [Blob Storage](blob-storage.md) — attachment and file storage
 - [Credential Store](credential-store.md) — CLI auth token persistence
+- [Vendor Doors](vendor-doors.md) — owner-confirmed vendor-door registry, authority functions, registrable domain (dark)

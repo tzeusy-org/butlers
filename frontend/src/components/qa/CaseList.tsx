@@ -122,7 +122,11 @@ export function CaseList({
                     "mt-1.5 h-2 w-2 justify-self-end rounded-full",
                     qaCase.pr_state ? prStateClass[qaCase.pr_state] : "bg-border",
                   )}
-                  aria-label={qaCase.pr_state ? `PR ${qaCase.pr_state}` : "No PR"}
+                  aria-label={
+                    qaCase.pr_state
+                      ? `PR ${qaCase.pr_state}`
+                      : qaCase.pr_url ? "PR state unknown" : "No PR"
+                  }
                 />
               </button>
               {sessionTraceDoor ? (

@@ -156,6 +156,20 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _meds.medication_travel_snapshot(module._get_pool())
 
     @_tool("medications")
+    async def medication_travel_snapshot_service(
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Service-only twin of medication_travel_snapshot for the named relay.
+
+        Not relay-presentable and excluded from the goal catalog
+        (``presentable=False``, RFC 0038 D7): it is the target of Switchboard's
+        ``medication.travel_snapshot`` relay on Travel's behalf. Classic Health
+        sessions still list it until the goal-runtime cutover.
+        """
+        del trace_context
+        return await _meds.medication_travel_snapshot(module._get_pool())
+
+    @_tool("medications")
     async def medication_log_dose(
         medication_id: str,
         taken_at: datetime | None = None,

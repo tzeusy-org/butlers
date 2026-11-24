@@ -3,15 +3,17 @@
 This document describes the dormant approval-only transport implementing RFC
 0023. The required behavior remains in the
 [delivery-intent recovery capability](../../openspec/specs/approval-delivery-intent-recovery/spec.md).
-Creating this transport does not enable admission, attach a daemon runtime, or
-start a worker. The rollout remains disabled by default.
+Constructing the transport does not enable admission. The trusted cohosted
+launcher installs runtimes and workers only for active sources whose
+server-held worker flag is enabled. Rollout remains disabled by default.
 
 ## Applicability and trust boundary
 
 `ApprovalAuthorityTopology` is an explicit trusted-host composition for Linux
 daemons cohosted in one process, as in `cli._start_all`. Its private companion
-MCP listeners expose only `deliver`, `route.execute`, or
-`verify_approval_admission`, using the actual registered tool wrappers. Every
+MCP listeners expose only `deliver`, `route.execute`, or the source verifier's
+`verify_approval_admission` and `verify_approved_notify`, using the actual
+registered tool wrappers. Every
 inter-butler request still crosses MCP; no peer pool or SQL read is shared.
 
 The listeners use Unix sockets and Linux `SO_PEERCRED`. Before parsing HTTP,
@@ -72,6 +74,72 @@ reuse the result. Telegram, email and WhatsApp uncertainty after provider start
 stays ambiguous. Reconciliation uses the original tuple and provider capability;
 an unavailable reconciliation capability never authorizes a blind resend.
 
+## Approved-notify proof (RFC 0038 D13)
+
+An owner-approved `notify` must reach its recipient once, never parked a second
+time by Messenger's recipient gate. The dashboard API therefore no longer sends
+an approved `notify` itself: it dispatches the action to the owning butler's
+`dispatch_approved_action`, like every other approved tool. The owning daemon's
+executor holds the approved row (null result) and sends the stored call's
+canonical `notify.v1` envelope (`approved_notify_request`) without re-running
+`notify()`.
+
+Where this topology is installed for the source, the executor uses
+`SourceApprovedNotifyDispatch`. `SourceApprovalAdmission.mint_approved_notify`
+is a separate operation from the `approval_request` admission and never widens
+it or shares its store. It reads the live row through
+`ApprovalDeliveryRepository.approved_notify_args` (owning schema and role,
+`tool_name = 'notify'`, `approved`, null result, no goal lineage), checks the
+stored-call digest and requires the presented envelope to equal the one projected
+from that row. It refuses recovery correlation, a foreign origin and owner-control
+intents. The proof binds action id, stored-call digest and envelope digest,
+expires within ten seconds and is revoked after the call whether or not it was
+presented.
+
+The proof travels in the same `X-Butlers-Approval-Proof` header on the source's
+kernel-admitted Switchboard companion. A header on public TCP has no principal and
+is ignored, so that delivery stays ordinary. On the protected hop Switchboard has
+the source's verifier `verify_approved_notify` consume the proof. The first
+presentation consumes it whatever the outcome. The verifier rechecks expiry,
+the envelope digest and the live row. Switchboard then requires the principal,
+`source_butler` and `origin_butler` to name the same source. Any failure refuses
+content-blind (`Approved notification authority rejected.`); it never degrades to
+an ordinary, re-parkable delivery.
+
+Switchboard re-digests the envelope it actually forwards, after its own rendering
+facts, and folds an `ApprovedNotifyAttestation` (issuer, action id, digest) into
+Switchboard-only route context for its protected Messenger client. Messenger
+parses the attestation only when the protected Switchboard principal installed
+the request, binds it to the handling task, and lets the shared approval matcher
+(`get_approval_execution_context`) honour it. It is honoured only for
+`route.execute` whose routed `notify_request` hashes to the attested digest,
+names the issuer as origin and route sender, and carries no recovery. A bare
+field, a caller origin or an action id grants nothing.
+
+The deliver hop nests two protected calls (the source verifier, then Switchboard
+to Messenger), each bounded by the ten-second companion deadline. Its own deadline
+(`approved_notify_deliver_deadline()`, 25 s) outlasts both and stays inside the
+dashboard API's 30 s dispatch deadline, so a late but successful send is never
+reported as a failure. If the hop still times out, an unconsumed proof proves
+nothing was forwarded and the row stays retryable. A consumed proof means the send
+may have happened. The executor then records the action executed with
+`{"status": "outcome_unknown"}` instead of leaving it eligible for a Retry that could
+message a non-owner twice.
+
+### Supported topology and the fallback
+
+Owner decision (2026-11-08): an approved non-owner send is supported only in the
+cohosted `butlers up` topology, meaning a kernel-admitted Switchboard companion and
+the source butler's approvals worker flag (`approval_delivery_rollout`) on. Only
+there does the single-use proof exist, so only there is the approval honoured once.
+
+Outside it (single-daemon `butlers run`, split hosts, or a source whose worker flag
+is off) the executor falls back to an ordinary `deliver`. Messenger's recipient gate
+then applies and parks a non-owner send as a second, previewable native channel
+command, which renders its preview and replays once on approval. That second owner
+approval is the intended safe behaviour in those topologies, not a defect: nothing
+is sent to a non-owner without it, and the proof transport is not extended to them.
+
 ## Composition and cleanup
 
 The opt-in topology receives already registered source, Switchboard and
@@ -83,8 +151,37 @@ rejected recovery does not enter those wrappers. Tool group exclusions remain
 unchanged. The companion copies this guarded registered tool, not an unwrapped
 business handler. `runtime(source, ...)`
 returns a dormant `ApprovalRecoveryRuntime` with the protected dispatch; it
-does not attach it to a daemon. Normal daemon startup does not construct this
-topology. Operational activation and its canary remain separate rollout gates.
+does not attach it to a daemon itself. After all successful daemon registrations,
+`cli._start_all` enters `approval_delivery_composition`. It discovers active,
+enabled Approvals modules and reads each schema's server-held worker flag.
+Disabled, missing or invalid flags create no admission objects, socket directory,
+listeners, runtimes or workers. Enabled sources require both registered
+Switchboard and Messenger in the same host; missing peers or tool registrations
+fail closed without a TCP fallback. A source whose configured schema differs
+from its butler name is unsupported and remains unavailable.
+
+The composition uses each source module's own repository and binds the expected
+Messenger registry target from the registered daemon port and the existing
+server-side cross-container URL mapping. The kernel-admitted companion still
+uses the registered Messenger object; the URL equality check grants no TCP
+authority. The source's existing default owner-recipient lookup supplies a
+candidate, which must independently resolve through `resolve_owner_channel_via_definer`
+on its owning pool before rendering. Messenger verifies the owner again. Callback
+secrets resolve through the source's credential store with environment fallback
+disabled; neither resolver value is logged or put in topology configuration.
+
+The host starts each eligible worker only after these bindings exist. On normal
+shutdown, startup failure or cancellation it stops all attached workers before
+retiring source admissions and listeners, then shuts down daemon modules/pools.
+Partial composition failure follows the same cleanup and leaves delivery
+unavailable; failed daemon startup is also torn down before retry or cancellation.
+Fresh startup has new source epochs, including when registered objects are reused.
+Worker-flag changes require a host restart to install an absent topology; module
+re-enables can reuse an already installed runtime. Single-daemon `butlers run`
+and split-process control/domain hosts do not install recovery authority.
+Operational activation, any exclusive temporary dev cohosting cutover and its
+canary remain separate rollout gates. This installation neither changes flags
+nor backfills or replays historical actions.
 
 Approval companions use stateless JSON request/reply responses, with no SSE
 stream or dependency on process-global SSE drain state. Each client call has

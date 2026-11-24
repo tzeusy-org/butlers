@@ -12,8 +12,6 @@ import pytest
 
 from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_close_cache_tuple
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
@@ -24,29 +22,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    # Three connections are needed for the blocker and the two overlapping
-    # writers; a larger pool proves serialization comes from the DB lock.
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=3,
-        max_size=6,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE tier2_cache")
-    await p.execute("TRUNCATE TABLE covered_local_days")
-    yield p
-    await p.close()
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    # The blocker and two overlapping writers need three connections; a larger
+    # pool proves serialization comes from the DB lock.
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(db, fresh_db, "chronicler", min_size=3, max_size=6)
 
 
 def _result(*, prose: str, date_label: str, timezone: str = "UTC") -> SimpleNamespace:
@@ -70,7 +52,7 @@ def _result(*, prose: str, date_label: str, timezone: str = "UTC") -> SimpleName
 
 
 async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
-    pool: asyncpg.Pool,
+    chronicler_pool: asyncpg.Pool,
 ) -> None:
     """Both cache writes serialize on the same real PostgreSQL lock.
 
@@ -94,12 +76,12 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
     valid_task: asyncio.Task | None = None
 
     try:
-        async with pool.acquire() as blocker:
+        async with chronicler_pool.acquire() as blocker:
             async with blocker.transaction():
                 await lock_day_close_cache_tuple(blocker, target_date, "UTC")
                 invalid_task = asyncio.create_task(
                     write_day_close_cache(
-                        pool,
+                        chronicler_pool,
                         task_name=DAY_CLOSE_TASK_NAME,
                         result=invalid_result,
                         run_at=run_at,
@@ -107,7 +89,7 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
                 )
                 valid_task = asyncio.create_task(
                     write_day_close_cache(
-                        pool,
+                        chronicler_pool,
                         task_name=DAY_CLOSE_TASK_NAME,
                         result=valid_result,
                         run_at=run_at,
@@ -118,7 +100,7 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
 
                     async def _condition_met() -> bool:
                         return (
-                            await pool.fetchval(
+                            await chronicler_pool.fetchval(
                                 """
                                 SELECT count(*)
                                 FROM pg_locks
@@ -137,7 +119,7 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
         assert valid_task is not None
         await asyncio.gather(invalid_task, valid_task)
 
-        row = await pool.fetchrow(
+        row = await chronicler_pool.fetchrow(
             "SELECT prose, date_label, invalid_reason FROM tier2_cache WHERE cache_key = $1",
             cache_key,
         )
@@ -155,7 +137,9 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def test_different_timezone_tuples_do_not_block_each_other(pool: asyncpg.Pool) -> None:
+async def test_different_timezone_tuples_do_not_block_each_other(
+    chronicler_pool: asyncpg.Pool,
+) -> None:
     """A held UTC tuple lock cannot delay an otherwise independent SGT writer."""
     run_at = datetime(2026, 4, 25, 1, 5, tzinfo=UTC)
     target_date = date(2026, 4, 24)
@@ -165,12 +149,12 @@ async def test_different_timezone_tuples_do_not_block_each_other(pool: asyncpg.P
         timezone="Asia/Singapore",
     )
 
-    async with pool.acquire() as blocker:
+    async with chronicler_pool.acquire() as blocker:
         async with blocker.transaction():
             await lock_day_close_cache_tuple(blocker, target_date, "UTC")
             async with asyncio.timeout(2):
                 await write_day_close_cache(
-                    pool,
+                    chronicler_pool,
                     task_name=DAY_CLOSE_TASK_NAME,
                     result=result,
                     run_at=run_at,
@@ -178,7 +162,7 @@ async def test_different_timezone_tuples_do_not_block_each_other(pool: asyncpg.P
                     target_date=target_date,
                 )
 
-    row = await pool.fetchrow(
+    row = await chronicler_pool.fetchrow(
         "SELECT cache_key FROM tier2_cache WHERE cache_key = $1",
         day_close_cache_key(target_date, "Asia/Singapore"),
     )

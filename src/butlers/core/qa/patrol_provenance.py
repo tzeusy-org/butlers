@@ -8,7 +8,7 @@ through :data:`LAST_QUALIFYING_PATROL_SQL`. Both sides derive the digest from
 this module so a configuration change makes every older row stop qualifying.
 
 A row qualifies only when it is ``origin='scheduled'``, finished
-``clean``/``findings_dispatched``/``suppressed``, has ``discovery_complete``
+``clean``/``findings_dispatched``/``halted``/``suppressed``, has ``discovery_complete``
 true, and carries the current configuration digest. Legacy rows keep null
 provenance and never qualify.
 """
@@ -36,8 +36,15 @@ DEFAULT_ENABLED_SOURCES: Final[tuple[str, ...]] = (
 
 #: Statuses that can end a genuine, fully discovered patrol. A ``suppressed``
 #: patrol filtered its novel findings by cooldown or severity after complete
-#: discovery, so it is healthy coverage when its row proves that discovery.
-QUALIFYING_PATROL_STATUSES: Final[tuple[str, ...]] = ("clean", "findings_dispatched", "suppressed")
+#: discovery, so it is healthy coverage when its row proves that discovery. A ``halted``
+#: patrol held its findings behind a halting gate (breaker, no model, cap): remediation
+#: stopped, but discovery ran, and the row's own ``status`` and ``halt_reason`` say so.
+QUALIFYING_PATROL_STATUSES: Final[tuple[str, ...]] = (
+    "clean",
+    "findings_dispatched",
+    "suppressed",
+    "halted",
+)
 
 #: A patrol is overdue after this many configured cadences without a
 #: qualifying completion (REQ-butler-control-plane-liveness-005).
@@ -51,6 +58,22 @@ LAST_QUALIFYING_PATROL_SQL: Final[str] = """
       AND status = ANY($1::text[])
       AND enabled_sources_config_digest = $2
       AND completed_at IS NOT NULL
+"""
+
+#: Distinct qualifying patrols that completed after a deployment window opened
+#: (REQ-dashboard-api-064). Same qualification as the readiness check above;
+#: the deployment gate counts durable IDs with strictly increasing completion
+#: times, so re-reading one patrol never counts as a second cycle.
+QUALIFYING_PATROLS_SINCE_SQL: Final[str] = """
+    SELECT id, completed_at
+    FROM public.qa_patrols
+    WHERE origin = 'scheduled'
+      AND discovery_complete IS TRUE
+      AND status = ANY($1::text[])
+      AND enabled_sources_config_digest = $2
+      AND completed_at > $3
+    ORDER BY completed_at, id
+    LIMIT 16
 """
 
 
@@ -91,6 +114,18 @@ class QaPatrolContract:
     @property
     def overdue_after_s(self) -> float:
         return float(self.patrol_interval_minutes * 60 * OVERDUE_CADENCE_MULTIPLIER)
+
+
+def qa_patrol_contract(configs: Iterable[Any]) -> QaPatrolContract | None:
+    """Return the first exact QA config's contract, including a missing/disabled one.
+
+    Read the startup sequence in order without recomputing the contract or
+    consulting runtime registry state. A later duplicate cannot supply a fallback.
+    """
+    return next(
+        (getattr(config, "qa_patrol_contract", None) for config in configs if config.name == "qa"),
+        None,
+    )
 
 
 def contract_from_module_config(qa_config: Mapping[str, Any]) -> QaPatrolContract | None:

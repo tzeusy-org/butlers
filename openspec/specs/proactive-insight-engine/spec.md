@@ -69,8 +69,8 @@ The system SHALL enforce a global daily delivery budget that caps the total numb
 - **AND** pending candidates SHALL remain for the next day's cycle
 
 #### Scenario: Zero budget (verbosity off)
-- **WHEN** the user's verbosity is set to `off` (budget = 0)
-- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery
+- **WHEN** the user's verbosity is set to `off` or `auto_off` (budget = 0)
+- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery, except that under `auto_off` an owner-clause `break_through` candidate is retained and delivered by an urgent cycle
 - **AND** butler insight-scan jobs SHALL skip candidate generation entirely (early return)
 
 ### Requirement: Verbosity Presets
@@ -157,7 +157,7 @@ remained unengaged across the existing fourteen-day safety window.
 #### Scenario: Total disengagement auto-off
 - **WHEN** every insight delivered on each of 14 consecutive days remains
   unengaged (at least 1 insight delivered per day)
-- **THEN** the system SHALL auto-downgrade verbosity to `off`
+- **THEN** the system SHALL auto-downgrade verbosity to `auto_off`, a distinct state with budget 0 that is treated as `off` for all routine speech (an owner-declared break-through candidate is the one exception, see Owner-Declared Break-Through Hits Are Observed At Ingest), so an auto-downgrade is distinguishable from the owner's explicit `off`; pre-existing `off` rows remain explicit opt-outs
 - **AND** SHALL deliver a final notification: "I've paused proactive insights
   since you haven't found them useful. You can re-enable them anytime."
 - **AND** this final notification SHALL be delivered via direct `notify` (not
@@ -359,7 +359,7 @@ In this mode:
   covers once a day.
 
 An explicit `verbosity=off` configuration SHALL still suppress delivery in
-`urgent_only` mode exactly as it does in the regular cycle — this is a hard
+`urgent_only` mode (including owner-declared break-through candidates) exactly as it does in the regular cycle — this is a hard
 user opt-out, not a time-based deferral the urgent bypass is meant to
 override.
 
@@ -450,7 +450,8 @@ The insight broker SHALL be implemented as a Switchboard module (`module-insight
   adaptive reduction), (6) select top-B candidates by priority, (7) deliver
   via `notify` (digest for B>1, standalone for B=1), (8) record cooldowns for
   delivered candidates, (9) record engagement tracking rows, (10) clean up old
-  rows (candidates older than 30 days, cooldowns older than 30 days past expiry)
+  bookkeeping rows (cooldowns older than 30 days past expiry, engagement rows
+  older than 30 days); candidates are never deleted by the cycle
 
 #### Scenario: Delivery cycle scheduling
 - **WHEN** the Switchboard butler's `butler.toml` configures the `insight-delivery-cycle`
@@ -485,9 +486,12 @@ User insight preferences SHALL be stored in a dedicated `public.insight_settings
 ### Requirement: Candidate Cleanup
 The system SHALL periodically clean up old insight data to prevent unbounded table growth.
 
-#### Scenario: Candidate row cleanup
+#### Scenario: Candidate rows are not deleted by the delivery cycle
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `public.insight_candidates` where `status` is NOT `'pending'` AND `created_at` is older than 30 days
+- **THEN** it SHALL NOT delete any row from `public.insight_candidates`
+- **AND** terminal (non-`pending`) candidates SHALL be deleted only by the opt-in, default-off,
+  dry-run-capable retention pruner `insight_candidates_prune`, whose default bound is 90 days
+  since `created_at` (`docs/operations/data-retention.md`, pruner [C])
 
 #### Scenario: Cooldown row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
@@ -765,6 +769,25 @@ requirement existed.
   clustering purposes — it does not raise, and does not silently link to an
   unrelated candidate
 
+#### Scenario: Conflicting declared choices become one owner question
+- **WHEN** a cluster holds two or more candidates whose `metadata.choice.key`
+  is equal and whose `metadata.choice.option` values differ, and an owner
+  confirm transport is wired to the delivery cycle
+- **THEN** the cycle asks the owner one confirm question whose options are the
+  distinct declared options (sorted, at most four), the members are removed
+  from the digest and settle as delivered, and the question spends one
+  delivery-budget slot
+- **AND** an answer records `useful` feedback on every member via
+  `record_insight_feedback`, while an unanswered expiry records none
+- **AND** a re-detected identical tension (same sorted dedup keys) does not
+  open a second question while the first is open
+- **AND** a cluster without conflicting choices render exactly as before
+
+#### Scenario: Unavailable question transport falls back to the digest
+- **WHEN** no transport is wired, the transport errors, or the cluster's
+  options cannot form a valid question
+- **THEN** the cluster renders in the normal digest, never silently dropped
+
 ### Requirement: Held-By Signal Telemetry on Suppressed Ledger Rows
 The delivery cycle SHALL record a `held_by` key in the `metadata` of any
 `public.attention_ledger` row it writes with `outcome="suppressed"`, naming
@@ -875,20 +898,40 @@ A candidate MAY carry a typed `premise` naming the fact its message asserts: `{"
 - **AND** the stored `insight_candidates.message` is unchanged
 
 ### Requirement: In-Place Amendment of Delivered Insights
-When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. The owner-condition ledger's `reconcile_snapshot` `post_write` hook SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the reconcile transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
+When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. Both owner-condition resolution paths, the ledger's `reconcile_snapshot` `post_write` hook and the explicit `resolve_condition` facade, SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the resolving transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
 
 #### Scenario: A standalone Telegram delivery is edited in place
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
 - **THEN** the cycle edits that message to a struck-through original plus `Resolved HH:MM UTC`, marks the amendment `applied`, and records one `outcome="amended"` ledger row
 
+#### Scenario: A resolved digest line is struck inside the delivered Telegram digest
+- **WHEN** pending amendments' candidates were delivered as lines of one Telegram digest with a stored chat id, provider message id and sent text
+- **THEN** the cycle edits that one message once, striking every resolved line (earlier applied strikes kept) with its `Resolved HH:MM UTC` note and leaving other lines untouched, marks those amendments `applied`, and sends no new notification
+- **AND** a replayed cycle issues no second edit
+
 #### Scenario: An uneditable delivery folds into the next digest
-- **WHEN** the delivery was a digest line, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
+- **WHEN** the delivery was a digest whose sent text was not recorded, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
 - **THEN** the amendment becomes `fold` and the next delivery that happens anyway SHALL carry a `Since last digest: Resolved ...` line, after which it is `folded`
 - **AND** a correction SHALL NEVER be sent as its own standalone message
 
 #### Scenario: Repeated reconciles stay single
 - **WHEN** the same resolved condition is reconciled again
 - **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
+
+#### Scenario: An explicit resolution amends exactly like a snapshot resolution
+- **WHEN** an owner condition that is the premise of a delivered candidate is resolved by the explicit `resolve_condition` facade
+- **THEN** exactly one amendment is enqueued for that candidate in the same transaction as the resolution, and resolving again enqueues none
+- **AND** a failed enqueue never rolls back the resolution
+
+#### Scenario: A forged enqueue writes nothing
+- **WHEN** a role granted EXECUTE on the SECURITY DEFINER `public.enqueue_premise_amendments` calls it for a condition with no `resolved` `owner_conditions` row, or with a `resolved_at` that differs from that row's
+- **THEN** it returns 0 and writes nothing
+- **AND** a genuine call keys the episode on the ledger row's own fingerprint and `resolved_at`, rendered identically from any session time zone or date style, and stores no caller-supplied summary
+
+#### Scenario: Amendment evidence outlives candidate cleanup
+- **WHEN** a candidate that has an amendment is deleted
+- **THEN** the amendment row remains, and the delivery cycle skips it without error
+- **AND** broker cleanup settles a `pending` or `fold` amendment whose candidate is gone to the terminal `orphaned` state; amendment rows are never deleted
 
 ### Requirement: Premise Amendment Migration Evidence
 
@@ -919,7 +962,7 @@ The premise-amendment migration lifecycle SHALL distinguish the ordinary migrati
 
 ### Requirement: Privileged Bootstrap Converges the Amendment Table Owner
 
-The privileged managed bootstrap SHALL narrowly converge an existing ordinary `public.insight_amendments` table from the actual current bootstrap owner to the existing configured trusted ordinary migration identity before subsequent ordinary core replay. An absent table and an already-converged owner SHALL be no-ops. Unexpected relation kind, third ownership or unsafe/unknown target identity SHALL fail closed; no generic owner reassignment, role creation, new grant, destructive recreation, applied-revision rewrite or new caller interface SHALL be introduced. Read-only initial classification SHALL precede bootstrap side effects, and the transition SHALL revalidate qualified object/owner/target identity under a finite nonwaiting exclusive lock. Its atomic ownership block SHALL preserve complete amendment rows, logical definitions, FK, runtime effective privileges and grant options, RLS flags/policy bodies and independently installed functions. Expected PostgreSQL owner-OID ACL and dependent-index/TOAST/owned-sequence ownership effects SHALL be separately measured. The trusted migration owner's ordinary RLS bypass SHALL be explicit and SHALL NOT be conflated with runtime-role authority. Existing historical diagnostics, six causal variants, 45 role controls, two bootstrap replays, 43-row baseline, all amendment retention states and bounded cumulative CHECK/lossy-fold/q34 invariants SHALL remain enforced. Actual ordinary canonical replay SHALL reach the dynamic core head and durable per-schema version/data witnesses; metadata, a stamped head, mocks or expected-failure green SHALL NOT establish repair. Function/caller/FK/FORCE-RLS hardening remains a separate contract.
+The privileged managed bootstrap SHALL narrowly converge an existing ordinary `public.insight_amendments` table from the actual current bootstrap owner to the existing configured trusted ordinary migration identity before subsequent ordinary core replay. An absent table and an already-converged owner SHALL be no-ops. Unexpected relation kind, third ownership or unsafe/unknown target identity SHALL fail closed; no generic owner reassignment, role creation, new grant, destructive recreation, applied-revision rewrite or new caller interface SHALL be introduced. Read-only initial classification SHALL precede bootstrap side effects, and the transition SHALL revalidate qualified object/owner/target identity under a finite nonwaiting exclusive lock. Its atomic ownership block SHALL preserve complete amendment rows, logical definitions, FK, runtime effective privileges and grant options, RLS flags/policy bodies and function bodies. The same atomic block SHALL converge the two core_255 SECURITY DEFINER functions (`public.enqueue_premise_amendments`, `public.resolve_finance_bill_status`) under the same rule — absent or already-target is a no-op, only the bootstrap owner transfers, a third owner fails closed in the read-only preflight — preserving their bodies, `proconfig` and runtime EXECUTE rights. Expected PostgreSQL owner-OID ACL and dependent-index/TOAST/owned-sequence ownership effects SHALL be separately measured. The trusted migration owner's ordinary RLS bypass SHALL be explicit and SHALL NOT be conflated with runtime-role authority. Existing historical diagnostics, six causal variants, 45 role controls, two bootstrap replays, 43-row baseline, all amendment retention states and bounded cumulative CHECK/lossy-fold/q34 invariants SHALL remain enforced. Actual ordinary canonical replay SHALL reach the dynamic core head and durable per-schema version/data witnesses; metadata, a stamped head, mocks or expected-failure green SHALL NOT establish repair. Function/caller/FK/FORCE-RLS hardening remains a separate contract.
 
 ID: REQ-proactive-insight-engine-033
 Source: RFC0006; scripts/init-db.sql Important ownership note; bu-d55reo adopted complete canonical P0-P9; scripts/init-db.sql qualified owner convergence
@@ -959,5 +1002,151 @@ Scope: v1-mandatory
 
 #### Scenario: Independent lifecycle proof retains historical contracts and attribution
 - **WHEN** the bounded repair is validated, reviewed and delivered through normal native/source/hosted/protected operations
-- **THEN** all existing amendment states, candidate retention/cascade, documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
+- **THEN** all existing amendment states, candidate retention (core_312 replaced the cascade with indefinite amendment retention), documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
 - **AND** function ownership/caller/EXECUTE and FK/FORCE-RLS hardening are reported separately, source/mock/collection or historical diagnostic green is never called SQL repair, and full original delivery outcomes remain required for closure
+
+### Requirement: Finance contribution protection survives durable insight processing
+
+The insight broker MUST preserve a Finance contribution protection floor bound to the exact subject, display value, revision and message through persistence and every derived message. Only the trusted deterministic producer SHALL supply an owner-only proof; public JSON labels, current session context and derived text MUST NOT upgrade stored provenance.
+
+ID: REQ-proactive-insight-engine-035
+Source: bu-svqpzo.19 proposed persisted contribution contract; RFC 0038 D6; canonical Messenger bu-vbdug9.1
+Scope: v1-mandatory
+
+#### Scenario: R01 Extracted subscription names remain protected through the actual producer
+
+- **WHEN** an extracted subscription service contains a bare host, an HTTPS URL or hostile markup
+- **THEN** the real registered writer, stored row and Finance scan MUST preserve its extracted origin through candidate persistence to the actual final delivery consumer
+- **AND** raw stored names MUST remain unchanged while text and metadata readback MUST NOT create an active extracted link or preview
+
+#### Scenario: R02 Extracted payees use the same protection
+
+- **WHEN** a bill due, reconciliation or predicted-bill candidate incorporates an extracted payee
+- **THEN** the same origin and revision protection MUST survive the actual bill writer and name-bearing producer branch
+- **AND** payment destination, bill settlement and reconciliation authority MUST remain unchanged
+
+#### Scenario: R06 Unprovable contribution origin stays conservative
+
+- **WHEN** a candidate is legacy, lacks a valid producer binding or carries forged, malformed or conflicting provenance
+- **THEN** its Finance display contribution MUST require inert rendering
+- **AND** public MCP JSON and a later owner session MUST NOT construct an owner-only proof, clear the protection floor or rebind it to different content
+
+#### Scenario: R07 Broker delay and restart retain the protection floor
+
+- **WHEN** a candidate is held for quiet hours, attention policy, day boundary or process restart
+- **THEN** the persisted row and its later replay MUST retain protection with the original subject, value and revision bindings
+- **AND** current quiet/context checks, expiry, priorities and budgets MUST still apply; re-reading current owner context MUST NOT upgrade the stored origin
+
+#### Scenario: R08 Failed delivery and replay do not lose protection
+
+- **WHEN** a protected delivery fails or is replayed by the existing broker retry path
+- **THEN** all subsequent attempts MUST retain its protection and exact contribution bindings
+- **AND** existing failure and attempt accounting, three-failure policy and unknown-outcome semantics MUST remain; no automatic duplicate-send or safe-retry claim is added
+
+#### Scenario: R09 Derived summaries and amendments inherit all contributors
+
+- **WHEN** synthesis, digest formatting, folded amendments or prepared-action doors derive text from protected contributions
+- **THEN** the resulting text MUST require the union of every contributor protection floor
+- **AND** paraphrase, ordering or a newly generated summary MUST NOT clear protection; separately bound server-created controls MUST keep their own authority without making extracted text active
+
+#### Scenario: R15 Successful in-place amendments retain the complete protection floor
+
+- **WHEN** a stored Finance insight is amended in place through `apply_pending_amendments`, the production `_build_switchboard_insight_amend_fn`, `amend_delivery` and the registered Telegram edit consumer
+- **THEN** the complete replacement MUST inherit the union of the persisted original message's and every new contributor's protection, bound to their exact values and revisions; a current session, public flag or resolution note MUST NOT clear it
+- **AND** a successful protected edit MUST use the same canonical rendering primitive for all replacement text, with every link inert and previews disabled, while preserving authenticated target/message identity and current edit permission
+- **AND** if that trusted edit path cannot enforce protection, it MUST refuse before the provider call and truthfully use the existing rejected-edit/fold path with the full persisted protection union; it MUST NOT mark the raw edit applied or lose protection in the later digest
+- **AND** owner-only independently unexposed edits MUST retain ordinary rendering, and existing amendment CAS, attempt limits, cancellation, ambiguous outcomes and replay accounting MUST remain; no unknown edit becomes a claimed success, duplicate send or invented safe retry
+
+### Requirement: Owner-Declared Break-Through Hits Are Observed At Ingest
+
+The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds, except that hits past a clause's hourly cap (3) fold into one pending "and N more" candidate delivered by the next hourly urgent cycle; the owner's own current clause, not a model or a producer, is the authority to interrupt.
+
+Source: bu-s11n0s.8 S1, S2 (owner-released intent bu-9zmre6)
+Scope: v1-mandatory
+
+#### Scenario: A matching inbound message yields one hit and one event
+
+- **WHEN** an inbound message is accepted whose resolved sender entity, authenticated sender domain, channel or account-security kind matches a current, unrevoked, unexpired clause
+- **THEN** exactly one row is recorded in `switchboard.break_through_hits` keyed by `(clause_id, source_request_id)` and exactly one `switchboard.break_through_hit` event is published
+- **AND** one urgent insight candidate (priority 95, category `break_through`) is queued for it
+
+#### Scenario: The event carries metadata only
+
+- **WHEN** the event is published
+- **THEN** its payload contains only the clause id, the channel, the source request id and, when the sender resolved to an entity, that entity's display name
+- **AND** it never contains a message body, subject, snippet, sender address or link, and an unresolved sender is never replaced by its address
+
+#### Scenario: A replay is silent
+
+- **WHEN** the same `(clause_id, source_request_id)` is observed again, such as a connector replay
+- **THEN** the insert conflicts, no second event is published and the first hit is unchanged, including under concurrent replays
+- **AND** a replay never loses an announcement: a hit whose event and candidate were not completed (a timeout or crash after the insert) stays unpublished and is announced by the next replay or the hourly sweep once its lease lapses, while a published hit is never announced again
+
+#### Scenario: The owner is told within seconds, without content
+
+- **WHEN** a hit is announced
+- **THEN** a delivery cycle scoped to that one candidate runs immediately with the production notify path, and the owner receives one line naming the sender's display name and the channel only
+- **AND** the line never contains a body, subject, snippet, address or link, and the observation runs as a tracked background task so ingest never waits for it
+- **AND** a failed send leaves the candidate pending for the hourly urgent cycle and never re-announces the hit
+
+#### Scenario: The owner's current word decides at send time
+
+- **WHEN** the clause is revoked after the hit, or the owner has replied in the same thread after the message arrived
+- **THEN** nothing is sent: the broker re-evaluates the live clause, and the `switchboard`/`inbound_still_unanswered` probe withdraws the candidate unsent with `premise_false`
+- **AND** a probe that cannot read its inputs is unknown, never a withdrawal, and the owner's own message is never a hit
+
+#### Scenario: Auto-off does not mute the owner's declared sender, an explicit off does
+
+- **WHEN** the total-disengagement ratchet has written `verbosity = 'auto_off'` (budget 0 like `off`)
+- **THEN** routine speech stays muted but an owner-clause break-through candidate is still proposed and delivered by an urgent cycle, and no other category is
+- **AND** an explicit `verbosity = 'off'` stops every candidate including break-through, and existing `off` rows remain explicit
+
+#### Scenario: A flood from one clause folds into one line
+
+- **WHEN** a clause records more than 3 hits within a rolling hour
+- **THEN** the first 3 each get their own line and every further hit folds into a single pending "and N more from senders you declared (<channel>) - open" candidate per clause, updated in place and delivered by the next hourly urgent cycle
+- **AND** the folded line names no sender and carries no text, a replayed hit counts once because rank is read from the unique hit rows, and every folded hit is closed (never retried)
+
+#### Scenario: A promoted skip rule does not hide a hit
+
+- **WHEN** an ingestion rule skips or blocks the same sender
+- **THEN** the hit is still recorded and announced, because the evaluator reads only the sender, channel and account-security classification
+
+#### Scenario: Unknown is routine and ingest never fails
+
+- **WHEN** the evaluator is unavailable (the interface is deactivated, the function raises, or the observation exceeds its timeout)
+- **THEN** the message is accepted as if no clause matched, no hit or event is recorded, and the fault is logged by error class at most once per interval rather than once per message
+- **AND** the observation is bounded by a single timeout and never raises into ingest
+
+#### Scenario: The owner can list their current clauses
+
+- **WHEN** the owner's verified cookie session reads `GET /attention/break-through-clauses`
+- **THEN** the unrevoked clauses are returned newest first (matcher ids, scope, expiry, creation time), from the same single clause store the create and revoke routes write
+- **AND** the read needs the session but not the CSRF proof, is refused for any non-cookie authority, and never exposes message content
+
+#### Scenario: The owner can list and revoke clauses from Telegram but never grant
+
+- **WHEN** the primary owner's Telegram channel sends exactly `/reach`
+- **THEN** the connector answers deterministically with the unrevoked clauses and a signed, chat-bound revoke button per clause, and the message never reaches ingest or any model
+- **AND** a revoke tap is honoured only from the primary owner channel, verified at the connector and again at the API, through the connector-credential route and two narrow SQL functions (`dashboard_attention.owner_channel_list`, `dashboard_attention.owner_channel_revoke`), the second of which only sets `revoked_at` on one live clause
+- **AND** no Telegram path can create a clause: `dashboard_attention.api` keeps the verified cookie session and CSRF proof for `clause_create` and `issue`, so a break-through clause is only ever granted from the dashboard
+
+#### Scenario: Telegram proposes a clause and only the dashboard confirms it
+
+- **WHEN** the primary owner sends `/reach add <matcher>` in a private chat
+- **THEN** one pending row of matchers only (sender domain, channel, security kind, scope; never message text) is written to the owner-owned `dashboard_attention.reach_proposals` table (no runtime role can read or write it directly; only the migration role may SELECT it for backup) through the SECURITY DEFINER `dashboard_attention.owner_channel_propose(jsonb)`, which validates lengths and closed sets again, expires the proposal after 24 hours, treats an identical live proposal as the same proposal and refuses an eleventh pending proposal, and no clause exists
+- **AND** the dashboard `/settings/reach` page lists pending, unexpired proposals, and Confirm (behind a confirm dialog, with no optimistic update) calls the cookie-session, CSRF-checked `dashboard_attention.api` action `proposal_confirm`, which creates the clause in the one clause store and marks the proposal consumed in one transaction; Dismiss calls `proposal_dismiss`
+- **AND** an expired, dismissed or already consumed proposal cannot be confirmed, so a repeated confirm creates no second clause, and the Telegram connector credential can reach neither `clause_create` nor any proposal action
+
+#### Scenario: A clause nobody opens is asked about once, then goes dormant
+
+- **WHEN** the deterministic hourly Switchboard sweep finds a live clause at least 30 days old (or 30 days past the owner's last keep) whose break-through lines were delivered in the last 30 days and none was opened, where "opened" is the delivered line's `insight_engagement.engaged` flag
+- **THEN** exactly one content-free "keep?" candidate (category `break_through_keep`, below the urgent threshold, no sender, address or message text) is queued through the ordinary insight broker, and the clause is marked `asked` in the owner-owned `dashboard_attention.clause_decay` table (no runtime role can read or write it directly; only the migration role may SELECT it for backup)
+- **AND** a clause with no hit at all for 90 days is marked `dormant`: the fixed evaluator skips it, so it no longer breaks through, while it stays listed on `/settings/reach` and can be revived
+- **AND** decay only narrows: the sweep reaches the clause store through two Switchboard-only SECURITY DEFINER functions (`decay_clauses` reads live clause ids and dates, `decay_apply` enforces the 30 and 90 day age thresholds itself), and can neither create, widen, revoke nor re-arm a clause; dormancy is a caller-asserted narrowing bounded by age, because the definer cannot verify "no hit in 90 days" (the Switchboard owns that evidence), so a hostile Switchboard could dormant an old clause early but never a clause under 90 days old, and the owner can revive it
+- **AND** keeping an asked clause or reviving a dormant one is only the cookie-session, CSRF-checked `dashboard_attention.api` action `clause_keep` (`POST /api/butlers/attention/break-through-clauses/{id}/keep`), behind a confirm dialog for a revive; no Telegram path keeps or revives, because re-arming a clause is grant-adjacent
+
+#### Scenario: Revoking a clause stops new hits and keeps old ones
+
+- **WHEN** the owner revokes a clause
+- **THEN** later messages no longer match it, and hits already recorded remain, because the hit record has no delete or truncate path and no update path beyond its announcement lease (`claimed_at`, and a one-way `published_at`)

@@ -12,8 +12,9 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
+from butlers.testing.mcp import registered_tools
 
 pytestmark = [
     pytest.mark.integration,
@@ -65,178 +66,9 @@ def mock_embedding_engine():
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship tables + facts table."""
-    async with provisioned_postgres_pool() as p:
-        # Contacts table (minimal — includes entity_id for resolve tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
-        # Without this table, contact_create silently no-ops and entity_id stays None.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # Life event taxonomy tables (needed by _validate_life_event_type)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_categories (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS life_event_types (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                category_id UUID NOT NULL REFERENCES life_event_categories(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (category_id, name)
-            )
-        """)
-        # Seed one life event category and type for validation tests
-        await p.execute("""
-            INSERT INTO life_event_categories (name) VALUES ('career') ON CONFLICT DO NOTHING
-        """)
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT c.id, 'promotion' FROM life_event_categories c WHERE c.name = 'career'
-            ON CONFLICT DO NOTHING
-        """)
-        await p.execute("""
-            INSERT INTO life_event_types (category_id, name)
-            SELECT c.id, 'new_job' FROM life_event_categories c WHERE c.name = 'career'
-            ON CONFLICT DO NOTHING
-        """)
-        # Facts table — embedding stored as TEXT (no pgvector required in tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector tsvector,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                entity_id UUID,
-                object_entity_id UUID,
-                valid_at TIMESTAMPTZ,
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_referenced_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-            ON facts (subject, predicate)
-        """)
-        # public.entities (needed by store_fact for entity_id validation)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        # memory_links table — needed by store_fact() supersession
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                PRIMARY KEY (source_type, source_id, target_type, target_id),
-                CONSTRAINT chk_memory_links_relation CHECK (
-                    relation IN (
-                        'derived_from', 'supports', 'contradicts',
-                        'supersedes', 'related_to'
-                    )
-                )
-            )
-        """)
-        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
-        # cascade targets task_delete's retraction must disown/delete.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table  TEXT NOT NULL,
-                source_id     UUID NOT NULL,
-                tenant_id     TEXT NOT NULL DEFAULT 'owner',
-                entity_id     UUID,
-                summary       TEXT NOT NULL DEFAULT '',
-                memory_type   TEXT NOT NULL DEFAULT 'fact',
-                confidence    DOUBLE PRECISION,
-                invalid_at    TIMESTAMPTZ,
-                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-        """)
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship chains, flat in ``public`` (as contact tools expect)."""
+    return await db("core", "memory", "relationship")
 
 
 # ---------------------------------------------------------------------------
@@ -244,15 +76,16 @@ async def pool(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def _make_contact(pool, first_name: str) -> dict:
+async def _make_contact(rel_pool, first_name: str) -> dict:
     # Create a linked entity first (required by fact_set → resolve_contact_entity_id)
     # canonical_name must be set so task_list JOIN can return the display name.
-    entity_row = await pool.fetchrow(
-        "INSERT INTO public.entities (name, canonical_name) VALUES ($1::text, $1::varchar) RETURNING id",
+    entity_row = await rel_pool.fetchrow(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1::varchar) RETURNING id",
         first_name,
     )
-    row = await pool.fetchrow(
-        "INSERT INTO contacts (first_name, entity_id) VALUES ($1, $2) RETURNING id, first_name",
+    row = await rel_pool.fetchrow(
+        "INSERT INTO contacts (name, first_name, entity_id) VALUES ($1::text, $1::text, $2)"
+        " RETURNING id, first_name",
         first_name,
         entity_row["id"],
     )
@@ -260,7 +93,7 @@ async def _make_contact(pool, first_name: str) -> dict:
     # can find the entity_id without reading public.contacts (contacts retirement,
     # bu-oluyt). contact_create() does this automatically; direct-insert helpers
     # must do it manually.
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO contact_entity_map (contact_id, entity_id)
         VALUES ($1, $2)
@@ -277,25 +110,25 @@ async def _make_contact(pool, first_name: str) -> dict:
 # ===========================================================================
 
 
-async def test_fact_set_reads_from_facts_table(pool):
+async def test_fact_set_reads_from_facts_table(rel_pool):
     """fact_set writes to facts table and fact_list reads from it."""
     from butlers.tools.relationship.facts import fact_list, fact_set
 
-    contact = await _make_contact(pool, "Alice")
+    contact = await _make_contact(rel_pool, "Alice")
     cid = contact["id"]
 
-    result = await fact_set(pool, cid, "color", "blue")
+    result = await fact_set(rel_pool, cid, "color", "blue")
     assert result["key"] == "color"
     assert result["value"] == "blue"
     assert result["contact_id"] == cid
 
-    items = await fact_list(pool, cid)
+    items = await fact_list(rel_pool, cid)
     assert len(items) == 1
     assert items[0]["key"] == "color"
     assert items[0]["value"] == "blue"
 
 
-async def test_fact_set_metadata_stored_as_dict(pool):
+async def test_fact_set_metadata_stored_as_dict(rel_pool):
     """_fact_set_spo writes metadata as a JSONB dict, not a double-encoded string.
 
     Regression for bu-69p63: json.dumps({}) was passed to a JSONB column that
@@ -304,12 +137,12 @@ async def test_fact_set_metadata_stored_as_dict(pool):
     """
     from butlers.tools.relationship.facts import fact_set
 
-    contact = await _make_contact(pool, "MetaReg")
+    contact = await _make_contact(rel_pool, "MetaReg")
     cid = contact["id"]
 
-    await fact_set(pool, cid, "language", "python")
+    await fact_set(rel_pool, cid, "language", "python")
 
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         "SELECT metadata FROM facts WHERE subject = $1 AND predicate = 'language'",
         f"contact:{cid}",
     )
@@ -320,23 +153,23 @@ async def test_fact_set_metadata_stored_as_dict(pool):
     )
 
 
-async def test_fact_set_supersedes_previous(pool):
+async def test_fact_set_supersedes_previous(rel_pool):
     """fact_set on same key supersedes the old property fact."""
     from butlers.tools.relationship.facts import fact_list, fact_set
 
-    contact = await _make_contact(pool, "Bob")
+    contact = await _make_contact(rel_pool, "Bob")
     cid = contact["id"]
 
-    await fact_set(pool, cid, "city", "London")
-    await fact_set(pool, cid, "city", "Paris")
+    await fact_set(rel_pool, cid, "city", "London")
+    await fact_set(rel_pool, cid, "city", "Paris")
 
-    items = await fact_list(pool, cid)
+    items = await fact_list(rel_pool, cid)
     city_items = [i for i in items if i["key"] == "city"]
     assert len(city_items) == 1
     assert city_items[0]["value"] == "Paris"
 
     # Old fact should be superseded in DB
-    superseded = await pool.fetchval(
+    superseded = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM facts"
         " WHERE subject = $1 AND predicate = 'city' AND validity = 'superseded'",
         f"contact:{cid}",
@@ -344,17 +177,17 @@ async def test_fact_set_supersedes_previous(pool):
     assert superseded == 1
 
 
-async def test_fact_list_multiple_keys(pool):
+async def test_fact_list_multiple_keys(rel_pool):
     """fact_list returns all active property facts for a contact."""
     from butlers.tools.relationship.facts import fact_list, fact_set
 
-    contact = await _make_contact(pool, "Carol")
+    contact = await _make_contact(rel_pool, "Carol")
     cid = contact["id"]
 
-    await fact_set(pool, cid, "food", "sushi")
-    await fact_set(pool, cid, "sport", "tennis")
+    await fact_set(rel_pool, cid, "food", "sushi")
+    await fact_set(rel_pool, cid, "sport", "tennis")
 
-    items = await fact_list(pool, cid)
+    items = await fact_list(rel_pool, cid)
     keys = {i["key"] for i in items}
     assert "food" in keys
     assert "sport" in keys
@@ -365,94 +198,94 @@ async def test_fact_list_multiple_keys(pool):
 # ===========================================================================
 
 
-async def test_gift_add_writes_to_facts(pool):
+async def test_gift_add_writes_to_facts(rel_pool):
     """gift_add writes a temporal fact and gift_list reads from it."""
     from butlers.tools.relationship.gifts import gift_add, gift_list
 
-    contact = await _make_contact(pool, "Dave")
+    contact = await _make_contact(rel_pool, "Dave")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "book about Python", occasion="birthday")
+    gift = await gift_add(rel_pool, cid, "book about Python", occasion="birthday")
     assert gift["description"] == "book about Python"
     assert gift["occasion"] == "birthday"
     assert gift["status"] == "idea"
     assert gift["contact_id"] == cid
 
-    gifts = await gift_list(pool, cid)
+    gifts = await gift_list(rel_pool, cid)
     assert len(gifts) == 1
     assert gifts[0]["description"] == "book about Python"
 
 
-async def test_gift_add_multiple_gifts_coexist(pool):
+async def test_gift_add_multiple_gifts_coexist(rel_pool):
     """Multiple gifts for a contact coexist as separate temporal facts."""
     from butlers.tools.relationship.gifts import gift_add, gift_list
 
-    contact = await _make_contact(pool, "Eve")
+    contact = await _make_contact(rel_pool, "Eve")
     cid = contact["id"]
 
-    await gift_add(pool, cid, "wine")
-    await gift_add(pool, cid, "flowers")
+    await gift_add(rel_pool, cid, "wine")
+    await gift_add(rel_pool, cid, "flowers")
 
-    gifts = await gift_list(pool, cid)
+    gifts = await gift_list(rel_pool, cid)
     assert len(gifts) == 2
     descs = {g["description"] for g in gifts}
     assert "wine" in descs
     assert "flowers" in descs
 
 
-async def test_gift_update_status(pool):
+async def test_gift_update_status(rel_pool):
     """gift_update_status supersedes old fact and creates new one."""
     from butlers.tools.relationship.gifts import gift_add, gift_update_status
 
-    contact = await _make_contact(pool, "Frank")
+    contact = await _make_contact(rel_pool, "Frank")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "chocolate box")
+    gift = await gift_add(rel_pool, cid, "chocolate box")
     gift_id = gift["id"]
 
-    updated = await gift_update_status(pool, gift_id, "purchased")
+    updated = await gift_update_status(rel_pool, gift_id, "purchased")
     assert updated["status"] == "purchased"
 
     # Old fact superseded
-    superseded = await pool.fetchval(
+    superseded = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM facts WHERE id = $1 AND validity = 'superseded'",
         gift_id,
     )
     assert superseded == 1
 
 
-async def test_gift_update_status_invalid_regression(pool):
+async def test_gift_update_status_invalid_regression(rel_pool):
     """gift_update_status rejects backward status transitions."""
     from butlers.tools.relationship.gifts import gift_add, gift_update_status
 
-    contact = await _make_contact(pool, "Grace")
+    contact = await _make_contact(rel_pool, "Grace")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "scarf")
+    gift = await gift_add(rel_pool, cid, "scarf")
     gift_id = gift["id"]
 
-    updated_gift = await gift_update_status(pool, gift_id, "purchased")
+    updated_gift = await gift_update_status(rel_pool, gift_id, "purchased")
 
     with pytest.raises(ValueError, match="Cannot move"):
-        await gift_update_status(pool, updated_gift["id"], "idea")
+        await gift_update_status(rel_pool, updated_gift["id"], "idea")
 
 
-async def test_gift_list_filter_by_status(pool):
+async def test_gift_list_filter_by_status(rel_pool):
     """gift_list filters by status correctly."""
     from butlers.tools.relationship.gifts import gift_add, gift_list, gift_update_status
 
-    contact = await _make_contact(pool, "Helen")
+    contact = await _make_contact(rel_pool, "Helen")
     cid = contact["id"]
 
-    g1 = await gift_add(pool, cid, "hat")
-    await gift_update_status(pool, g1["id"], "purchased")
-    await gift_add(pool, cid, "gloves")
+    g1 = await gift_add(rel_pool, cid, "hat")
+    await gift_update_status(rel_pool, g1["id"], "purchased")
+    await gift_add(rel_pool, cid, "gloves")
 
-    idea_gifts = await gift_list(pool, cid, status="idea")
+    idea_gifts = await gift_list(rel_pool, cid, status="idea")
     assert len(idea_gifts) == 1
     assert idea_gifts[0]["description"] == "gloves"
 
-    purchased_gifts = await gift_list(pool, cid, status="purchased")
+    purchased_gifts = await gift_list(rel_pool, cid, status="purchased")
     assert len(purchased_gifts) == 1
     assert purchased_gifts[0]["description"] == "hat"
 
@@ -462,94 +295,94 @@ async def test_gift_list_filter_by_status(pool):
 # ===========================================================================
 
 
-async def test_task_create_writes_to_facts(pool):
+async def test_task_create_writes_to_facts(rel_pool):
     """task_create writes a temporal fact."""
     from butlers.tools.relationship.tasks import task_create
 
-    contact = await _make_contact(pool, "Ivan")
+    contact = await _make_contact(rel_pool, "Ivan")
     cid = contact["id"]
 
-    task = await task_create(pool, cid, "Call back", description="About the meeting")
+    task = await task_create(rel_pool, cid, "Call back", description="About the meeting")
     assert task["title"] == "Call back"
     assert task["description"] == "About the meeting"
     assert task["completed"] is False
     assert task["contact_id"] == cid
 
 
-async def test_task_list_returns_tasks(pool):
+async def test_task_list_returns_tasks(rel_pool):
     """task_list reads tasks from facts."""
     from butlers.tools.relationship.tasks import task_create, task_list
 
-    contact = await _make_contact(pool, "Julia")
+    contact = await _make_contact(rel_pool, "Julia")
     cid = contact["id"]
 
-    await task_create(pool, cid, "Send email")
-    await task_create(pool, cid, "Book flight")
+    await task_create(rel_pool, cid, "Send email")
+    await task_create(rel_pool, cid, "Book flight")
 
-    tasks = await task_list(pool, cid)
+    tasks = await task_list(rel_pool, cid)
     assert len(tasks) == 2
     titles = {t["title"] for t in tasks}
     assert "Send email" in titles
     assert "Book flight" in titles
 
 
-async def test_task_list_includes_contact_name(pool):
+async def test_task_list_includes_contact_name(rel_pool):
     """task_list includes contact_name field."""
     from butlers.tools.relationship.tasks import task_create, task_list
 
-    contact = await _make_contact(pool, "Karl")
+    contact = await _make_contact(rel_pool, "Karl")
     cid = contact["id"]
 
-    await task_create(pool, cid, "Follow up")
-    tasks = await task_list(pool, cid)
+    await task_create(rel_pool, cid, "Follow up")
+    tasks = await task_list(rel_pool, cid)
     assert len(tasks) == 1
     assert tasks[0]["contact_name"] == "Karl"
 
 
-async def test_task_complete_supersedes_old_fact(pool):
+async def test_task_complete_supersedes_old_fact(rel_pool):
     """task_complete supersedes old task fact and creates completed version."""
     from butlers.tools.relationship.tasks import task_complete, task_create
 
-    contact = await _make_contact(pool, "Linda")
+    contact = await _make_contact(rel_pool, "Linda")
     cid = contact["id"]
 
-    task = await task_create(pool, cid, "Fix bug")
+    task = await task_create(rel_pool, cid, "Fix bug")
     task_id = task["id"]
 
-    completed = await task_complete(pool, task_id)
+    completed = await task_complete(rel_pool, task_id)
     assert completed["completed"] is True
     assert completed["completed_at"] is not None
 
     # Old fact superseded
-    superseded = await pool.fetchval(
+    superseded = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM facts WHERE id = $1 AND validity = 'superseded'",
         task_id,
     )
     assert superseded == 1
 
 
-async def test_task_delete_retracts_fact(pool):
+async def test_task_delete_retracts_fact(rel_pool):
     """task_delete retracts the task fact and cascades the memory_catalog
     disownment + entity_graph_edges deletion forget_memory() performs (bu-9ltqm)."""
     from butlers.tools.relationship.tasks import task_create, task_delete, task_list
 
-    contact = await _make_contact(pool, "Mike")
+    contact = await _make_contact(rel_pool, "Mike")
     cid = contact["id"]
-    entity_id = await pool.fetchval(
+    entity_id = await rel_pool.fetchval(
         "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", cid
     )
 
-    task = await task_create(pool, cid, "Buy groceries")
+    task = await task_create(rel_pool, cid, "Buy groceries")
     task_id = task["id"]
 
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO public.memory_catalog (source_schema, source_table, source_id, memory_type)
         VALUES ('public', 'facts', $1, 'fact')
         """,
         task_id,
     )
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO public.entity_graph_edges
             (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
@@ -559,20 +392,20 @@ async def test_task_delete_retracts_fact(pool):
         entity_id,
     )
 
-    await task_delete(pool, task_id)
+    await task_delete(rel_pool, task_id)
 
-    tasks = await task_list(pool, cid)
+    tasks = await task_list(rel_pool, cid)
     task_ids = {t["id"] for t in tasks}
     assert task_id not in task_ids
 
-    catalog_row = await pool.fetchrow(
+    catalog_row = await rel_pool.fetchrow(
         "SELECT confidence, invalid_at FROM public.memory_catalog"
         " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
         task_id,
     )
     assert catalog_row["confidence"] == 0
     assert catalog_row["invalid_at"] is not None
-    edge_row = await pool.fetchrow(
+    edge_row = await rel_pool.fetchrow(
         "SELECT 1 FROM public.entity_graph_edges"
         " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
         task_id,
@@ -580,26 +413,26 @@ async def test_task_delete_retracts_fact(pool):
     assert edge_row is None
 
 
-async def test_task_list_exclude_completed_by_default(pool):
+async def test_task_list_exclude_completed_by_default(rel_pool):
     """task_list excludes completed tasks by default."""
     from butlers.tools.relationship.tasks import task_complete, task_create, task_list
 
-    contact = await _make_contact(pool, "Nancy")
+    contact = await _make_contact(rel_pool, "Nancy")
     cid = contact["id"]
 
-    t1 = await task_create(pool, cid, "Active task")
-    t2 = await task_create(pool, cid, "Done task")
+    t1 = await task_create(rel_pool, cid, "Active task")
+    t2 = await task_create(rel_pool, cid, "Done task")
 
-    completed = await task_complete(pool, t2["id"])
+    completed = await task_complete(rel_pool, t2["id"])
 
     # Default: no completed tasks
-    tasks = await task_list(pool, cid)
+    tasks = await task_list(rel_pool, cid)
     task_ids = {t["id"] for t in tasks}
     assert t1["id"] in task_ids
     assert completed["id"] not in task_ids
 
     # Include completed
-    tasks_all = await task_list(pool, cid, include_completed=True)
+    tasks_all = await task_list(rel_pool, cid, include_completed=True)
     all_ids = {t["id"] for t in tasks_all}
     assert t1["id"] in all_ids
     assert completed["id"] in all_ids
@@ -610,15 +443,15 @@ async def test_task_list_exclude_completed_by_default(pool):
 # ===========================================================================
 
 
-async def test_loan_create_writes_to_facts(pool):
+async def test_loan_create_writes_to_facts(rel_pool):
     """loan_create writes a temporal fact."""
     from butlers.tools.relationship.loans import loan_create
 
-    contact = await _make_contact(pool, "Tom")
+    contact = await _make_contact(rel_pool, "Tom")
     cid = contact["id"]
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         contact_id=cid,
         amount=Decimal("50.00"),
         direction="lent",
@@ -630,15 +463,15 @@ async def test_loan_create_writes_to_facts(pool):
     assert loan["lender_contact_id"] == cid
 
 
-async def test_loan_settle_updates_fact(pool):
+async def test_loan_settle_updates_fact(rel_pool):
     """loan_settle supersedes old loan fact and marks as settled."""
     from butlers.tools.relationship.loans import loan_create, loan_settle
 
-    contact = await _make_contact(pool, "Uma")
+    contact = await _make_contact(rel_pool, "Uma")
     cid = contact["id"]
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         contact_id=cid,
         amount=Decimal("100.00"),
         direction="borrowed",
@@ -647,19 +480,19 @@ async def test_loan_settle_updates_fact(pool):
     )
     loan_id = loan["id"]
 
-    settled = await loan_settle(pool, loan_id)
+    settled = await loan_settle(rel_pool, loan_id)
     assert settled["settled"] is True
     assert settled["settled_at"] is not None
 
     # Old fact superseded
-    superseded = await pool.fetchval(
+    superseded = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM facts WHERE id = $1 AND validity = 'superseded'",
         loan_id,
     )
     assert superseded == 1
 
 
-async def test_loan_list_returns_loans(pool):
+async def test_loan_list_returns_loans(rel_pool):
     """loan_list reads loans from facts.
 
     Multiple loans from the same contact are stored as temporal facts and
@@ -667,11 +500,11 @@ async def test_loan_list_returns_loans(pool):
     """
     from butlers.tools.relationship.loans import loan_create, loan_list
 
-    contact = await _make_contact(pool, "Victor")
+    contact = await _make_contact(rel_pool, "Victor")
     cid = contact["id"]
 
     await loan_create(
-        pool,
+        rel_pool,
         contact_id=cid,
         amount=Decimal("20.00"),
         direction="lent",
@@ -679,7 +512,7 @@ async def test_loan_list_returns_loans(pool):
         currency="USD",
     )
     await loan_create(
-        pool,
+        rel_pool,
         contact_id=cid,
         amount=Decimal("30.00"),
         direction="lent",
@@ -687,18 +520,18 @@ async def test_loan_list_returns_loans(pool):
         currency="USD",
     )
 
-    loans = await loan_list(pool, cid)
+    loans = await loan_list(rel_pool, cid)
     assert len(loans) == 2
 
 
-async def test_loan_settle_rolls_back_if_replacement_fact_fails(pool, monkeypatch):
+async def test_loan_settle_rolls_back_if_replacement_fact_fails(rel_pool, monkeypatch):
     """The original obligation remains active after a mid-flight storage failure."""
     from butlers.modules.memory import storage
     from butlers.tools.relationship.loans import loan_create, loan_list, loan_settle
 
-    contact = await _make_contact(pool, "Atomic Loan")
+    contact = await _make_contact(rel_pool, "Atomic Loan")
     loan = await loan_create(
-        pool,
+        rel_pool,
         contact_id=contact["id"],
         amount=Decimal("12.00"),
         direction="lent",
@@ -711,16 +544,16 @@ async def test_loan_settle_rolls_back_if_replacement_fact_fails(pool, monkeypatc
 
     monkeypatch.setattr(storage, "store_fact", fail_store)
     with pytest.raises(RuntimeError, match="injected storage failure"):
-        await loan_settle(pool, loan["id"])
+        await loan_settle(rel_pool, loan["id"])
 
-    remaining = await loan_list(pool, contact["id"])
+    remaining = await loan_list(rel_pool, contact["id"])
     assert [item["id"] for item in remaining] == [loan["id"]]
 
 
-async def test_loan_backfill_counts_currency_less_rows_without_inventing_currency(pool):
+async def test_loan_backfill_counts_currency_less_rows_without_inventing_currency(rel_pool):
     from butlers.tools.relationship.loans import backfill_loan_cost_claims
 
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO facts
             (subject, predicate, content, metadata, scope, validity, valid_at)
@@ -729,7 +562,7 @@ async def test_loan_backfill_counts_currency_less_rows_without_inventing_currenc
                 'relationship', 'active', now())
         """
     )
-    result = await backfill_loan_cost_claims(pool)
+    result = await backfill_loan_cost_claims(rel_pool)
     assert result["skipped_missing_currency"] == 1
 
 
@@ -738,57 +571,63 @@ async def test_loan_backfill_counts_currency_less_rows_without_inventing_currenc
 # ===========================================================================
 
 
-async def test_interaction_log_writes_to_facts(pool):
+async def test_interaction_log_writes_to_facts(rel_pool):
     """interaction_log writes a temporal fact keyed by entity_id."""
     from butlers.tools.relationship.interactions import interaction_log
 
-    contact = await _make_contact(pool, "Wendy")
-    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
+    contact = await _make_contact(rel_pool, "Wendy")
+    entity_id = await rel_pool.fetchval(
+        "SELECT entity_id FROM contacts WHERE id = $1", contact["id"]
+    )
     occurred = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
 
     result = await interaction_log(
-        pool, entity_id, "call", summary="Caught up", occurred_at=occurred
+        rel_pool, entity_id, "call", summary="Caught up", occurred_at=occurred
     )
     assert result["type"] == "call"
     assert result["summary"] == "Caught up"
     assert result["entity_id"] == entity_id
 
     # Fact must be stored with entity: subject prefix.
-    row = await pool.fetchrow("SELECT subject FROM facts WHERE id = $1", result["id"])
+    row = await rel_pool.fetchrow("SELECT subject FROM facts WHERE id = $1", result["id"])
     assert row is not None
     assert row["subject"] == f"entity:{entity_id}"
 
 
-async def test_interaction_log_with_metadata(pool):
+async def test_interaction_log_with_metadata(rel_pool):
     """interaction_log stores user-provided metadata."""
     from butlers.tools.relationship.interactions import interaction_log
 
-    contact = await _make_contact(pool, "Xavier")
-    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
+    contact = await _make_contact(rel_pool, "Xavier")
+    entity_id = await rel_pool.fetchval(
+        "SELECT entity_id FROM contacts WHERE id = $1", contact["id"]
+    )
     meta = {"topic": "project update"}
     occurred = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
 
     result = await interaction_log(
-        pool, entity_id, "meeting", summary="Project sync", occurred_at=occurred, metadata=meta
+        rel_pool, entity_id, "meeting", summary="Project sync", occurred_at=occurred, metadata=meta
     )
     assert result["metadata"] == meta
 
 
-async def test_interaction_list_returns_interactions(pool):
+async def test_interaction_list_returns_interactions(rel_pool):
     """interaction_list reads interactions from facts by entity_id."""
     from butlers.tools.relationship.interactions import interaction_list, interaction_log
 
-    contact = await _make_contact(pool, "Yara")
-    entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", contact["id"])
-
-    await interaction_log(
-        pool, entity_id, "email", summary="Hi!", occurred_at=datetime(2026, 3, 1, tzinfo=UTC)
-    )
-    await interaction_log(
-        pool, entity_id, "call", summary="Chat", occurred_at=datetime(2026, 3, 2, tzinfo=UTC)
+    contact = await _make_contact(rel_pool, "Yara")
+    entity_id = await rel_pool.fetchval(
+        "SELECT entity_id FROM contacts WHERE id = $1", contact["id"]
     )
 
-    items = await interaction_list(pool, entity_id)
+    await interaction_log(
+        rel_pool, entity_id, "email", summary="Hi!", occurred_at=datetime(2026, 3, 1, tzinfo=UTC)
+    )
+    await interaction_log(
+        rel_pool, entity_id, "call", summary="Chat", occurred_at=datetime(2026, 3, 2, tzinfo=UTC)
+    )
+
+    items = await interaction_list(rel_pool, entity_id)
     assert len(items) == 2
     types = {i["type"] for i in items}
     assert "email" in types
@@ -800,87 +639,87 @@ async def test_interaction_list_returns_interactions(pool):
 # ===========================================================================
 
 
-async def test_life_event_log_basic(pool):
+async def test_life_event_log_basic(rel_pool):
     """life_event_log writes a temporal fact."""
     from butlers.tools.relationship.life_events import life_event_log
 
-    contact = await _make_contact(pool, "Zara")
+    contact = await _make_contact(rel_pool, "Zara")
     cid = contact["id"]
 
-    result = await life_event_log(pool, cid, "promotion", summary="Got promoted!")
+    result = await life_event_log(rel_pool, cid, "promotion", summary="Got promoted!")
     assert result["type_name"] == "promotion"
     assert result["summary"] == "Got promoted!"
     assert result["contact_id"] == cid
 
 
-async def test_life_event_log_without_date(pool):
+async def test_life_event_log_without_date(rel_pool):
     """life_event_log with no date leaves happened_at as None in return."""
     from butlers.tools.relationship.life_events import life_event_log
 
-    contact = await _make_contact(pool, "Andy")
+    contact = await _make_contact(rel_pool, "Andy")
     cid = contact["id"]
 
-    result = await life_event_log(pool, cid, "new_job", summary="New role")
+    result = await life_event_log(rel_pool, cid, "new job", summary="New role")
     # happened_at should be None since no date was provided
     assert result.get("happened_at") is None
 
 
-async def test_life_event_log_with_date(pool):
+async def test_life_event_log_with_date(rel_pool):
     """life_event_log with happened_at sets the date."""
     from butlers.tools.relationship.life_events import life_event_log
 
-    contact = await _make_contact(pool, "Beth")
+    contact = await _make_contact(rel_pool, "Beth")
     cid = contact["id"]
 
     result = await life_event_log(
-        pool, cid, "promotion", summary="Promoted", happened_at="2026-01-15"
+        rel_pool, cid, "promotion", summary="Promoted", happened_at="2026-01-15"
     )
     from datetime import date
 
     assert result["happened_at"] == date(2026, 1, 15)
 
 
-async def test_life_event_list_returns_events(pool):
+async def test_life_event_list_returns_events(rel_pool):
     """life_event_list reads events from facts table."""
     from butlers.tools.relationship.life_events import life_event_list, life_event_log
 
-    contact = await _make_contact(pool, "Chad")
+    contact = await _make_contact(rel_pool, "Chad")
     cid = contact["id"]
 
-    await life_event_log(pool, cid, "promotion", summary="Promoted to VP")
-    await life_event_log(pool, cid, "new_job", summary="Started at Acme")
+    await life_event_log(rel_pool, cid, "promotion", summary="Promoted to VP")
+    await life_event_log(rel_pool, cid, "new job", summary="Started at Acme")
 
-    events = await life_event_list(pool, cid)
+    events = await life_event_list(rel_pool, cid)
     assert len(events) == 2
     type_names = {e["type_name"] for e in events}
     assert "promotion" in type_names
-    assert "new_job" in type_names
+    assert "new job" in type_names
 
 
-async def test_life_event_list_filter_by_type(pool):
+async def test_life_event_list_filter_by_type(rel_pool):
     """life_event_list filters by type_name correctly."""
     from butlers.tools.relationship.life_events import life_event_list, life_event_log
 
-    contact = await _make_contact(pool, "Dana")
+    contact = await _make_contact(rel_pool, "Dana")
     cid = contact["id"]
 
-    await life_event_log(pool, cid, "promotion", summary="Promoted")
-    await life_event_log(pool, cid, "new_job", summary="New job")
+    await life_event_log(rel_pool, cid, "promotion", summary="Promoted")
+    await life_event_log(rel_pool, cid, "new job", summary="New job")
 
-    events = await life_event_list(pool, cid, type_name="promotion")
+    events = await life_event_list(rel_pool, cid, type_name="promotion")
     assert len(events) == 1
     assert events[0]["type_name"] == "promotion"
 
 
-async def test_life_event_log_invalid_type_raises(pool):
+async def test_life_event_log_invalid_type_raises(rel_pool):
     """life_event_log raises ValueError for unknown event type."""
     from butlers.tools.relationship.life_events import life_event_log
 
-    contact = await _make_contact(pool, "Evan")
+    contact = await _make_contact(rel_pool, "Evan")
     cid = contact["id"]
 
     with pytest.raises(ValueError, match="Unknown life event type"):
-        await life_event_log(pool, cid, "alien_abduction", summary="Weird")
+        await life_event_log(rel_pool, cid, "alien_abduction", summary="Weird")
 
 
 # ===========================================================================
@@ -888,15 +727,15 @@ async def test_life_event_log_invalid_type_raises(pool):
 # ===========================================================================
 
 
-async def test_gift_add_stores_entity_id(pool):
+async def test_gift_add_stores_entity_id(rel_pool):
     """gift_add resolves contact entity_id and stores it on the fact row."""
     from butlers.tools.relationship.gifts import gift_add
 
-    contact = await _make_contact(pool, "Iris")
+    contact = await _make_contact(rel_pool, "Iris")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "notebook")
-    fact_row = await pool.fetchrow(
+    gift = await gift_add(rel_pool, cid, "notebook")
+    fact_row = await rel_pool.fetchrow(
         "SELECT entity_id FROM facts WHERE id = $1",
         gift["id"],
     )
@@ -904,84 +743,84 @@ async def test_gift_add_stores_entity_id(pool):
     assert fact_row["entity_id"] is not None, "entity_id must be set on the fact (not None)"
 
     # The stored entity_id must match the one on the contact
-    contact_entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    contact_entity_id = await rel_pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
     assert fact_row["entity_id"] == contact_entity_id
 
 
-async def test_gift_update_status_preserves_entity_id(pool):
+async def test_gift_update_status_preserves_entity_id(rel_pool):
     """gift_update_status passes entity_id so the superseding fact also carries it."""
     from butlers.tools.relationship.gifts import gift_add, gift_update_status
 
-    contact = await _make_contact(pool, "James")
+    contact = await _make_contact(rel_pool, "James")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "candle")
-    updated = await gift_update_status(pool, gift["id"], "purchased")
+    gift = await gift_add(rel_pool, cid, "candle")
+    updated = await gift_update_status(rel_pool, gift["id"], "purchased")
 
-    fact_row = await pool.fetchrow(
+    fact_row = await rel_pool.fetchrow(
         "SELECT entity_id FROM facts WHERE id = $1",
         updated["id"],
     )
     assert fact_row is not None
     assert fact_row["entity_id"] is not None, "superseding fact must carry entity_id"
 
-    contact_entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    contact_entity_id = await rel_pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
     assert fact_row["entity_id"] == contact_entity_id
 
 
-async def test_gift_list_returns_only_active_facts(pool):
+async def test_gift_list_returns_only_active_facts(rel_pool):
     """gift_list returns only validity='active' facts, not superseded ones."""
     from butlers.tools.relationship.gifts import gift_add, gift_list, gift_update_status
 
-    contact = await _make_contact(pool, "Kate")
+    contact = await _make_contact(rel_pool, "Kate")
     cid = contact["id"]
 
-    gift = await gift_add(pool, cid, "perfume")
+    gift = await gift_add(rel_pool, cid, "perfume")
     # Advance status — old fact becomes superseded
-    await gift_update_status(pool, gift["id"], "purchased")
+    await gift_update_status(rel_pool, gift["id"], "purchased")
 
-    gifts = await gift_list(pool, cid)
+    gifts = await gift_list(rel_pool, cid)
     # Only the active (purchased) fact should be visible
     assert len(gifts) == 1
     assert gifts[0]["status"] == "purchased"
 
     # Confirm superseded row exists but is not returned
-    total = await pool.fetchval(
+    total = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM facts WHERE subject LIKE $1 AND predicate = 'gift'",
         f"contact:{cid}:gift:%",
     )
     assert total == 2  # original + superseding
 
 
-async def test_gift_add_no_entity_raises_value_error(pool):
+async def test_gift_add_no_entity_raises_value_error(rel_pool):
     """gift_add raises ValueError when the contact has no linked entity."""
     from butlers.tools.relationship.gifts import gift_add
 
     # Create a contact without entity_id
-    row = await pool.fetchrow(
-        "INSERT INTO contacts (first_name) VALUES ($1) RETURNING id",
+    row = await rel_pool.fetchrow(
+        "INSERT INTO contacts (name, first_name) VALUES ($1::text, $1::text) RETURNING id",
         "Orphan",
     )
     cid = row["id"]
 
     with pytest.raises(ValueError, match="no linked entity_id"):
-        await gift_add(pool, cid, "mystery gift")
+        await gift_add(rel_pool, cid, "mystery gift")
 
 
-async def test_gift_update_status_no_entity_raises_value_error(pool):
+async def test_gift_update_status_no_entity_raises_value_error(rel_pool):
     """gift_update_status raises ValueError when the contact has no linked entity."""
     from butlers.tools.relationship.gifts import gift_update_status
 
     # Create a contact without entity_id (no entry in contact_entity_map)
-    row = await pool.fetchrow(
-        "INSERT INTO contacts (first_name) VALUES ($1) RETURNING id",
+    row = await rel_pool.fetchrow(
+        "INSERT INTO contacts (name, first_name) VALUES ($1::text, $1::text) RETURNING id",
         "OrphanUpdate",
     )
     cid = row["id"]
 
     # Insert a gift fact directly (bypassing gift_add which would also raise).
     # This simulates a gift that exists but whose contact lost its entity link.
-    gift_row = await pool.fetchrow(
+    gift_row = await rel_pool.fetchrow(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, metadata)
         VALUES ($1, 'gift', 'mystery gift', 'relationship', 'active', '{"status": "idea"}')
@@ -992,7 +831,7 @@ async def test_gift_update_status_no_entity_raises_value_error(pool):
     gift_id = gift_row["id"]
 
     with pytest.raises(ValueError, match="no linked entity_id"):
-        await gift_update_status(pool, gift_id, "purchased")
+        await gift_update_status(rel_pool, gift_id, "purchased")
 
 
 # ===========================================================================
@@ -1000,7 +839,7 @@ async def test_gift_update_status_no_entity_raises_value_error(pool):
 # ===========================================================================
 
 
-async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
+async def test_feed_get_aggregates_temporal_facts_ordered_desc(rel_pool):
     """feed_get returns interaction_*, life_event, contact_note, and activity
     facts for a contact entity ordered by valid_at DESC, via the real fact store.
     """
@@ -1012,9 +851,9 @@ async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
     from butlers.tools.relationship.life_events import life_event_log
     from butlers.tools.relationship.notes import note_create
 
-    contact = await _make_contact(pool, "FeedAlice")
+    contact = await _make_contact(rel_pool, "FeedAlice")
     cid = contact["id"]
-    entity_id = await resolve_contact_entity_id(pool, cid)
+    entity_id = await resolve_contact_entity_id(rel_pool, cid)
     assert entity_id is not None
 
     # Distinct valid_at across the four temporal families.
@@ -1023,10 +862,10 @@ async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
     interaction_at = datetime(2025, 3, 1, tzinfo=UTC)
 
     # life_event (valid_at = happened_at)
-    await life_event_log(pool, cid, "promotion", summary="Made partner", occurred_at=life_at)
+    await life_event_log(rel_pool, cid, "promotion", summary="Made partner", occurred_at=life_at)
     # activity (no dedicated tool — write directly through the real fact store)
     await store_fact(
-        pool,
+        rel_pool,
         subject=f"entity:{entity_id}",
         predicate="activity",
         content="Joined a book club",
@@ -1038,12 +877,12 @@ async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
     )
     # interaction (valid_at = occurred_at); pass contact_id (resolved internally)
     await interaction_log(
-        pool, cid, type="call", summary="Quarterly catch-up", occurred_at=interaction_at
+        rel_pool, cid, type="call", summary="Quarterly catch-up", occurred_at=interaction_at
     )
     # contact_note (valid_at = now, newest)
-    await note_create(pool, cid, content="Loves hiking")
+    await note_create(rel_pool, cid, content="Loves hiking")
 
-    feed = await feed_get(pool, entity_id)
+    feed = await feed_get(rel_pool, entity_id)
 
     kinds = [item["kind"] for item in feed]
     assert "interaction" in kinds
@@ -1061,7 +900,7 @@ async def test_feed_get_aggregates_temporal_facts_ordered_desc(pool):
     assert feed[3]["kind"] == "life_event"
 
 
-async def test_feed_get_registered_tool_resolves_contact(pool):
+async def test_feed_get_registered_tool_resolves_contact(rel_pool):
     """The registered feed_get MCP tool accepts a contact_id, resolves it to the
     entity, and returns the contact's temporal feed from the real fact store.
     """
@@ -1077,34 +916,24 @@ async def test_feed_get_registered_tool_resolves_contact(pool):
         "butlers.modules._roster_relationship.tools"
     ).register_tools
 
-    contact = await _make_contact(pool, "FeedBob")
+    contact = await _make_contact(rel_pool, "FeedBob")
     cid = contact["id"]
 
     await interaction_log(
-        pool, cid, type="meeting", summary="Lunch", occurred_at=datetime(2025, 5, 1, tzinfo=UTC)
+        rel_pool, cid, type="meeting", summary="Lunch", occurred_at=datetime(2025, 5, 1, tzinfo=UTC)
     )
-    await note_create(pool, cid, content="Allergic to peanuts")
-
-    class _CapturingMcp:
-        def __init__(self) -> None:
-            self.tools: dict = {}
-
-        def tool(self):
-            def deco(fn):
-                self.tools[fn.__name__] = fn
-                return fn
-
-            return deco
+    await note_create(rel_pool, cid, content="Allergic to peanuts")
 
     class _StubModule:
         def _get_pool(self):
-            return pool
+            return rel_pool
 
-    mcp = _CapturingMcp()
+    mcp = FastMCP("relationship-feed-test")
     register_tools(mcp, _StubModule(), config=None)
-    assert "feed_get" in mcp.tools
+    tools = await registered_tools(mcp)
+    assert "feed_get" in tools
 
-    feed = await mcp.tools["feed_get"](contact_id=cid)
+    feed = await tools["feed_get"](contact_id=cid)
     kinds = {item["kind"] for item in feed}
     assert kinds == {"interaction", "contact_note"}
     assert len(feed) == 2

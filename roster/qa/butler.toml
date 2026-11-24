@@ -59,5 +59,4 @@ max_reactive_buffer = 50
 # UTC hour for daily removal of raw investigation_notes.evidence_lines.
 retention_cleanup_hour = 4
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

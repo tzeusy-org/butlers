@@ -17,11 +17,13 @@ Covers:
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.connectors.discretion import ContactWeightResolver, WeightTier
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -31,25 +33,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_row(roles: list[str]) -> MagicMock:
+def _contact_row(roles: list[str]) -> Record:
     # entity_id must be a real UUID: resolution runs through the canonical
     # resolver, which discards a row whose entity_id will not parse (a row
     # that cannot identify anyone is not a match).
-    row = MagicMock()
-    row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "entity_id": uuid.uuid4(),
-            "name": "Test",
-            "roles": roles,
-        }[k]
-    )
-    return row
-
-
-def _make_pool(*, row: MagicMock | None) -> AsyncMock:
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=row)
-    return pool
+    return row(entity_id=uuid.uuid4(), name="Test", roles=roles)
 
 
 # ---------------------------------------------------------------------------
@@ -58,35 +46,35 @@ def _make_pool(*, row: MagicMock | None) -> AsyncMock:
 
 
 async def test_owner_role_returns_owner_weight() -> None:
-    pool = _make_pool(row=_make_row(["owner"]))
+    pool = fake_pool(fetchrow=_contact_row(["owner"]))
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "123456789")
     assert weight == WeightTier().owner
 
 
 async def test_inner_circle_role_returns_inner_circle_weight() -> None:
-    pool = _make_pool(row=_make_row(["family"]))
+    pool = fake_pool(fetchrow=_contact_row(["family"]))
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "111")
     assert weight == WeightTier().inner_circle
 
 
 async def test_close_friends_returns_inner_circle_weight() -> None:
-    pool = _make_pool(row=_make_row(["close-friends"]))
+    pool = fake_pool(fetchrow=_contact_row(["close-friends"]))
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("email", "friend@example.com")
     assert weight == WeightTier().inner_circle
 
 
 async def test_known_contact_returns_known_weight() -> None:
-    pool = _make_pool(row=_make_row(["colleague"]))
+    pool = fake_pool(fetchrow=_contact_row(["colleague"]))
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "222")
     assert weight == WeightTier().known
 
 
 async def test_no_entity_found_returns_unknown_weight() -> None:
-    pool = _make_pool(row=None)
+    pool = fake_pool(fetchrow=None)
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "999")
     assert weight == WeightTier().unknown
@@ -94,7 +82,7 @@ async def test_no_entity_found_returns_unknown_weight() -> None:
 
 async def test_unknown_channel_type_returns_unknown_weight() -> None:
     """Channel type with no predicate mapping → skip DB, return unknown."""
-    pool = _make_pool(row=_make_row(["owner"]))
+    pool = fake_pool(fetchrow=_contact_row(["owner"]))
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("unknown_channel_xyz", "some_value")
     assert weight == WeightTier().unknown
@@ -113,7 +101,7 @@ async def test_db_error_returns_unknown_weight() -> None:
 
 async def test_cache_hit_avoids_second_db_call() -> None:
     """Second call with same key uses cache, no extra DB round-trip."""
-    pool = _make_pool(row=_make_row(["owner"]))
+    pool = fake_pool(fetchrow=_contact_row(["owner"]))
     resolver = ContactWeightResolver(pool, cache_ttl_s=60.0)
     w1 = await resolver.resolve("telegram", "555")
     w2 = await resolver.resolve("telegram", "555")
@@ -147,9 +135,9 @@ _JID = "15551234567@s.whatsapp.net"
 
 
 def _make_seq_pool(
-    rows: list[MagicMock | None],
+    rows: list[Record | None],
     *,
-    phone_rows: list[MagicMock] | None = None,
+    phone_rows: list[Record] | None = None,
 ) -> AsyncMock:
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(side_effect=rows)
@@ -159,7 +147,7 @@ def _make_seq_pool(
 
 async def test_whatsapp_phone_fallback_resolves_known_via_has_phone() -> None:
     # has-handle miss, then the ambiguity-aware has-phone scan returns one entity.
-    pool = _make_seq_pool([None], phone_rows=[_make_row(["colleague"])])
+    pool = _make_seq_pool([None], phone_rows=[_contact_row(["colleague"])])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().known
@@ -173,7 +161,7 @@ async def test_whatsapp_phone_fallback_resolves_known_via_has_phone() -> None:
 
 
 async def test_whatsapp_phone_fallback_inner_circle() -> None:
-    pool = _make_seq_pool([None], phone_rows=[_make_row(["family"])])
+    pool = _make_seq_pool([None], phone_rows=[_contact_row(["family"])])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().inner_circle
@@ -193,7 +181,7 @@ async def test_whatsapp_group_jid_does_not_fabricate_phone_fallback() -> None:
 async def test_whatsapp_has_handle_hit_skips_phone_fallback() -> None:
     """A sender WITH a has-handle triple resolves directly — the fallback is
     never reached, so the weight is unchanged from before bu-jns8k."""
-    pool = _make_seq_pool([_make_row(["colleague"]), _make_row(["owner"])])
+    pool = _make_seq_pool([_contact_row(["colleague"]), _contact_row(["owner"])])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().known  # from has-handle, not the unused owner row

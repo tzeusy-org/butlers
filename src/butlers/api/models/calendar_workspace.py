@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date as LocalDate
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -138,6 +139,14 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: ``POST /api/calendar/sources``. A disabled source is rendered "off" (not
     #: failed) and is skipped by the sync loop. Default ``True`` (opt-out).
     sync_enabled: bool = True
+    #: Whether a sync verdict applies at all. Only provider sources are synced;
+    #: internal sources (schedules, reminders) are projected locally and never
+    #: get a cursor, so their null ``last_synced_at`` is normal, not "never
+    #: synced". Mirrors the sync deadman's provider-only rule (bu-ak7fij).
+    sync_applicable: bool = True
+    #: Whose time this calendar's events are, and whether that was inferred or the owner's word.
+    time_role: str = "unclassified"
+    role_basis: Literal["provider_inferred", "owner_confirmed"] = "provider_inferred"
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
@@ -534,6 +543,41 @@ class ConflictScanWindow(BaseModel):
     end: datetime
 
 
+class HouseholdEventRef(BaseModel):
+    """One other-person event: when, whose and nothing else (REQ-module-calendar-038).
+
+    Deliberately has no title, location, description or attendee field: another person's text
+    must not reach a response, a prompt or a context line.
+    """
+
+    role: Literal["household_member", "other_person", "team"]
+    subject_entity_id: UUID | None = None
+    subject_label: str | None = None
+    start_at: datetime
+    end_at: datetime
+    all_day: bool = False
+
+
+class HouseholdSubjectGroup(BaseModel):
+    """One subject's context events (``subject_entity_id`` null for an unattributed source)."""
+
+    subject_entity_id: UUID | None = None
+    subject_label: str | None = None
+    events: list[HouseholdEventRef] = Field(default_factory=list)
+
+
+class HouseholdTimeResponse(BaseModel):
+    """Response payload for GET /api/calendar/workspace/household-time.
+
+    Context only: nothing here counts toward owner load. ``available=False`` means the read
+    could not run, so an empty list is not "nobody has anything on".
+    """
+
+    window: ConflictScanWindow
+    subjects: list[HouseholdSubjectGroup] = Field(default_factory=list)
+    available: bool = True
+
+
 class ConflictScanResponse(BaseModel):
     """Response payload for GET /api/calendar/workspace/conflicts.
 
@@ -552,6 +596,12 @@ class ConflictScanResponse(BaseModel):
     issues: list[ConflictIssue] = Field(default_factory=list)
     scan_window: ConflictScanWindow
     issues_available: bool = True
+    #: Calendars (and their events) the scan skipped because their source role is unclassified
+    #: and the owner is not invited. Non-zero means "not everything was checked", not "clear".
+    unclassified_sources: int = 0
+    unclassified_events: int = 0
+    #: Other people's events in the window: attributed, opaque, never counted as owner load.
+    household_context: list[HouseholdEventRef] = Field(default_factory=list)
 
 
 class CalendarInvitationEntry(BaseModel):
@@ -569,8 +619,24 @@ class CalendarInvitationEntry(BaseModel):
     response_configured: bool = False
 
 
+class CalendarQuarantinedInvitation(BaseModel):
+    """An unanswered invitation from an untrusted organizer: time and verdict only.
+
+    Deliberately carries no title, description, location, organizer or attendee: third-party text
+    is data, and the owner decides about the sender, not the content (REQ-module-calendar-041).
+    """
+
+    entry_id: UUID
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    verdict: Literal["first_contact", "blocked", "unknown"]
+    lure_badges: list[str] = Field(default_factory=list)
+
+
 class CalendarInvitationsResponse(BaseModel):
     entries: list[CalendarInvitationEntry] = Field(default_factory=list)
+    quarantined: list[CalendarQuarantinedInvitation] = Field(default_factory=list)
     issues_available: bool = True
     conflicts_available: bool = True
     sources_degraded: list[str] = Field(default_factory=list)
@@ -767,6 +833,41 @@ class CalendarSourceToggleRequest(BaseModel):
         return self
 
 
+CalendarSourceRole = Literal[
+    "owner",
+    "household_member",
+    "other_person",
+    "team",
+    "subscription",
+    "holidays",
+    "birthdays",
+    "butler",
+    "unclassified",
+]
+
+
+class CalendarSourceRoleRequest(BaseModel):
+    """Request payload for POST /api/calendar/sources/role.
+
+    ``role`` is a member of the closed role set, or ``null`` to clear the owner's confirmation.
+    """
+
+    source_key: str
+    role: CalendarSourceRole | None
+    #: Whose calendar it is, for ``household_member``, ``other_person`` and ``team`` only.
+    subject_entity_id: UUID | None = None
+
+
+class CalendarSourceRoleResponse(BaseModel):
+    source_key: str
+    role: CalendarSourceRole
+    role_basis: Literal["provider_inferred", "owner_confirmed"]
+    subject_entity_id: UUID | None = None
+    updated_butlers: list[str] = Field(default_factory=list)
+    #: Schemas whose write failed. Non-empty means the role is not yet the same everywhere.
+    failed_butlers: list[str] = Field(default_factory=list)
+
+
 class CalendarSourceToggleResponse(BaseModel):
     """Response payload for POST /api/calendar/sources."""
 
@@ -857,6 +958,27 @@ class CalendarRespondRequest(BaseModel):
     send_updates: Literal["none", "all", "externalOnly"] = "none"
 
 
+class CalendarOrganizerDecisionRequest(BaseModel):
+    """Vouch for or Block the organizer of one stored invitation (REQ-module-calendar-042).
+
+    Only the entry id and the verb come from the caller; the organizer address is read from the
+    stored event, never from the request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    entry_id: UUID
+    verb: Literal["vouch", "block"]
+
+
+class CalendarOrganizerDecisionResponse(BaseModel):
+    verb: Literal["vouch", "block"]
+    endpoints: int
+    rules_written: int
+    rules_removed: int
+    events_restamped: int
+    restamp_degraded: bool = False
+
+
 class CalendarRespondResponse(BaseModel):
     status: Literal[
         "pending_approval", "approved", "rejected", "uncertain", "noop", "applied", "failed"
@@ -866,3 +988,47 @@ class CalendarRespondResponse(BaseModel):
     projection_available: bool = False
     source_butler: str
     reason: str | None = None
+
+
+class DaySheetItem(BaseModel):
+    ref: str
+    start: datetime
+    end: datetime
+    all_day: bool
+    kind: Literal["attended", "tentative", "butler"]
+    title: str
+    label_class: Literal["owner_authored", "third_party"]
+    people_count: int
+    conflict_ref: str | None = None
+    door: str
+
+
+class DaySheetGap(BaseModel):
+    start: datetime
+    end: datetime
+
+
+class DaySheetFreshness(BaseModel):
+    state: Literal["current", "stale", "unreadable"]
+    as_of: datetime | None = None
+    sources_unreadable: list[str] = Field(default_factory=list)
+    sources_total: int = 0
+
+
+class DaySheetResponse(BaseModel):
+    """GET /api/calendar/workspace/day-sheet: the one projection of an owner-local day.
+
+    ``freshness.state`` is never inferred from an empty ``items`` list: ``unreadable`` and
+    ``stale`` are explicit, and ``text`` is the fixed-template rendering the nightly message uses.
+    """
+
+    date: LocalDate
+    zone: str
+    freshness: DaySheetFreshness
+    items: list[DaySheetItem] = Field(default_factory=list)
+    gaps: list[DaySheetGap] = Field(default_factory=list)
+    attended_minutes: int = 0
+    attended_count: int = 0
+    longest_gap: DaySheetGap | None = None
+    digest: str
+    text: str
