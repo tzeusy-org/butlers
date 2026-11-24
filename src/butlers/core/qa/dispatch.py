@@ -98,6 +98,13 @@ from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
 from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.diff import parse_unified_diff
+from butlers.core.qa.evidence_bundle import (
+    BUNDLE_FILE_NAME,
+    EvidenceWithheld,
+    build_evidence_bundle,
+    persist_bundle,
+    write_bundle_file,
+)
 from butlers.core.qa.findings import (
     hold_findings_for_retry,
     update_finding_attempt,
@@ -665,6 +672,38 @@ async def _isolated_diff_snapshot(
     if export is None:
         return []
     return await derive_diff_snapshot(export, repo_root / ".git" / "objects")
+
+
+async def _prepare_evidence_bundle(
+    pool: asyncpg.Pool,
+    repo_root: Path,
+    attempt_id: uuid.UUID,
+    finding: QaFinding,
+    isolation: JobIsolation | None,
+    agent_cwd: Path | None,
+) -> str | None:
+    """Build, record and write the evidence bundle; return the path the agent should read.
+
+    ``EvidenceWithheld`` propagates (the launch is refused). Any other failure (the record,
+    the file) leaves the agent without a bundle rather than with one that cannot be checked.
+    """
+    bundle = await build_evidence_bundle(pool, finding, attempt_id=attempt_id, repo_root=repo_root)
+    try:
+        await persist_bundle(pool, attempt_id, bundle)
+        if isolation is not None:
+            directory = isolation.evidence_dir(attempt_id)
+            agent_path = isolation.pod_evidence_path()
+        else:
+            assert agent_cwd is not None
+            directory = agent_cwd / "evidence"
+            agent_path = f"evidence/{BUNDLE_FILE_NAME}"
+        await asyncio.to_thread(write_bundle_file, bundle, directory)
+    except Exception as exc:  # noqa: BLE001 — the investigation proceeds without a bundle
+        logger.warning(
+            "Evidence bundle not delivered (attempt=%s): %s", attempt_id, type(exc).__name__
+        )
+        return None
+    return agent_path
 
 
 async def _resolve_pr_by_head(
@@ -1307,11 +1346,6 @@ async def _run_investigation_session(
         _inv_span_token = otel_context.attach(trace.set_span_in_context(_inv_span))
 
     try:
-        prompt = build_investigation_prompt(
-            finding=finding,
-            attempt_id=attempt_id,
-            dashboard_base_url=config.dashboard_base_url,
-        )
         isolation = config.job_isolation
         seal_root = repo_root
         agent_cwd: Path | None = None
@@ -1320,6 +1354,43 @@ async def _run_investigation_session(
             agent_cwd = _prepare_agent_workspace(worktree_path)
         else:
             job_launch = isolation.launch(attempt_id, deadline_s=config.timeout_minutes * 60)
+
+        # The dispatcher observes what it can and hands the agent a read-only bundle; the
+        # authoritative copy and its digest are recorded before launch.
+        try:
+            bundle_path = await _prepare_evidence_bundle(
+                pool, repo_root, attempt_id, finding, isolation, agent_cwd
+            )
+        except EvidenceWithheld:
+            logger.warning("QA dispatch refused: evidence bundle withheld (attempt=%s)", attempt_id)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="qa", decision="evidence_withheld"
+                )
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail="evidence_withheld: an evidence item could not be anonymized",
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=[],
+                otel_span=_inv_span,
+            )
+            return
+        prompt = build_investigation_prompt(
+            finding=finding,
+            attempt_id=attempt_id,
+            dashboard_base_url=config.dashboard_base_url,
+            evidence_bundle_path=bundle_path,
+        )
 
         # Build sandboxed environment for the agent
         sandbox_env = build_agent_env(

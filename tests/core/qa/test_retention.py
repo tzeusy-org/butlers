@@ -230,3 +230,42 @@ async def test_export_prune_failure_does_not_fail_the_evidence_cleanup(monkeypat
 
     assert cleaned["cleaned_rows"] == 1 and cleaned["pruned_exports"] == 0
     assert "export prune failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_daily_evidence_cleanup_prunes_bundle_bodies_and_keeps_the_manifest(monkeypatch):
+    now = datetime(2026, 5, 15, 4, tzinfo=UTC)
+    manifest = {"digest": "d", "sections": [{"name": "sessions", "items": [{"id": "E1"}]}]}
+    row = _row(
+        created_at=now - timedelta(days=31),
+        structured_evidence={
+            "evidence_bundle": {"manifest": manifest, "bodies": {"sections": ["raw"]}},
+        },
+    )
+    pool = _retention_pool([row])
+    monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", _FakeRetentionCounter())
+
+    result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
+
+    assert result == {"status": "completed", "cleaned_rows": 1, "malformed_rows": 0}
+    assert _updated(pool)[row["id"]]["evidence_bundle"] == {"manifest": manifest}
+
+
+@pytest.mark.asyncio
+async def test_daily_evidence_cleanup_prunes_notes_lines_and_bundle_bodies_together(monkeypatch):
+    now = datetime(2026, 5, 15, 4, tzinfo=UTC)
+    row = _row(
+        created_at=now - timedelta(days=31),
+        structured_evidence={
+            "investigation_notes": {"headline": "kept", "evidence_lines": ["raw"]},
+            "evidence_bundle": {"manifest": {"digest": "d"}, "bodies": {}},
+        },
+    )
+    pool = _retention_pool([row])
+    monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", _FakeRetentionCounter())
+
+    await _module_with_pool(pool).daily_evidence_cleanup(now=now)
+
+    updated = _updated(pool)[row["id"]]
+    assert updated["investigation_notes"] == {"headline": "kept"}
+    assert "bodies" not in updated["evidence_bundle"]

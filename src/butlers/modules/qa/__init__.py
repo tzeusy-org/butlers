@@ -1105,7 +1105,8 @@ class QaModule(Module):
             FROM public.qa_findings f
             LEFT JOIN public.healing_attempts h ON h.id = f.healing_attempt_id
             WHERE f.structured_evidence IS NOT NULL
-              AND f.structured_evidence ? 'investigation_notes'
+              AND (f.structured_evidence ? 'investigation_notes'
+                   OR f.structured_evidence ? 'evidence_bundle')
               AND (
                     (h.closed_at IS NOT NULL AND h.closed_at < $1)
                  OR (f.healing_attempt_id IS NULL AND f.created_at < $2)
@@ -1141,23 +1142,36 @@ class QaModule(Module):
                 )
                 continue
 
-            investigation_notes = structured_evidence.get("investigation_notes")
-            if not isinstance(investigation_notes, dict):
-                malformed_rows += 1
-                logger.warning(
-                    "QaModule.daily_evidence_cleanup: malformed investigation_notes "
-                    "shape; skipping finding_id=%s",
-                    finding_id,
-                )
-                continue
-
-            if "evidence_lines" not in investigation_notes:
-                continue
-
-            cleaned_notes = dict(investigation_notes)
-            cleaned_notes.pop("evidence_lines", None)
             cleaned_evidence = dict(structured_evidence)
-            cleaned_evidence["investigation_notes"] = cleaned_notes
+            changed = False
+
+            if "investigation_notes" in structured_evidence:
+                investigation_notes = structured_evidence["investigation_notes"]
+                if not isinstance(investigation_notes, dict):
+                    malformed_rows += 1
+                    logger.warning(
+                        "QaModule.daily_evidence_cleanup: malformed investigation_notes "
+                        "shape; skipping finding_id=%s",
+                        finding_id,
+                    )
+                    continue
+                if "evidence_lines" in investigation_notes:
+                    cleaned_notes = dict(investigation_notes)
+                    cleaned_notes.pop("evidence_lines", None)
+                    cleaned_evidence["investigation_notes"] = cleaned_notes
+                    changed = True
+
+            # The evidence bundle's anonymized bodies are raw evidence under the same window;
+            # the manifest (ids, kinds, digests) survives so refs stay resolvable.
+            bundle = structured_evidence.get("evidence_bundle")
+            if isinstance(bundle, dict) and "bodies" in bundle:
+                cleaned_evidence["evidence_bundle"] = {
+                    key: value for key, value in bundle.items() if key != "bodies"
+                }
+                changed = True
+
+            if not changed:
+                continue
 
             await self._pool.execute(
                 """

@@ -535,6 +535,43 @@ def _extract_call_site(entry: LogEntry) -> str:
     return "<unknown>:<unknown>"
 
 
+def read_fingerprint_lines(
+    log_stem: str,
+    fingerprint: str,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    log_root: Path | None = None,
+) -> list[str]:
+    """Raw-text lines of one log file that share a finding's fingerprint, inside a window.
+
+    For the evidence bundle (bu-ejow5p.13): the caller anonymizes each returned line. Only the
+    active ``<log_stem>.log`` under the known log subdirectories is read (``log_stem`` is
+    matched, never joined into a path), bounded by the tail reader's chunking and ``limit``.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", log_stem) or ".." in log_stem:
+        return []
+    root = _get_log_root(log_root)
+    lines: list[str] = []
+    for subdir in _LOG_SUBDIRS:
+        log_file = root / subdir / f"{log_stem}.log"
+        if not log_file.is_file():
+            continue
+        for raw in _read_file_tail(log_file, start):
+            entry = _parse_log_line(raw, _butler_name_from_filename(log_file))
+            if entry is None or not (start <= entry.timestamp <= end):
+                continue
+            if _entry_fingerprint(entry) != fingerprint:
+                continue
+            detail = f" | {entry.exc_message}" if entry.exc_message else ""
+            lines.append(
+                f"{entry.timestamp.isoformat()} {entry.level} {entry.logger}: {entry.event}{detail}"
+            )
+            if len(lines) >= limit:
+                return lines
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
