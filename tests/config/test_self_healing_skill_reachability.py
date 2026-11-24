@@ -27,12 +27,6 @@ def test_shared_skill_exists() -> None:
     assert "get_healing_status" in content
 
 
-def test_butler_skills_md_mentions_self_healing_conditionally() -> None:
-    content = (ROSTER_DIR / "shared" / "BUTLER_SKILLS.md").read_text(encoding="utf-8")
-    assert "core QA relay" in content
-    assert "Only present when the `self_healing` module is enabled" not in content
-
-
 @pytest.mark.parametrize("butler", ROSTERS_WITH_BUTLER_TOML)
 def test_roster_enabling_self_healing_module_carries_the_skill(butler: str) -> None:
     """Every original roster keeps core relay access without a module/skill opt-in."""

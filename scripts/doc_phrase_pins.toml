@@ -11,3 +11,27 @@ file = "roster/shared/BUTLER_SKILLS.md"
 mode = "require"
 phrase = "cross-butler-delegation"
 governs = "bu-27dxl.5.3"
+
+[[pin]]
+file = "roster/shared/BUTLER_SKILLS.md"
+mode = "require"
+phrase = "core QA relay"
+governs = "bu-dss7he.1"
+
+[[pin]]
+file = "roster/shared/BUTLER_SKILLS.md"
+mode = "forbid"
+phrase = "Only present when the `self_healing` module is enabled"
+governs = "bu-dss7he.1"
+
+[[pin]]
+file = "docs/connectors/whatsapp.md"
+mode = "forbid"
+phrase = "--unix-socket /tmp/wa-bridge.sock"
+governs = "bu-hrfd0"
+
+[[pin]]
+file = "docs/connectors/whatsapp.md"
+mode = "require"
+phrase = "--unix-socket /tmp/wa-bridge/bridge.sock"
+governs = "bu-hrfd0"
