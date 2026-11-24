@@ -39,6 +39,11 @@ class TestNormalize:
             ("no-at", None),
             ("two@@ats.test", None),
             ("a b@c.test", None),
+            ("\ta@b.test\n", "a@b.test"),  # ASCII whitespace is trimmed
+            ("a\tb@c.test", None),
+            ("a\u00a0b@c.test", "a\u00a0b@c.test"),  # a Unicode space is not ASCII whitespace
+            ("Stra\u00dfe@C.test", "stra\u00dfe@c.test"),  # ASCII lowercase only, no case folding
+            ("\u00c9@c.test", "\u00c9@c.test"),
             ("@nolocal.test", None),
             ("nodomain@", None),
             (None, None),
@@ -496,6 +501,35 @@ class TestProjectionSeam:
             await participants.backfill_participants(pool, limit=1)
         assert len(set(attempted)) == 3  # each pass moved on to a different event
         participants._attempted_at.clear()
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "\tAlice@Known.test ",
+            "a\tb@x.test",
+            "a\u00a0b@x.test",
+            "Stra\u00dfe@X.test",
+            "\u00c9@x.test",
+        ],
+        ids=["tab-padded", "inner-tab", "nbsp", "eszett", "e-acute"],
+    )
+    async def test_the_sql_and_python_normalizers_agree_on_odd_addresses(self, db, address):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        event_id = await pool.fetchval("SELECT id FROM calendar_events")
+        await pool.execute("DELETE FROM calendar_event_participants")
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = jsonb_set(metadata, '{attendees}', "
+            "jsonb_build_array(jsonb_build_object('email', $1::text)))",
+            address,
+        )
+        before = await participants.unavailable_event_ids(pool, [event_id])
+        assert before == ({event_id} if normalize_email(address) else set())
+        await participants.sync_event_participants(pool, event_id)
+        read = await participants.read_participants(pool, event_id)
+        twin = await participants.unavailable_event_ids(pool, [event_id])
+        assert read["available"] is True and twin == set()
+        assert await participants.backfill_participants(pool) == 0  # nothing left to derive
 
     @pytest.mark.parametrize("state", ["healthy", "no rows", "stale version", "new attendee"])
     async def test_the_sql_availability_twin_agrees_with_read_participants(self, db, state):

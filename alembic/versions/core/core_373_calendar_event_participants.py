@@ -17,10 +17,10 @@ active ``has-email`` claimant, no names; merged, deleted and unidentified entiti
 An address with two live claimants returns two rows and the resolver marks it ambiguous. It is
 SECURITY DEFINER with a pinned ``search_path`` and its ACL converges to the runtime roles of the
 butlers that enable ``[modules.calendar]`` (PUBLIC revoked): a butler that does not host the module
-cannot probe the address-to-entity map. A butler that later enables the module needs a revision that
-re-converges the ACL. The core chain runs once per butler schema: every run takes one advisory lock and
-replaces the function, which is idempotent; the downgrade drops the function only when no other
-schema-local chain is still at core_373 or later, and always drops this schema's table.
+cannot probe the address-to-entity map. A butler that later enables the module needs a revision
+that re-converges the ACL. The core chain runs once per butler schema: every run takes one advisory
+lock and replaces the function, which is idempotent; the downgrade drops the function only when
+no other schema-local chain is still at core_373 or later, and always drops this schema's table.
 """
 
 from __future__ import annotations
@@ -106,6 +106,8 @@ END $$
 
 def _grants(signature: str) -> list[str]:
     """Converge the ACL: revoke every grantee but the owner, then grant the existing roles."""
+    if not _ROLES:  # module_roles already raises; never render an empty NOT IN () list
+        raise RuntimeError("no butler hosts the calendar module: refusing an empty ACL")
     roles = ", ".join(f"'{role}'" for role in _ROLES)
     statements = [
         f"REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM PUBLIC",

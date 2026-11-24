@@ -380,6 +380,20 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
     }
 
 
+ASCII_WHITESPACE_SQL = " \\t\\n\\r\\f\\v"  # the escapes of an E'' string
+
+
+def _sql_normalized_email(expr: str) -> str:
+    """SQL twin of :func:`normalize_email` for a text expression (NULL stays NULL)."""
+    return (
+        f"translate(btrim({expr}, E'{ASCII_WHITESPACE_SQL}'), "
+        f"'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    )
+
+
+_PLAIN_ADDRESS_REGEX = "^[^@ \\t\\n\\r\\f\\v]+@[^@ \\t\\n\\r\\f\\v]+$"
+
+
 def _not_ready_predicate(alias: str, version_param: str) -> str:
     """SQL: the event's stored provider rows do not cover exactly its current plain addresses.
 
@@ -390,11 +404,12 @@ def _not_ready_predicate(alias: str, version_param: str) -> str:
     """
     metadata = f"{alias}.metadata"
     return f"""(
-        SELECT COALESCE(array_agg(DISTINCT lower(btrim(att ->> 'email'))), '{{}}')
+        SELECT COALESCE(array_agg(DISTINCT {_sql_normalized_email("att ->> 'email'")}), '{{}}')
         FROM jsonb_array_elements(
             CASE WHEN jsonb_typeof({metadata} -> 'attendees') = 'array'
                  THEN {metadata} -> 'attendees' ELSE '[]'::jsonb END) AS att
-        WHERE jsonb_typeof(att) = 'object' AND btrim(att ->> 'email') ~ '^[^@\\s]+@[^@\\s]+$'
+        WHERE jsonb_typeof(att) = 'object'
+          AND {_sql_normalized_email("att ->> 'email'")} ~ '{_PLAIN_ADDRESS_REGEX}'
     ) IS DISTINCT FROM (
         SELECT COALESCE(array_agg(p.email_norm ORDER BY p.email_norm), '{{}}')
         FROM calendar_event_participants p

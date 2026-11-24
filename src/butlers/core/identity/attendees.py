@@ -37,13 +37,22 @@ class Resolved:
     entity_id: uuid.UUID | None = None
 
 
+#: The one definition of "the same address", shared with the SQL twins in
+#: ``butlers.modules.calendar.participants``: trim ASCII whitespace, lowercase ASCII letters only
+#: (no locale or Unicode case folding), and refuse any ASCII whitespace inside.
+ASCII_WHITESPACE = " \t\n\r\f\v"
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def normalize_email(raw: object) -> str | None:
-    """Trim and case-fold one address; ``None`` when it is not a single plain address."""
+    """Trim and lowercase one address (ASCII only); ``None`` when it is not one plain address."""
     if not isinstance(raw, str):
         return None
-    address = raw.strip().casefold()
+    address = raw.strip(ASCII_WHITESPACE).translate(_ASCII_LOWER)
     local, at, domain = address.partition("@")
-    if not at or not local or not domain or "@" in domain or any(c.isspace() for c in address):
+    if not at or not local or not domain or "@" in domain:
+        return None
+    if any(c in ASCII_WHITESPACE for c in address):
         return None
     return address
 
