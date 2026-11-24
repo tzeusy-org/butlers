@@ -697,6 +697,19 @@ class BrokerLedger:
             effect_id,
         )
 
+    async def approval_principal(self, goal: Any, effect_id: UUID) -> Principal:
+        """The requesting invocation's current label/grant, under the caller's goal lock."""
+        invocation = await self.connection.fetchrow(
+            "SELECT i.* FROM switchboard.invocations i JOIN switchboard.effects e "
+            "ON (i.goal_id, i.id) = (e.goal_id, e.invocation_id) "
+            "WHERE e.goal_id=$1 AND e.id=$2",
+            goal["id"],
+            effect_id,
+        )
+        if invocation is None:
+            raise BrokerRefused(Reason.POLICY)
+        return self._principal(goal, invocation)
+
     async def begin_approved(
         self,
         goal_id: UUID,
@@ -778,6 +791,31 @@ class BrokerLedger:
             raise BrokerRefused(Reason.CAPABILITY)
         if catalog_digest != principal.catalog_digest:
             raise BrokerRefused(Reason.CATALOG)
+        # A committed amendment makes the original digest unusable. Neither a raw
+        # control-plane call nor a recovery can substitute another edited call.
+        amendment = await self.connection.fetchrow(
+            "SELECT args_digest, approved_digest FROM switchboard.owner_decision_items "
+            "WHERE goal_id=$1 AND effect_id=$2 AND outcome='approved'",
+            goal_id,
+            effect_id,
+        )
+        authorized = (
+            amendment["approved_digest"] or amendment["args_digest"]
+            if amendment is not None
+            else effect["args_digest"]
+        )
+        if args_digest != authorized:
+            raise BrokerRefused(Reason.POLICY)
+        if args_digest != effect["args_digest"]:
+            duplicate = await self.connection.fetchval(
+                "SELECT id FROM switchboard.effects WHERE goal_id=$1 AND capability=$2 "
+                "AND args_digest=$3 AND status IN ('committed','unknown') LIMIT 1",
+                goal_id,
+                effect["capability"],
+                args_digest,
+            )
+            if duplicate is not None:
+                raise BrokerRefused(Reason.DUPLICATE, effect_id=duplicate)
         dispatch_id = effect_id
         if args_digest == effect["args_digest"]:
             if effect["status"] != "approved":

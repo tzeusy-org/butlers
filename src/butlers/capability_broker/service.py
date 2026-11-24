@@ -15,8 +15,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
+from jsonschema import SchemaError, ValidationError, validators
+
 from butlers.capability_health.source import HealthSource
 from butlers.capability_health.unavailable import CapabilityUnavailable, first_unavailable
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.capability_json import (
     InvalidArguments,
     arguments_digest,
@@ -186,12 +189,16 @@ class Broker:
         return self.signer
 
     @asynccontextmanager
-    async def _transaction(self):
+    async def _transaction(self, *, audited: bool = False):
         """Acquire-through-commit under one deadline; store errors become UNAVAILABLE."""
         try:
             async with asyncio.timeout(self.transaction_timeout):
-                async with self.pool.acquire() as connection, connection.transaction():
-                    yield BrokerLedger(connection)
+                async with self.pool.acquire() as connection:
+                    transaction = (
+                        audit_transaction(connection) if audited else connection.transaction()
+                    )
+                    async with transaction:
+                        yield BrokerLedger(connection)
         except BrokerRefused:
             raise
         except Exception:
@@ -828,6 +835,46 @@ class Broker:
 
     # -- trusted owner-decision path (D13) --------------------------------------
 
+    async def check_approved_constraints(self, ledger, principal, capability, args) -> None:
+        """Approval answers a park, never a revoked grant or a current hard refusal.
+
+        Validate without rewriting the owner's exact call. This runs both before an
+        amendment receipt and inside the dispatch reservation transaction.
+        """
+        grant = principal.grant_for(capability.identity)
+        if grant is None or not listable(capability, principal.depth):
+            raise BrokerRefused(Reason.CAPABILITY)
+        try:
+            validator = validators.validator_for(capability.input_schema)
+            validator.check_schema(capability.input_schema)
+            validator(capability.input_schema).validate(args)
+        except (SchemaError, ValidationError, TypeError, ValueError):
+            raise BrokerRefused(Reason.POLICY) from None
+        if not _in_scope(capability, grant, args):
+            raise BrokerRefused(Reason.RESOURCE)
+        resolution = await self._resolve(capability, args)
+        fixed = Resolution(
+            args,
+            frozenset(name for name in resolution.resolved if resolution.args[name] == args[name]),
+            resolution.matched,
+        )
+        recipient = await classify_recipients(ledger.connection, capability, args)
+        risk = (
+            await critical_actuation_risk(
+                self.actuation_risk(capability, args), capability, args, self.critical_registry
+            )
+            if capability.effect_class == "actuate"
+            else "safe"
+        )
+        if decide(principal, capability, grant, recipient, risk).disposition is Disposition.REFUSE:
+            raise BrokerRefused(Reason.POLICY)
+        hold = await self._owner_law(ledger, capability, fixed)
+        if hold is not None and hold.constraint == "never":
+            raise BrokerRefused(Reason.POLICY, hold=hold)
+        unavailable = await self._known_unavailable(capability)
+        if unavailable is not None:
+            raise BrokerRefused(Reason.CAPABILITY_UNAVAILABLE, unavailable=unavailable)
+
     async def execute_approved(
         self, goal_id: UUID, effect_id: UUID, approval_ref: str, arguments: dict[str, Any]
     ) -> BrokerResult:
@@ -868,20 +915,14 @@ class Broker:
                     # a param that needed pinning to its canonical id cannot
                     # release a term. A match-only kind needs no pin, so a merge
                     # since the park is matched on its survivor here.
-                    resolution = await self._resolve(reserved.capability, args)
-                    fixed = Resolution(
-                        args,
-                        frozenset(
-                            name
-                            for name in resolution.resolved
-                            if resolution.args[name] == args[name]
-                        ),
-                        resolution.matched,
-                    )
-                    hold = await self._owner_law(ledger, reserved.capability, fixed)
-                    if hold is not None and hold.constraint == "never":
-                        held = (reserved, hold)
-                        raise BrokerRefused(Reason.POLICY, effect_id=effect_id, hold=hold)
+                    try:
+                        await self.check_approved_constraints(
+                            ledger, reserved.principal, reserved.capability, args
+                        )
+                    except BrokerRefused as refused:
+                        if refused.hold is not None:
+                            held = (reserved, refused.hold)
+                        raise
         except BrokerRefused:
             if held is None:
                 raise
