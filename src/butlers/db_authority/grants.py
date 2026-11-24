@@ -310,6 +310,11 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
         {_CONCIERGE: _DML, "butler_chronicler_rw": _SELECT, "butler_travel_rw": _SELECT},
         "migration: concierge full; chronicler and travel read",
     ),
+    "qa_known_issue_links": _replay_widened(
+        _NONE,
+        {"butler_qa_rw": _DML},
+        "migration: QA suppression control; QA butler only, no other butler or connector",
+    ),
     "qa_publication_exports": _replay_widened(
         _SELECT,
         {"butler_qa_rw": frozenset({"SELECT", "INSERT"})},

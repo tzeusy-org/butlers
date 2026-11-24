@@ -118,6 +118,7 @@ from butlers.core.qa.journal import (
     record_pr_merged_event,
     record_wait_event_once,
 )
+from butlers.core.qa.known_issue_links import sync_qa_pr_link
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
@@ -1759,6 +1760,14 @@ async def _run_investigation_session(
 # ---------------------------------------------------------------------------
 
 
+async def _sync_pr_link(pool: asyncpg.Pool, fingerprint: str, pr_url: str, pr_state: str) -> None:
+    """Best-effort: a link-store failure must never fail the PR status check."""
+    try:
+        await sync_qa_pr_link(pool, fingerprint=fingerprint, pr_url=pr_url, pr_state=pr_state)
+    except Exception as exc:
+        logger.warning("QA PR link sync failed (fingerprint=%s): %s", fingerprint[:12], exc)
+
+
 async def check_open_pr_statuses(
     pool: asyncpg.Pool,
     repo_root: Path,
@@ -2003,6 +2012,7 @@ async def check_open_pr_statuses(
 
             if state == "MERGED":
                 await update_attempt_status(pool, attempt_id, "pr_merged")
+                await _sync_pr_link(pool, fingerprint, pr_url, "merged")
                 try:
                     await record_pr_merged_event(
                         pool,
@@ -2027,6 +2037,7 @@ async def check_open_pr_statuses(
                     "failed",
                     error_detail="pr_closed_without_merge",
                 )
+                await _sync_pr_link(pool, fingerprint, pr_url, "closed")
                 counts["closed"] += 1
                 logger.info(
                     "QA PR closed without merge: attempt=%s pr_number=%s",
@@ -2034,6 +2045,8 @@ async def check_open_pr_statuses(
                     pr_number,
                 )
                 continue
+
+            await _sync_pr_link(pool, fingerprint, pr_url, "open")
 
             pending_check_names = _extract_pending_check_names(pr_data)
             if pending_check_names:
