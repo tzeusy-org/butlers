@@ -445,6 +445,20 @@
       "sample_source": "bu-g0fmdv separate immutable old-runtime PG control source",
       "review_uv_nominal_envelope_s": 640,
       "review_setup_placement": "start one2480s aggregate before checkout; owned UV640/environment640/two480s phases including cleanup/setup120/evidence120;45min job provisional"
+    },
+    {
+      "workflow": ".github/workflows/qa-isolation.yml",
+      "job": "isolation",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 25,
+      "installed_timeout_minutes": 25,
+      "retry_extra_s": 0,
+      "state": "provisional finite control; no hosted observation or calibration yet",
+      "sample_source": "bu-ejow5p.11 path-filtered k3d isolation check, not a required check",
+      "review_uv_nominal_envelope_s": 0,
+      "review_setup_placement": "k3d cluster create 180s, image build, then up to three Jobs per control (baseline, mutated, restored); 25min job provisional"
     }
   ],
   "tests": [

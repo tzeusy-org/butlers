@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // REQ-module-memory-013: attribution displays persisted authority, never request metadata.
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 import { getShellCapability } from "@/lib/shell-capability";
 
 const clients: QueryClient[] = [];
@@ -110,4 +111,150 @@ it("withholds the waiting destination for terminal and endorsed rules even with 
     expect(screen.queryByRole("link", { name: "Guidance waiting for you" })).toBeNull();
     cleanup();
   }
+});
+
+const legacyA = record({
+  id: "legacy-a", held: true, content: "Remember the north gate",
+  content_authority: null, owning_source: "general",
+});
+const legacyB = record({
+  id: "legacy-b", held: true, content: "Keep the garden schedule",
+  content_authority: null, owning_source: "general",
+});
+const correspondent = record({
+  id: "remote", held: true, content: "Consider the correspondent's suggestion",
+  content_authority: "third_party", owning_source: "general",
+  authority_entity_id: "correspondent", authority_entity_name: "A correspondent",
+  source_episode_id: "episode-a", source_episode_status: "available",
+});
+const confirmationDigest = "0".repeat(64);
+
+function EndorseFromCommandMenu() {
+  const command = useCommandMenuActions().find((item) => item.id === "memory-endorse-remote");
+  return command
+    ? <button type="button" onClick={command.perform}>Choose Endorse in command menu</button>
+    : null;
+}
+
+async function mountHeld(
+  fixtures: ReturnType<typeof record>[],
+  handleConfirm: (body: unknown) => Promise<Response>,
+  poolsFailed: string[] = [],
+) {
+  const writes: Array<{ path: string; body: unknown }> = [];
+  const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://localhost");
+    if (init?.method === "POST") {
+      const body = init.body ? JSON.parse(String(init.body)) : null;
+      writes.push({ path: url.pathname, body });
+      if (url.pathname.endsWith("/preview")) {
+        const chosen = (body as { rule_ids: string[] }).rule_ids.map((id) => {
+          const rule = fixtures.find((item) => item.id === id)!;
+          return {
+            rule_id: id, content: rule.content, content_authority: null,
+            scope: rule.scope, source_butler: rule.source_butler,
+            source_episode_id: rule.source_episode_id, created_at: rule.created_at,
+          };
+        });
+        return json({ data: { rules: chosen, confirmation_digest: confirmationDigest } });
+      }
+      if (url.pathname.endsWith("/remote/endorse")) {
+        return json({ data: { rule_id: "remote", changed: true, endorsed_at: "2026-10-20T14:00Z" } });
+      }
+      return handleConfirm(body);
+    }
+    if (url.pathname === "/api/memory/rules") {
+      return json({
+        data: fixtures,
+        meta: { total: fixtures.length, offset: 0, limit: 50, pools_failed: poolsFailed },
+      });
+    }
+    return json(url.pathname === "/api/memory/stats"
+      ? { data: null } : { data: [], meta: { total: 0, offset: 0, limit: 50 } });
+  }));
+  const { default: Browser } = await getShellCapability("/memory")!.loader();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  clients.push(client);
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={["/memory?register=rules&held=true"]}>
+        <CommandRegistryProvider>
+          <Browser />
+          <EndorseFromCommandMenu />
+        </CommandRegistryProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return writes;
+}
+
+it("reviews an exact legacy selection and sends committed receipts and palette endorsement through HTTP", async () => {
+  let commit: (response: Response) => void = () => { throw new Error("No pending commit"); };
+  const writes = await mountHeld(
+    [legacyA, legacyB, correspondent, record({
+      id: "legacy-c", content: "Keep a second calendar", content_authority: null,
+      owning_source: "relationship", held: true,
+    })],
+    () => new Promise<Response>((resolve) => { commit = resolve; }),
+  );
+  expect(await screen.findByRole("link", { name: "A correspondent" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Source episode" }).getAttribute("href"))
+    .toBe("/memory/episodes/episode-a");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Remember the north gate" }));
+  expect((screen.getByRole("checkbox", { name: "Select Keep a second calendar" }) as HTMLInputElement).disabled)
+    .toBe(true);
+  expect(screen.queryByRole("checkbox", { name: /correspondent's suggestion/ })).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Keep the garden schedule" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review 2 selected" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Endorse selected legacy guidance" });
+  expect(within(dialog).getByText("Remember the north gate")).toBeTruthy();
+  expect(within(dialog).getByText("Keep the garden schedule")).toBeTruthy();
+  expect(writes).toEqual([{
+    path: "/api/memory/rules/endorse-legacy/preview",
+    body: { rule_ids: ["legacy-a", "legacy-b"] },
+  }]);
+  const confirm = within(dialog).getByRole("button", { name: "Endorse guidance" });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+  await waitFor(() => expect(writes).toHaveLength(2));
+  expect(writes[1]).toEqual({
+    path: "/api/memory/rules/endorse-legacy",
+    body: { rule_ids: ["legacy-a", "legacy-b"], confirmation_digest: confirmationDigest },
+  });
+  expect((within(dialog).getByRole("button", { name: "Endorsing…" }) as HTMLButtonElement).disabled)
+    .toBe(true);
+  await act(async () => {
+    commit(new Response(JSON.stringify({ data: [
+      { rule_id: "legacy-a", changed: true, endorsed_at: "2026-10-20T14:00Z" },
+      { rule_id: "legacy-b", changed: false, endorsed_at: "2026-10-20T13:00Z" },
+    ] })));
+  });
+  expect(await screen.findByText("Endorsed · Remember the north gate")).toBeTruthy();
+  expect(screen.getByText("Already endorsed · Keep the garden schedule")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Choose Endorse in command menu" }));
+  const single = screen.getByRole("alertdialog", { name: "Endorse this guidance" });
+  expect(within(single).getByText(correspondent.content)).toBeTruthy();
+  expect(writes).toHaveLength(2);
+  fireEvent.click(within(single).getByRole("button", { name: "Endorse guidance" }));
+  await screen.findByText(`Endorsed · ${correspondent.content}`);
+  expect(writes[2]).toEqual({ path: "/api/memory/rules/remote/endorse", body: null });
+});
+
+it("keeps a refused selection reviewable and treats a partial held-list result as incomplete", async () => {
+  const writes = await mountHeld(
+    [legacyA],
+    async () => new Response(JSON.stringify({ detail: "The selection changed." }), { status: 409 }),
+    ["relationship"],
+  );
+  expect(await screen.findByText(/relationship/)).toBeTruthy();
+  expect(screen.queryByText("No guidance waiting for you.")).toBeNull();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Remember the north gate" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 selected" }));
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Endorse guidance" }));
+  expect(await within(dialog).findByText(/The selection changed/)).toBeTruthy();
+  expect(within(dialog).getByText("Remember the north gate")).toBeTruthy();
+  expect(writes).toHaveLength(2);
+  expect(screen.queryByText(/Endorsed ·/)).toBeNull();
 });

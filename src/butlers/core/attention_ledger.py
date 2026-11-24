@@ -275,16 +275,10 @@ async def record_attention_event(
             notification_ref,
             metadata_json,
         )
-    except Exception:
-        # Never let ledger-write trouble affect the notification it describes.
-        logger.warning(
-            "record_attention_event: failed to record ledger row "
-            "(origin_butler=%s source=%s outcome=%s)",
-            origin_butler,
-            source,
-            outcome,
-            exc_info=True,
-        )
+    except Exception as exc:
+        # A traceback can include a private delivery exception currently being
+        # handled by the caller, as well as database row/parameter details.
+        logger.warning("record_attention_event: ledger write failed: %s", type(exc).__name__)
         return None
     return str(row_id) if row_id is not None else None
 

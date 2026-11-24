@@ -1417,6 +1417,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     try:
         cal_rows = await db_pool.fetch(
             """
+            -- quarantine-exempt: filtered in Python by is_owner_attending
             SELECT
                 id,
                 title,
@@ -1481,12 +1482,12 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Same RSVP rule as the calendar conflict radar (shared helper).
-        owner_declined = not is_owner_attending(meta)
-
-        if owner_declined:
+        # Same RSVP rule as the calendar conflict radar (shared helper): an event the owner
+        # declined, or an unanswered invitation from an untrusted organizer, is not attended.
+        if not is_owner_attending(meta):
             logger.debug(
-                "interaction_sync: skipping calendar event %s — owner declined",
+                "interaction_sync: skipping calendar event %s — owner not attending "
+                "(declined or quarantined invitation)",
                 event_id,
             )
             continue
@@ -3626,6 +3627,14 @@ _NO_VENDOR_DOOR = """
 """
 
 
+# An owner-confirmed household subject names its entity on a calendar source (core_368). Archiving a
+# placeholder that a source's role names would silently unassign the household role, and this role
+# cannot read other butlers' calendar_sources: the core_368 definer answers across every schema.
+_NO_CALENDAR_ROLE_SUBJECT = """
+    AND NOT public.calendar_role_subject_entity_pinned(e.id)
+"""
+
+
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
 
@@ -3686,6 +3695,10 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
         "SELECT to_regprocedure('public.vendor_door_entity_pinned(uuid)') IS NOT NULL"
     ):
         clean_orphan += _NO_VENDOR_DOOR
+    if await db_pool.fetchval(
+        "SELECT to_regprocedure('public.calendar_role_subject_entity_pinned(uuid)') IS NOT NULL"
+    ):
+        clean_orphan += _NO_CALENDAR_ROLE_SUBJECT
     candidates = await db_pool.fetch(
         f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )

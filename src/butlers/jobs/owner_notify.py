@@ -12,14 +12,14 @@ parameterised by origin butler:
    ``background.dispatch_scheduled_task`` binds for the handler call, with a bounded timeout.
    No client means ``failed``; there is no direct provider fallback.
 4. Exactly one ``public.attention_ledger`` row per call, whatever the outcome. A failed or
-   uncertain delivery is recorded and never retried here; a caller that retries passes a
-   ``dedup_key`` so it can pace itself on its own failed rows.
+   uncertain delivery is recorded and never retried here.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -28,6 +28,7 @@ import asyncpg
 from butlers.core.attention_ledger import check_owner_notify_suppression, record_attention_event
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.telegram_api import terminal_telegram_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +39,137 @@ SUPPRESSED = "suppressed"
 FAILED = "failed"
 
 NotifyOutcome = Literal["delivered", "suppressed", "failed"]
+DeliveryOutcome = Literal["delivered", "failed", "partial_delivery", "delivery_uncertain"]
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """One Switchboard attempt; classification is not permission or retry authority."""
+
+    outcome: DeliveryOutcome
+    data: dict[str, Any]
+    reason: str | None = None
+    exception_type: str | None = None
+    retryable: bool = False
+    timed_out: bool = False
+    mcp_error: bool = False
+
+    @property
+    def delivered(self) -> bool:
+        return self.outcome == DELIVERED
+
+    @property
+    def notification_ref(self) -> Any:
+        return self.data.get("notification_id")
+
+    @property
+    def error(self) -> Any:
+        # Structured remote errors remain part of the public response contract.
+        # Exception messages never enter this payload or the attention ledger.
+        return self.data.get("error") or "Delivery failed"
+
+    def require_delivered(self) -> None:
+        if not self.delivered:
+            raise RuntimeError(self.reason or "delivery_error")
+
+
+def owner_notify_request(
+    *,
+    origin_butler: str,
+    message: str,
+    recipient: str | None = None,
+    channel: str | None = "telegram",
+    intent: str = "send",
+) -> dict[str, Any]:
+    """Construct the wire envelope after caller-owned recipient/policy validation."""
+    delivery = {"intent": intent, "message": message}
+    if channel is not None:
+        delivery["channel"] = channel
+    if recipient is not None:
+        delivery["recipient"] = recipient
+    return {"schema_version": "notify.v1", "origin_butler": origin_butler, "delivery": delivery}
+
+
+async def deliver_notification(
+    send: Callable[[], Awaitable[Any]],
+    *,
+    timeout_s: float | None = _NOTIFY_TIMEOUT_S,
+    propagate_errors: bool = False,
+) -> DeliveryResult:
+    """Execute exactly once through an explicitly supplied Switchboard transport.
+
+    This does not choose a route, resolve an actor, retry, defer or write a second
+    attention outcome. Those decisions belong to the caller's existing boundary.
+    Cancellation propagates. The caller can retain an unbounded direct boundary
+    by passing ``timeout_s=None``. Ordinary transport failures carry only their type.
+    """
+    try:
+        response = await asyncio.wait_for(send(), timeout=timeout_s)
+    except Exception as exc:
+        terminal = terminal_telegram_metadata(exc)
+        if propagate_errors and not terminal:
+            raise
+        name = type(exc).__name__
+        logger.warning("Owner notification delivery failed: %s", name)
+        if terminal:
+            data = {"status": "failed", **terminal}
+        else:
+            return DeliveryResult(
+                FAILED,
+                {"status": "failed", "error": name},
+                "delivery_error:" + name,
+                name,
+                retryable=isinstance(exc, OSError),
+                timed_out=isinstance(exc, TimeoutError),
+            )
+    else:
+        if isinstance(response, dict):
+            data = response
+            is_error = False
+        else:
+            data = getattr(response, "data", None)
+            is_error = getattr(response, "is_error", False) is True
+        terminal = terminal_telegram_metadata(data)
+        if is_error and not terminal:
+            # Preserve FastMCP's public MCP-error content and keep it out of logs.
+            content = getattr(response, "content", None)
+            text = getattr(content[0], "text", None) if content else None
+            error = text if isinstance(text, str) and text else "Unknown error"
+            return DeliveryResult(
+                FAILED, {"status": "failed", "error": error}, "delivery_error", mcp_error=True
+            )
+        if not isinstance(data, dict):
+            data = {}
+        if not terminal and data.get("status") not in ("sent", "ok"):
+            return DeliveryResult(
+                FAILED, data, "delivery_error", retryable=data.get("retryable") is True
+            )
+    if terminal:
+        outcome = "partial_delivery" if terminal.get("partial_delivery") else "delivery_uncertain"
+        return DeliveryResult(outcome, data, "telegram_" + outcome)
+    return DeliveryResult(DELIVERED, data)
+
+
+@dataclass(frozen=True)
+class OwnerNotifyBoundary:
+    """Explicit caller bindings; no policy, identity or transport fallback is inferred."""
+
+    suppression: Callable[..., Awaitable[str | None]] | None
+    recipient: Callable[..., Awaitable[str | None]]
+    client: Callable[[], Any]
+    record: Callable[..., Awaitable[Any]]
+    failure_reason: Callable[[DeliveryResult], str | None] = lambda result: result.reason
 
 
 @dataclass(frozen=True)
 class OwnerNotifyResult:
     outcome: NotifyOutcome
-    #: True once a provider call began, so a ``failed`` outcome may still have delivered.
+    # A failure after transport began may still have reached the provider.
     call_started: bool
-    #: The provider's numeric message id of a delivered send, so the card can be retracted later.
+    # A Telegram message id can address a later retract of the same card.
     provider_ref: str | None = None
+    # A caller with a terminal latch must distinguish these from a failed attempt.
+    delivery_outcome: DeliveryOutcome | None = None
 
 
 async def send_owner_telegram_checked(
@@ -57,83 +180,91 @@ async def send_owner_telegram_checked(
     log_context: str,
     dedup_key: str | None = None,
     envelope: dict[str, Any] | None = None,
+    boundary: OwnerNotifyBoundary | None = None,
+    priority: str = "medium",
+    metadata: dict[str, Any] | None = None,
 ) -> OwnerNotifyResult:
-    """Send ``message`` to the owner's Telegram chat and return the recorded outcome.
+    """Send to the verified owner and report whether transport began.
 
-    ``dedup_key`` tags the ledger row, so a caller that retries can find its own attempts.
-    ``call_started`` is False when the outcome was decided before any provider call
-    (suppressed, no recipient, no client): nothing can have been delivered. A ``failed``
-    outcome with ``call_started`` True is ambiguous, because the provider may have delivered.
-
-    ``envelope`` is a prebuilt ``notify.v1`` request (a card with actions) sent in place of
-    ``message``. Its recipient must be the owner's resolved chat: a mismatch is a ``failed``
-    send decided before any provider call.
+    A prebuilt envelope carries its existing presentation and must name the
+    resolved owner chat. The optional dedup key belongs to the caller's retry
+    policy and is recorded on the one attention row.
     """
+    bound = boundary or OwnerNotifyBoundary(
+        check_owner_notify_suppression,
+        resolve_owner_telegram_recipient,
+        get_current_switchboard_client,
+        record_attention_event,
+    )
 
-    async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
-        await record_attention_event(
+    async def _record(outcome: NotifyOutcome, reason: str | None = None, ref: Any = None) -> None:
+        await bound.record(
             pool,
             origin_butler=origin_butler,
             source="notify",
             outcome=outcome,
             channel="telegram",
             intent="send",
-            priority="medium",
+            priority=priority,
             reason=reason,
             notification_ref=ref,
             dedup_key=dedup_key,
+            **({"metadata": metadata} if metadata is not None else {}),
         )
 
-    reason = await check_owner_notify_suppression(pool, log_context=log_context)
+    recipient = None
+    client = None
+    try:
+        reason = (
+            await bound.suppression(pool, log_context=log_context)
+            if bound.suppression is not None
+            else None
+        )
+        if reason is None:
+            recipient = await bound.recipient(pool)
+            if recipient:
+                client = bound.client()
+    except Exception as exc:
+        exception_type = type(exc).__name__
+        logger.warning("Owner notification preparation failed: %s", exception_type)
+        await _record(FAILED, f"preparation_error:{exception_type}")
+        return OwnerNotifyResult(FAILED, False)
+
     if reason is not None:
         await _record(SUPPRESSED, reason)
         return OwnerNotifyResult(SUPPRESSED, False)
-    recipient = await resolve_owner_telegram_recipient(pool)
     if not recipient:
         await _record(FAILED, "no_recipient_configured")
         return OwnerNotifyResult(FAILED, False)
-    client = get_current_switchboard_client()
     if client is None:
         await _record(FAILED, "switchboard_client_unavailable")
         return OwnerNotifyResult(FAILED, False)
     if envelope is not None:
-        if (envelope.get("delivery") or {}).get("recipient") != recipient:
+        delivery = envelope.get("delivery")
+        if not isinstance(delivery, dict) or delivery.get("recipient") != recipient:
             await _record(FAILED, "recipient_mismatch")
             return OwnerNotifyResult(FAILED, False)
         notify_request = envelope
     else:
-        notify_request = {
-            "schema_version": "notify.v1",
-            "origin_butler": origin_butler,
-            "delivery": {
-                "intent": "send",
-                "channel": "telegram",
-                "message": message,
-                "recipient": recipient,
-            },
-        }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool(
-                "deliver", {"source_butler": origin_butler, "notify_request": notify_request}
-            ),
-            timeout=_NOTIFY_TIMEOUT_S,
+        notify_request = owner_notify_request(
+            origin_butler=origin_butler, message=message, recipient=recipient
         )
-    except Exception as exc:
-        logger.warning("%s: deliver() call failed: %s", log_context, type(exc).__name__)
-        await _record(FAILED, f"delivery_error:{type(exc).__name__}")
-        return OwnerNotifyResult(FAILED, True)
-    data = result.data
-    if result.is_error or (isinstance(data, dict) and data.get("status") == "failed"):
-        await _record(FAILED, "delivery_error")
-        return OwnerNotifyResult(FAILED, True)
-    await _record(DELIVERED, ref=data.get("notification_id") if isinstance(data, dict) else None)
-    # Telegram's message id; the adapter-less ``telegram:<uuid>`` fallback is never a card.
-    delivery_id = data.get("delivery_id") if isinstance(data, dict) else None
-    ref = str(delivery_id) if isinstance(delivery_id, (str, int)) else None
-    return OwnerNotifyResult(
-        DELIVERED, True, ref if ref and ref.isascii() and ref.isdigit() else None
+
+    result = await deliver_notification(
+        lambda: client.call_tool(
+            "deliver", {"source_butler": origin_butler, "notify_request": notify_request}
+        )
     )
+    if not result.delivered:
+        await _record(FAILED, bound.failure_reason(result), result.notification_ref)
+        return OwnerNotifyResult(FAILED, True, delivery_outcome=result.outcome)
+
+    await _record(DELIVERED, ref=result.notification_ref)
+    # An adapter-less telegram:<uuid> receipt cannot address an existing card.
+    delivery_id = result.data.get("delivery_id")
+    ref = str(delivery_id) if isinstance(delivery_id, (str, int)) else None
+    provider_ref = ref if ref and ref.isascii() and ref.isdigit() else None
+    return OwnerNotifyResult(DELIVERED, True, provider_ref, delivery_outcome=result.outcome)
 
 
 async def send_owner_telegram(
@@ -143,13 +274,19 @@ async def send_owner_telegram(
     message: str,
     log_context: str,
     dedup_key: str | None = None,
+    boundary: OwnerNotifyBoundary | None = None,
+    priority: str = "medium",
+    metadata: dict[str, Any] | None = None,
 ) -> NotifyOutcome:
-    """Send ``message`` to the owner's Telegram chat and return the recorded outcome."""
+    """Send to the verified owner and return the recorded outcome."""
     result = await send_owner_telegram_checked(
         pool,
         origin_butler=origin_butler,
         message=message,
         log_context=log_context,
         dedup_key=dedup_key,
+        boundary=boundary,
+        priority=priority,
+        metadata=metadata,
     )
     return result.outcome

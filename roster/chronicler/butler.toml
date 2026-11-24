@@ -98,6 +98,12 @@ dispatch_mode = "job"
 job_name = "chronicler_project_activitywatch"
 
 [[butler.schedule]]
+name = "chronicler_project_calendar_revisions"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_calendar_revisions"
+
+[[butler.schedule]]
 name = "chronicler_project_owner_outbound"
 cron = "*/15 * * * *"
 dispatch_mode = "job"

@@ -47,13 +47,15 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import Path as PathParam
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -78,8 +80,19 @@ from butlers.core.healing.constants import (
     QA_BREAKER_WHERE_SQL,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.logging import redact_text
 from butlers.core.model_routing import get_breaker_states
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
+from butlers.core.qa.known_issue_links import (
+    DEFAULT_LINK_TTL,
+    MAX_LINK_TTL,
+    TRACKER_KINDS,
+    close_link,
+    get_gating_link,
+    is_valid_tracker_ref,
+    upsert_link,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import DiffLine, InvestigationNotes
 from butlers.core.qa.patrol_status import (
@@ -92,6 +105,7 @@ from butlers.core.qa.remediation_liveness import (
 )
 from butlers.core.qa.remediation_liveness import (
     active_loop_conditions,
+    classify_cause,
     evaluate_reset,
     record_reset_refusal,
 )
@@ -373,6 +387,9 @@ class QaPatrolSummary(BaseModel):
     log_lookback_minutes: int
     sources_polled: list[str] = Field(default_factory=list)
     error_detail: str | None = None
+    # The gate that stopped dispatch when ``status`` is ``halted``: ``circuit_breaker``,
+    # ``no_model`` or ``concurrency_cap``. ``None`` for every other status.
+    halt_reason: str | None = None
 
 
 class QaFindingRecord(BaseModel):
@@ -566,6 +583,9 @@ class QaCaseDossier(BaseModel):
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
+    # "Tracked as <ref>, N occurrences since": the live link and the recurrences it held back.
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_occurrences_since_link: int = 0
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
     journal: list[QaJournalEvent] = Field(default_factory=list)
@@ -595,6 +615,13 @@ class QaCircuitBreaker(BaseModel):
     # fixtures/tests that construct this without a threshold keep working;
     # the real endpoint always sets it explicitly.
     threshold: int = QA_BREAKER_THRESHOLD
+    # Why it tripped: the one cause every counted failure shares, ``mixed`` when they differ,
+    # ``None`` while it is closed. ``cause_counts`` carries the per-cause counts.
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    # When the breaker tripped, and when the next half-open probe is admitted (None while closed).
+    opened_at: datetime | None = None
+    next_probe_at: datetime | None = None
 
 
 class QaCredentialsStatus(BaseModel):
@@ -708,6 +735,33 @@ class DismissRequest(BaseModel):
 
     dismissed_until: datetime | None = None
     dismissed_by: str = "dashboard_user"
+
+
+#: A finding fingerprint is a sha256 hex digest; anything else cannot name a finding.
+_FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
+
+
+class QaKnownIssueLink(BaseModel):
+    """A finding fingerprint's link to the bead, PR or issue that tracks it."""
+
+    id: uuid.UUID
+    fingerprint: str
+    tracker_kind: str
+    tracker_ref: str
+    linked_by: str
+    linked_at: datetime
+    fix_ref: str | None = None
+    state: str
+    expires_at: datetime | None = None
+
+
+class KnownIssueLinkRequest(BaseModel):
+    """Request body for linking a finding to a tracked defect (owner action)."""
+
+    tracker_kind: str
+    tracker_ref: str
+    # Omitted: the link lapses after ``DEFAULT_LINK_TTL``, so it never suppresses forever.
+    expires_at: datetime | None = None
 
 
 class QaInvestigation(BaseModel):
@@ -881,7 +935,11 @@ class CircuitBreakerAttempt(BaseModel):
 
     id: str
     status: str
-    closed_at: str
+    closed_at: datetime
+    # The cause code (``classify_cause``) and the first line of the attempt's own error text, so
+    # the owner can see why each counted attempt failed without opening it.
+    reason_class: str | None = None
+    reason_text: str | None = None
 
 
 class CircuitBreakerStatus(BaseModel):
@@ -891,6 +949,10 @@ class CircuitBreakerStatus(BaseModel):
     threshold: int
     recent_statuses: list[str]
     recent_attempts: list[CircuitBreakerAttempt]
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    opened_at: datetime | None = None
+    next_probe_at: datetime | None = None
 
 
 class CircuitBreakerResetResponse(BaseModel):
@@ -1004,6 +1066,7 @@ def _row_to_patrol_summary(row: Any) -> QaPatrolSummary:
         log_lookback_minutes=row["log_lookback_minutes"],
         sources_polled=list(sources),
         error_detail=row["error_detail"],
+        halt_reason=row.get("halt_reason"),
     )
 
 
@@ -1303,11 +1366,14 @@ async def _fetch_recent_circuit_breaker_rows(
     *,
     limit: int,
     include_ids: bool = False,
+    include_detail: bool = False,
 ) -> list[asyncpg.Record]:
     """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
 
     status_col = f"{QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status"
     select_cols = f"id, {status_col}, closed_at" if include_ids else status_col
+    if include_detail:
+        select_cols = f"id, {status_col}, closed_at, error_detail"
     return await pool.fetch(
         f"""
         SELECT {select_cols}
@@ -1337,6 +1403,38 @@ def _compute_circuit_breaker_state(
         status in CIRCUIT_BREAKER_FAILURE_STATUSES for status in statuses
     )
     return statuses, consecutive_failures, tripped
+
+
+_REASON_TEXT_MAX = 200
+
+
+def _breaker_cause_fields(rows: list[Any], *, threshold: int) -> dict[str, Any]:
+    """Derived cause and probe schedule for the breaker, from rows newest first."""
+    state = derive_breaker_state(
+        [
+            {
+                "status": row["status"],
+                "error_detail": row.get("error_detail"),
+                "closed_at": row.get("closed_at"),
+            }
+            for row in rows
+        ],
+        threshold,
+    )
+    return {
+        "dominant_cause": state.dominant_cause,
+        "cause_counts": dict(state.cause_counts),
+        "opened_at": state.opened_at,
+        "next_probe_at": state.next_probe_at,
+    }
+
+
+def _reason_text(error_detail: str | None) -> str | None:
+    """First non-empty line of an attempt's error text, credential-redacted and bounded."""
+    for line in redact_text(error_detail or "").splitlines():
+        if line.strip():
+            return line.strip()[:_REASON_TEXT_MAX]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1533,7 +1631,8 @@ async def get_qa_summary(
     last_patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE status != 'running'
         ORDER BY started_at DESC
@@ -1763,16 +1862,22 @@ async def get_qa_summary(
     # dispatcher semantics.
     cb_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
     cb_statuses, consecutive_failures, cb_tripped = _compute_circuit_breaker_state(
-        cb_rows,
+        cb_rows[:_CIRCUIT_BREAKER_THRESHOLD],
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cb_cause = _breaker_cause_fields(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
         consecutive_failures=consecutive_failures,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
+        dominant_cause=cb_cause["dominant_cause"],
+        cause_counts=cb_cause["cause_counts"],
+        opened_at=cb_cause["opened_at"],
+        next_probe_at=cb_cause["next_probe_at"],
     )
 
     # Active sources — derive from the most recent patrols (last 10)
@@ -1952,7 +2057,8 @@ async def list_patrols(
 
     rows = await pool.fetch(
         f"SELECT id, started_at, completed_at, status, findings_count, novel_count,"
-        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail"
+        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail,"
+        f" halt_reason"
         f" FROM public.qa_patrols{where}"
         f" ORDER BY started_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -1984,7 +2090,8 @@ async def get_patrol(
     patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE id = $1
         """,
@@ -2020,6 +2127,7 @@ async def get_patrol(
         log_lookback_minutes=summary.log_lookback_minutes,
         sources_polled=summary.sources_polled,
         error_detail=summary.error_detail,
+        halt_reason=summary.halt_reason,
         findings=findings,
     )
     return ApiResponse(data=detail)
@@ -2371,6 +2479,24 @@ async def get_case(
         if dismissal_row is not None:
             dismissal = _row_to_active_dismissal(dismissal_row)
 
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_since_link = 0
+    if finding_fingerprint:
+        link_row = await get_gating_link(pool, finding_fingerprint)
+        if link_row is not None:
+            known_issue_link = QaKnownIssueLink(**link_row)
+            tracked_since_link = int(
+                await pool.fetchval(
+                    """
+                    SELECT count(*) FROM public.qa_findings
+                    WHERE fingerprint = $1 AND dedup_reason = 'tracked' AND created_at > $2
+                    """,
+                    finding_fingerprint,
+                    known_issue_link.linked_at,
+                )
+                or 0
+            )
+
     journal_rows = await pool.fetch(
         """
         SELECT id, ts, step, text, detail, data
@@ -2411,6 +2537,8 @@ async def get_case(
         proposal_diff_snapshot=proposal_diff_snapshot,
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
+        known_issue_link=known_issue_link,
+        tracked_occurrences_since_link=tracked_since_link,
         investigation_notes=investigation_notes,
         pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
@@ -2758,6 +2886,98 @@ async def dismiss_known_issue(
         raise HTTPException(status_code=500, detail="Failed to create dismissal")
 
     return ApiResponse(data=_row_to_dismissal(row))
+
+
+# ---------------------------------------------------------------------------
+# POST/DELETE /api/qa/known-issues/{fingerprint}/link — tracked-defect linkage
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/known-issues/{fingerprint}/link",
+    response_model=ApiResponse[QaKnownIssueLink],
+    status_code=201,
+)
+async def link_known_issue(
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
+    body: KnownIssueLinkRequest,
+    response: Response,
+    *,
+    db: Db,
+) -> ApiResponse[QaKnownIssueLink]:
+    """Link a finding to the work item that already tracks it (owner action).
+
+    While the link is open, patrols persist the finding as ``tracked`` and dispatch no
+    investigation. A bead ref is an unverified owner assertion (QA does not read the tracker);
+    a GitHub PR ref is rejected when GitHub says it is already merged or closed. A repeat link
+    is idempotent (200).
+    """
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if body.tracker_kind not in TRACKER_KINDS:
+        raise HTTPException(
+            status_code=422, detail=f"tracker_kind must be one of {', '.join(TRACKER_KINDS)}"
+        )
+    tracker_ref = body.tracker_ref.strip()
+    if not is_valid_tracker_ref(body.tracker_kind, tracker_ref):
+        raise HTTPException(
+            status_code=422,
+            detail=f"tracker_ref is not a well-formed {body.tracker_kind} reference",
+        )
+    now = datetime.now(UTC)
+    if body.expires_at is not None and not (now < body.expires_at <= now + MAX_LINK_TTL):
+        raise HTTPException(
+            status_code=422,
+            detail=f"expires_at must be in the future and within {MAX_LINK_TTL.days} days",
+        )
+
+    pool = _shared_pool(db)
+    if body.tracker_kind == "github_pr":
+        parsed = parse_pr_url(tracker_ref)
+        if parsed is None:  # unreachable once the pattern held; keeps the type narrow
+            raise HTTPException(status_code=422, detail="tracker_ref must be a GitHub PR URL")
+        owner, repo, number = parsed
+        meta = await get_pr_client().fetch(
+            owner, repo, number, token=await _resolve_github_token(db)
+        )
+        # An unreachable or unauthenticated read is not a verdict: the link is accepted as an
+        # owner assertion, exactly as a bead ref is. Only a PR known to be done is refused.
+        if meta.state in ("merged", "closed"):
+            raise HTTPException(
+                status_code=422, detail=f"That pull request is already {meta.state}"
+            )
+
+    expires_at = body.expires_at or (now + DEFAULT_LINK_TTL)
+    row, created = await upsert_link(
+        pool,
+        fingerprint=fingerprint,
+        tracker_kind=body.tracker_kind,
+        tracker_ref=tracker_ref,
+        linked_by="owner",
+        expires_at=expires_at,
+    )
+    response.status_code = 201 if created else 200
+    return ApiResponse(data=QaKnownIssueLink(**row))
+
+
+@router.delete("/known-issues/{fingerprint}/link", response_model=ApiResponse[dict[str, bool]])
+async def unlink_known_issue(
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
+    tracker_ref: str = Query(..., min_length=1, max_length=300),
+    *,
+    db: Db,
+) -> ApiResponse[dict[str, bool]]:
+    """Close a link so its finding is investigated again (owner action)."""
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not await close_link(_shared_pool(db), fingerprint, tracker_ref.strip()):
+        raise HTTPException(status_code=404, detail="No open link for that fingerprint and ref")
+    return ApiResponse(data={"closed": True})
 
 
 # ---------------------------------------------------------------------------
@@ -3466,15 +3686,17 @@ async def get_circuit_breaker_status(
     """Return the current QA dispatch circuit breaker state."""
     pool = _shared_pool(db)
 
-    rows = await _fetch_recent_circuit_breaker_rows(
+    detail_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
-        include_ids=True,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
+    rows = detail_rows[:_CIRCUIT_BREAKER_THRESHOLD]
     statuses, _, tripped = _compute_circuit_breaker_state(
         rows,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cause = _breaker_cause_fields(detail_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
 
     return ApiResponse(
         data=CircuitBreakerStatus(
@@ -3485,10 +3707,13 @@ async def get_circuit_breaker_status(
                 CircuitBreakerAttempt(
                     id=str(row["id"]),
                     status=row["status"],
-                    closed_at=row["closed_at"].isoformat(),
+                    closed_at=row["closed_at"],
+                    reason_class=classify_cause(row.get("error_detail")),
+                    reason_text=_reason_text(row.get("error_detail")),
                 )
                 for row in rows
             ],
+            **cause,
         ),
         meta=ApiMeta(),
     )

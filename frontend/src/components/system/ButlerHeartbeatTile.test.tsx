@@ -2,11 +2,9 @@
 // ---------------------------------------------------------------------------
 // ButlerHeartbeatTile tests (bu-86c4c.17)
 //
-// Canonical liveness source: the tile now consumes useButlerStatusBoard
-// (the same hook powering the roster board and the /system topology graph),
-// not a separate useButlerHeartbeats() fetch with its own 5-minute
-// heartbeat-age threshold. Fixtures below build StatusBoardRow objects
-// directly rather than raw ButlerHeartbeat wire records.
+// Board activity retains its own interaction contract. Observation/policy/
+// compatibility/eligibility now come from the separate existing heartbeat
+// query. Old tone/label expectations survive through the real HTTP matrix.
 //
 // Coverage:
 //   - Loading state: skeleton rendered, no butler rows
@@ -19,13 +17,35 @@
 //   - Sorting: most-recently-seen butler appears first (nulls last)
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { cleanup, render as renderDom, screen, waitFor, act, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useButlerHeartbeats } from "@/hooks/use-system";
+import type { ButlerHeartbeat } from "@/api/types";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import { ButlerHeartbeatTile } from "./ButlerHeartbeatTile";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
+
+
+vi.mock("@/hooks/use-system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-system")>();
+  return { ...actual, useButlerHeartbeats: vi.fn() };
+});
+
+function heartbeatFact(name: string, overrides: Partial<ButlerHeartbeat> = {}): ButlerHeartbeat {
+  return { name, last_heartbeat_at: "2026-05-03T10:00:00Z", last_probe_at: "2026-05-03T10:01:00Z",
+    last_session_at: null, active_session_count: 0, heartbeat_age_seconds: 60,
+    observation_state: "healthy", administrative_policy: "active", route_compatibility: "compatible",
+    effective_eligibility: "eligible", ...overrides };
+}
+
+function setHeartbeatFacts(butlers: ButlerHeartbeat[], flags = {}) {
+  vi.mocked(useButlerHeartbeats).mockReturnValue({data: {data: {butlers}, meta: {}},
+    isPending: false, isFetching: false, isError: false, refetch: vi.fn(), ...flags} as AnyMock);
+}
 
 // ---------------------------------------------------------------------------
 // Mock useButlerStatusBoard
@@ -126,6 +146,8 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
 }
 
 function setState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
+  setHeartbeatFacts(rows.map((row) => heartbeatFact(row.name, {last_heartbeat_at: row.lastHeartbeatISO})),
+    {isPending: aggregates.isLoading, isError: aggregates.isError});
   vi.mocked(useButlerStatusBoard).mockReturnValue({ rows, aggregates, needsYou: [] } as AnyMock);
 }
 
@@ -141,10 +163,14 @@ function setData(rows: StatusBoardRow[]) {
   setState(rows, makeAggregates({ total: rows.length, butlerCount: rows.length }));
 }
 
+function HeartbeatTileWithQuery() {
+  return <ButlerHeartbeatTile heartbeat={useButlerHeartbeats()} />;
+}
+
 function render(): string {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <ButlerHeartbeatTile />
+      <HeartbeatTileWithQuery />
     </MemoryRouter>,
   );
 }
@@ -248,30 +274,30 @@ describe("ButlerHeartbeatTile -- running/idle butlers", () => {
     expect(html).toContain("2026-05-03T09:00:00Z");
   });
 
-  it("renders an active session badge for butlers with active sessions", () => {
+  it("renders a historical session badge for butlers with incomplete session records", () => {
     const html = render();
-    expect(html).toContain("2 active");
+    expect(html).toContain("2 incomplete session records");
   });
 
-  it("does not render an active badge for butlers with zero sessions", () => {
+  it("does not render an incomplete session badge for butlers with zero sessions", () => {
     const html = render();
     // Only one badge for the memory butler -- no badge for general
-    const count = (html.match(/active/g) ?? []).length;
+    const count = (html.match(/\d+ incomplete session records?/g) ?? []).length;
     expect(count).toBe(1);
   });
 
   it("renders the canonical healthy tone dot for running/idle butlers", () => {
     const html = render();
-    const healthyDots = (html.match(/bg-severity-low/g) ?? []).length;
+    const healthyDots = (html.match(/var\(--green\)/g) ?? []).length;
     expect(healthyDots).toBe(2);
   });
 
   it("keeps the canonical liveness verdict in accessible and visual-hover labels", () => {
     const html = render();
-    expect(html).toContain('aria-label="Liveness: idle"');
-    expect(html).toContain('aria-label="Liveness: running"');
-    expect(html).toContain('title="idle"');
-    expect(html).toContain('title="running"');
+    expect(html).toContain('aria-label="Observation: healthy"');
+    expect(html).toContain("Board activity: running");
+    expect(html).toContain("Board activity: idle");
+    expect(html).toContain('title="healthy"');
   });
 
   it("shows the butler count in the header", () => {
@@ -294,11 +320,14 @@ describe("ButlerHeartbeatTile -- overdue and offline/quarantined butlers", () =>
       makeRow({ name: "never-seen", lastHeartbeatISO: null, heartbeatAgeSeconds: null }),
       makeRow({ name: "down-butler", activity: "offline", cellTone: "red", status: "down" }),
     ]);
+    setHeartbeatFacts([heartbeatFact("overdue-butler", {observation_state: "stale", effective_eligibility: "ineligible"}),
+      heartbeatFact("never-seen", {last_heartbeat_at: null, observation_state: "observer_unknown", effective_eligibility: "unknown"}),
+      heartbeatFact("down-butler", {observation_state: "unavailable", effective_eligibility: "ineligible"})]);
   });
 
-  it("renders an amber dot for the overdue butler (matches the roster board's tone)", () => {
+  it("renders an amber dot for a stale observation", () => {
     const html = render();
-    expect(html).toContain("bg-severity-medium");
+    expect(html).toContain("var(--amber)");
   });
 
   it("renders 'No heartbeat recorded' for butlers with no lastHeartbeatISO", () => {
@@ -308,12 +337,12 @@ describe("ButlerHeartbeatTile -- overdue and offline/quarantined butlers", () =>
 
   it("renders a red dot for the offline butler", () => {
     const html = render();
-    expect(html).toContain("bg-severity-high");
+    expect(html).toContain("var(--red)");
   });
 
-  it("does not render an active badge for any of these non-running butlers", () => {
+  it("does not render an incomplete session badge for any of these non-running butlers", () => {
     const html = render();
-    expect(html).not.toMatch(/\d+ active/);
+    expect(html).not.toMatch(/\d+ incomplete session records?/);
   });
 });
 
@@ -429,5 +458,128 @@ describe("ButlerHeartbeatTile -- sort order", () => {
     expect(newestPos).toBeLessThan(middlePos);
     expect(middlePos).toBeLessThan(oldestPos);
     expect(oldestPos).toBeLessThan(neverPos);
+  });
+});
+
+// Governing successor REQ-system-overview-page-007: real query -> session HTTP -> UI.
+// The old board-dot assertions survive as this independent four-fact consumer;
+// activity, navigation, ordering and explicit tick assertions remain above.
+describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("keeps every legal server fact dimension independent of board activity and timestamp age", async () => {
+    vi.resetAllMocks();
+    const facts: ButlerHeartbeat[] = [];
+    for (const observation of ["healthy", "stale", "unavailable", "observer_unknown"] as const) {
+      for (const policy of ["active", "paused", "quarantined", "review_required"] as const) {
+        for (const compatibility of ["compatible", "incompatible", "unknown"] as const) {
+          for (const accepting of [true, false]) {
+            const eligibility = policy === "paused" ? "paused" : policy === "active" && observation === "healthy" && compatibility === "compatible" && accepting ? "eligible" : "ineligible";
+            facts.push(heartbeatFact(`service-${facts.length}`, {observation_state: observation,
+              administrative_policy: policy, route_compatibility: compatibility, effective_eligibility: eligibility,
+              last_heartbeat_at: observation === "healthy" ? "2001-01-01T00:00:00Z" : "2080-01-01T00:00:00Z",
+              last_probe_at: "2080-01-01T00:01:00Z", heartbeat_age_seconds: observation === "healthy" ? 999999999 : 0}));
+          }
+        }
+      }
+    }
+    facts.push(heartbeatFact("legacy", {observation_state: undefined, administrative_policy: undefined,
+      route_compatibility: undefined, effective_eligibility: undefined} as unknown as Partial<ButlerHeartbeat>));
+    facts.push(heartbeatFact("future-enum", {observation_state: "new-state", administrative_policy: "new-policy",
+      route_compatibility: "new-compatibility", effective_eligibility: "new-eligibility"} as unknown as Partial<ButlerHeartbeat>));
+    facts.push(heartbeatFact("unknown", {observation_state: "observer_unknown", administrative_policy: "unknown", route_compatibility: "unknown", effective_eligibility: "unknown"}));
+    facts.push(heartbeatFact("schema-only", {error: "schema_unreachable"}));
+    facts.push(heartbeatFact("case"));
+    setData([...facts.filter((entry) => entry.name !== "schema-only").map((entry) => makeRow({name: entry.name, activity: "running", lastHeartbeatISO: "2080-01-01T00:00:00Z"})), makeRow({name: "Case"})]);
+    const actual = await vi.importActual<typeof import("@/hooks/use-system")>("@/hooks/use-system");
+    vi.mocked(useButlerHeartbeats).mockImplementation(actual.useButlerHeartbeats);
+    const calls: {url: string; method: string}[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({url, method: init?.method ?? "GET"});
+      return new Response(JSON.stringify({data: {butlers: facts}, meta: {}}), {status: 200});
+    }));
+    vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
+    const client = new QueryClient({defaultOptions: {queries: {retry: false, gcTime: 0}}});
+    try {
+      const view = renderDom(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
+      const firstServiceRow = () => view.container.querySelector('[aria-label="View service-0"]');
+      // The probe timestamp only exists in the HTTP response. Wait for it before
+      // enumerating accessible names so readiness is independent of the verdict.
+      await waitFor(() => {
+        const probe = firstServiceRow()?.querySelector('time[datetime="2080-01-01T00:01:00Z"]');
+        expect(probe).toBeTruthy();
+      }, {container: view.container});
+
+      const indexVisibleRows = (scope = view.container) => {
+        const links = new Map<string, HTMLElement[]>();
+        const names = new Map<Element, string>();
+        const visible = within(scope).getAllByRole("link", {name: (name, element) => {
+          if (element) names.set(element, name);
+          return true;
+        }});
+        for (const link of visible) {
+          const name = names.get(link)!;
+          links.set(name, [...(links.get(name) ?? []), link]);
+        }
+        return links;
+      };
+      let visibleRows = indexVisibleRows();
+      const rowFor = (name: string) => {
+        const matches = visibleRows.get(`View ${name}`) ?? [];
+        expect(matches, `one visible row for ${name}`).toHaveLength(1);
+        const item = matches[0].closest("li");
+        expect(item, `list item for ${name}`).not.toBeNull();
+        return matches[0];
+      };
+      const rowsBeforeDuplicate = visibleRows;
+      const duplicate = document.createElement("a");
+      duplicate.href = "/butlers/service-1";
+      duplicate.setAttribute("aria-label", "View   service-1");
+      duplicate.hidden = true;
+      const duplicateItem = document.createElement("li");
+      duplicateItem.append(duplicate);
+      const duplicateFixture = document.createElement("ul");
+      duplicateFixture.append(rowFor("service-1").closest("li")!.cloneNode(true), duplicateItem);
+      document.body.append(duplicateFixture);
+      try {
+        visibleRows = indexVisibleRows(duplicateFixture);
+        expect(() => rowFor("service-1")).not.toThrow();
+        duplicate.hidden = false;
+        visibleRows = indexVisibleRows(duplicateFixture);
+        expect(() => rowFor("service-1")).toThrow();
+      } finally {
+        duplicateFixture.remove();
+        expect(duplicate.isConnected).toBe(false);
+        visibleRows = rowsBeforeDuplicate;
+      }
+      for (const entry of facts) {
+        const row = rowFor(entry.name);
+        const values = [...row.querySelectorAll("dd")].map((value) => value.textContent);
+        expect.soft(values, entry.name).toEqual([entry.observation_state, entry.administrative_policy, entry.route_compatibility, entry.effective_eligibility]
+          .map((value) => !value || value.startsWith("new-") ? "unknown" : value.replaceAll("_", " ")));
+      }
+      expect.soft([...rowFor("Case").querySelectorAll("dd")].map((value) => value.textContent), "missing exact-name facts").toEqual(["unknown", "unknown", "unknown", "unknown"]);
+      expect(rowFor("schema-only").textContent).toContain("unreachable");
+      expect(rowFor("service-0").textContent).toContain("2001-01-01T00:00:00Z");
+      expect(rowFor("service-0").textContent).toContain("Last probe attempt");
+      expect(calls).toEqual([{url: "/api/system/butlers/heartbeat", method: "GET"}]);
+      facts[0] = { ...facts[0], administrative_policy: "paused", effective_eligibility: "paused" };
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await waitFor(() => {
+        expect(calls).toHaveLength(2);
+        const eligibility = firstServiceRow()?.querySelector("[aria-label='Service eligibility: paused']");
+        expect(eligibility?.textContent).toBe("paused");
+      }, {container: view.container});
+      expect(calls.every((entry) => entry.url === "/api/system/butlers/heartbeat" && entry.method === "GET")).toBe(true);
+      vi.mocked(useButlerStatusBoard).mockReturnValue({rows: [], needsYou: [], aggregates: makeAggregates({isError: true})});
+      view.rerender(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
+      expect(screen.getByText("Board activity unavailable.").textContent).toContain("unavailable");
+      const schemaLinks = view.container.querySelectorAll('[aria-label="View schema-only"]');
+      expect(schemaLinks).toHaveLength(1);
+      const schemaItem = schemaLinks[0].closest("li");
+      expect(schemaItem).not.toBeNull();
+      const schemaLink = within(schemaItem!).getByRole("link", {name: "View schema-only"});
+      expect(schemaLink.querySelectorAll("dd")[0]?.textContent).toBe("healthy");
+    } finally { cleanup(); client.clear(); vi.useRealTimers(); }
   });
 });

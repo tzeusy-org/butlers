@@ -60,7 +60,7 @@ column lists and closed row filters; all-table and schema wildcards refuse. A ma
 alone never qualifies as a no-op. Failure rolls back publication and digest together. No slot,
 subscription, subscriber connection or grant/owner step is performed by reconcile.
 
-The manifest is the single exposure decision: 47 entries declare 472 columns, including
+The manifest is the single exposure decision: 47 entries declare 482 columns, including
 controls/state. Registry validation cannot add a predicate; future columns stay private until
 an explicit edit. Finance/Health JSONB arrives through the existing credential-filtered scalar
 materializations, never as JSONB columns. Graph keys derive from the same fact predicate lists.
@@ -522,6 +522,8 @@ The flags are 1 while no alert of their severity fires and 0 while any does; eac
 that is never empty while Prometheus evaluates, and only this surface's alerts (label
 `surface="butlers-public-mcp"`) move them. Narrowing left pending 24 hours turns the critical
 flag; widening pending, any age, only the warning flag (`butlers_public_mcp_owner_step_pending`).
+The label is the server's view: while the public pod lags the deployed tag it is inverted, so a
+narrowing deploy shows `widening` and a widening deploy shows `narrowing` (section 5).
 
 *Sources outside the chart.* Slot alerts read CNPG's `cnpg_pg_replication_slots_*` series from
 the `postgres-<env>` exporter. Importer alerts read the OTel series
@@ -604,13 +606,30 @@ recurring owner act.
 
 The server announces a due run: the `butlers_public_mcp_owner_step_pending` gauge is 1 with
 `change="narrowing"` or `change="widening"`, the warning flag drops, and a narrowing left pending
-for 24 hours turns the critical flag (D16). On dev the pending state normally lasts only between
-a deploy's reconcile and its owner step, so a warning that outlives the deploy, or the 24-hour
-critical, means the automatic step is failing: read the deploy's `public-mcp owner step FAILED`
-output (a guard refusal means the migrations did not reconcile) and rerun the script after the
-fix. A pending state with no `FAILED` marker in the last deploy means the off switch is `off` or
-no dev deploy has run since the change. A slot invalidation shows as `projection_stale` with
-the slot and lag alerts instead.
+for 24 hours turns the critical flag (D16). The gauge compares the applied projection with the
+manifest the *running public pod* ships, and only requests refresh it (`describe` included).
+
+*On dev, a manifest change passes through deploy skew.* [Inferred: `capability_host/projection.py`
+`judge`; refusals Observed on dev 2026-11-22] The deploy reconciles and runs the owner step before
+the public pod moves to the new tag (by hand while `PUBLIC_MCP_CHART_dev` is `off`, as the
+deploy's last step once it is `on`). In that order:
+
+1. Reconcile to owner step: the old pod answers data calls with `projection_version_mismatch`;
+   the gauge stays 0, since the applied digest still matches what that pod ships.
+2. Owner step to public chart upgrade: still `projection_version_mismatch`, and the gauge is 1
+   with the label inverted (the old pod sees the new projection as a change *back* to its own
+   manifest). A narrowing deploy reads `widening`, a widening deploy `narrowing`, so a widening
+   whose chart upgrade waits 24 hours turns the critical flag although nothing is unpurged.
+3. After the upgrade: no refusal, gauge 0 once a request refreshes it.
+
+Data calls do not answer `projection_apply_pending` in this sequence; that code means the public
+pod is current and the owner step is not (bu-y66o00.73 tracks the gauge decision). So a warning
+that outlives the deploy and its chart upgrade, or a 24-hour critical, means the automatic step
+is failing: read the deploy's `public-mcp owner step FAILED` output (a guard refusal means the
+migrations did not reconcile) and rerun the script after the fix. A pending state with no
+`FAILED` marker in the last deploy means the off switch is `off`, no dev deploy has run since the
+change, or the public chart was not upgraded. A slot invalidation shows as `projection_stale`
+with the slot and lag alerts instead.
 
 The `init-db.sql` rerun needs no cadence on dev, because every `make deploy-dev` repeats it (3a).
 Rerun section 1 after a CNPG upgrade (the `local` map and the socket path are CNPG internals) and
@@ -1092,18 +1111,21 @@ note the deployed tag (handles above) as `tag`.
 widening adds one; reverting the PR rehearses the other direction. Deploy it with
 `scripts/k8s/deploy-dev.sh`, then the public chart by hand while `PUBLIC_MCP_CHART_dev` is `off`.
 
-- *The window* runs from the migrations' reconcile until the owner step records the new digest.
-  Data calls in it answer `projection_apply_pending`, and any call, `describe` included, sets
-  `butlers_public_mcp_owner_step_pending{change="narrowing"}` or `{change="widening"}` to 1, so
-  `PublicMcpOwnerStepPending` lowers the warning flag (section 5). The gauge is refreshed only by
-  requests: call `describe` during the window to see it, and once after the step to return it to
-  0. A narrowing left pending 24 hours would also turn the critical flag. Until the hand chart
-  upgrade, the old pod answers `projection_version_mismatch` instead (section 4).
+- *The window* runs from the migrations' reconcile until the public chart runs at the deployed
+  tag. On dev the old pod answers data calls with `projection_version_mismatch` throughout; after
+  the owner step the gauge reads 1 with the inverted label until the chart upgrade (section 5).
+  Call `describe` after the upgrade to return the gauge to 0.
 - *Narrowing* rebuilds the subscription and re-copies (D3 step 4). Verify as in leak runbook step
   5: the column is gone from the subscriber table and from `describe`'s `columns`; every answer in
   the window was a refusal, so none carried it.
 - *Widening* that only adds a table needs no rebuild; a changed existing entry rebuilds. Verify the
   new column in the subscriber table and in `describe`'s `columns`.
+- *Rehearsed on dev* [Observed: 2026-11-23/24] by removing and re-adding the `travel.documents`
+  table, each as its own PR and full deploy. After the narrowing the table left the publication,
+  the subscriber dropped both its relations, every remaining relation reached state `r`, and the
+  applied digest matched the manifest digest. After the widening the table was published again,
+  both relations were recreated, its row count matched the pre-rehearsal count, and the digests
+  matched again. Both alert flags stayed 1 after each deploy.
 
 **Rolling back below the search indexes (bu-y66o00.53).** An owner step from any tag before
 #5867 cannot run over this one's projection:

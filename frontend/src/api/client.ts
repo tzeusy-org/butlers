@@ -55,6 +55,8 @@ import type {
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
+  CalendarOrganizerDecisionRequest,
+  CalendarOrganizerDecisionResponse,
   CalendarInvitationsResponse,
   CalendarResponseRequest,
   CalendarResponseReceipt,
@@ -183,7 +185,9 @@ import type {
   MemoryInspectParams,
   MemoryInspectResult,
   MemoryRetentionPolicy,
+  LegacyRuleEndorsementPreview,
   MemoryRule,
+  RuleEndorsement,
   MemoryStatsResponse,
   CompactionLogEntry,
   ReembedPendingCounts,
@@ -1638,6 +1642,16 @@ export function respondToCalendarInvitation(
   });
 }
 
+/** Vouch for or Block the organizer of one stored invitation (owner-only). */
+export function decideCalendarOrganizer(
+  body: CalendarOrganizerDecisionRequest,
+): Promise<ApiResponse<CalendarOrganizerDecisionResponse>> {
+  return apiFetch<ApiResponse<CalendarOrganizerDecisionResponse>>(
+    "/calendar/workspace/organizer-decision",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
 /**
  * Fetch the structured "tomorrow at a glance" day-briefing card for a target
  * date. Reads the precomputed overlay view grouped by butler/kind — no per-open
@@ -2817,6 +2831,34 @@ export function retireRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
     `/memory/rules/${encodeURIComponent(ruleId)}/retire`,
     { method: "PATCH" },
   );
+}
+
+export function endorseRule(ruleId: string): Promise<ApiResponse<RuleEndorsement>> {
+  return apiFetch<ApiResponse<RuleEndorsement>>(
+    `/memory/rules/${encodeURIComponent(ruleId)}/endorse`,
+    { method: "POST" },
+  );
+}
+
+export function previewLegacyRuleEndorsement(
+  ruleIds: string[],
+): Promise<ApiResponse<LegacyRuleEndorsementPreview>> {
+  return apiFetch<ApiResponse<LegacyRuleEndorsementPreview>>(
+    "/memory/rules/endorse-legacy/preview",
+    { method: "POST", body: JSON.stringify({ rule_ids: ruleIds }) },
+  );
+}
+
+export function confirmLegacyRuleEndorsement(
+  preview: LegacyRuleEndorsementPreview,
+): Promise<ApiResponse<RuleEndorsement[]>> {
+  return apiFetch<ApiResponse<RuleEndorsement[]>>("/memory/rules/endorse-legacy", {
+    method: "POST",
+    body: JSON.stringify({
+      rule_ids: preview.rules.map((rule) => rule.rule_id),
+      confirmation_digest: preview.confirmation_digest,
+    }),
+  });
 }
 
 /** Fetch recent memory activity. */

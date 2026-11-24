@@ -3906,6 +3906,24 @@
       "sites": [],
       "workloads": []
     },
+    "src/butlers/core/qa/egress_gate.py::target_from_env::config::56931331f50a7874e7e7704b6adde82892cc20861247a6e7500fbb9d4d2c428d": {
+      "class": "blocked",
+      "observed": {
+        "authorities": [],
+        "config": "KUBERNETES_SERVICE_HOST",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/core/qa/egress_gate.py",
+        "scope": "target_from_env",
+        "sha256": "56931331f50a7874e7e7704b6adde82892cc20861247a6e7500fbb9d4d2c428d"
+      },
+      "reason": "The investigator start-up gate dials the cluster API server to prove the egress policy refuses it before any work runs; it is a deliberate probe of a blocked destination, never an admitted route, and the qa-investigator profile declares none.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "qa-investigator"
+      ]
+    },
     "src/butlers/core/telegram_identity.py::resolve_telegram_endpoint_identity::url::2d3578068927cda4725b5286254f92a494d64d35f2e26d553db86c5e35f34c18": {
       "class": "external",
       "observed": {
@@ -6072,7 +6090,7 @@
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
     },
     "deploy/helm/butlers/templates/qa-investigator.yaml": {
-      "sha256": "b310fea472ea91efd43e759d1cd89d84a271684a20a3609d9f61ea15b5acb2a4"
+      "sha256": "b89e9e2597b4f8176f6a7123bd39c5ba9df18053b2274f6f9bcc6273245aa698"
     },
     "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
       "sha256": "0d0e63bb8391a8d2ef826855c90517e143e56f9845dae849b0b4383ba4ca7aaf"
@@ -6084,7 +6102,7 @@
       "sha256": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c"
     },
     "roster/chronicler/butler.toml": {
-      "sha256": "f285991a53369fd0c194f85168c27c2d5f0b0e7db508b637a87e14920369fd07"
+      "sha256": "bce69b0a2ae5a0a872cc73da9a3ae7ef7f982a3397566b621c8441a7ffd46937"
     },
     "roster/concierge/butler.toml": {
       "sha256": "dfb76df841bd011cdb0df4a7c58b0969c6de1de156ab04ab2c6bd8b5d77c4278"

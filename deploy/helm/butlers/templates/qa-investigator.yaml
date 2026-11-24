@@ -111,6 +111,15 @@ spec:
         apiVersions: [v1]
         operations: [CREATE]
         resources: [pods]
+      # Pods match on CREATE only (plus the ephemeral-container update below): the launcher and the
+      # investigator hold no pods update/patch verb (the launcher Role grants get/list/watch), so
+      # the only way a pod's spec comes to exist is the Job controller creating it from the
+      # validated template.
+      # An ephemeral container is the way to add a container to a running pod.
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [pods/ephemeralcontainers]
       {{- end }}
   # Judged: everything the launcher creates, and anything claiming the investigator identity.
   matchConditions:
@@ -144,14 +153,32 @@ spec:
         !(has(variables.spec.hostIPC) && variables.spec.hostIPC) &&
         !(has(variables.spec.shareProcessNamespace) && variables.spec.shareProcessNamespace) &&
         !has(variables.spec.nodeName) && !has(variables.spec.nodeSelector) &&
-        !has(variables.spec.affinity) && !has(variables.spec.tolerations) &&
+        !has(variables.spec.affinity) &&
+        {{- if eq $kind "pod" }}
+        {{- /* The DefaultTolerationSeconds admission plugin (mutating, runs before this policy) adds these two to every pod; no other toleration is admitted. */}}
+        (!has(variables.spec.tolerations) || variables.spec.tolerations.all(t,
+          has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+          has(t.operator) && t.operator == 'Exists' &&
+          has(t.effect) && t.effect == 'NoExecute' &&
+          has(t.tolerationSeconds) && t.tolerationSeconds <= 300)) &&
+        {{- else }}
+        !has(variables.spec.tolerations) &&
+        {{- end }}
         !has(variables.spec.priorityClassName) && !has(variables.spec.hostAliases) &&
-        !has(variables.spec.runtimeClassName)
+        !has(variables.spec.runtimeClassName) &&
+        has(variables.spec.enableServiceLinks) && variables.spec.enableServiceLinks == false
     - message: the pod has exactly one container, and no init or ephemeral container
       expression: >-
         variables.spec.containers.size() == 1 &&
         (!has(variables.spec.initContainers) || variables.spec.initContainers.size() == 0) &&
         (!has(variables.spec.ephemeralContainers) || variables.spec.ephemeralContainers.size() == 0)
+    - message: the container starts under the egress gate, from the daemon image's own venv interpreter
+      expression: >-
+        variables.spec.containers.all(c,
+          has(c.command) && c.command.size() >= 6 &&
+          c.command[0] == '/app/.venv/bin/python' && c.command[1] == '-I' &&
+          c.command[2] == '-m' && c.command[3] == 'butlers.core.qa.egress_gate' &&
+          c.command[4] == '--')
     - message: the pod runs under the runtime-default seccomp profile as the pinned non-root user and group
       expression: >-
         has(variables.spec.securityContext) &&
@@ -162,6 +189,8 @@ spec:
         has(variables.spec.securityContext.runAsGroup) && variables.spec.securityContext.runAsGroup == {{ $uid }} &&
         has(variables.spec.securityContext.fsGroup) && variables.spec.securityContext.fsGroup == {{ $uid }} &&
         !has(variables.spec.securityContext.supplementalGroups) &&
+        (!has(variables.spec.securityContext.appArmorProfile) ||
+         variables.spec.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
         !has(variables.spec.securityContext.sysctls)
     - message: the container is the exact daemon image by digest, unprivileged, read-only and capability-free
       expression: >-
@@ -176,6 +205,10 @@ spec:
           !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
           (!has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
           !has(c.securityContext.procMount) &&
+          (!has(c.securityContext.appArmorProfile) || c.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+          has(c.resources) && has(c.resources.limits) &&
+          'memory' in c.resources.limits && 'cpu' in c.resources.limits &&
+          'ephemeral-storage' in c.resources.limits &&
           has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) &&
           c.securityContext.capabilities.drop == ['ALL'] &&
           !has(c.securityContext.capabilities.add) &&
@@ -191,7 +224,7 @@ spec:
       expression: >-
         has(variables.spec.volumes) &&
         variables.spec.volumes.all(v,
-          has(v.emptyDir) ||
+          (has(v.emptyDir) && has(v.emptyDir.sizeLimit) && !has(v.emptyDir.medium)) ||
           (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == '{{ $claim }}')) &&
         variables.spec.containers.all(c,
           !has(c.volumeMounts) || c.volumeMounts.all(m,
@@ -201,6 +234,8 @@ spec:
     - message: an investigator Job never retries, has a deadline, is named for its attempt, and its template carries the same labels
       expression: >-
         has(object.spec.backoffLimit) && object.spec.backoffLimit == 0 &&
+        has(object.spec.parallelism) && object.spec.parallelism == 1 &&
+        has(object.spec.completions) && object.spec.completions == 1 &&
         has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds > 0 &&
         object.spec.activeDeadlineSeconds <= 14400 &&
         object.metadata.name == 'qa-' + variables.labels['butlers.io/qa-attempt'] &&

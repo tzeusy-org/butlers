@@ -6,7 +6,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   confirmFact,
+  confirmLegacyRuleEndorsement,
   createEntityInfo,
+  endorseRule,
   getEntities,
   getEntity,
   getEpisode,
@@ -20,6 +22,7 @@ import {
   getRule,
   getRules,
   inspectMemory,
+  previewLegacyRuleEndorsement,
   promoteEntity,
   retireRule,
   retractFact,
@@ -43,6 +46,7 @@ import type {
   Fact,
   FactParams,
   FactVouch,
+  LegacyRuleEndorsementPreview,
   MemoryInspectParams,
   MemoryRule,
   PaginatedResponse,
@@ -314,6 +318,30 @@ export function useRule(ruleId: string | null) {
     queryKey: ["memory-rule", ruleId],
     queryFn: () => getRule(ruleId!),
     enabled: !!ruleId,
+  });
+}
+
+export function useLegacyRuleEndorsementPreview() {
+  return useMutation({
+    mutationFn: async (ruleIds: string[]) => (await previewLegacyRuleEndorsement(ruleIds)).data,
+  });
+}
+
+export function useEndorseGuidance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (selection: string | LegacyRuleEndorsementPreview) =>
+      typeof selection === "string"
+        ? [(await endorseRule(selection)).data]
+        : (await confirmLegacyRuleEndorsement(selection)).data,
+    onSuccess: (receipts) => {
+      for (const receipt of receipts) {
+        void queryClient.invalidateQueries({ queryKey: ["memory-rule", receipt.rule_id] });
+      }
+      for (const key of ["memory-rules", "memory-stats", "memory-inspect"]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    },
   });
 }
 

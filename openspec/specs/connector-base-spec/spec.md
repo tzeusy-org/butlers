@@ -434,6 +434,10 @@ transitions separately from the connector's stored operational health state.
 The stored `state` value (`healthy`, `degraded`, or `error`) SHALL remain
 source-health evidence and SHALL NOT override heartbeat-derived liveness.
 
+ID: REQ-connector-base-spec-016
+Source: Non-Negotiable Rule 7, RFC 0001 with RFC 0003 for connector heartbeats, and the adopted infrastructure-reliability lifecycle contract
+Scope: v1-mandatory
+
 #### Scenario: Liveness thresholds
 - **WHEN** a connector's liveness is evaluated
 - **THEN** `derive_liveness(last_heartbeat_at)` reports `online` when last
@@ -443,11 +447,13 @@ source-health evidence and SHALL NOT override heartbeat-derived liveness.
   ahead of server time is `offline`, never a false-healthy result
 
 #### Scenario: Stored health state does not override liveness
-- **WHEN** a connector has a recent heartbeat with `state = error`
-- **THEN** its liveness is `online` and its independent state remains `error`
-- **WHEN** a connector has a stale or offline heartbeat with `state = healthy`
-- **THEN** its liveness remains `stale` or `offline` from heartbeat recency
-  and is not presented as live because of the stored state
+- **WHEN** a connector's heartbeat recency and stored `state` match a row below
+- **THEN** its liveness and stored health are presented as specified in that row
+
+| Heartbeat and stored state | Liveness and stored health |
+| --- | --- |
+| Recent heartbeat with `state = error` | Liveness is `online` and the independent state remains `error`. |
+| Stale or offline heartbeat with `state = healthy` | Liveness remains `stale` or `offline` from heartbeat recency, and the stored state does not make it appear live. |
 
 #### Scenario: Eligibility states
 - **WHEN** a connector's eligibility is evaluated

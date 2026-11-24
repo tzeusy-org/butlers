@@ -80,7 +80,10 @@ plain columns, `merged_into UUID NULL`, `deleted BOOLEAN NOT NULL`,
 `unidentified BOOLEAN NOT NULL` and `placeholder_name BOOLEAN NOT NULL`, and a
 `BEFORE INSERT OR UPDATE` trigger keeps them equal to the JSONB keys, with
 `placeholder_name` true while `canonical_name` still equals the
-`Unknown (<source_channel> <source_value>)` form. [Observed] Other routes hide an entity
+`Unknown (<source_channel> <source_value>)` form. It also flags legacy names starting with
+`Unknown ` and carrying a raw phone or WhatsApp identifier in the name or legacy channel
+identity metadata. A forward migration recomputes the flag so the existing row filter withdraws
+already-published placeholders. [Observed] Other routes hide an entity
 from active surfaces through `tombstone`, `archived`, `archived_at` and `listed`
 (`roster/relationship/api/router.py:1161-1174,5755`, `roster/relationship/tools/contacts.py:336`),
 and readers treat any present `merged_into` as a tombstone, so `deleted` is also true for any

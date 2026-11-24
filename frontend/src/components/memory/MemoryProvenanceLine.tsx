@@ -4,7 +4,13 @@ import { useTimezone } from "@/components/ui/timezone-context";
 import { formatDayStamp } from "@/lib/memory-derived";
 
 /** Display server-stamped content authorship, independently of the record's subject. */
-export function MemoryProvenanceLine({ record }: { record: Fact | MemoryRule }) {
+export function MemoryProvenanceLine({
+  record,
+  showHeldLink = true,
+}: {
+  record: Fact | MemoryRule;
+  showHeldLink?: boolean;
+}) {
   const tz = useTimezone();
   const authority = record.content_authority;
   const rule = "maturity" in record ? record : null;
@@ -37,7 +43,7 @@ export function MemoryProvenanceLine({ record }: { record: Fact | MemoryRule }) 
         : "Endorsement recorded"}
       {" on "}<time dateTime={rule.endorsed_at}>{formatDayStamp(rule.endorsed_at, tz)}</time>
     </>}
-    {held && <> · <Link className="underline underline-offset-2" to="/memory?register=rules&held=true">
+    {held && showHeldLink && <> · <Link className="underline underline-offset-2" to="/memory?register=rules&held=true">
       Guidance waiting for you</Link></>}
   </div>;
 }

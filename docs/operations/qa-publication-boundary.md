@@ -44,6 +44,55 @@ unaffected.
 - A PR review follow-up runs the agent in the daemon and is refused while Job isolation is
   configured (`follow_up_isolation_unavailable`).
 
+### Verifying investigator isolation (bu-ejow5p.11)
+
+`scripts/verify_qa_isolation.py` proves the per-attempt Job isolation against a dev cluster; a
+mock or a chart render proves nothing about it. It is a human-run act, not CI, and refuses any
+namespace that is not `-dev`.
+
+1. `render --namespace <ns>-dev --image <repo@sha256:...>` prints the probe Job and the five
+   inverse controls without touching a cluster; review them first.
+2. `dry-run --namespace <ns>-dev --image <repo@sha256:...> [--policies-file <helm template output>]`
+   sends the probe Job and the five inverse controls to the API server with
+   `--dry-run=server` as the launcher service account, and creates nothing. Admission, including
+   the ValidatingAdmissionPolicies, evaluates dry-run requests, so this is the server-side CEL
+   type and cost check that a chart render and the cel-python tests cannot give. With
+   `--policies-file` the policies and bindings are dry-run applied too. It passes when the probe
+   is admitted and every inverse control is refused (default `Deny` action). Both `dry-run` and
+   `run` also refuse a kube context that does not look like a dev cluster.
+3. `run` creates a synthetic canary Secret (random value, piped on stdin, never printed) and a
+   canary-publisher pod, then applies each Job as the launcher service account so the admission
+   policy is exercised. The probe is `python -I -m butlers.core.qa.isolation_probe`.
+4. Negative probes: uid is the pinned non-root user; no foreign process is visible; no
+   service-account directory; `/` and `/app` are read-only; the canary file and environment are
+   unreadable; TCP to the canary publisher and to any `--refused-tcp` target (give it `tracker=`,
+   the daemon ports 41100-41112 and Postgres) is refused. Positive controls: the workspace is
+   writable, each `--readable-path` is readable, each `--reachable-tcp` (the model route) connects.
+5. Inverse controls render the same template with exactly one hardening removed (token mounted,
+   run as root, writable root, no tracker-egress exclusion, hostPID). The named probe must go RED,
+   hostPID must be refused by the admission policy, and the restored template must PASS.
+6. The output is a content-blind receipt: check names, outcomes and digests only. Attach it to the
+   review. It is operational evidence for that cluster and revision, not provider-side least
+   privilege, and it does not close `bu-vc90le`.
+
+### The egress start-up gate (bu-ejow5p.11)
+
+A NetworkPolicy is programmed by the CNI after a pod starts, so a fresh pod can reach the network
+for a short window even though a default-deny policy existed first. The k3d verifier measured it:
+the API server was reachable when the probe started and refused about 20 seconds later. Every
+investigator container therefore starts under `butlers.core.qa.egress_gate`, which dials the
+cluster's own API server (`KUBERNETES_SERVICE_HOST`/`PORT`, always present) until it is refused
+three times in a row, within 120 seconds, and only then `exec`s the real command. It fails
+closed: with the address still reachable, or no target found, it exits 70 with a fixed token on
+stderr and the command never runs. The launcher reports exit 70 as
+`containment_not_enforced`, a containment failure and never an investigation result. The probe
+and the verifier run under the same gate, and the probe repeats its refused checks 20 seconds
+later (`...:after_settle`), so a gate that stops working shows as a first-pass failure.
+
+There is no credential-injecting model proxy yet: with no proxy URL the launcher refuses with
+`launch_refused:model_route_unavailable`, so the investigator cannot reach a model and nothing
+runs end to end. That decision is recorded with the owner question on `bu-ejow5p.11`.
+
 ## Publisher architecture
 
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls
@@ -312,10 +361,8 @@ never changed or cleared, so a reconciled row keeps the outcome it was reached f
 produces: `bound` and `egress_started` carry none, `succeeded` carries `success`, `failed` carries
 `failed`, `ambiguous` carries `ambiguous`, and a `reconciled` row carries none (reached from
 `egress_started`) or `ambiguous` (reached from `ambiguous`). A `succeeded` or `failed` row without
-its result is refused. Residual: an `ambiguous` row may carry a NULL result. The writer never produces
-one and holds are keyed on stage, not result, so it cannot release a hold; bu-mc01y5.15 closes it
-later. A BEFORE DELETE trigger (`qa_publication_operations_no_held_delete`) refuses deleting a row in
-the hold predicate's stages (`egress_started`, `ambiguous`), including from a privileged login; rows in
+its result is refused. A BEFORE DELETE trigger (`qa_publication_operations_no_held_delete`) refuses
+deleting a row in the hold predicate's stages (`egress_started`, `ambiguous`), including from a privileged login; rows in
 any other stage can still be deleted by a role that can reach them. Only the last schema to leave
 `core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
 body.
@@ -327,6 +374,13 @@ anchors the settle), and the stamp is set-once afterwards. A CHECK
 `egress_started` are backfilled with the migration's time, the latest moment their egress can have
 begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
 guard body.
+
+Migration `core_374` requires the result `ambiguous` on every insert or update with stage
+`ambiguous`. It backfills that result on historical rows through the existing QA write role
+under forced row security. The table lock covers both the backfill and CHECK replacement.
+The existing triggers enforce set-once results, bindings, stages, reconciliation and held-row
+protection throughout the migration. Only the last schema to leave `core_374` restores the
+historical `core_268` CHECK. Downgrade retains canonicalized results and every unresolved hold.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and

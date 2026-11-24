@@ -766,6 +766,15 @@ that invalidate the affected fact and stats query keys on success, and these
 hooks MUST only render their corresponding commit pills when the backend
 confirm/retract endpoints are present (no dead buttons).
 
+#### Scenario: Review and endorse held guidance from Memory
+
+- **WHEN** the owner opens Guidance waiting for you in the Rules register
+- **THEN** held rows show recorded authority and source provenance and expose the existing single endorsement action through keyboard-operable controls and the command palette
+- **AND** the register distinguishes loading, partial source failure, and actual absence of held guidance
+- **WHEN** the owner previews selected visible legacy rules for batch endorsement
+- **THEN** the dashboard presents the exact returned guidance and explains that endorsing it allows it to steer future sessions
+- **AND** only an explicit confirmation submits the batch, pending submission prevents duplicate actions, and receipts reflect the server's committed result
+
 #### Scenario: Confirm/Retract gated on backend
 
 - **WHEN** the confirm and retract endpoints are unavailable

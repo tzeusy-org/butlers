@@ -13,6 +13,7 @@ Covers the two halves the bead's acceptance criteria require:
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -207,10 +208,14 @@ def _ws_row(
     timezone: str = "UTC",
     event_metadata: object | None = None,
     time_role: str = "owner",
+    subject_entity_id=None,
+    subject_label: str | None = None,
 ) -> dict:
     """A workspace event-instance row (shape ``row_to_workspace`` consumes)."""
     return {
         "source_time_role": time_role,
+        "source_subject_entity_id": subject_entity_id,
+        "source_subject_label": subject_label,
         "instance_id": entry_id,
         "origin_instance_ref": str(uuid4()),
         "instance_timezone": timezone,
@@ -821,12 +826,13 @@ async def test_conflicts_endpoint_rejects_oversized_window(app):
     assert resp.status_code == 400
 
 
-def _invitation_row(status="needsAction", *, explicit=True, **overrides):
+def _invitation_row(status="needsAction", *, explicit=True, verdict="known_entity", **overrides):
     row = _ws_row(entry_id=uuid4(), title="Invitation", start=_DAY)
     row["title"] = f"Invitation {row['instance_id']}"
     row["event_metadata"] = {
         "source_type": "provider_event",
         "organizer": "organizer@example.test",
+        **({"organizer_verdict": verdict} if verdict else {}),
         "attendees": [
             {
                 "email": "owner@example.test",
@@ -1269,3 +1275,151 @@ async def test_conflicts_endpoint_reports_how_many_unclassified_calendars_were_s
     # Every synthetic row gets its own source id, so two events are two calendars here.
     assert data["unclassified_sources"] == 2
     assert data["issues"] == []
+
+
+# -- household context beside the scan (bu-5ii4gj.1 S3, REQ-calendar-conflict-overcommitment-radar-003)
+
+
+async def test_conflicts_endpoint_lists_household_events_as_opaque_context_not_issues(app):
+    subject = uuid4()
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    partner = _ws_row(
+        entry_id="partner",
+        title="Synthetic private appointment",
+        start=_DAY + timedelta(minutes=30),
+        time_role="household_member",
+        subject_entity_id=subject,
+        subject_label="Alex",
+        event_metadata={
+            "source_type": "provider_event",
+            "attendees": [{"email": "guest@example.test"}],
+        },
+    )
+    partner["location"] = "12 Synthetic Road"
+    unknown = _ws_row(
+        entry_id="unknown",
+        title="Unclassified block",
+        start=_DAY + timedelta(minutes=15),
+        time_role="unclassified",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, partner, unknown]})
+
+    response = await _get(app)
+    data = response.json()["data"]
+
+    assert data["issues"] == []  # context never forms a conflict
+    [context] = data["household_context"]
+    assert context["subject_entity_id"] == str(subject) and context["subject_label"] == "Alex"
+    assert set(context) == {
+        "role",
+        "subject_entity_id",
+        "subject_label",
+        "start_at",
+        "end_at",
+        "all_day",
+    }
+    for leaked in ("Synthetic private appointment", "Synthetic Road", "guest@example.test"):
+        assert leaked not in response.text
+    assert data["unclassified_events"] == 1  # the coverage line is unchanged
+
+
+async def test_household_time_endpoint_groups_by_subject_and_leaks_nothing(app):
+    alex, sam = uuid4(), uuid4()
+    rows = [
+        _ws_row(
+            entry_id="a1",
+            title="Synthetic A1",
+            start=_DAY,
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="a2",
+            title="Synthetic A2",
+            start=_DAY + timedelta(hours=3),
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="s1",
+            title="Synthetic S1",
+            start=_DAY,
+            time_role="team",
+            subject_entity_id=sam,
+            subject_label="Sam",
+        ),
+        _ws_row(entry_id="mine", title="Owner", start=_DAY),
+        _ws_row(entry_id="u", title="Unclassified", start=_DAY, time_role="unclassified"),
+    ]
+    app, _ = _build_app(app, workspace_rows={"general": rows})
+    start = _DAY - timedelta(hours=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/calendar/workspace/household-time",
+            params={"start": start.isoformat(), "end": (start + timedelta(days=1)).isoformat()},
+        )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["available"] is True
+    by_subject = {g["subject_label"]: len(g["events"]) for g in data["subjects"]}
+    assert by_subject == {"Alex": 2, "Sam": 1}
+    for leaked in ("Synthetic A1", "Synthetic S1", "Owner", "Unclassified"):
+        assert leaked not in response.text
+
+
+async def test_untrusted_invitations_are_quarantined_with_time_and_verdict_only(app):
+    """REQ-module-calendar-041: no title, organizer or text reaches the quarantine section."""
+    trusted = _invitation_row()
+    stranger = _invitation_row(verdict="first_contact")
+    blocked = _invitation_row(verdict="blocked")
+    unstamped = _invitation_row(verdict=None)
+    accepted_blocked = _invitation_row("accepted", verdict="blocked")
+    app, _db = _build_app(
+        app, workspace_rows={"general": [trusted, stranger, blocked, unstamped, accepted_blocked]}
+    )
+    response = await _get_invitations(app)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [e["entry_id"] for e in data["entries"]] == [str(trusted["instance_id"])]
+    quarantined = {q["entry_id"]: q for q in data["quarantined"]}
+    assert set(quarantined) == {
+        str(stranger["instance_id"]),
+        str(blocked["instance_id"]),
+        str(unstamped["instance_id"]),
+    }
+    assert quarantined[str(stranger["instance_id"])]["verdict"] == "first_contact"
+    assert quarantined[str(blocked["instance_id"])]["verdict"] == "blocked"
+    assert quarantined[str(unstamped["instance_id"])]["verdict"] == "unknown"
+    forbidden = {"title", "organizer", "description", "location", "attendees", "summary"}
+    for item in quarantined.values():
+        assert not forbidden & set(item)
+    body = response.text
+    for row in (stranger, blocked, unstamped):
+        assert row["title"] not in body
+    assert "organizer@example.test" not in json.dumps(data["quarantined"])
+    # An unstamped row means the verdict could not be read: the envelope says so.
+    assert data["issues_available"] is False
+    assert "calendar organizer verdict" in data["sources_degraded"]
+
+
+async def test_a_quarantined_invitation_adds_no_conflict_or_load(app):
+    held = _ws_row(entry_id=uuid4(), title="Accepted standup", start=_DAY)
+    held["event_metadata"] = {
+        "source_type": "provider_event",
+        "organizer_verdict": "known_entity",
+        "attendees": [{"email": "owner@example.test", "self": True, "response_status": "accepted"}],
+    }
+    spam = _invitation_row(verdict="blocked")
+    spam["instance_starts_at"] = _DAY
+    spam["instance_ends_at"] = _DAY + timedelta(hours=1)
+    app, _db = _build_app(app, workspace_rows={"general": [held, spam]})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/calendar/workspace/conflicts", params=_PARAMS)
+    assert response.status_code == 200
+    assert response.json()["data"]["issues"] == []

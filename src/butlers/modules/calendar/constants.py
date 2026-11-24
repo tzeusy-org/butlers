@@ -74,6 +74,18 @@ DEFAULT_SYNC_WINDOW_DAYS = 30
 DEFAULT_SYNC_INTERVAL_MINUTES = 5
 # Projection staleness grace period multiplier over the configured sync interval.
 PROJECTION_STALENESS_MULTIPLIER = 2
+
+
+def projection_staleness_threshold(interval_minutes: int | None = None) -> timedelta:
+    """How long a source may go without a successful sync before it counts as stale.
+
+    The one expression the sync deadman and the write-time overlap check share: the configured
+    poll interval (the default when none is given) times ``PROJECTION_STALENESS_MULTIPLIER``.
+    """
+    minutes = interval_minutes if interval_minutes is not None else DEFAULT_SYNC_INTERVAL_MINUTES
+    return timedelta(minutes=minutes * PROJECTION_STALENESS_MULTIPLIER)
+
+
 # Projection table source constants.
 SOURCE_KIND_PROVIDER = "provider_event"
 SOURCE_KIND_INTERNAL_SCHEDULER = "internal_scheduler"

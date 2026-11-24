@@ -46,7 +46,7 @@ Connectors run independently from the Switchboard daemon lifecycle. The preferre
 
 ## Transport Model
 
-Connectors submit envelopes via **MCP tool call** (`ingest`) to the Switchboard MCP server. Transport is SSE-based MCP (`fastmcp.Client`), not HTTP POST. The MCP server endpoint is configured via the `SWITCHBOARD_MCP_URL` environment variable.
+Every connector submits envelopes through `butlers.connectors.ingest_submit.submit_ingest()`, which checks the reply to the Switchboard MCP `ingest` tool before the caller records success. Transport is SSE-based MCP (`fastmcp.Client`), not HTTP POST. The MCP server endpoint is configured via the `SWITCHBOARD_MCP_URL` environment variable.
 
 The Switchboard responds with `202 Accepted` semantics: ingest is accepted for async processing, and the response includes a canonical request reference. Duplicate submissions for the same dedupe identity return the same canonical request reference and are treated as success, not error.
 

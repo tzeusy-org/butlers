@@ -34,7 +34,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any
@@ -48,6 +48,7 @@ from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_owner_attending,
+    is_quarantined_invitation,
     is_status_event,
 )
 from butlers.core.temporal.calendar_source_roles import (
@@ -61,6 +62,7 @@ from butlers.core.temporal.conflicts import (
     detect_conflict_issues,
     overlap_pair_id,
 )
+from butlers.core.temporal.household_context import HouseholdEvent, household_events
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,7 @@ READ_MODEL_VERSION = "calendar_workspace_v1"
 #: pass; ``balanced`` (default) adds the title/start collapse pass; ``aggressive``
 #: additionally strips non-alphanumerics from titles before comparing.
 DEDUP_STRATEGIES: tuple[str, ...] = ("exact", "balanced", "aggressive")
+QUARANTINE_LIST_LIMIT = 50
 DEDUP_DEFAULT_STRATEGY = "balanced"
 DEDUP_DEFAULT_NOISY_THRESHOLD = 2
 
@@ -399,6 +402,9 @@ WORKSPACE_COLUMNS: str = (
     " s.writable,"
     " s.metadata AS source_metadata,"
     " s.time_role AS source_time_role,"
+    " s.role_subject_entity_id AS source_subject_entity_id,"
+    " (SELECT en.canonical_name FROM public.entities en"
+    "  WHERE en.id = s.role_subject_entity_id) AS source_subject_label,"
     " c.cursor_name,"
     " c.last_synced_at,"
     " c.last_success_at,"
@@ -532,6 +538,9 @@ class CalendarWorkspaceRow:
     event_type: str = "default"
     #: The source's role (core_360): whose time its events are. Absent reads as ``unclassified``.
     source_time_role: str = "unclassified"
+    #: Whose calendar a household source is (core_368): the entity and its display name.
+    source_subject_entity_id: UUID | None = None
+    source_subject_label: str | None = None
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -737,6 +746,8 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         db_butler=db_butler,
         event_type=row.get("event_type") or "default",
         source_time_role=row.get("source_time_role") or "unclassified",
+        source_subject_entity_id=row.get("source_subject_entity_id"),
+        source_subject_label=row.get("source_subject_label"),
     )
 
 
@@ -978,6 +989,7 @@ async def query_calendar_workspace_entry(
     not-found (a misleading 404 would otherwise mask a 503, bu-sn71y).
     """
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard entry read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1110,6 +1122,7 @@ async def query_calendar_workspace(
         args.append(limit)
         idx += 1
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard window read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1257,6 +1270,92 @@ class CalendarConflictScan:
     #: mistaken for a clear window (REQ-calendar-conflict-overcommitment-radar-002).
     unclassified_sources: int = 0
     unclassified_events: int = 0
+    #: Other people's events overlapping the window, attributed and opaque
+    #: (REQ-module-calendar-038).
+    #: Context only: they form no issue and add no hours.
+    household_context: list[HouseholdEvent] = field(default_factory=list)
+
+
+def _household_from_workspace_rows(
+    rows: Iterable[Mapping[str, Any]], *, start: datetime, end: datetime
+) -> list[HouseholdEvent]:
+    """Household context events among flattened workspace rows; only time and subject survive."""
+    return household_events(
+        (
+            {
+                "time_role": row.get("source_time_role"),
+                # One effective-occurrence rule: an exception's own metadata (its attendees) wins
+                # over the series', as the free-slot search and the card do in SQL.
+                "metadata": _effective_metadata(row),
+                "starts_at": row["instance_starts_at"],
+                "ends_at": row["instance_ends_at"],
+                "all_day": row.get("all_day"),
+                "source_id": row.get("source_id"),
+                "subject_entity_id": row.get("source_subject_entity_id"),
+                "subject_label": row.get("source_subject_label"),
+                "event_type": row.get("event_type"),
+            }
+            for row in rows
+            if "cancelled" not in (row.get("event_status"), row.get("instance_status"))
+        ),
+        start=start,
+        end=end,
+    )
+
+
+def _effective_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The occurrence's metadata: the series' with the instance's keys laid over it."""
+    merged: dict[str, Any] = {}
+    for key in ("event_metadata", "instance_metadata"):
+        value = row.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        if isinstance(value, dict):
+            merged.update(value)
+    return merged
+
+
+@dataclass
+class HouseholdTimeRead:
+    """Result of :func:`query_household_time`: context events and whether the read was complete."""
+
+    events: list[HouseholdEvent]
+    available: bool = True
+
+
+async def query_household_time(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+) -> HouseholdTimeRead:
+    """Other people's events in ``[start, end)``, attributed and opaque, never owner load.
+
+    Reads the same user-lane window and duplicate collapse as the conflict scan, so a provider
+    event synced into several butler schemas appears once. Fail-open: a failed fan-out returns
+    ``available=False`` rather than raising, and an empty list then means nothing was checked.
+    """
+    try:
+        rows, failed = await query_calendar_workspace(
+            db, view="user", start=start, end=end, butlers=butlers
+        )
+    except Exception:
+        logger.warning("query_household_time workspace fan-out failed", exc_info=True)
+        return HouseholdTimeRead([], available=False)
+    flattened = [shallow_asdict(row) for row in rows]
+    flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+    dedup_rules, _ = await _read_dedup_rules(db)
+    keep_separate, _ = await _read_keep_separate_keys(db)
+    deduped, _clusters = _dedup_workspace_rows(
+        flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
+    )
+    return HouseholdTimeRead(
+        _household_from_workspace_rows(deduped, start=start, end=end), available=not failed
+    )
 
 
 def _entry_identity_key(row: Mapping[str, Any]) -> str:
@@ -1273,6 +1372,9 @@ class CalendarInvitationRead:
     rows: list[dict[str, Any]]
     failed_butlers: list[str]
     status_available: bool = True
+    #: Unanswered invitations from untrusted organizers (REQ-module-calendar-041), bounded and
+    #: never paged; the route exposes their time and verdict only.
+    quarantined: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _invitation_metadata(value: Any) -> Mapping[str, Any]:
@@ -1356,6 +1458,7 @@ async def _query_invitation_copies(
 ) -> tuple[list[CalendarWorkspaceRow], list[str]]:
     """Read only relevant provider copies, without pre-dedup eligibility filters."""
     sql = f"""
+        -- quarantine-exempt: split in Python by is_quarantined_invitation into the quarantine panel
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1444,6 +1547,7 @@ async def query_calendar_invitations(
     pins = await load_keep_separate_keys(db)
     deduped, _ = _dedup_workspace_rows(flattened, strategy=rules.match_strategy, keep_separate=pins)
     eligible: list[dict[str, Any]] = []
+    quarantined: list[dict[str, Any]] = []
     available = True
     for row in deduped:
         if row["instance_starts_at"] >= end or row["instance_ends_at"] <= start:
@@ -1452,9 +1556,13 @@ async def query_calendar_invitations(
         if state == "unknown":
             available = False
         elif state == "eligible":
-            if cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
+            if is_quarantined_invitation(row.get("event_metadata")):
+                quarantined.append(row)
+            elif cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
                 eligible.append(row)
-    return CalendarInvitationRead(eligible[:limit], failed, available)
+    return CalendarInvitationRead(
+        eligible[:limit], failed, available, quarantined[:QUARANTINE_LIST_LIMIT]
+    )
 
 
 async def query_calendar_conflicts(
@@ -1610,6 +1718,7 @@ async def query_calendar_conflicts(
         entry_identity_keys=identity_keys,
         unclassified_sources=len({str(row.get("source_id")) for row in unclassified}),
         unclassified_events=len(unclassified),
+        household_context=_household_from_workspace_rows(deduped, start=start, end=end),
     )
 
 
@@ -1890,6 +1999,7 @@ def _build_search_sql(
 
     where = " AND ".join(conditions)
     return f"""
+        -- quarantine-exempt: owner-facing dashboard search; no prompt
         SELECT {WORKSPACE_COLUMNS}, {rank_expr} AS search_rank
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id

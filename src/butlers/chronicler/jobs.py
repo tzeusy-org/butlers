@@ -14,6 +14,7 @@ import asyncpg
 from butlers.chronicler.adapters import (
     ActivityWatchWindowAdapter,
     CalendarCompletedAdapter,
+    CalendarRevisionsAdapter,
     CommsSocialAdapter,
     CoreSessionsAdapter,
     ExerciseInferredAdapter,
@@ -34,6 +35,9 @@ from butlers.chronicler.adapters import (
     SpotifySessionAdapter,
     SteamPlayAdapter,
     SteamStatusAdapter,
+)
+from butlers.chronicler.adapters.calendar_revisions import (
+    DEFAULT_BATCH_LIMIT as DEFAULT_CALENDAR_REVISIONS_BATCH_LIMIT,
 )
 from butlers.chronicler.adapters.owntracks_place_cluster import parse_place_references
 from butlers.chronicler.adapters.owntracks_ssid import SSID_PLACE_STATE_KEY, parse_ssid_places
@@ -352,6 +356,22 @@ async def run_project_activitywatch(
         supported_fields=("batch_limit", "screen_gap_minutes"),
     )
     adapter = ActivityWatchWindowAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def run_project_calendar_revisions(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project calendar revision-journal plan changes into Chronicler (bu-uhbhzq.1)."""
+    options = _parse_job_args(
+        "chronicler_project_calendar_revisions",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = CalendarRevisionsAdapter(
+        batch_limit=options.get("batch_limit", DEFAULT_CALENDAR_REVISIONS_BATCH_LIMIT)
+    )
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
@@ -836,6 +856,7 @@ __all__ = [
     "run_project_home_assistant_sensor_activity",
     "run_project_meals",
     "run_project_occupation_inferred",
+    "run_project_calendar_revisions",
     "run_project_owner_outbound",
     "run_project_owntracks",
     "run_project_owntracks_place_cluster",

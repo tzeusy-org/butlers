@@ -13,12 +13,21 @@ provisioned via the shared ``db`` factory at the subject's predecessor revision.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import asyncpg
 import pytest
+from sqlalchemy.exc import DBAPIError
 
-from butlers.testing.migration import load_migration
+from alembic import command
+from butlers.db import register_jsonb_codec, schema_search_path
+from butlers.migrations import _build_alembic_config
+from butlers.modules.memory import storage
+from butlers.testing.migration import create_migrated_test_db, load_migration, migration_db_name
+from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
 pytestmark = pytest.mark.unit
 
@@ -264,3 +273,117 @@ class TestWellnessPredicatesMigrationIntegration:
             "measurement_heart_rate should NOT be inserted by the wellness migration; "
             "it is the pre-existing point-in-time reading predicate from mem_002"
         )
+
+
+_WORKOUT_DEFINITION = """
+    SELECT to_jsonb(reg) - ARRAY['usage_count', 'last_used_at']
+    FROM predicate_registry AS reg
+    WHERE name = 'workout_session'
+"""
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("initial", ["absent", "proposed", "active"])
+async def test_workout_predicate_round_trip_with_real_fact_write(postgres_container, initial):
+    url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory"],
+        schemas={"core": "health", "memory": "health"},
+        revisions={"memory": "mem_019"},
+    )
+    config = _build_alembic_config(url, chains=["memory"], target_schema="health")
+    search_path = schema_search_path("health")
+    assert search_path is not None
+    pool = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": search_path},
+    )
+    try:
+        if initial != "absent":
+            await pool.execute(
+                """
+                INSERT INTO predicate_registry
+                    (name, expected_subject_type, description, scope, status,
+                     aliases, example_json, description_embedding, usage_count)
+                VALUES ('workout_session', 'person', 'Existing fixture description',
+                        'global', $1, ARRAY['fixture_activity'], '{"source":"fixture"}',
+                        array_fill(0.25::real, ARRAY[384])::vector, 7)
+                """,
+                initial,
+            )
+        before = await pool.fetchval(_WORKOUT_DEFINITION)
+        await asyncio.to_thread(command.upgrade, config, "memory@mem_020")
+        applied = await pool.fetchval(_WORKOUT_DEFINITION)
+        assert applied is not None
+        if initial == "active":
+            assert applied == before
+        else:
+            assert applied["status"] == "active"
+            assert applied["scope"] == "health"
+            assert applied["expected_subject_type"] == "person"
+            assert applied["expected_object_type"] is None
+            assert applied["is_edge"] is False
+            assert applied["is_temporal"] is True
+            assert applied["description_embedding"] is None
+            assert "Workout" in applied["description"]
+            assert applied["example_json"]["metadata"]["activity_type"] == "running"
+
+        # Use the real store and spy on the actual novelty branch.
+        embedding = make_embedding_engine_mock()
+        with patch.object(
+            storage, "_fuzzy_match_predicates", wraps=storage._fuzzy_match_predicates
+        ) as fuzzy:
+            result = await storage.store_fact(
+                pool,
+                "Fixture athlete",
+                "workout_session",
+                "Fixture run",
+                embedding,
+                scope="health",
+                valid_at=datetime(2026, 4, 24, 9, tzinfo=UTC),
+                idempotency_key="mem020-fixture-workout",
+            )
+        fuzzy.assert_not_awaited()
+        assert "suggestions" not in result
+        fact = await pool.fetchrow("SELECT predicate, content FROM facts WHERE id=$1", result["id"])
+        assert fact is not None
+        assert dict(fact) == {"predicate": "workout_session", "content": "Fixture run"}
+        assert await pool.fetchval(_WORKOUT_DEFINITION) == applied
+
+        await asyncio.to_thread(command.upgrade, config, "memory@mem_020")
+        assert await pool.fetchval(_WORKOUT_DEFINITION) == applied
+
+        if initial == "absent":
+            edit_description = (
+                "UPDATE predicate_registry SET description=$1 WHERE name='workout_session'"
+            )
+            await pool.execute(edit_description, "Fixture curated edit")
+            with pytest.raises(DBAPIError, match="workout_session predicate definition changed"):
+                await asyncio.to_thread(command.downgrade, config, "memory@mem_019")
+            assert (await pool.fetchval(_WORKOUT_DEFINITION))[
+                "description"
+            ] == "Fixture curated edit"
+            await pool.execute(edit_description, applied["description"])
+
+        await asyncio.to_thread(command.downgrade, config, "memory@mem_019")
+        assert await pool.fetchval(_WORKOUT_DEFINITION) == before
+        assert (
+            await pool.fetchrow("SELECT predicate, content FROM facts WHERE id=$1", result["id"])
+            == fact
+        )
+        if initial != "absent":
+            assert (
+                await pool.fetchval(
+                    "SELECT usage_count FROM predicate_registry WHERE name='workout_session'"
+                )
+                == 8
+            )
+    finally:
+        await pool.close()

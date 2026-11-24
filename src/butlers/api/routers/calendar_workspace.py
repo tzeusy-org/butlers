@@ -41,12 +41,15 @@ from butlers.api.models.calendar_workspace import (
     CalendarInvitationEntry,
     CalendarInvitationsResponse,
     CalendarLinkedPerson,
+    CalendarOrganizerDecisionRequest,
+    CalendarOrganizerDecisionResponse,
     CalendarPrepAttendee,
     CalendarPrepCommitment,
     CalendarPrepNote,
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
+    CalendarQuarantinedInvitation,
     CalendarRespondRequest,
     CalendarRespondResponse,
     CalendarSourceRoleRequest,
@@ -74,6 +77,9 @@ from butlers.api.models.calendar_workspace import (
     DaySheetGap,
     DaySheetItem,
     DaySheetResponse,
+    HouseholdEventRef,
+    HouseholdSubjectGroup,
+    HouseholdTimeResponse,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -103,6 +109,7 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
+    query_household_time,
     shallow_asdict,
     update_calendar_proposal_status,
 )
@@ -110,6 +117,7 @@ from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
 from butlers.core.liveness import derive_liveness
 from butlers.core.temporal.day_sheet import render_day_sheet_text
+from butlers.core.temporal.household_context import SUBJECT_ROLES, HouseholdEvent
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
@@ -1555,6 +1563,28 @@ async def get_workspace_invitations(
                 response_configured=owner in response_owners and row.get("writable") is True,
             )
         )
+    quarantined = []
+    for row in invitation_read.quarantined:
+        metadata = _normalize_json_object(row.get("event_metadata"))
+        verdict = metadata.get("organizer_verdict")
+        if verdict not in ("first_contact", "blocked"):
+            # An unreadable or missing verdict quarantines as ``unknown`` and degrades the
+            # envelope: the system cannot say the organizer is trustworthy or not.
+            verdict = "unknown"
+            degraded.add("calendar organizer verdict")
+        badges = metadata.get("lure_badges")
+        quarantined.append(
+            CalendarQuarantinedInvitation(
+                entry_id=row["instance_id"],
+                start_at=row["instance_starts_at"],
+                end_at=row["instance_ends_at"],
+                timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+                verdict=verdict,
+                lure_badges=[b for b in badges if isinstance(b, str)]
+                if isinstance(badges, list)
+                else [],
+            )
+        )
     has_more = len(invitation_read.rows) > limit
     next_cursor = None
     if has_more:
@@ -1565,6 +1595,7 @@ async def get_workspace_invitations(
     return ApiResponse(
         data=CalendarInvitationsResponse(
             entries=entries,
+            quarantined=quarantined,
             issues_available=not degraded,
             conflicts_available=conflicts_available,
             sources_degraded=sorted(degraded),
@@ -1660,6 +1691,60 @@ async def get_workspace_conflicts(
             issues_available=scan.available,
             unclassified_sources=scan.unclassified_sources,
             unclassified_events=scan.unclassified_events,
+            household_context=[_household_ref(event) for event in scan.household_context],
+        )
+    )
+
+
+def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
+    return HouseholdEventRef(
+        role=event.role,  # type: ignore[arg-type]
+        subject_entity_id=UUID(event.subject_entity_id) if event.subject_entity_id else None,
+        subject_label=event.subject_label,
+        start_at=event.starts_at,
+        end_at=event.ends_at,
+        all_day=event.all_day,
+    )
+
+
+@router.get("/household-time", response_model=ApiResponse[HouseholdTimeResponse])
+async def get_household_time(
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    butler_name: str | None = Query(None, description="Optional single butler-schema filter"),
+    *,
+    db: Db,
+) -> ApiResponse[HouseholdTimeResponse]:
+    """Other people's events in the window, grouped by whose calendar, for context only.
+
+    Opaque by construction: time window, role and subject, with no title, location or
+    attendee. Nothing here counts toward owner load, and an unclassified source contributes
+    nothing. Fails open: a failed read returns ``available=false``, never HTTP 500. The window
+    must satisfy ``end > start`` and ``end - start <= 90 days`` (HTTP 400 otherwise).
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+    window = ConflictScanWindow(start=start, end=end)
+    read = await query_household_time(
+        db, start=start, end=end, butlers=[butler_name] if butler_name else None
+    )
+    groups: dict[str | None, HouseholdSubjectGroup] = {}
+    for event in read.events:
+        group = groups.setdefault(
+            event.subject_entity_id,
+            HouseholdSubjectGroup(
+                subject_entity_id=UUID(event.subject_entity_id)
+                if event.subject_entity_id
+                else None,
+                subject_label=event.subject_label,
+            ),
+        )
+        group.events.append(_household_ref(event))
+    return ApiResponse[HouseholdTimeResponse](
+        data=HouseholdTimeResponse(
+            window=window, subjects=list(groups.values()), available=read.available
         )
     )
 
@@ -2557,6 +2642,100 @@ async def _respond_through_approval(
         source_butler=butler_name,
         reason=receipt.get("reason") or result.get("reason"),
         projection_available=receipt.get("projection_available") is True,
+    )
+
+
+@router.post("/organizer-decision", response_model=ApiResponse[CalendarOrganizerDecisionResponse])
+async def decide_organizer(
+    body: CalendarOrganizerDecisionRequest,
+    http_request: Request,
+    *,
+    db: Db,
+) -> ApiResponse[CalendarOrganizerDecisionResponse]:
+    """Owner-only Vouch or Block of a stored invitation's organizer (REQ-module-calendar-042).
+
+    The organizer address comes from the stored event. The verb writes calendar-scoped ingestion
+    rules (never a global one), then re-stamps that organizer's stored events at once.
+    """
+    from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
+    from butlers.modules.calendar.organizer_decisions import (
+        NoCalendarEndpoint,
+        apply_decision,
+        normalize_address,
+        restamp_organizer,
+    )
+
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="owner_principal_required") from exc
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="organizer_decision_census_unavailable")
+    found, failed = await db.fan_out_with_status(
+        "SELECT lower(btrim(COALESCE(e.metadata ->> 'organizer', ''))) AS organizer,"
+        " lower(btrim(COALESCE(own.email, ''))) AS own_email"
+        " FROM calendar_event_instances i JOIN calendar_events e ON e.id = i.event_id"
+        " LEFT JOIN LATERAL ("
+        "   SELECT att ->> 'email' AS email"
+        "   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.metadata -> 'attendees') = 'array'"
+        "        THEN e.metadata -> 'attendees' ELSE '[]'::jsonb END) AS att"
+        "   WHERE att ->> 'self' = 'true' LIMIT 1) AS own ON TRUE"
+        " WHERE i.id = $1",
+        (body.entry_id,),
+        butler_names=targets,
+    )
+    rows = [row for result in found.values() for row in result]
+    if failed:
+        raise HTTPException(status_code=503, detail="organizer_decision_lookup_degraded")
+    if len(rows) != 1:
+        raise HTTPException(status_code=404 if not rows else 409, detail="entry_not_found")
+    organizer = normalize_address(rows[0]["organizer"])
+    if not organizer or "@" not in organizer:
+        raise HTTPException(status_code=409, detail="entry_has_no_organizer")
+    if organizer == normalize_address(rows[0]["own_email"]):
+        raise HTTPException(status_code=409, detail="organizer_is_the_owner")
+
+    try:
+        switchboard = db.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail="switchboard_unavailable") from exc
+    try:
+        decision = await apply_decision(switchboard, organizer, body.verb)
+    except NoCalendarEndpoint as exc:
+        raise HTTPException(status_code=409, detail="no_calendar_endpoint") from exc
+
+    restamped = 0
+    degraded = False
+    for name in targets:
+        try:
+            restamped += await restamp_organizer(db.pool(name), organizer)
+        except Exception:
+            logger.warning("organizer decision: re-stamp failed for %s", name, exc_info=True)
+            degraded = True  # the sweep restamps these rows on its next pass
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="calendar_organizer_decision",
+        method="POST",
+        path="/api/calendar/workspace/organizer-decision",
+        body={
+            "verb": body.verb,
+            "rules_written": decision.rules_written,
+            "rules_removed": decision.rules_removed,
+        },
+        response_status=200,
+        request=http_request,
+    )
+    return ApiResponse(
+        data=CalendarOrganizerDecisionResponse(
+            verb=decision.verb,
+            endpoints=decision.endpoints,
+            rules_written=decision.rules_written,
+            rules_removed=decision.rules_removed,
+            events_restamped=restamped,
+            restamp_degraded=degraded,
+        )
     )
 
 
@@ -3678,6 +3857,18 @@ async def set_calendar_source_role(
     targets = sorted(names if isinstance(names, list) else db.butler_names)
     role = request.role or "unclassified"
     basis = "owner_confirmed" if request.role is not None else "provider_inferred"
+    subject = request.subject_entity_id
+    if subject is not None and role not in SUBJECT_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail="A subject only accompanies the household_member, other_person or team role.",
+        )
+    if subject is not None and targets:
+        known = await db.pool(targets[0]).fetchval(
+            "SELECT 1 FROM public.entities WHERE id = $1", subject
+        )
+        if not known:
+            raise HTTPException(status_code=404, detail="Requested subject entity was not found")
 
     updated: list[str] = []
     failed: list[str] = []
@@ -3686,7 +3877,8 @@ async def set_calendar_source_role(
     # requests (even on different API replicas) cannot leave schemas on different roles.
     update_sql = f"""
         UPDATE calendar_sources
-        SET time_role = $1, role_basis = '{basis}', updated_at = now()
+        SET time_role = $1, role_basis = '{basis}', role_subject_entity_id = $3,
+            updated_at = now()
         WHERE source_key = $2
         RETURNING id
         """
@@ -3697,7 +3889,7 @@ async def set_calendar_source_role(
                     try:
                         # The lock-holding connection serves its own schema's write.
                         runner = lock_conn if butler == targets[0] else db.pool(butler)
-                        rows = await runner.fetch(update_sql, role, request.source_key)
+                        rows = await runner.fetch(update_sql, role, request.source_key, subject)
                     except Exception:
                         logger.warning(
                             "set_calendar_source_role failed in %s", butler, exc_info=True
@@ -3728,6 +3920,7 @@ async def set_calendar_source_role(
             "source_key": request.source_key,
             "role": role,
             "basis": basis,
+            "subject_entity_id": str(subject) if subject else None,
             "updated": updated,
             "failed": failed,
         },
@@ -3737,6 +3930,7 @@ async def set_calendar_source_role(
             source_key=request.source_key,
             role=role,  # type: ignore[arg-type]
             role_basis=basis,  # type: ignore[arg-type]
+            subject_entity_id=subject,
             updated_butlers=updated,
             failed_butlers=failed,
         )

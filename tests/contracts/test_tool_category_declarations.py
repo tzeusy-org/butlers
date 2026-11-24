@@ -134,6 +134,7 @@ NARROWED = {
     "module.states": (),
     "list_butlers": (),
     "pending_action_count": (),
+    "skill_read": (),
 }
 
 

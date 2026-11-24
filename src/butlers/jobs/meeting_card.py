@@ -59,6 +59,11 @@ from butlers.core.delivery_rendering import defang_delivery_text
 from butlers.core.state import state_get
 from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
 from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
+from butlers.core.temporal.household_context import (
+    HOUSEHOLD_OVERLAP_SQL,
+    context_lines,
+    events_from_overlap_rows,
+)
 from butlers.jobs.briefing import SGT
 from butlers.jobs.calendar_prep import prep_key
 from butlers.jobs.meeting_debrief import (
@@ -104,6 +109,7 @@ _PENDING_CARDS_SQL = """
 """
 
 _STILL_SCHEDULED_SQL = """
+    -- quarantine-exempt: existence check; returns no event text
     SELECT EXISTS (
         SELECT 1 FROM calendar_events ce
         WHERE ce.id = $1 AND ce.recurrence_rule IS NULL
@@ -117,8 +123,10 @@ _STILL_SCHEDULED_SQL = """
 """
 
 _OCCURRENCE_SQL = """
+    -- quarantine-exempt: filtered in Python by counts_as_owner_time
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
-           ce.starts_at AS starts_at, ce.metadata AS metadata, cs.time_role AS time_role
+           ce.starts_at AS starts_at, ce.ends_at AS ends_at, ce.metadata AS metadata,
+           cs.time_role AS time_role
     FROM calendar_events ce
     JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NULL
@@ -128,7 +136,8 @@ _OCCURRENCE_SQL = """
       AND ce.starts_at > $1
       AND ce.starts_at <= $2
     UNION ALL
-    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata, cs.time_role
+    SELECT ce.id, ce.title, ce.location, ci.starts_at, ci.ends_at, ce.metadata || ci.metadata,
+           cs.time_role
     FROM calendar_event_instances ci
     JOIN calendar_events ce ON ce.id = ci.event_id
     JOIN calendar_sources cs ON cs.id = ce.source_id
@@ -141,6 +150,33 @@ _OCCURRENCE_SQL = """
       AND ci.starts_at <= $2
     ORDER BY starts_at
 """
+
+
+def _ends_at(row: Any) -> datetime:
+    return row.get("ends_at") or row["starts_at"]
+
+
+async def _household_context(pool: asyncpg.Pool, meetings: Sequence[Any]) -> list[Any]:
+    """Other people's events overlapping any carded meeting, whenever they started.
+
+    Selected by overlap with the meetings' own span, not by the lead-time window, so an event that
+    is already running is found. Fail-open: context is a nicety, never a reason to skip a card.
+    """
+    if not meetings:
+        return []
+    start = min(row["starts_at"] for row in meetings)
+    end = max(_ends_at(row) for row in meetings)
+    try:
+        rows = await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end)
+        # The subject name is entity data an owner or import can set: make it inert like every
+        # other name on the card before it reaches a message.
+        return events_from_overlap_rows(
+            {**row, "subject_label": inert_text(row.get("subject_label"), _MAX_NAME) or None}
+            for row in rows
+        )
+    except Exception:
+        logger.warning("meeting_card: household context read failed", exc_info=True)
+        return []
 
 
 def clean_text(value: Any, limit: int) -> str:
@@ -219,8 +255,12 @@ def render_card(
     envelope: Any,
     now: datetime,
     link: str | None,
+    household: Sequence[str] = (),
 ) -> str:
     """The card text. *attendees* are the people to name (``entity_id`` may be ``None``).
+
+    *household* are ready context lines about other people's overlapping events (time and whose
+    calendar only); they are never counted as the owner's time (REQ-module-calendar-038).
 
     Pure: the same inputs always give the same text, and nothing here reads a database.
     """
@@ -256,6 +296,7 @@ def render_card(
             lines.extend(line for line in (owed, waiting) if line)
     if len(attendees) > len(shown):
         lines.append(f"+{len(attendees) - len(shown)} more")
+    lines.extend(household)
     if not prep_by_entity or not any(
         str(p.get("entity_id")) in prep_by_entity for p in shown if p.get("entity_id")
     ):
@@ -345,7 +386,6 @@ async def run_meeting_card(
             staged.append((row, others))
             emails.update(a["email"] for a in others)
     people = await _resolve_people(pool, emails)
-
     # Anyone who resolves to the owner is the owner for eligibility: a meeting whose only other
     # address is the owner's own is a solo block and gets no card. A non-active person is still
     # a real attendee (the meeting is carded) but is never named.
@@ -377,6 +417,7 @@ async def run_meeting_card(
         "withdrawn": withdrawn,
     }
     link = dashboard_link("/calendar")
+    context = await _household_context(pool, [row for row, _named in carded])
     for row, named in carded:
         try:
             envelope = await state_get(pool, prep_key(str(row["event_id"])))
@@ -390,6 +431,15 @@ async def run_meeting_card(
             envelope=envelope,
             now=now,
             link=link,
+            household=context_lines(
+                [
+                    e
+                    for e in context
+                    if e.overlaps(row["starts_at"], row.get("ends_at") or row["starts_at"])
+                ],
+                timezone=SGT,
+                limit=2,
+            ),
         )
         try:
             result = await insight_proposer(

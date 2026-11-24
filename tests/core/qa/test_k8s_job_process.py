@@ -109,6 +109,18 @@ async def test_failed_job_carries_the_container_exit_code() -> None:
     )
 
 
+async def test_the_egress_gate_exit_is_a_containment_failure_not_an_investigation_result() -> None:
+    api = FakeApi()
+    api.job_conditions = [[{"type": "Failed", "status": "True", "reason": "BackoffLimitExceeded"}]]
+    api.pod_phases = [[_pod("Failed", 70)]]
+    outcome = await _runner(api).run(_manifest(), timeout_s=600)
+    assert (outcome.state, outcome.exit_code, outcome.reason) == (
+        "failed",
+        70,
+        "containment_not_enforced",
+    )
+
+
 async def test_deadline_exceeded_is_its_own_state() -> None:
     api = FakeApi()
     api.job_conditions = [[{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]]

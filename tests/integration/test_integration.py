@@ -379,8 +379,8 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
-        assert len(set(registered_tools)) == 78
-        assert "metric_baseline_get" in registered_tools
+        assert len(set(registered_tools)) == 79
+        assert {"metric_baseline_get", "skill_read"} <= set(registered_tools)
         assert {"report_error", "get_healing_status"} <= set(registered_tools)
         assert "retry_healing" not in registered_tools
         assert "schedule_toggle" in registered_tools

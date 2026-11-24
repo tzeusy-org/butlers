@@ -1,6 +1,9 @@
 ## Shared Skills
 
-These cross-cutting skills are available in your `.agents/skills/` directory:
+Load a local or shared skill with `skill_read(name="skill-name")`. Follow the returned
+instructions using your MCP tools. If the skill is unavailable, report it by name.
+
+Use these shared skills when they apply:
 
 - **butler-notifications** — How to use the `notify()` tool (required parameters, intents, examples). Consult this skill before calling `notify()`.
 - **butler-memory** — Memory classification framework (permanence levels, tagging, extraction philosophy). Consult this skill when storing facts via `memory_store_fact()`.

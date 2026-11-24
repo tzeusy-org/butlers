@@ -442,7 +442,7 @@ async def test_send_notify_delivers_via_deliver_mcp_tool():
     assert mock_ledger.await_args.kwargs["notification_ref"] == "abc-123"
 
 
-async def test_send_notify_deliver_failure_recorded_as_failed():
+async def test_send_notify_deliver_failure_recorded_as_failed(caplog: pytest.LogCaptureFixture):
     """deliver() reporting status=failed is recorded as a failed ledger row, not raised."""
     pool = _home_pool()
     p1, p2 = _patch_no_suppression()
@@ -450,10 +450,12 @@ async def test_send_notify_deliver_failure_recorded_as_failed():
     mock_client = MagicMock()
     mock_result = MagicMock()
     mock_result.is_error = False
-    mock_result.data = {"status": "failed", "error": "Messenger unreachable"}
+    provider_detail = "private-provider-detail"
+    mock_result.data = {"status": "failed", "error": provider_detail}
     mock_client.call_tool = AsyncMock(return_value=mock_result)
 
     with (
+        caplog.at_level("DEBUG"),
         p1,
         p2,
         patch(
@@ -467,5 +469,10 @@ async def test_send_notify_deliver_failure_recorded_as_failed():
         outcome = await _send_notify(pool, "Weekly digest")
 
     assert outcome == "failed"
-    assert mock_ledger.await_args.kwargs["outcome"] == "failed"
-    assert "Messenger unreachable" in mock_ledger.await_args.kwargs["reason"]
+    mock_client.call_tool.assert_awaited_once()
+    mock_ledger.assert_awaited_once()
+    recorded = mock_ledger.await_args
+    assert recorded is not None
+    assert recorded.kwargs["outcome"] == "failed"
+    assert recorded.kwargs["reason"] == "delivery_error"
+    assert provider_detail not in caplog.text

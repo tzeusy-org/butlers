@@ -70,7 +70,7 @@ Check the context for a REQUEST CONTEXT JSON block. If present and its `source_c
 
 For response-mode selection and interactive finance transaction, bill,
 subscription, and question examples, consult the `interactive-response` skill
-(`.agents/skills/interactive-response/SKILL.md`).
+(`skill_read(name="interactive-response")`).
 
 ## Memory Classification
 
@@ -107,7 +107,7 @@ calls the registered handler directly with no ephemeral LLM session:
 ### Reference and Import Skills
 
 - **`tool-reference`**: Detailed parameter documentation for all finance butler MCP tools
-- **`transaction-csv-extraction`**: Import a stored bank or card CSV export via `import_transactions(storage_ref)`: dry-run preview, explicit `column_map` when needed, then one import call; a historical backfill repeats this once per uploaded statement
+- **`transaction-csv-extraction`**: Import a stored bank or card CSV export via `import_transactions(storage_ref)`: dry-run preview, explicit parsing options when needed, then one import call after owner confirmation; a historical backfill repeats this once per uploaded statement
 - **`memory-classification`**: Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`**: `notify()` required parameters and intent usage
 - **`butler-memory`**: Entity resolution protocol before storing memory facts
@@ -123,7 +123,7 @@ When to use intelligence tools in scheduled tasks and interactive workflows:
 - **`subscription_audit`** → used by `monthly-finance-digest`
 - **`detect_duplicates`** → surface in `anomaly-triage` skill
 - **`net_worth_history` / `net_worth_snapshot`** → no longer prompted from a scheduled task (dropped from `monthly-finance-digest` as low-value/redundant per bu-rvz2o); use interactively
-- **`compute_baselines`** → returns merchant and category figures for inspection; persists nothing, and `anomaly_scan` judges category spend from the stored bands, not from this tool's figures. Bands are refreshed by the `anomaly-insight-scan` job and once per 50+ row `import_transactions_from_file` call
+- **`compute_baselines`** → returns merchant and category figures for inspection; persists nothing, and `anomaly_scan` judges category spend from the stored bands, not from this tool's figures. Bands are refreshed by the `anomaly-insight-scan` job and once per 50+ row `import_transactions` call
 
 ## Notes to self
 

@@ -100,6 +100,7 @@ from butlers.core.temporal.calendar_provenance import (
     is_status_event,
 )
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time, counts_as_owner_time
+from butlers.core.temporal.household_context import HOUSEHOLD_LIVE_SQL, events_from_overlap_rows
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -158,29 +159,33 @@ async def run_calendar_context_producer(
     del job_args
     rows = await pool.fetch(
         """
+        -- quarantine-exempt: filtered in Python by asserts_owner_time and counts_as_owner_time
         SELECT ce.title, ce.starts_at, ce.ends_at, ce.timezone, ce.all_day, ce.metadata,
-               ce.event_type, cs.time_role
+               ce.event_type, cs.time_role, ce.status
         FROM calendar_events ce
         JOIN calendar_sources cs ON cs.id = ce.source_id
-        WHERE ce.status = 'confirmed'
+        WHERE ce.status <> 'cancelled'
           AND (ce.all_day = false OR ce.event_type = 'outOfOffice')
           AND ce.starts_at <= now()
           AND ce.ends_at > now()
         ORDER BY ce.starts_at DESC
         """
     )
+    # Tentative events are still occupied time for household context, but the owner's own
+    # signals keep to confirmed events as before.
+    owner_rows = [r for r in rows if r.get("status", "confirmed") == "confirmed"]
     # Only an event on a source whose role asserts the owner's time counts (REQ-context-bus-018):
     # another person's meeting or out of office is not the owner's state.
     out_of_office = any(
         candidate.get("event_type") == OUT_OF_OFFICE
         and not is_explicit_butler_generated(candidate["metadata"])
         and asserts_owner_time(candidate.get("time_role"), candidate["metadata"])
-        for candidate in rows
+        for candidate in owner_rows
     )
     # (row, signal) for every attended meeting/focus candidate, latest start first.
     candidates = [
         (candidate, _calendar_candidate_signal(candidate))
-        for candidate in rows
+        for candidate in owner_rows
         if not is_status_event(candidate.get("event_type"))
         and is_calendar_analysis_candidate(
             metadata=candidate["metadata"],
@@ -196,7 +201,19 @@ async def run_calendar_context_producer(
         # stronger signal (people take calls while away), so it keeps `meeting`.
         candidates = [pair for pair in candidates if pair[1] is ContextSignal.meeting]
     chosen = candidates[0] if candidates else None
-    marker = {"out_of_office": True} if out_of_office else {}
+    marker: dict[str, Any] = {"out_of_office": True} if out_of_office else {}
+    # Other people's live events are context for the owner's surfaces and assert nothing here
+    # (REQ-context-bus-019): they are reported, never a signal.
+    # Counted from the shared household overlap read at the database clock (all-day and
+    # materialized recurring occurrences included), apart from the owner-signal selection above.
+    # Fail open: the count is a nicety, and a failed read must not stop the owner signals.
+    try:
+        live_household = len(events_from_overlap_rows(await pool.fetch(HOUSEHOLD_LIVE_SQL)))
+    except Exception:
+        logger.warning("calendar producer: household count read failed", exc_info=True)
+        live_household = 0
+    if live_household:
+        marker["household_events"] = live_household
 
     if chosen is None:
         # No live event — retract any stale meeting/focused assertion.

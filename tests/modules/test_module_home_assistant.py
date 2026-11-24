@@ -846,6 +846,7 @@ class TestToolBehaviors:
 
         assert result == statistics
         payload = command.await_args.args[0]
+        assert command.await_args.kwargs == {"timeout_s": 30.0}
         assert payload["type"] == "recorder/statistics_during_period"
         assert payload["types"] == ["mean", "min", "max", "sum", "state", "change"]
 

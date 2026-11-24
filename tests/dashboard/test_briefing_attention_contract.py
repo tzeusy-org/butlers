@@ -41,7 +41,11 @@ import pytest
 
 from butlers.api.audit_grouping import build_audit_group_query
 from butlers.api.briefing.classify import classify
-from butlers.api.routers.dashboard_briefing import _fetch_dashboard_state, _map_board_rows
+from butlers.api.routers.dashboard_briefing import (
+    _fetch_dashboard_state,
+    _map_board_rows,
+    _qa_attention_item,
+)
 from butlers.testing.fake_pool import fake_pool
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -149,6 +153,17 @@ class TestAttentionContractBackend:
             f"scenario {scenario['name']!r}: expected state_class "
             f"{scenario['expect']['backend_state_class']!r}, got {state_class!r}"
         )
+
+    @pytest.mark.parametrize(
+        "scenario",
+        [s for s in _SCENARIOS if "qa_attention_text_contains" in s["expect"]],
+        ids=lambda s: s["name"],
+    )
+    def test_qa_attention_text_names_the_cause(self, scenario: dict):
+        """The briefing says what the Overview says; model.contract.test.ts asserts the same."""
+        item = _qa_attention_item(scenario["qa"])
+        assert item is not None
+        assert scenario["expect"]["qa_attention_text_contains"] in item["description"]
 
     def test_fixture_file_is_nonempty(self):
         """A silently-empty fixture file would make every parametrized test

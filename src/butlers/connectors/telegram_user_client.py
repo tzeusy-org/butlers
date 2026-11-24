@@ -76,6 +76,7 @@ from butlers.connectors.filtered_event_buffer import (
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import (
@@ -2430,20 +2431,13 @@ class TelegramUserClientConnector:
             # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
             # write raises, so nothing is submitted; a failed submit below keeps the row.
             await commit_envelope(self._db_pool, envelope)
-            result = await self._mcp_client.call_tool("ingest", envelope)
-
-            # Check for tool-level error response
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = await submit_ingest(self._mcp_client, envelope)
 
             logger.info(
                 "Submitted to Switchboard ingest",
                 extra={
-                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
-                    "duplicate": (
-                        result.get("duplicate", False) if isinstance(result, dict) else False
-                    ),
+                    "request_id": result.request_id,
+                    "duplicate": result.duplicate,
                     "endpoint_identity": self._config.endpoint_identity,
                     "external_event_id": envelope["event"]["external_event_id"],
                 },

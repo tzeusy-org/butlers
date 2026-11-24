@@ -26,6 +26,29 @@ The system SHALL auto-detect common bank export CSV formats by analyzing header 
 - **AND** optional mapped columns SHALL include: `description` (the transaction's own description field, never a merchant alias), `category`, `currency`, `account`, `reference`
 - **AND** when a generic CSV's merchant column is neither auto-detected nor mapped by `merchant`, the system SHALL return `status="unrecognized_format"` with `merchant` in `missing_columns`, even if `column_map` maps `description`
 
+### Requirement: Explicit CSV parsing options
+`import_transactions` SHALL support a caller-selected CSV delimiter, date format, and amount direction convention through closed parsing options.
+
+ID: REQ-finance-data-import-001
+Source: bu-svqpzo.5; RFC 0038 D2 and D3
+Scope: v1-mandatory
+
+#### Scenario: Apply explicit parsing options end to end
+- **WHEN** an import receives `delimiter`, `date_format`, or `amount_sign`
+- **THEN** the delimiter SHALL be one of comma, semicolon, tab, or pipe and SHALL apply to header detection, date sampling, and row parsing
+- **AND** an explicit `date_format` SHALL parse dates through `strptime` in place of format detection
+- **AND** an explicit `amount_sign` SHALL select `negative_debit`, `positive_debit`, or `split_cols` over the detected convention
+- **AND** `split_cols` SHALL use distinct `debit_col` and `credit_col` names from `column_map`
+
+#### Scenario: Refuse invalid options before reading the CSV
+- **WHEN** a delimiter, date format, amount convention, or split column mapping is invalid
+- **THEN** `import_transactions` SHALL return `status="error"` with `reason="invalid_import_options"` before reading blob bytes
+
+#### Scenario: Bound untrusted CSV text returned to the caller
+- **WHEN** a preview or error response contains CSV-derived text
+- **THEN** the daemon SHALL bound the returned preview, header samples, and per-row errors
+- **AND** row errors SHALL identify the row and failure without returning the original CSV row
+
 ### Requirement: Blob Prefix Scoping
 `import_transactions(storage_ref, ...)` SHALL read only a blob under the importing butler's RFC 0016 key prefix (`{bucket}/{butler}/...`) or the connector prefix (`{bucket}/connectors/...`), where the butler name comes from the daemon context and never from the caller.
 
@@ -70,6 +93,12 @@ The system SHALL prevent duplicate transactions during import by checking agains
 - **WHEN** transactions are imported from a CSV
 - **THEN** each transaction SHALL be checked against existing rows in `finance.transactions` using the tiered UNIQUE partial index strategy: Priority 1 `(account_id, external_id)` if an external ID is available, Priority 2 `(source_message_id, merchant, amount, posted_at)` if a source message ID is available, Priority 3 `(account_id, posted_at, amount, merchant)` as fallback for CSV imports without stable IDs
 - **AND** matching transactions SHALL be skipped and counted in the `skipped` total of the response
+
+#### Scenario: Duplicate CSV rows and simultaneous retries
+- **WHEN** a file repeats a transaction key or simultaneous CSV imports submit the same transaction key under the same account scope
+- **THEN** the daemon SHALL insert one matching transaction and count the other matching rows as skipped
+- **AND** the dry-run preview SHALL flag repeated keys within the preview without writing transactions
+- **AND** preview, duplicate matching, and insert SHALL use the same ledger-rounded amount
 
 #### Scenario: Import response with dedup summary
 - **WHEN** `import_transactions()` completes

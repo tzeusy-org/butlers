@@ -140,16 +140,23 @@ def test_log_directory_structure_and_credential_redaction(tmp_path: Path):
     assert (tmp_path / "uvicorn").is_dir()
     assert (tmp_path / "connectors").is_dir()
 
-    file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)]
-    assert str(file_handlers[0].baseFilename).endswith("butlers/health.log")
+    # Logging keeps file handlers installed by other callers.
+    butler_log = tmp_path / "butlers" / "health.log"
+    file_handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == butler_log
+    ]
+    assert len(file_handlers) == 1
     assert isinstance(file_handlers[0].formatter.processors[-1], structlog.processors.JSONRenderer)
 
+    uvicorn_log = tmp_path / "uvicorn" / "health.log"
     uv_handlers = [
         h
         for h in logging.getLogger("uvicorn.access").handlers
-        if isinstance(h, logging.FileHandler)
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == uvicorn_log
     ]
-    assert str(uv_handlers[0].baseFilename).endswith("uvicorn/health.log")
+    assert len(uv_handlers) == 1
 
     # Nested path auto-created; JSON parseable
     log_dir = tmp_path / "deep" / "nested"

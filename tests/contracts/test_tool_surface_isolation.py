@@ -97,10 +97,11 @@ class TestEphemeralMcpConfig:
         # duplicating its production catalog.  Keep the total as a regression
         # guard for accidental registration loss.
         # +4: Switchboard's fleet-case service twins (RFC 0038 D7, bu-2c1g7v).
-        assert len(inventory) == 98
-        assert sum(group is not None for group in inventory.values()) == 88
+        assert len(inventory) == 99
+        assert sum(group is not None for group in inventory.values()) == 89
         assert inventory["schedule_toggle"] == "scheduling"
         assert inventory["metric_baseline_get"] == "infra"
+        assert inventory["skill_read"] == "infra"
         assert {
             "state",
             "infra",

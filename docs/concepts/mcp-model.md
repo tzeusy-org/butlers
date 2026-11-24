@@ -28,6 +28,8 @@ Every butler registers these core tools regardless of its module configuration:
 
 - **`status()`** --- Returns butler identity, loaded modules, health, and uptime. This is the primary health-check endpoint used by the dashboard and monitoring.
 - **`trigger(prompt, context?)`** --- Spawns a new LLM session with the given prompt. This is how external MCP clients (or other butlers via the Switchboard) invoke a butler.
+- **`skill_read(name)`** --- Reads the named skill from this butler or the shared roster and
+  returns its instructions and content digest.
 - **`route.execute(...)`** --- Accepts routed requests from the Switchboard. Handles the full route envelope (schema version, request context, input, subrequest, source metadata, trace context) and dispatches to the spawner or the durable route inbox.
 
 Core tools are wrapped with OpenTelemetry spans (`butler.tool.<name>`) and tool-call logging for session attribution.
@@ -57,7 +59,10 @@ Each butler can have a skills directory at `roster/<butler>/.agents/skills/`. Sk
   `.agents/skills/<name>/SKILL.md` identity and content digest. A `.claude/skills` compatibility
   alias is recorded only when it resolves to that same physical source; missing or unreadable
   canonical sources fail explicitly.
-- **`read_agents_md` / `write_agents_md` / `append_agents_md`** --- Read/write access to `AGENTS.md`, the runtime agent notes file that LLM sessions can use for persistent inter-session memory.
+- **`skill_read(name)`** --- Resolves the exact canonical local or shared `SKILL.md` for a valid
+  kebab-case name linked or defined in this butler's roster. Missing or unreadable definitions
+  return a typed error. The digest covers the bytes returned to the caller. Sessions use this
+  read-only tool for skill instructions and use Memory tools for persistent knowledge.
 
 Skill names must follow kebab-case: start with a lowercase letter, allow lowercase letters, digits, and hyphens between segments. The pattern is `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`.
 
