@@ -245,6 +245,34 @@ describe("QA case dossier composition", () => {
     expect(screen.getByTestId("qa-dossier-unsupported-claims")).toBeTruthy();
   });
 
+  it("test_dossier_says_citations_are_not_verified_without_a_bundle", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        investigation_notes: { ...notes, verification: { state: "unverified" } },
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.getByTestId("qa-dossier-not-verified")).toBeTruthy();
+  });
+
+  it("test_dossier_omits_the_not_verified_notice_for_a_verified_case", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        investigation_notes: { ...notes, verification: { state: "verified", bundle_digest: "d" } },
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.queryByTestId("qa-dossier-not-verified")).toBeNull();
+  });
+
   it("test_dossier_renders_in_flight_case", () => {
     qaHookMocks.useQaCase.mockReturnValue(
       caseResponse({

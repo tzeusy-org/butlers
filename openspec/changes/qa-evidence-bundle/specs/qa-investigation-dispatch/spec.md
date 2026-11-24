@@ -35,11 +35,14 @@ Investigation notes at schema version 2 SHALL carry a `ref` on each evidence lin
 evidence bundle item it quotes. When persisting notes the dispatcher SHALL verify each line
 against the evidence it recorded before launch, never against any agent-visible copy: a line is
 supported only if its `ref` names a recorded item and its `msg`, after whitespace normalisation,
-is contained in that item's text. All other lines SHALL be stored with `unsupported = true`, and a claim that cites no supported line
-SHALL be stored with `unsupported = true`; a case whose every claim is unsupported SHALL NOT be
-`patch_ready`. An agent-supplied `unsupported` value SHALL be ignored,
-and the dossier SHALL label unsupported lines and claims. Notes persisted for an attempt with no
-recorded bundle SHALL be stored unverified.
+is either that item's whole text or a span of at least 16 characters of it. All other lines SHALL
+be stored with `unsupported = true`, and a claim that cites no supported line SHALL be stored with
+`unsupported = true`. A case with no supported claim, including one with no claims, SHALL NOT be
+`patch_ready`. The dispatcher SHALL discard every agent-supplied `unsupported` flag and
+`verification` value and store an explicit `verification` of `verified` (with the bundle digest)
+or `unverified`. When no bundle is available a later persist SHALL keep flags already stored by a
+`verified` pass and otherwise store `unverified`. The dossier SHALL label unsupported lines and
+claims and SHALL state when citations were not verified.
 
 ID: REQ-qa-investigation-dispatch-018
 Source: bu-ejow5p.13 (run 25)
@@ -47,7 +50,7 @@ Scope: v1-mandatory
 
 #### Scenario: An invented citation
 
-- **WHEN** the agent cites a ref that is not in the recorded bundle
+- **WHEN** the agent cites a ref that is not in the recorded bundle, or a one-character quote of a longer item
 - **THEN** that line and any claim resting only on it are stored unsupported and shown as such
 
 #### Scenario: Only unsupported claims

@@ -51,9 +51,11 @@ causes, never proposed code as though it were already active.
 short ``note`` explaining what those evidence lines establish.
 - ``evidence_lines``: Array of evidence objects with ``id``, ``ts``, ``lvl``, \
 ``butler``, ``msg`` and ``ref``. ``ref`` is the id of the evidence bundle item \
-(``E1``...) the line quotes and ``msg`` must be that item's text copied \
-verbatim. A line without a matching ``ref`` is stored as unsupported, and a \
-claim citing only unsupported lines is shown as an unsupported claim.
+(``E1``...) the line quotes and ``msg`` must be a verbatim span of that item's \
+anonymized text (at least 16 characters, or the whole item), never a raw \
+log line. A line without a matching ``ref`` is stored as \
+unsupported, and a claim citing only unsupported lines is shown as an \
+unsupported claim.
 - ``counter_evidence``: Array of hypotheses you considered, each with \
 ``hypothesis``, ``verdict`` (``rejected``, ``accepted``, or ``pending``), and \
 ``reason``.

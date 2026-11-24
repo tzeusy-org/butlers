@@ -113,6 +113,7 @@ def _with_verification_defaults(payload: dict) -> dict:
         line.setdefault("unsupported", False)
     for claim in out["claims"].values():
         claim.setdefault("unsupported", False)
+    out["verification"] = {"state": "unverified", "bundle_digest": None}
     return out
 
 
@@ -198,7 +199,7 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
     assert "investigation_notes" in sql
     assert persisted_attempt_id == attempt_id
     assert persisted_payload == _with_verification_defaults(payload)
-    assert pool.fetchval.await_count == 3  # includes the bundle manifest lookup
+    assert pool.fetchval.await_count == 4  # bundle and stored-notes lookups included
 
 
 @pytest.mark.asyncio
@@ -278,7 +279,7 @@ async def test_dispatcher_persists_partial_notes(
     _sql, _persisted_attempt_id, persisted_payload = pool.execute.await_args.args
     assert persisted_payload["claims"] == {}
     assert persisted_payload["headline"] == payload["headline"]
-    assert pool.fetchval.await_count == 3  # includes the bundle manifest lookup
+    assert pool.fetchval.await_count == 4  # bundle and stored-notes lookups included
 
 
 @pytest.mark.asyncio
@@ -554,3 +555,88 @@ def test_a_case_with_only_unsupported_claims_cannot_be_patch_ready() -> None:
 
     assert checked.claims["c1"].unsupported is True
     assert can_be_patch_ready(checked) is False
+
+
+def test_a_one_character_quote_cannot_forge_support() -> None:
+    from butlers.core.qa.notes import verify_evidence_against_bundle
+
+    notes = _notes_with_lines(
+        _line("e1", "e", "E1"),
+        _line("e2", "scope_mismatch", "E1"),  # 14 chars, a span but too short to prove anything
+        _line("e3", "spotify 401 scope_mismatch", "E1"),
+        _line("e4", "short", "E2"),  # whole item, so it counts
+    )
+
+    checked = verify_evidence_against_bundle(
+        notes, _bundle_manifest(E1="spotify 401 scope_mismatch /me/player", E2="short")
+    )
+
+    assert [line.unsupported for line in checked.evidence_lines] == [True, True, False, False]
+
+
+def test_verification_state_is_set_by_the_dispatcher_and_never_the_agent() -> None:
+    from butlers.core.qa.notes import reset_verification, verify_evidence_against_bundle
+
+    payload = _valid_notes_payload()
+    payload["verification"] = {"state": "verified", "bundle_digest": "forged"}
+    notes, _ = parse_investigation_notes(json.dumps(payload))
+
+    assert reset_verification(notes).verification.state == "unverified"
+    checked = verify_evidence_against_bundle(notes, {**_bundle_manifest(), "digest": "real"})
+    assert checked.verification.model_dump() == {"state": "verified", "bundle_digest": "real"}
+
+
+def test_a_case_with_no_claims_is_not_patch_ready() -> None:
+    from butlers.core.qa.notes import can_be_patch_ready
+
+    assert can_be_patch_ready(_notes_with_lines(_line("e1", "real text", "E1"))) is False
+
+
+def test_carry_forward_keeps_earlier_flags_and_defaults_unknown_ids_to_unsupported() -> None:
+    from butlers.core.qa.notes import carry_forward_verification
+
+    notes = _notes_with_lines(
+        _line("e1", "x", "E1"),
+        _line("e2", "y", "E2"),
+        _line("e3", "z", "E3"),
+        claims={
+            "c1": {"evidence_ids": ["e1"], "note": "n"},
+            "c2": {"evidence_ids": ["e2"], "note": "n"},
+        },
+    )
+    stored = {
+        "verification": {"state": "verified", "bundle_digest": "d"},
+        "evidence_lines": [{"id": "e1", "unsupported": False}, {"id": "e2", "unsupported": True}],
+        "claims": {"c1": {"unsupported": False}, "c2": {"unsupported": True}},
+    }
+
+    kept = carry_forward_verification(notes, stored)
+
+    assert [line.unsupported for line in kept.evidence_lines] == [False, True, True]
+    assert {k: c.unsupported for k, c in kept.claims.items()} == {"c1": False, "c2": True}
+    assert kept.verification.state == "verified"
+    for earlier in (None, {}, {"verification": {"state": "unverified"}}):
+        fresh = carry_forward_verification(notes, earlier)
+        assert fresh.verification.state == "unverified"
+        assert not any(line.unsupported for line in fresh.evidence_lines)
+
+
+def test_the_skill_prompt_and_model_agree_on_the_notes_schema_version() -> None:
+    import re
+    from typing import get_args
+
+    from butlers.core.qa import prompts
+    from butlers.core.qa.notes import InvestigationNotes
+
+    skill = Path("roster/qa/.agents/skills/investigation-notes/SKILL.md").read_text()
+    skill_version = int(re.search(r'"schema_version": (\d+)', skill).group(1))
+    prompt_version = int(
+        re.search(
+            r"``schema_version``: Always the integer ``(\d+)``",
+            prompts._INVESTIGATION_NOTES_JSON_GUIDANCE,
+        ).group(1)
+    )
+    model_versions = get_args(InvestigationNotes.model_fields["schema_version"].annotation)
+
+    assert skill_version == prompt_version == max(model_versions)
+    assert "ref" in skill and "verbatim" in skill

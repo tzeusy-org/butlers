@@ -23151,6 +23151,11 @@ export interface components {
             evidence_ids: string[];
             /** Note */
             note: string;
+            /**
+             * Unsupported
+             * @default false
+             */
+            unsupported?: boolean;
         };
         /**
          * ClearPreferredChannelResponse
@@ -28088,8 +28093,15 @@ export interface components {
             lvl: string;
             /** Msg */
             msg: string;
+            /** Ref */
+            ref?: string | null;
             /** Ts */
             ts: string;
+            /**
+             * Unsupported
+             * @default false
+             */
+            unsupported?: boolean;
         };
         /**
          * ExpectedSignalResponse
@@ -30615,9 +30627,15 @@ export interface components {
             hypothesis: string;
             /**
              * Schema Version
-             * @constant
+             * @enum {integer}
              */
-            schema_version: 1;
+            schema_version: 1 | 2;
+            /**
+             * @default {
+             *       "state": "unverified"
+             *     }
+             */
+            verification?: components["schemas"]["Verification"];
             /** Why This Fix */
             why_this_fix: string;
         };
@@ -41195,6 +41213,20 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * Verification
+         * @description Whether the dispatcher checked these notes against its recorded evidence bundle.
+         */
+        Verification: {
+            /** Bundle Digest */
+            bundle_digest?: string | null;
+            /**
+             * State
+             * @default unverified
+             * @enum {string}
+             */
+            state?: "verified" | "unverified";
         };
         /**
          * VerifyAllResult

@@ -131,6 +131,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import (
     InvestigationNotes,
     ParseStatus,
+    carry_forward_verification,
     parse_investigation_notes,
     verify_evidence_against_bundle,
 )
@@ -803,23 +804,28 @@ async def _emit_investigation_notes_journal_events(
     )
 
 
-async def _recorded_bundle_bodies(
-    pool: asyncpg.Pool, attempt_id: uuid.UUID
+async def _recorded_json(
+    pool: asyncpg.Pool, attempt_id: uuid.UUID, path_sql: str, *, requires: str
 ) -> dict[str, Any] | None:
-    """The dispatcher's own anonymized bundle bodies for this attempt, or ``None`` if none."""
+    """One JSON object out of the attempt's finding evidence, or ``None`` if absent/unreadable.
+
+    ``path_sql`` and ``requires`` are fixed literals chosen by the callers below. The finding
+    choice is deterministic (newest first) when several findings share the attempt.
+    """
     try:
         raw = await pool.fetchval(
-            """
-            SELECT structured_evidence->'evidence_bundle'->'bodies'
+            f"""
+            SELECT {path_sql}
             FROM public.qa_findings
-            WHERE healing_attempt_id = $1
+            WHERE healing_attempt_id = $1 AND structured_evidence ? '{requires}'
+            ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
             attempt_id,
         )
     except Exception as exc:  # noqa: BLE001 — verification is skipped, notes still persist
         logger.warning(
-            "Evidence bundle unreadable (attempt=%s): %s", attempt_id, type(exc).__name__
+            "Recorded evidence unreadable (attempt=%s): %s", attempt_id, type(exc).__name__
         )
         return None
     if isinstance(raw, str):
@@ -828,6 +834,29 @@ async def _recorded_bundle_bodies(
         except ValueError:
             return None
     return raw if isinstance(raw, dict) else None
+
+
+async def _recorded_bundle_bodies(
+    pool: asyncpg.Pool, attempt_id: uuid.UUID
+) -> dict[str, Any] | None:
+    """The dispatcher's own anonymized bundle bodies for this attempt, or ``None`` if none."""
+    return await _recorded_json(
+        pool,
+        attempt_id,
+        "structured_evidence->'evidence_bundle'->'bodies'",
+        requires="evidence_bundle",
+    )
+
+
+async def _stored_investigation_notes(
+    pool: asyncpg.Pool, attempt_id: uuid.UUID
+) -> dict[str, Any] | None:
+    return await _recorded_json(
+        pool,
+        attempt_id,
+        "structured_evidence->'investigation_notes'",
+        requires="investigation_notes",
+    )
 
 
 async def _persist_investigation_notes(
@@ -897,6 +926,12 @@ async def _persist_investigation_notes(
     bodies = await _recorded_bundle_bodies(pool, attempt_id)
     if bodies is not None:
         notes = verify_evidence_against_bundle(notes, bodies)
+    else:
+        # No bundle to check against (never recorded, or its bodies were pruned): keep what an
+        # earlier pass already established, and otherwise store the notes explicitly unverified.
+        notes = carry_forward_verification(
+            notes, await _stored_investigation_notes(pool, attempt_id)
+        )
     payload = notes.model_dump(mode="json")
     if diff_snapshot is not None:
         payload["diff_snapshot"] = diff_snapshot

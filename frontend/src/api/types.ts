@@ -6752,6 +6752,8 @@ export interface QaCaseSummary {
 /** Parsed QA investigation notes embedded in a case dossier. */
 export interface QaInvestigationNotes {
   schema_version: 1 | 2;
+  /** Set only by the dispatcher: whether the notes were checked against its evidence bundle. */
+  verification?: { state: "verified" | "unverified"; bundle_digest?: string | null };
   headline: string;
   hypothesis: string;
   blurb_segments: (

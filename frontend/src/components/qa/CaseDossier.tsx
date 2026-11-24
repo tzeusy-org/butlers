@@ -78,6 +78,7 @@ export function CaseDossier({
 
   const claimList = notes ? Object.values(notes.claims) : [];
   const onlyUnsupportedClaims = claimList.length > 0 && claimList.every((c) => c.unsupported);
+  const notVerified = notes ? notes.verification?.state !== "verified" : false;
 
   if (!caseId) {
     return (
@@ -156,7 +157,15 @@ export function CaseDossier({
                     className="text-[11px] text-[var(--amber-text)]"
                     data-testid="qa-dossier-unsupported-claims"
                   >
-                    Unsupported claim: nothing here matches the evidence the dispatcher recorded.
+                    Unsupported claim: cites no evidence bundle item.
+                  </p>
+                ) : null}
+                {notVerified ? (
+                  <p
+                    className="text-[11px] text-muted-foreground"
+                    data-testid="qa-dossier-not-verified"
+                  >
+                    Evidence citations not verified: no recorded evidence bundle to check against.
                   </p>
                 ) : null}
                 {hasUnpublishedProposal ? (
@@ -185,6 +194,10 @@ export function CaseDossier({
 
               <div className="space-y-2">
                 <DossierEyebrow>Evidence · log fragments</DossierEyebrow>
+                <p className="text-[11px] text-muted-foreground">
+                  Only the quoted text is checked against the recorded evidence; time, level and
+                  butler are as reported by the agent.
+                </p>
                 <EvidenceLog
                   evidence={notes.evidence_lines}
                   claims={hasUnpublishedProposal ? {} : notes.claims}

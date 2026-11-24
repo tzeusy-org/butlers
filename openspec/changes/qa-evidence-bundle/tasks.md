@@ -7,3 +7,4 @@
 ## 2. Verification
 
 - [x] 2.1 Notes v2 `ref`, dispatcher-side verification, dossier labels
+- [ ] 2.2 A case with no supported claim is not `patch_ready`: enforced by the dispatcher gate in bu-ejow5p.7.1 (`can_be_patch_ready` has no caller until then)
