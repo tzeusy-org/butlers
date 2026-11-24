@@ -327,6 +327,7 @@ class ConflictsMixin:
         # owner calendar is read from the stored projection (quarantined invitations excluded,
         # so an outsider's invite cannot veto a write), and only while that calendar's sync is
         # fresh; otherwise the check is unavailable rather than silently narrower.
+        skipped = 0
         try:
             try:
                 conflicts = list(
@@ -342,11 +343,10 @@ class ConflictsMixin:
                     for c in conflicts
                     if not (c.start_at == ignore_start_at and c.end_at == ignore_end_at)
                 ]
-            conflicts.extend(
-                await self._stored_owner_busy(
-                    calendar_id, candidate, ignore_event_id=ignore_event_id
-                )
+            stored, skipped = await self._stored_owner_busy(
+                calendar_id, candidate, ignore_event_id=ignore_event_id
             )
+            conflicts.extend(stored)
         except ConflictCheckUnavailable:
             if conflict_policy != "allow_overlap":
                 raise
@@ -359,17 +359,22 @@ class ConflictsMixin:
                 "suggested_slots": [],
                 "conflict_check": "unavailable",
             }
+        # A source the owner switched off was left out: the check ran, but on fewer calendars.
+        partial: dict[str, Any] = (
+            {"conflict_check": "partial", "skipped_calendars": skipped} if skipped else {}
+        )
         conflict_payload = await guard_provider_events(
             pool_of(self), conflicts, self._conflict_to_payload
         )
         if not conflict_payload:
-            return {"status": "clear", "conflicts": [], "suggested_slots": []}
+            return {"status": "clear", "conflicts": [], "suggested_slots": [], **partial}
 
         if conflict_policy == "allow_overlap":
             return {
                 "status": "allow_overlap",
                 "conflicts": conflict_payload,
                 "suggested_slots": [],
+                **partial,
             }
 
         suggested_slots: list[dict[str, str]] = []
@@ -385,6 +390,7 @@ class ConflictsMixin:
             "status": "conflict",
             "conflicts": conflict_payload,
             "suggested_slots": suggested_slots,
+            **partial,
         }
 
     @staticmethod
@@ -440,13 +446,14 @@ class ConflictsMixin:
             return list(self._all_provider_calendar_ids)
         return [self._resolve_calendar_id(None)]
 
-    async def _other_owner_calendar_ids(self, calendar_id: str) -> list[str]:
+    async def _other_owner_calendar_ids(self, calendar_id: str) -> tuple[list[str], int]:
         """The owner calendars a write is also checked against, besides the target.
 
         Every source whose stored role is ``owner`` or ``butler`` (never another person's shared
         calendar) plus the primary calendar even when it has no source row yet: a calendar that
         should count but cannot be read makes the check unavailable instead of being skipped.
-        An unreadable role ledger raises ``ConflictCheckUnavailable``.
+        An unreadable role ledger raises ``ConflictCheckUnavailable``. Also returns how many
+        owner calendars were skipped because the owner switched their sync off.
         """
         known: list[str] = list(getattr(self, "_all_provider_calendar_ids", ()))
         pool = getattr(getattr(self, "_db", None), "pool", None)
@@ -477,7 +484,8 @@ class ConflictsMixin:
                 )
         if primary and primary not in owner_ids and primary not in disabled:
             owner_ids.append(primary)
-        return [cid for cid in dict.fromkeys(owner_ids) if cid != calendar_id]
+        ids = [cid for cid in dict.fromkeys(owner_ids) if cid != calendar_id]
+        return ids, len(disabled - {calendar_id})
 
     async def _stored_owner_busy(
         self,
@@ -485,17 +493,20 @@ class ConflictsMixin:
         candidate: CalendarEventCreate,
         *,
         ignore_event_id: str | None,
-    ) -> list[CalendarEvent]:
+    ) -> tuple[list[CalendarEvent], int]:
         """Busy windows on the other owner calendars, from the stored projection.
+
+        Returns ``(busy, skipped)``; ``skipped`` counts owner calendars left out because their
+        sync is switched off, so the caller can say the check was partial.
 
         Quarantined invitations are excluded (REQ-module-calendar-041) and the event being
         updated is excluded by its event id, not its time window. A calendar with no source row
         or no successful sync within ``PROJECTION_STALENESS_MULTIPLIER`` poll intervals (the same
         grace the sync deadman uses) makes the check unavailable.
         """
-        others = await self._other_owner_calendar_ids(calendar_id)
+        others, skipped = await self._other_owner_calendar_ids(calendar_id)
         if not others:
-            return []
+            return [], skipped
         pool = getattr(getattr(self, "_db", None), "pool", None)
         if pool is None:
             raise ConflictCheckUnavailable()
@@ -552,7 +563,7 @@ class ConflictsMixin:
             logger.warning("Failed to read stored owner busy time", exc_info=True)
             raise ConflictCheckUnavailable() from exc
         timezone = tz_name
-        return [
+        events = [
             CalendarEvent(
                 event_id=f"busy-stored-{index + 1}",
                 title="(busy)",
@@ -562,6 +573,7 @@ class ConflictsMixin:
             )
             for index, row in enumerate(rows)
         ]
+        return events, skipped
 
     async def _default_free_busy_calendar_ids(self) -> list[str]:
         """The calendars a default availability query spans: owner-time sources only.

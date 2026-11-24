@@ -589,7 +589,7 @@ class TestCalendarWriteTools:
         mod._resolved_calendar_id = "butlers@group.calendar.google.com"
         mod._primary_calendar_id = "owner@example.com"
         # The other-calendar busy read has its own tests; this one is about routing.
-        mod._stored_owner_busy = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        mod._stored_owner_busy = AsyncMock(return_value=([], 0))  # type: ignore[method-assign]
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "butlers@group.calendar.google.com"},

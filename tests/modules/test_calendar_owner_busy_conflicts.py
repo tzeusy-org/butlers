@@ -304,8 +304,25 @@ async def test_a_source_switched_off_is_left_out_with_one_warning(caplog):
         result = await _create(provider, pool)
     assert result.get("status") != "error"
     assert provider.create_calls
+    assert result["conflict_check"] == "partial"
+    assert result["skipped_calendars"] == 1
     warnings = [r for r in caplog.records if "sync disabled" in r.getMessage()]
     assert len(warnings) == 1
+
+
+async def test_a_complete_check_carries_no_partial_marker():
+    provider = _ByCalendarProvider({}, event=_block())
+    result = await _create(provider, _pool([BUTLERS, PRIMARY]))
+    assert "conflict_check" not in result and "skipped_calendars" not in result
+
+
+async def test_a_replan_move_is_declined_when_a_calendar_was_skipped():
+    provider = _ByCalendarProvider({}, event=_block())
+    pool = _pool([BUTLERS, PRIMARY], synced_ago=None, disabled={PRIMARY})
+    result = await _move(provider, setup=lambda mod: _wire(mod, pool))
+    assert result["status"] == REPLAN_DECLINED
+    assert result["reason"] == "conflict_check_unavailable"
+    assert provider.update_calls == []
 
 
 async def test_an_owner_declined_stored_row_is_excluded_in_the_query():
@@ -375,13 +392,15 @@ async def test_stored_busy_excludes_quarantined_invitations_and_the_updated_even
 
     candidate = CalendarEventCreate(title="x", start_at=START, end_at=END)
     # A quarantined needsAction invitation on the primary does not block.
-    assert await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None) == []
+    assert (await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None))[0] == []
 
     await event("real-meeting", {"organizer": "me@example.com"})
-    busy = await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None)
+    busy = (await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None))[0]
     assert len(busy) == 1
     # The event being updated is excluded by id, not by its window.
-    assert await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id="real-meeting") == []
+    assert (await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id="real-meeting"))[
+        0
+    ] == []
 
     # An all-day write binds as instants: it conflicts over an all-day primary event and passes
     # on a free day (a bare date against timestamptz is rejected by asyncpg).
@@ -412,8 +431,8 @@ async def test_stored_busy_excludes_quarantined_invitations_and_the_updated_even
     free = CalendarEventCreate(
         title="x", start_at=date(2026, 3, 5), end_at=date(2026, 3, 6), timezone="UTC"
     )
-    assert len(await mod._stored_owner_busy(BUTLERS, over, ignore_event_id=None)) == 1
-    assert await mod._stored_owner_busy(BUTLERS, free, ignore_event_id=None) == []
+    assert len((await mod._stored_owner_busy(BUTLERS, over, ignore_event_id=None))[0]) == 1
+    assert (await mod._stored_owner_busy(BUTLERS, free, ignore_event_id=None))[0] == []
 
     # A naive datetime is read in the candidate's timezone: 11:00 New York is 16:00 UTC.
     naive = CalendarEventCreate(
@@ -422,7 +441,7 @@ async def test_stored_busy_excludes_quarantined_invitations_and_the_updated_even
         end_at=datetime(2026, 2, 20, 12, 0),
         timezone="America/New_York",
     )
-    assert len(await mod._stored_owner_busy(BUTLERS, naive, ignore_event_id=None)) == 1
+    assert len((await mod._stored_owner_busy(BUTLERS, naive, ignore_event_id=None))[0]) == 1
 
     # A row the owner declined holds no time.
     await pool.execute(
@@ -432,7 +451,7 @@ async def test_stored_busy_excludes_quarantined_invitations_and_the_updated_even
             "attendees": [{"self": True, "response_status": "declined"}],
         },
     )
-    assert await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None) == []
+    assert (await mod._stored_owner_busy(BUTLERS, candidate, ignore_event_id=None))[0] == []
 
 
 _ = Any

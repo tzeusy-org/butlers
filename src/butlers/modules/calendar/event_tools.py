@@ -329,6 +329,9 @@ def register_event_tools(
             result["policy"] = resolved_conflict_policy
             result["conflicts"] = conflict_result["conflicts"]
             result["suggested_slots"] = []
+        if conflict_result.get("conflict_check") == "partial":
+            result["conflict_check"] = "partial"
+            result["skipped_calendars"] = conflict_result.get("skipped_calendars", 0)
         # Eagerly project the event to avoid Google indexing latency race.
         await module._project_provider_mutation(
             source_id=source_id,
@@ -735,9 +738,10 @@ def register_event_tools(
                     error=error_payload.get("error"),
                 )
                 return error_payload
-            if replan and conflict_result.get("conflict_check") == "unavailable":
+            if replan and conflict_result.get("conflict_check") in ("unavailable", "partial"):
                 # allow_overlap lets a blind check pass for an owner's write, never for a move
-                # that is making its own decision to avoid every other event.
+                # that is making its own decision to avoid every other event; a check that
+                # skipped a calendar cannot promise the slot is free either.
                 return await decline("conflict_check_unavailable")
             if replan and conflict_result["conflicts"]:
                 # A move onto anything else on the calendar is the owner's call.
@@ -940,6 +944,9 @@ def register_event_tools(
             result["policy"] = resolved_conflict_policy
             result["conflicts"] = conflict_result["conflicts"]
             result["suggested_slots"] = []
+        if conflict_result.get("conflict_check") == "partial":
+            result["conflict_check"] = "partial"
+            result["skipped_calendars"] = conflict_result.get("skipped_calendars", 0)
         # Eagerly project the update to avoid Google indexing latency race.
         await module._project_provider_mutation(
             source_id=source_id,

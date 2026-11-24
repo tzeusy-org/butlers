@@ -17,7 +17,9 @@ your calendars to check for overlaps. Try again, or allow overlap to write anywa
 SHALL be declined with the reason `conflict_check_unavailable`. Under the `allow_overlap` policy an
 unavailable check SHALL NOT block the owner's write, no conflict SHALL be claimed, and no approval
 SHALL be queued from it; a replan move is still declined. A source the owner switched off in the sources toggle SHALL be left out of the owner set, with one
-warning per check. Dates and naive datetimes SHALL be read in the candidate's timezone, so an
+warning per check, and the result SHALL carry `conflict_check: "partial"` and
+`skipped_calendars` (a count, never ids); a no-park replan move SHALL be declined on a partial check
+like an unavailable one, while a plain owner write proceeds. Dates and naive datetimes SHALL be read in the candidate's timezone, so an
 all-day write is checked like any other. A write SHALL NOT report `clear` from a
 check that did not read the owner's calendars, except by that explicit `allow_overlap` choice.
 
@@ -59,6 +61,8 @@ Scope: v1-mandatory
 
 - **WHEN** the primary calendar's sync is switched off in the sources toggle
 - **THEN** it is left out of the owner set rather than reading as stale forever
+- **AND** the write result carries `conflict_check: "partial"` with `skipped_calendars: 1`, and a
+  no-park replan move is declined as `conflict_check_unavailable`
 
 #### Scenario: Allow overlap proceeds when the check cannot run
 
