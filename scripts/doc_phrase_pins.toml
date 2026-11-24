@@ -1,0 +1,7 @@
+# Each pin enforces one exact substring in a repository Markdown file.
+# A pin with an optional TOML expires date is valid through that UTC date.
+[[pin]]
+file = "about/heart-and-soul/v1.md"
+mode = "require"
+phrase = "Chronicler"
+governs = "bu-pa4e0"
