@@ -539,6 +539,81 @@ async def test_resolve_model_preview_200_and_422_for_invalid(app):
     assert r422.status_code == 422
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_model_preview_reports_selected_model_quota(
+    api: httpx.AsyncClient, api_db: ApiDatabase
+) -> None:
+    selected, competing = uuid.uuid4(), uuid.uuid4()
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_catalog
+            (id, alias, runtime_type, model_id, complexity_tier, priority,
+             session_timeout_s, extra_args)
+        VALUES ($1, $2, 'codex', $3, 'workhorse', $4, $5, $6)
+        """,
+        [
+            (selected, "preview-selected", "synthetic-selected-model", 1, 73, '["compact"]'),
+            (competing, "preview-competing", "synthetic-competing-model", 7000, 91, "[]"),
+        ],
+    )
+    await api_db.pool.execute(
+        """
+        INSERT INTO public.butler_model_overrides (butler_name, catalog_entry_id, priority)
+        VALUES ('switchboard', $1, 7001)
+        """,
+        selected,
+    )
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.token_usage_ledger
+            (catalog_entry_id, butler_name, input_tokens, output_tokens)
+        VALUES ($1, 'switchboard', $2, $3)
+        """,
+        [(selected, 3, 7), (competing, 8, 10)],
+    )
+    await api_db.pool.execute(
+        """
+        INSERT INTO public.token_limits (catalog_entry_id, limit_24h, limit_30d)
+        VALUES ($1, 10, 200)
+        """,
+        selected,
+    )
+    route = "/api/butlers/switchboard/resolve-model?complexity=workhorse"
+
+    at_limit_response = await api.get(route)
+
+    assert at_limit_response.status_code == 200
+    at_limit = at_limit_response.json()["data"]
+    assert (
+        at_limit["butler_name"],
+        at_limit["complexity"],
+        at_limit["runtime_type"],
+        at_limit["model_id"],
+        at_limit["extra_args"],
+        at_limit["session_timeout_s"],
+        at_limit["resolved"],
+    ) == ("switchboard", "workhorse", "codex", "synthetic-selected-model", ["compact"], 73, True)
+    assert (
+        at_limit["usage_24h"],
+        at_limit["usage_30d"],
+        at_limit["limit_24h"],
+        at_limit["limit_30d"],
+    ) == (10, 10, 10, 200)
+    assert at_limit["quota_blocked"] is True
+
+    await api_db.pool.execute(
+        "UPDATE public.token_limits SET limit_24h = 11 WHERE catalog_entry_id = $1",
+        selected,
+    )
+    below_limit_response = await api.get(route)
+
+    assert below_limit_response.status_code == 200
+    below_limit = below_limit_response.json()["data"]
+    assert below_limit["quota_blocked"] is False
+    assert below_limit == {**at_limit, "limit_24h": 11, "quota_blocked": False}
+
+
 # ---------------------------------------------------------------------------
 # §3.4  Priority stepper
 # ---------------------------------------------------------------------------
