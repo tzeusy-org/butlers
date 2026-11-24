@@ -177,6 +177,7 @@ SELECT p.id, p.cause, p.subject_id, p.original_ask ->> 'refusal' AS refusal, p.l
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
+   AND s.state NOT IN ('acknowledged', 'decided', 'cancelled', 'expired')
    AND p.line_attempts < $4
    AND NOT EXISTS (SELECT 1 FROM public.owner_delivery_presentations x
                     WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation
