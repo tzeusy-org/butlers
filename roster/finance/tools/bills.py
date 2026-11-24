@@ -99,7 +99,9 @@ async def _mirror_bill_to_spo(
     This function is scheduled via asyncio.create_task and must never raise.
     """
     try:
-        from butlers.tools.finance.facts import _write_bill_fact
+        from butlers.roster_imports import roster_module
+
+        _write_bill_fact = roster_module("finance", "tools/property_facts")._write_bill_fact
 
         mirror_metadata: dict[str, Any] = {}
         if reconciled_transaction_id is not None:

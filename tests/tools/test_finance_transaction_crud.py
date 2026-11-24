@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -158,16 +158,15 @@ async def test_record_and_list_transactions():
     dedup_id_row.__getitem__ = MagicMock(side_effect=lambda k: _TXN_ID if k == "id" else None)
     pool = fake_pool(fetchval=0, fetchrow=AsyncMock(side_effect=[dedup_id_row, existing_row]))
 
-    with patch("butlers.tools.finance.transactions._mirror_to_spo"):
-        result = await record_transaction(
-            pool=pool,
-            posted_at=_NOW,
-            merchant="Netflix",
-            amount=Decimal("15.99"),
-            currency="USD",
-            category="subscriptions",
-            source_message_id="msg-abc-123",
-        )
+    result = await record_transaction(
+        pool=pool,
+        posted_at=_NOW,
+        merchant="Netflix",
+        amount=Decimal("15.99"),
+        currency="USD",
+        category="subscriptions",
+        source_message_id="msg-abc-123",
+    )
     pool.execute.assert_not_called()
     assert result["id"] == _TXN_ID
 

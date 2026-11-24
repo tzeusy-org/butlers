@@ -33,10 +33,10 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 - **AND** the original supplied value SHALL be preserved in `metadata.original_category`, and a structured warning `{code: 'unknown_category', field: 'category', stored_as: 'uncategorized'}` SHALL be appended to `metadata.warnings`
 - **AND** on legacy schemas without the `categories` table, the free-form category value SHALL be preserved unchanged
 
-#### Scenario: Post-insert SPO mirror write
-- **WHEN** a transaction is successfully inserted into `finance.transactions`
-- **THEN** a background task SHALL mirror the transaction to `public.facts` with the appropriate predicate (`'transaction_debit'` or `'transaction_credit'`)
-- **AND** the mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
+#### Scenario: Transaction ledger is authoritative
+- **WHEN** a transaction insert completes
+- **THEN** no background transaction fact mirror SHALL be scheduled
+- **AND** existing transaction facts SHALL remain unchanged as memory history
 
 #### Scenario: Inline bill reconciliation hook on debit insert
 - **WHEN** a fresh debit transaction is inserted, the system SHALL call `match_transaction_to_bills()` against open bills

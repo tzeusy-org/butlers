@@ -1,12 +1,4 @@
-"""Tests for SPO mirror write in record_transaction() and bulk_record_transactions().
-
-Covers:
-- 6.1: record_transaction() schedules a fire-and-forget SPO mirror to public.facts
-- 6.2: bulk_record_transactions() routes through record_transaction() for per-row
-  dedup and SPO mirror
-- 6.3: spending_summary() response shape backward compatibility
-- 6.4: SPO mirror fact is created; primary insert is not rolled back on mirror failure
-"""
+"""Transaction mirror retirement, canonical bulk ingestion, and retained bill mirroring."""
 
 from __future__ import annotations
 
@@ -76,167 +68,6 @@ def _txn_row(
 # ---------------------------------------------------------------------------
 # 6.1 / 6.4: SPO mirror is scheduled after a successful primary insert
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_record_transaction_schedules_spo_mirror():
-    """After a successful insert, record_transaction() schedules a SPO mirror task."""
-    from butlers.tools.finance.transactions import record_transaction
-
-    pool = fake_pool(fetchrow=record_row(**_txn_row()), fetchval=0)
-    mirror_called = asyncio.Event()
-
-    async def _fake_mirror_to_spo(*args, **kwargs):
-        mirror_called.set()
-
-    patch_target = "butlers.tools.finance.transactions._mirror_to_spo"
-    with patch(patch_target, side_effect=_fake_mirror_to_spo):
-        await record_transaction(
-            pool=pool,
-            posted_at=_utcnow(),
-            merchant="Trader Joe's",
-            amount=-42.50,
-            currency="USD",
-            category="groceries",
-        )
-        # Let the event loop run the background task
-        await asyncio.sleep(0)
-
-    assert mirror_called.is_set(), "SPO mirror was not scheduled/called after primary insert"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_spo_mirror_failure_does_not_raise_or_rollback_primary():
-    """If the SPO mirror write fails, record_transaction() still succeeds.
-
-    Patches the underlying record_transaction_fact (called inside _mirror_to_spo)
-    so that _mirror_to_spo's own exception handler is exercised.  The primary
-    insert result must be returned successfully even when the mirror throws.
-    """
-    from butlers.tools.finance.transactions import record_transaction
-
-    pool = fake_pool(
-        fetchrow=record_row(**_txn_row(merchant="Netflix", direction="debit")), fetchval=0
-    )
-
-    async def _failing_fact(*args, **kwargs):
-        raise RuntimeError("Simulated SPO mirror failure")
-
-    with patch("butlers.tools.finance.facts.record_transaction_fact", side_effect=_failing_fact):
-        result = await record_transaction(
-            pool=pool,
-            posted_at=_utcnow(),
-            merchant="Netflix",
-            amount=-15.49,
-            currency="USD",
-            category="subscriptions",
-        )
-        # Yield to the event loop so the background task runs and
-        # _mirror_to_spo's exception handler swallows the error.
-        await asyncio.sleep(0)
-
-    # Primary insert succeeded: result contains id
-    assert "id" in result
-    assert result["merchant"] == "Netflix"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_spo_mirror_called_with_correct_predicate_for_debit():
-    """SPO mirror receives the correct arguments for a debit transaction."""
-    from butlers.tools.finance.transactions import record_transaction
-
-    inserted_row = _txn_row(merchant="Starbucks", direction="debit")
-    pool = AsyncMock()
-
-    async def _fetchrow(query, *args):
-        if "INSERT INTO transactions" in query:
-            return record_row(**inserted_row)
-        return None
-
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-    pool.fetchval = AsyncMock(return_value=0)
-
-    mirror_mock = AsyncMock()
-
-    with patch("butlers.tools.finance.transactions._mirror_to_spo", mirror_mock):
-        posted_at = _utcnow()
-        await record_transaction(
-            pool=pool,
-            posted_at=posted_at,
-            merchant="Starbucks",
-            amount=-5.50,
-            currency="USD",
-            category="dining",
-            source_message_id="msg-mirror-test-001",
-        )
-        await asyncio.sleep(0)
-
-    mirror_mock.assert_called_once()
-    _, kwargs = mirror_mock.call_args
-    assert kwargs["merchant"] == "Starbucks"
-    assert kwargs["currency"] == "USD"
-    assert kwargs["category"] == "dining"
-    assert kwargs["source_message_id"] == "msg-mirror-test-001"
-    # The amount passed to _mirror_to_spo is the original (signed) amount
-    assert Decimal(str(kwargs["amount"])) == Decimal("-5.50")
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_spo_mirror_called_for_credit_transaction():
-    """SPO mirror is called for credit (positive amount) transactions too."""
-    from butlers.tools.finance.transactions import record_transaction
-
-    pool_row = _txn_row(direction="credit", amount=Decimal("100.00"))
-    pool = fake_pool(fetchrow=record_row(**pool_row), fetchval=0)
-    mirror_called = asyncio.Event()
-
-    async def _capture_mirror(*args, **kwargs):
-        mirror_called.set()
-
-    with patch("butlers.tools.finance.transactions._mirror_to_spo", side_effect=_capture_mirror):
-        await record_transaction(
-            pool=pool,
-            posted_at=_utcnow(),
-            merchant="PayPal",
-            amount=100.00,
-            currency="USD",
-            category="refunds",
-        )
-        await asyncio.sleep(0)
-
-    assert mirror_called.is_set()
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_spo_mirror_not_called_on_dedup_hit():
-    """When a duplicate is detected (fetchrow returns existing row), no new
-    primary insert fires, but the function still returns the existing record.
-    (The mirror for the original insert was already done at insert time.)"""
-    from butlers.tools.finance.transactions import record_transaction
-
-    existing_row = _txn_row(source_message_id="msg-dedup-001")
-    # Simulate dedup: fetchrow returns existing row for source_message_id check
-    pool = fake_pool(fetchrow=record_row(**existing_row), fetchval=0)
-    mirror_calls = []
-
-    async def _capture_mirror(*args, **kwargs):
-        mirror_calls.append(kwargs)
-
-    with patch("butlers.tools.finance.transactions._mirror_to_spo", side_effect=_capture_mirror):
-        result = await record_transaction(
-            pool=pool,
-            posted_at=_utcnow(),
-            merchant="ACME",
-            amount=-42.00,
-            currency="USD",
-            category="shopping",
-            source_message_id="msg-dedup-001",
-        )
-        await asyncio.sleep(0)
-
-    # Dedup path returns the existing row without a new insert or mirror
-    assert result["source_message_id"] == "msg-dedup-001"
-    assert len(mirror_calls) == 0, "Mirror should not be called on dedup path"
 
 
 # ---------------------------------------------------------------------------
@@ -564,16 +395,6 @@ def test_spending_summary_response_shape():
         assert key in doc, f"spending_summary docstring missing key: {key!r}"
 
 
-def test_spending_summary_facts_response_shape_matches():
-    """spending_summary_facts() documents the same response shape as spending_summary()."""
-    from butlers.tools.finance.facts import spending_summary_facts
-
-    expected_keys = {"start_date", "end_date", "currency", "total_spend", "groups"}
-    doc = spending_summary_facts.__doc__ or ""
-    for key in expected_keys:
-        assert key in doc, f"spending_summary_facts docstring missing key: {key!r}"
-
-
 def test_spending_summary_valid_group_by_modes_unchanged():
     """VALID_GROUP_BY_MODES includes the same values as the SPO implementation."""
     from butlers.tools.finance.spending import VALID_GROUP_BY_MODES
@@ -738,7 +559,7 @@ async def test_track_bill_spo_mirror_failure_does_not_raise():
     async def _failing_fact(*args, **kwargs):
         raise RuntimeError("Simulated SPO mirror failure")
 
-    with patch("butlers.tools.finance.facts._write_bill_fact", side_effect=_failing_fact):
+    with patch("butlers.tools.finance.property_facts._write_bill_fact", side_effect=_failing_fact):
         result = await track_bill(
             pool=pool,
             payee="Netflix",
@@ -987,3 +808,22 @@ async def test_reconcile_bills_mirrors_backfilled_amount_for_placeholder():
     assert abs(kwargs["amount"] - 717.57) < 0.01, (
         f"Expected backfilled amount ~717.57, got {kwargs['amount']}"
     )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_record_transaction_writes_only_ledger():
+    """A fresh primary insert succeeds without scheduling a transaction mirror."""
+    from butlers.tools.finance.transactions import record_transaction
+
+    pool = fake_pool(fetchrow=record_row(**_txn_row()), fetchval=0)
+    scheduled = []
+
+    def capture(coroutine):
+        scheduled.append(coroutine)
+        coroutine.close()
+
+    with patch("asyncio.create_task", side_effect=capture):
+        result = await record_transaction(pool, _utcnow(), "ACME", -42, "USD", "shopping")
+    assert result["id"]
+    assert any("INSERT INTO transactions" in call.args[0] for call in pool.fetchrow.call_args_list)
+    assert scheduled == []

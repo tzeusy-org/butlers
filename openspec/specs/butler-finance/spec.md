@@ -2,7 +2,7 @@
 
 ## Purpose
 The Finance butler tracks transactions, subscriptions, and bills as primary
-storage in dedicated `finance.*` tables (with a fire-and-forget SPO fact mirror
+storage in dedicated `finance.*` tables (with a fire-and-forget bill fact mirror
 for memory/recall), runs scheduled bill/subscription/anomaly digests, and
 provides deterministic financial intelligence — including bill↔payment
 reconciliation that settles paid bills automatically without manual entry.
@@ -88,16 +88,15 @@ The finance butler runtime instances SHALL follow additional behavioral guidelin
 - **THEN** the runtime SHALL inform the user about the minimum data requirements
 - **AND** it SHALL suggest importing historical statements through the `transaction-csv-extraction` skill (one upload and one `import_transactions(storage_ref)` call per statement) if no historical import has been performed
 
-### Requirement: Finance data stored in dedicated tables with SPO mirror
-The finance butler SHALL store transactions and bills in dedicated `finance.*` tables as primary storage, with SPO facts as a secondary fire-and-forget mirror for memory/recall.
+### Requirement: Finance data stored in dedicated tables
+The finance butler SHALL store transactions and bills in dedicated `finance.*` tables. Transactions SHALL have a single ledger with ID-bound enrichment; only bills retain a secondary fire-and-forget fact mirror for memory/recall.
 
-#### Scenario: Transaction tools as dedicated table wrappers with SPO mirroring
+#### Scenario: Transaction tools as dedicated table wrappers
 - **WHEN** `record_transaction` is called
 - **THEN** it SHALL first check for an existing duplicate using the tiered dedup key hierarchy on `finance.transactions`
 - **AND** if a duplicate is found, the existing transaction ID SHALL be returned (idempotent dedup)
 - **AND** if no duplicate is found, it SHALL INSERT into `finance.transactions` with all applicable columns
-- **AND** it SHALL fire a background task to mirror the write to `public.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields
-- **AND** the SPO mirror write SHALL be fire-and-forget (failure does not roll back the primary insert)
+- **AND** it SHALL NOT mirror transaction writes to facts; legacy transaction facts remain memory history
 - **AND** `list_transactions` SHALL query `finance.transactions WHERE deleted_at IS NULL` ordered by `posted_at DESC`
 
 #### Scenario: spending_summary as dedicated table aggregation

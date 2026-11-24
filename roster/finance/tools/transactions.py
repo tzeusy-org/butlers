@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 import uuid as _uuid_mod
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_insert, taint_stamp, taint_update
 from butlers.tools.finance._helpers import _log_activity, _row_to_dict
 from butlers.tools.finance.expected_signals import (
     FinanceSignalSource,
@@ -170,57 +170,6 @@ _column_existence_cache: dict[asyncpg.Pool, dict[tuple[str, str], bool]] = {}
 # Module-level cache for _has_table results, mirroring _column_existence_cache.
 # Avoids an information_schema round-trip per insert (hot on bulk imports).
 _table_existence_cache: dict[asyncpg.Pool, dict[str, bool]] = {}
-
-
-async def _mirror_to_spo(
-    pool: asyncpg.Pool,
-    posted_at: datetime,
-    merchant: str,
-    amount: Decimal | float | int,
-    currency: str,
-    category: str,
-    description: str | None = None,
-    payment_method: str | None = None,
-    account_id: str | None = None,
-    receipt_url: str | None = None,
-    external_ref: str | None = None,
-    source_message_id: str | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    """Fire-and-forget SPO mirror write to shared.facts after a primary insert.
-
-    Writes a bitemporal fact with predicate='transaction_{direction}' to
-    public.facts via record_transaction_fact.  Errors are swallowed so that
-    a mirror failure never rolls back the primary finance.transactions insert.
-
-    This function is scheduled via asyncio.ensure_future and must never raise.
-    """
-    try:
-        from butlers.tools.finance.facts import record_transaction_fact
-
-        await record_transaction_fact(
-            pool=pool,
-            posted_at=posted_at,
-            merchant=merchant,
-            amount=amount,
-            currency=currency,
-            category=category,
-            description=description,
-            payment_method=payment_method,
-            account_id=account_id,
-            receipt_url=receipt_url,
-            external_ref=external_ref,
-            source_message_id=source_message_id,
-            metadata=metadata,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "_mirror_to_spo: SPO mirror write failed for merchant=%r posted_at=%r; "
-            "primary insert is unaffected",
-            merchant,
-            posted_at,
-            exc_info=True,
-        )
 
 
 def _infer_direction(amount: Decimal | float | int) -> str:
@@ -707,9 +656,7 @@ async def _record_transaction(
         Stable external transaction ID from bank APIs (used for Priority-1 dedup).
     connection:
         Optional already-acquired connection for the foreground ledger work.
-        Callers holding an advisory lock use this to avoid recursively leasing
-        the pool; the asynchronous SPO mirror still uses ``pool`` after the
-        foreground work completes.
+        Callers holding an advisory lock use this to avoid recursively leasing the pool.
     include_insert_status:
         Internal-only observability flag. When true, the result includes
         ``_inserted`` so deterministic import jobs can distinguish a fresh
@@ -725,8 +672,7 @@ async def _record_transaction(
         key: ``{threshold, amount, merchant, exceeds_by}``.
     """
     # Jobs that hold an advisory lock may supply their acquired connection so
-    # every foreground query remains on that session.  Keep the original pool
-    # for the fire-and-forget mirror, which can run after this connection exits.
+    # every foreground query remains on that session.
     executor = connection if connection is not None else pool
 
     # Resolve human-readable account identifiers to UUID.
@@ -785,10 +731,13 @@ async def _record_transaction(
 
     # Build the INSERT with explicit casts to avoid IndeterminateDatatypeError.
     # We always include the 13 base columns; optional columns are appended.
-    extra_cols: list[str] = []
-    extra_vals: list[str] = []
-    extra_params: list[Any] = []
-    param_idx = 14  # base params occupy $1-$13
+    extra_cols: list[str] = ["normalized_merchant", "inferred_category"]
+    extra_vals: list[str] = ["$14::text", "$15::text"]
+    extra_params: list[Any] = [
+        meta_dict.get("normalized_merchant"),
+        meta_dict.get("inferred_category"),
+    ]
+    param_idx = 16  # base params and enrichment occupy $1-$15
 
     if has_external_id and external_id is not None:
         extra_cols.append("external_id")
@@ -812,6 +761,10 @@ async def _record_transaction(
     vals_clause = ", ".join(extra_vals)
     extra_cols_sql = f", {cols_clause}" if extra_cols else ""
     extra_vals_sql = f", {vals_clause}" if extra_vals else ""
+    taint = taint_insert(param_idx)
+    extra_cols_sql += taint.columns
+    extra_vals_sql += taint.placeholders
+    extra_params.extend(taint.values)
 
     is_fresh_insert = True
     try:
@@ -911,26 +864,6 @@ async def _record_transaction(
         ),
         entity_type="transaction",
         entity_id=str(row["id"]),
-    )
-
-    # Fire-and-forget SPO mirror write to public.facts.  Scheduled as a
-    # background task so failures never roll back the primary insert.
-    asyncio.create_task(
-        _mirror_to_spo(
-            pool=pool,
-            posted_at=posted_at,
-            merchant=merchant,
-            amount=signed_amount,
-            currency=currency,
-            category=effective_category,
-            description=description,
-            payment_method=payment_method,
-            account_id=account_id,
-            receipt_url=receipt_url,
-            external_ref=external_ref,
-            source_message_id=source_message_id,
-            metadata=meta_dict,
-        )
     )
 
     result = _row_to_dict(row)
@@ -1346,6 +1279,11 @@ async def update_transaction(
         params.append(category_meta_target if used_category_fallback else metadata)
         changed_fields["metadata"] = (None, metadata)  # Don't log full metadata diffs
         idx += 1
+        for field in ("normalized_merchant", "inferred_category"):
+            if field in metadata:
+                sets.append(f"{field} = ${idx}::text")
+                params.append(metadata[field])
+                idx += 1
     elif used_category_fallback:
         # The caller did not replace metadata, but the category fallback needs
         # to persist its original_category / warnings annotation somewhere.
@@ -1370,8 +1308,11 @@ async def update_transaction(
     else:
         where_extra = ""
 
+    taint = taint_update(idx)
+    params.extend(taint.values)
+    idx += len(taint.values)
     params.append(transaction_id)
-    set_clause = ", ".join(sets)
+    set_clause = ", ".join(sets) + taint.assignments
     row = await pool.fetchrow(
         f"UPDATE transactions SET {set_clause} WHERE id = ${idx}::uuid{where_extra} RETURNING *",
         *params,
@@ -1793,6 +1734,7 @@ async def split_transaction(
 
             # Insert split records with metadata.split_from set.
             inserted: list[dict[str, Any]] = []
+            split_goal, split_invocation = taint_stamp()
             for s in parsed_splits:
                 child_meta = dict(orig_meta)
                 child_meta["split_from"] = str(original["id"])
@@ -1812,9 +1754,11 @@ async def split_transaction(
                     INSERT INTO transactions (
                         account_id, source_message_id, posted_at, merchant,
                         description, amount, currency, direction, category,
-                        payment_method, receipt_url, external_ref, metadata
+                        payment_method, receipt_url, external_ref, metadata,
+                        normalized_merchant, inferred_category, taint_goal_id, taint_invocation_id
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                        $14, $15, $16, $17
                     )
                     RETURNING *
                     """,
@@ -1831,6 +1775,10 @@ async def split_transaction(
                     original["receipt_url"],
                     original["external_ref"],
                     child_meta,
+                    original.get("normalized_merchant"),
+                    original.get("inferred_category"),
+                    split_goal or original.get("taint_goal_id"),
+                    split_invocation or original.get("taint_invocation_id"),
                 )
                 inserted.append(_row_to_dict(row))
 
@@ -2096,8 +2044,7 @@ async def bulk_record_transactions(
     """Bulk-ingest normalized transaction objects.
 
     Routes each row through ``record_transaction()`` to obtain per-row
-    deduplication (source_message_id uniqueness) and the SPO mirror write
-    to public.facts.
+    deduplication (source_message_id uniqueness) in the single transaction ledger.
 
     Args:
         pool: Database connection pool.
@@ -2189,7 +2136,7 @@ async def bulk_record_transactions(
             extra_metadata.setdefault("import_source", source)
 
         # ------------------------------------------------------------------
-        # 3. Route through record_transaction for dedup + SPO mirror
+        # 3. Route through record_transaction for canonical deduplication
         # ------------------------------------------------------------------
         try:
             _recorded = await record_transaction(
@@ -2241,4 +2188,217 @@ async def bulk_record_transactions(
         "errors": errors,
         "error_details": error_details,
         "large_transaction_alerts": large_transaction_alerts,
+    }
+
+
+_MAX_DISTINCT_MERCHANTS_LIMIT = 1000
+
+
+async def list_distinct_merchants(
+    pool: asyncpg.Pool,
+    start_date: date | str | None = None,
+    end_date: date | str | None = None,
+    min_count: int | None = None,
+    unnormalized_only: bool = False,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return distinct merchants from active ledger transactions with aggregates.
+
+    Groups by the unique combination of original merchant and normalized merchant.
+    Each distinct (merchant, normalized_merchant) pair is a separate row.
+    Returns: {items: [{merchant, normalized_merchant, count, total_amount}], total, limit, offset}
+
+    Filters:
+      start_date / end_date  — ISO-8601 date strings or date objects
+      min_count              — HAVING COUNT(*) >= min_count
+      unnormalized_only      — Only rows where normalized_merchant IS NULL
+      limit / offset         — Pagination (limit capped at 1000)
+    """
+    limit = min(max(1, limit), _MAX_DISTINCT_MERCHANTS_LIMIT)
+    offset = max(0, offset)
+
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+
+    conditions: list[str] = [
+        "deleted_at IS NULL",
+    ]
+    params: list[Any] = []
+    idx = 1
+
+    if start_date is not None:
+        conditions.append(f"posted_at::date >= ${idx}")
+        params.append(start_date)
+        idx += 1
+
+    if end_date is not None:
+        conditions.append(f"posted_at::date <= ${idx}")
+        params.append(end_date)
+        idx += 1
+
+    if unnormalized_only:
+        conditions.append("(normalized_merchant) IS NULL")
+
+    where_clause = " AND ".join(conditions)
+
+    # Build HAVING clause for min_count
+    having_clause = ""
+    if min_count is not None and min_count >= 1:
+        having_clause = f"HAVING COUNT(*) >= ${idx}"
+        params.append(min_count)
+        idx += 1
+
+    # Count query (wrap in subquery to apply HAVING)
+    count_sql = f"""
+    SELECT COUNT(*) AS total FROM (
+        SELECT 1
+        FROM transactions
+        WHERE {where_clause}
+        GROUP BY merchant, normalized_merchant
+        {having_clause}
+    ) sq
+    """
+    count_row = await pool.fetchrow(count_sql, *params)
+    total = count_row["total"] if count_row else 0
+
+    # Data query
+    data_sql = f"""
+    SELECT
+        merchant AS merchant,
+        normalized_merchant AS normalized_merchant,
+        COUNT(*) AS count,
+        SUM(abs(amount)) AS total_amount
+    FROM transactions
+    WHERE {where_clause}
+    GROUP BY merchant, normalized_merchant
+    {having_clause}
+    ORDER BY COUNT(*) DESC, merchant ASC
+    LIMIT ${idx} OFFSET ${idx + 1}
+    """
+    params_data = params + [limit, offset]
+    rows = await pool.fetch(data_sql, *params_data)
+
+    items = [
+        {
+            "merchant": r["merchant"] or "",
+            "normalized_merchant": r["normalized_merchant"],
+            "count": r["count"],
+            "total_amount": str(r["total_amount"] or Decimal("0.00")),
+        }
+        for r in rows
+    ]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Bulk metadata update (overlay, write-once contract preserved)
+# ---------------------------------------------------------------------------
+
+_MAX_BULK_UPDATE_OPS = 200
+_ALLOWED_SET_KEYS = frozenset({"normalized_merchant", "inferred_category"})
+
+
+async def bulk_update_transactions(
+    pool: asyncpg.Pool,
+    ops: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply bulk metadata overlay to matching ledger transactions.
+
+    Each op has the shape:
+      {
+        "match": {"merchant_pattern": "<ILIKE pattern>"},
+        "set":   {"normalized_merchant": "...", "inferred_category": "..."}
+      }
+
+    Constraints:
+    - Maximum 200 ops per call.
+    - Only 'normalized_merchant' and 'inferred_category' keys are settable.
+    - Updates transaction-ID-bound enrichment columns, preserving raw merchant/category.
+    - Pattern matching is ILIKE on the raw merchant column.
+
+    Returns: {updated_total, results: [{pattern, set, matched, updated}]}
+    """
+    if not isinstance(ops, list):
+        raise ValueError("ops must be a list")
+    if len(ops) > _MAX_BULK_UPDATE_OPS:
+        raise ValueError(f"Too many ops: {len(ops)} exceeds max {_MAX_BULK_UPDATE_OPS}")
+
+    results = []
+    updated_total = 0
+
+    for op in ops:
+        if not isinstance(op, dict):
+            raise ValueError(f"Each op must be a dict, got: {type(op).__name__}")
+        match = op.get("match") or {}
+        set_fields = op.get("set") or {}
+
+        merchant_pattern = match.get("merchant_pattern")
+        if not merchant_pattern:
+            raise ValueError("Each op must have match.merchant_pattern")
+
+        # Validate set keys
+        unknown_keys = set(set_fields.keys()) - _ALLOWED_SET_KEYS
+        if unknown_keys:
+            raise ValueError(
+                f"set keys {sorted(unknown_keys)} are not allowed. "
+                f"Only {sorted(_ALLOWED_SET_KEYS)} may be set."
+            )
+
+        if not set_fields:
+            # Nothing to set — count matches but do not update
+            matched = await pool.fetchval(
+                """
+                SELECT COUNT(*) FROM transactions
+                WHERE deleted_at IS NULL AND merchant ILIKE $1
+                """,
+                merchant_pattern,
+            )
+            results.append(
+                {
+                    "pattern": merchant_pattern,
+                    "set": set_fields,
+                    "matched": matched or 0,
+                    "updated": 0,
+                }
+            )
+            continue
+
+        assignments = []
+        values: list[Any] = [merchant_pattern]
+        for key in sorted(set_fields):
+            assignments.append(f"{key} = ${len(values) + 1}::text")
+            values.append(set_fields[key])
+        taint = taint_update(len(values) + 1)
+        values.extend(taint.values)
+        status = await pool.execute(
+            f"UPDATE transactions SET {', '.join(assignments)}, "
+            f"updated_at = now(), version = version + 1{taint.assignments} "
+            "WHERE deleted_at IS NULL AND merchant ILIKE $1",
+            *values,
+        )
+        # asyncpg's acknowledged count is authoritative; an unexpected status is an error.
+        updated = int(status.removeprefix("UPDATE "))
+
+        updated_total += updated
+        results.append(
+            {
+                "pattern": merchant_pattern,
+                "set": set_fields,
+                "matched": updated,
+                "updated": updated,
+            }
+        )
+
+    return {
+        "updated_total": updated_total,
+        "results": results,
     }

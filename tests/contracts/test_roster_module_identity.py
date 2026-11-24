@@ -75,7 +75,7 @@ default_registry()
 for name in ('eligibility_sweep','rule_promotion_trigger','dropped_known_watch'):
  getattr(scheduled_jobs, '_load_switchboard_'+name+'_job')()
 finance=next(e.module for e in app.state.router_registry if e.butler_name=='finance')
-assert finance._load_facts_tools() is importlib.import_module('butlers.tools.finance.facts')
+assert finance._load_transactions_tools() is importlib.import_module('butlers.tools.finance.transactions')
 root=Path.cwd()/'roster'
 identities=defaultdict(set)
 for module in tuple(sys.modules.values()):

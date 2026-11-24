@@ -233,7 +233,7 @@ class BulkUpdateMatchModel(BaseModel):
 
 
 class BulkUpdateSetModel(BaseModel):
-    """Fields to overlay on matching transaction fact metadata."""
+    """Enrichment columns to set on matching ledger transactions."""
 
     normalized_merchant: str | None = None
     inferred_category: str | None = None
@@ -266,48 +266,3 @@ class BulkUpdateResponseModel(BaseModel):
 
     updated_total: int
     results: list[BulkUpdateOpResultModel]
-
-
-# ---------------------------------------------------------------------------
-# Bulk transaction ingestion models
-# ---------------------------------------------------------------------------
-
-
-class BulkTransactionItem(BaseModel):
-    """A single normalized transaction in a bulk ingestion request."""
-
-    posted_at: str  # ISO 8601 datetime string (required)
-    merchant: str  # required
-    amount: str  # string-encoded decimal, required; negative=debit, positive=credit
-    currency: str = "USD"
-    category: str = "uncategorized"
-    description: str | None = None
-    payment_method: str | None = None
-    account_id: str | None = None  # per-row override; inherits from request-level if absent
-    source_message_id: str | None = None
-    metadata: dict = {}
-
-
-class BulkTransactionRequest(BaseModel):
-    """Request body for the bulk transaction ingestion endpoint."""
-
-    transactions: list[BulkTransactionItem]
-    account_id: str | None = None  # top-level account_id inherited by all rows
-    source: str | None = None  # stored as import_source in fact metadata
-
-
-class BulkTransactionErrorDetail(BaseModel):
-    """Per-row error detail in a bulk ingestion response."""
-
-    index: int
-    reason: str  # "duplicate", "invalid_date", "invalid_amount", or other
-
-
-class BulkTransactionResponse(BaseModel):
-    """Response from the bulk transaction ingestion endpoint."""
-
-    total: int
-    imported: int
-    skipped: int
-    errors: int
-    error_details: list[BulkTransactionErrorDetail] = []

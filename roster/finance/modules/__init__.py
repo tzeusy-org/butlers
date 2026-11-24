@@ -30,8 +30,7 @@ class FinanceModuleConfig(ToolGroupMixin, BaseModel):
     -----------
     core : record_transaction, list_transactions, update_transaction,
            delete_transaction, list_distinct_merchants
-    facts : list_transaction_facts, track_account_fact,
-            track_subscription_fact, spending_summary_facts
+    facts : track_account_fact, track_subscription_fact
     bulk : bulk_record_transactions, bulk_update_transactions,
            bulk_recategorize, import_transactions, merge_duplicates,
            split_transaction

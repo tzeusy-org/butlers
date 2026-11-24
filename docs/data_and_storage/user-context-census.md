@@ -164,7 +164,7 @@ not exist fails the guard.
 | `tests/integration/test_owntracks_retention_execute_integration.py::test_a_grant_executed_twice_returns_its_first_receipt` | authorized raw-location retention | an executed deletion grant replays its existing receipt |
 | `tests/connectors/test_owntracks_connector.py::test_successful_retention_purge_resets_degraded_connector_health` | raw location fixes | a successful purge clears degraded connector health; this does not prove which fixes expire |
 | `roster/finance/tests/test_simplefin_bridge.py::test_overlap_window_replays_by_external_id_without_duplicate` | Finance typed records | an overlapping fetch replays without a duplicate |
-| `roster/finance/tests/test_facts.py::test_dedup_via_source_message_id` | Finance typed records | a re-delivered message makes one record |
+| `roster/finance/tests/test_bulk_import.py::test_mcp_bulk_counts_existing_duplicate_as_skipped` | Finance typed records | a re-delivered message makes one ledger record |
 | `roster/travel/tests/test_bookings.py::test_reingesting_same_segment_is_idempotent` | Travel typed records | re-ingesting a segment is idempotent |
 | `roster/travel/tests/test_bookings.py::test_deduplicates_on_confirmation_and_source_message_id` | Travel typed records | one booking per confirmation and message |
 | `roster/health/tests/test_wellness_ingest.py::test_duplicate_delivery_returns_existing_fact_id` | Health typed records | a duplicate delivery returns the existing record |
