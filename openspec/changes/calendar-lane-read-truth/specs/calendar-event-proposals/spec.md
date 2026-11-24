@@ -6,6 +6,10 @@ The capability SHALL extend the calendar workspace read endpoint so
 `GET /api/calendar/workspace?view=proposals` projects pending proposals into the
 unified entry shape, tagged with the `source_type` value `"proposed_event"`.
 
+ID: REQ-calendar-event-proposals-001
+Source: bu-5ii4gj.4 (run 26 move 4), slice C
+Scope: v1-mandatory
+
 #### Scenario: Proposals view returns pending proposals
 
 - **WHEN** `GET /api/calendar/workspace?view=proposals` is called with a `start`/`end` range
