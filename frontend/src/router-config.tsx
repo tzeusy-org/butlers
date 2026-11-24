@@ -18,6 +18,7 @@ import { RouteErrorFallback } from './components/layout/RouteErrorFallback.tsx'
 import RootLayout from './layouts/RootLayout.tsx'
 import NotFoundPage from './pages/NotFoundPage.tsx'
 import { getShellCapability } from './lib/shell-capability'
+import { d19Routes } from './pages/d19/routes'
 import {
   ChroniclesEpisodeRedirect,
   ColumnsToPlexRedirect,
@@ -100,6 +101,7 @@ export const routes: RouteObject[] = [
       element: <RootLayout />,
       errorElement: <RouteErrorFallback />,
       children: [
+        ...d19Routes,
         { path: '/', element: routeElement(<DashboardPage />) },
         { path: '/chat', element: routeElement(<ChatPage />) },
         { path: '/chat/:conversationId', element: routeElement(<ChatConversationPage />) },

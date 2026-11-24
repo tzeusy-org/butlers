@@ -25,6 +25,10 @@ see [Notification delivery adapters](../operations/runtime-attention.md#notifica
 
 ## Implementation Notes
 
+- D19's [one-voice preview](../frontend/d19-preview.md#one-voice) is a separate
+  default-off source-prefix formatter for verified owner destinations. Exact-call
+  approval and delivery receipts retain their existing authority and provenance.
+
 - Email and Telegram native commands check the live permission matrix at their module effect seam, including deferred approval execution. An unavailable store refuses before traffic with `PermissionUnavailable`; Messenger reports a retryable `target_unavailable` and existing `not_attempted` / `pre_transport` / `policy_denied` evidence. Errors and availability logs omit content, recipients, row reasons and raw database errors. Readable missing rows remain default-allow and explicit revocation/recipient approvals remain separate. This bu-30sah4 effect stage precedes bu-svqpzo.3, which makes remaining shared callers, including spawn, fail closed. No provider-uncertain send gains retry permission.
 
 - The delivery path is Switchboard `route.execute`, then approval or pending action, then the native
