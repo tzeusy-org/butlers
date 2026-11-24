@@ -227,13 +227,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/chronicler/test_activitywatch_adapter.py",
-      "line": 107,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/chronicler/test_aggregations.py",
       "line": 399,
       "rule": "ast-tests-use-source-guard",
@@ -255,38 +248,10 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/chronicler/test_google_health_adapter.py",
-      "line": 151,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/chronicler/test_history_repair.py",
       "line": 32,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape d00b2863a358f223)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_home_assistant_adapter.py",
-      "line": 162,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_home_assistant_sensor_activity_adapter.py",
-      "line": 187,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_meals_adapter.py",
-      "line": 113,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
@@ -304,27 +269,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/chronicler/test_owntracks_adapter.py",
-      "line": 133,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_owntracks_place_cluster_adapter.py",
-      "line": 89,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_owntracks_ssid_adapter.py",
-      "line": 680,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/chronicler/test_participant_entity_ids_api.py",
       "line": 203,
       "rule": "ast-tests-use-source-guard",
@@ -336,20 +280,6 @@
       "line": 444,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_spotify_adapter.py",
-      "line": 124,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_steam_adapter.py",
-      "line": 116,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -31,6 +30,7 @@ from butlers.chronicler.projection_coverage import (
     ProjectionCoverage,
 )
 from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -677,15 +677,9 @@ def test_ssid_adapter_has_no_llm_imports() -> None:
     import butlers.chronicler.adapters.owntracks_ssid as mod
 
     source_path = Path(mod.__file__ or "")
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    tree = parse_file(source_path)
     forbidden = ("anthropic", "openai", "langchain", "litellm", "llm")
-    imported = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.append(node.module)
-    assert not [name for name in imported if name.startswith(forbidden)]
+    assert not [name for name in imported_module_names(tree) if name.startswith(forbidden)]
 
 
 def test_state_key_is_scoped_to_chronicler_owntracks_config() -> None:

@@ -18,8 +18,8 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +34,7 @@ from butlers.chronicler.adapters.activitywatch import (
 from butlers.chronicler.models import PointEvent, Precision, Privacy
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record, row
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 _NOW = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "activitywatch:desktop"
@@ -103,20 +104,10 @@ def test_no_llm_imports_in_activitywatch_adapter() -> None:
     source_path = mod.__file__
     assert source_path is not None
 
-    with open(source_path) as fh:
-        tree = ast.parse(fh.read(), filename=source_path)
-
+    tree = parse_file(Path(source_path))
     forbidden_prefixes = ("anthropic", "openai", "langchain", "litellm", "llm")
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for prefix in forbidden_prefixes:
-                    assert not alias.name.startswith(prefix)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                for prefix in forbidden_prefixes:
-                    assert not node.module.startswith(prefix)
+    for name in imported_module_names(tree):
+        assert not name.startswith(forbidden_prefixes)
 
 
 # ---------------------------------------------------------------------------

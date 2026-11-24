@@ -80,6 +80,31 @@ def test_sql_folds_maximal_literals_and_ignores_docstrings_comments_and_prose():
     ]
 
 
+def test_imported_module_names_preserve_raw_import_order():
+    tree = ast.parse(
+        "import json as data, functools\n"
+        "from . import local\n"
+        "from ..foreign.service import Client\n"
+        "if enabled:\n"
+        "    import nested.worker as worker\n"
+        "else:\n"
+        "    from sibling import Toolbox\n"
+        "def load():\n"
+        "    import deferred\n"
+        "import final_module\n"
+        "name = 'not_an_import'\n"
+    )
+    assert list(guard.imported_module_names(tree)) == [
+        "json",
+        "functools",
+        "foreign.service",
+        "final_module",
+        "nested.worker",
+        "sibling",
+        "deferred",
+    ]
+
+
 def test_import_edges_preserve_aliases_relative_and_nested_type_context():
     tree = ast.parse(
         "import typing as t\nfrom typing import TYPE_CHECKING as TC\n"
