@@ -113,6 +113,31 @@ def test_site_replacement_on_same_line_and_duplicates_are_not_silenced():
     assert format_violations([Violation(Path("a.py"), 1, rule.id, "bad")]).startswith("a.py:1: [")
 
 
+@pytest.mark.parametrize(
+    "second_path",
+    ["openspec/changes/other/design.md", "openspec/changes/active/design.md"],
+    ids=["distinct-site", "same-shape"],
+)
+def test_new_change_path_on_same_line_is_rejected(second_path):
+    rule = RULES[0]
+    first_path = "openspec/changes/active/design.md"
+    original = tuple(rule.check(source(f"read_files({first_path!r})")))
+    assert len(original) == 1
+    approved = [Offender(original[0], "S2")]
+    assert ratchet(original, approved) == ()
+
+    expanded = tuple(rule.check(source(f"read_files({first_path!r}, {second_path!r})")))
+    assert len(expanded) == 2
+    assert [error.detail for error in ratchet(expanded, approved)] == [
+        f"new offender: {expanded[1].detail}"
+    ]
+
+
+def test_nested_expression_reports_the_same_split_path_once():
+    text = "path = root / 'openspec' / 'changes' / 'archive' / 'design.md'"
+    assert len(tuple(RULES[0].check(source(text)))) == 1
+
+
 @pytest.mark.parametrize("rule", RULES, ids=lambda rule: rule.id)
 def test_real_clean_source_copy_rejects_a_planted_shape(rule, tmp_path):
     relative = (

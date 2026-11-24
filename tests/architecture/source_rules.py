@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from collections.abc import Callable, Iterable
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -82,6 +83,16 @@ def _excepted(source: SourceFile, pragma: str, rule: str) -> tuple[bool, list[Vi
     return bool(reason), []
 
 
+def _path_segments(node: ast.AST) -> Iterator[tuple[ast.Constant, str] | None]:
+    if isinstance(node, ast.BinOp):
+        yield from _path_segments(node.left)
+        yield from _path_segments(node.right)
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        yield node, node.value.strip("/")
+    else:
+        yield None
+
+
 def no_change_prose_reads(source: SourceFile) -> Iterable[Violation]:
     rule = "no-change-prose-reads"
     # Escaped literals must still be parsed; the filter only skips files whose
@@ -97,44 +108,32 @@ def no_change_prose_reads(source: SourceFile) -> Iterable[Violation]:
     if excused:
         return
     tree = strip_docstrings(source.tree)
-    seen = set()
+    seen_pairs: set[tuple[ast.Constant, ast.Constant]] = set()
     for node in ast.walk(tree):
-        match = (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and "openspec/changes" in node.value
-        )
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if "openspec/changes" in node.value:
+                yield _site(source, node, rule, "change-prose path")
+            continue
+
         # Path('openspec', 'changes'), root / 'openspec' / 'changes', and
         # adjacent constant strings. The bare word 'changes' never qualifies.
-        if isinstance(node, ast.BinOp | ast.Call | ast.List | ast.Tuple):
-            values = []
-
-            def segments(part: ast.AST, values=values) -> None:
-                if isinstance(part, ast.BinOp):
-                    segments(part.left)
-                    segments(part.right)
-                elif isinstance(part, ast.Constant) and isinstance(part.value, str):
-                    values.append(part.value.strip("/"))
-                else:
-                    values.append(None)
-
-            parts = (
-                node.args
-                if isinstance(node, ast.Call)
-                else (node.elts if isinstance(node, ast.List | ast.Tuple) else [node])
-            )
-            for part in parts:
-                segments(part)
-            match = match or any(
-                left == "openspec" and right == "changes"
-                for left, right in zip(values, values[1:], strict=False)
-            )
-        if match:
-            site = _site(source, node, rule, "change-prose path")
-            # A containing expression and its children can share the same start.
-            if site.line not in seen:
-                seen.add(site.line)
-                yield site
+        if not isinstance(node, ast.BinOp | ast.Call | ast.List | ast.Tuple):
+            continue
+        parts = (
+            node.args
+            if isinstance(node, ast.Call)
+            else (node.elts if isinstance(node, ast.List | ast.Tuple) else [node])
+        )
+        segments = [segment for part in parts for segment in _path_segments(part)]
+        for left, right in zip(segments, segments[1:], strict=False):
+            if left is None or right is None or (left[1], right[1]) != ("openspec", "changes"):
+                continue
+            pair = (left[0], right[0])
+            # An enclosing expression can visit the same literals as its child.
+            # Another pair on the same line is a separate occurrence.
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                yield _site(source, node, rule, "change-prose path")
 
 
 def _bindings(tree: ast.Module, module: str) -> dict[str, str]:
@@ -263,14 +262,16 @@ class Offender:
 
 def ratchet(actual: Iterable[Violation], approved: Iterable[Offender]) -> tuple[Violation, ...]:
     """Reject new, obsolete, duplicate and unreasoned exact-site entries."""
-    actual = set(actual)
+    observed = Counter(actual)
     approved = tuple(approved)
     known = {entry.violation for entry in approved}
     errors = [
-        Violation(v.path, v.line, v.rule, f"new offender: {v.detail}") for v in actual - known
+        Violation(v.path, v.line, v.rule, f"new offender: {v.detail}")
+        for v in (observed - Counter(known)).elements()
     ]
     errors += [
-        Violation(v.path, v.line, v.rule, f"obsolete offender: {v.detail}") for v in known - actual
+        Violation(v.path, v.line, v.rule, f"obsolete offender: {v.detail}")
+        for v in known - observed.keys()
     ]
     errors += [
         Violation(
