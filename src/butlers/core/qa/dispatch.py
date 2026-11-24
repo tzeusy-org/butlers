@@ -121,10 +121,14 @@ from butlers.core.qa.journal import (
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
-from butlers.core.qa.publication.diff_snapshot import derive_diff_snapshot
+from butlers.core.qa.publication.diff_snapshot import (
+    derive_diff_snapshot,
+    record_snapshot_failure,
+)
 from butlers.core.qa.publication.export import (
     ExportRefused,
     GitIdentity,
+    SealedExport,
     build_sealed_export,
 )
 from butlers.core.qa.publication.proposal import (
@@ -625,28 +629,39 @@ async def _job_branch_is_no_op(seal_root: Path, branch_name: str, base_sha: str 
     return base_sha is not None and head == base_sha
 
 
-async def _isolated_diff_snapshot(
-    repo_root: Path,
+async def _seal_isolated_export(
     seal_root: Path,
     branch_name: str,
     base_sha: str | None,
     identity: GitIdentity | None,
+) -> SealedExport | None:
+    """Seal an isolated attempt's branch once, for the diff snapshot and the publisher alike.
+
+    ``None`` means it could not be sealed (no bound base or identity, a refusal, or an error):
+    the diff snapshot is then empty and the publisher seals again, so it records the refusal
+    itself. Never raises, and never logs more than the refusal code or exception class.
+    """
+    if base_sha is None or identity is None:
+        return None
+    try:
+        objects_dir, head_sha = resolve_branch_head(seal_root, branch_name)
+        return await build_sealed_export(
+            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+        )
+    except Exception as exc:  # noqa: BLE001 — a hostile branch must not fail dispatch here
+        record_snapshot_failure("seal", exc)
+        return None
+
+
+async def _isolated_diff_snapshot(
+    repo_root: Path, export: SealedExport | None
 ) -> list[dict[str, str]]:
     """The dossier diff of an isolated attempt, from its sealed export, never from pod git.
 
-    The pod-written clone is read only through the sealer's confined object reader; base blobs
-    come from the dispatcher's own ``repo_root``. A snapshot is display, so anything that
-    cannot be sealed or derived records ``[]`` (as before) and the publisher still decides.
+    Base blobs come from the dispatcher's own ``repo_root``. A snapshot is display, so no
+    export, or anything that cannot be derived, records ``[]`` and the publisher still decides.
     """
-    if base_sha is None or identity is None:
-        return []
-    try:
-        objects_dir, head_sha = resolve_branch_head(seal_root, branch_name)
-        export = await build_sealed_export(
-            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
-        )
-    except ExportRefused as exc:
-        logger.info("No diff snapshot for isolated attempt: export refused (%s)", exc.code)
+    if export is None:
         return []
     return await derive_diff_snapshot(export, repo_root / ".git" / "objects")
 
@@ -1529,10 +1544,13 @@ async def _run_investigation_session(
             if git_author_name and git_author_email
             else None
         )
+        sealed_export = (
+            await _seal_isolated_export(seal_root, branch_name, base_sha, seal_identity)
+            if isolation is not None
+            else None
+        )
         diff_snapshot = (
-            await _isolated_diff_snapshot(
-                repo_root, seal_root, branch_name, base_sha, seal_identity
-            )
+            await _isolated_diff_snapshot(repo_root, sealed_export)
             if isolation is not None
             else await _capture_commit_diff_snapshot(worktree_path)
         )
@@ -1549,6 +1567,7 @@ async def _run_investigation_session(
                 labels=list(config.pr_labels),
                 whitelist=config.repo_whitelist,
                 dashboard_base_url=config.dashboard_base_url,
+                sealed_export=sealed_export,
             )
             await _record_publication_outcome(
                 pool,
@@ -1595,6 +1614,7 @@ async def _run_investigation_session(
             base_sha=base_sha,
             identity=identity,
             isolated=config.job_isolation is not None,
+            sealed_export=sealed_export,
         )
         if refusal is None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000

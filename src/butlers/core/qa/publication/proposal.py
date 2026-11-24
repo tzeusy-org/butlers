@@ -24,6 +24,7 @@ from butlers.core.qa.publication.binding import QA_BASE_REF, InvalidBinding, Pub
 from butlers.core.qa.publication.export import (
     ExportRefused,
     GitIdentity,
+    SealedExport,
     build_sealed_export,
 )
 from butlers.core.qa.publication.publisher import (
@@ -193,8 +194,12 @@ async def publish_investigation(
     labels: list[str],
     whitelist: RepoWhitelist | None,
     dashboard_base_url: str | None,
+    sealed_export: SealedExport | None = None,
 ) -> PublicationResult:
     """Seal the branch, bind it, and hand it to the publisher.  Never raises.
+
+    ``sealed_export`` is an export the dispatcher already sealed for this attempt's branch
+    (one seal per attempt); when absent the branch is sealed here.
 
     A refusal before the publisher is reached is receipted through it as well
     (:meth:`QaPublisher.record_refusal`): nothing was retained or sent for the attempt.
@@ -205,10 +210,13 @@ async def publish_investigation(
             attempt_id, PublicationResult(PublicationStatus.REFUSED, "unbound_export")
         )
     try:
-        objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
-        export = await build_sealed_export(
-            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
-        )
+        if sealed_export is None:
+            objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
+            export = await build_sealed_export(
+                objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+            )
+        else:
+            export, head_sha = sealed_export, sealed_export.head_sha
         binding = PublicationBinding(
             repository=publisher.repository,
             branch=branch_name,
@@ -261,6 +269,7 @@ async def retain_unpublished_proposal(
     base_sha: str | None,
     identity: GitIdentity | None,
     isolated: bool = False,
+    sealed_export: SealedExport | None = None,
 ) -> PublicationResult | None:
     """Seal and retain a committed investigation when no publisher is injected.
 
@@ -273,10 +282,13 @@ async def retain_unpublished_proposal(
     if base_sha is None or identity is None:
         return await _refuse(pool, attempt_id, PublicationStatus.REFUSED, "unbound_export")
     try:
-        objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
-        export = await build_sealed_export(
-            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
-        )
+        if sealed_export is None:
+            objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
+            export = await build_sealed_export(
+                objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+            )
+        else:
+            export = sealed_export
     except ExportRefused as exc:
         status = (
             PublicationStatus.ANONYMIZATION_FAILED
