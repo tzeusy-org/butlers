@@ -1097,6 +1097,37 @@ async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
 
 
 @pytest.mark.asyncio
+async def test_owner_published_pr_does_not_dispatch_followup():
+    pool = _qa_pool()
+    row = _make_pr_row(attempt_id=uuid.uuid4())
+    row["publication_provenance"] = "owner_published"
+    pool.fetch = AsyncMock(return_value=[row])
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [{"state": "CHANGES_REQUESTED", "body": "Fix tests.", "author": {"login": "a"}}],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "a"}}],
+        "reviewThreads": [],
+    }
+    proc = MagicMock(returncode=0)
+    proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc),
+        patch(
+            "butlers.core.qa.dispatch._dispatch_pr_review_followup", new_callable=AsyncMock
+        ) as followup,
+    ):
+        counts = await check_open_pr_statuses(
+            pool,
+            Path("/tmp/repo"),
+            "synthetic-token",
+            spawner=MagicMock(),
+            config=QaDispatchConfig(),
+        )
+    assert counts["follow_ups_dispatched"] == 0
+    followup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_check_open_pr_statuses_rate_limit_respected():
     """Recent follow-up dispatches are staggered with exponential backoff."""
     attempt_id = uuid.uuid4()

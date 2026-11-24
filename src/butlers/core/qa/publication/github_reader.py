@@ -210,7 +210,11 @@ class GithubPublicationReader:
             if not isinstance(name, str):
                 raise PublicationReadError("unexpected_pull_request")
             names.append(name)
-        return PullRequestView(number, head, base, title, body, tuple(names))
+        head_side = item.get("head")
+        head_sha = head_side.get("sha") if isinstance(head_side, dict) else None
+        if head_sha is not None and (not isinstance(head_sha, str) or not _SHA.fullmatch(head_sha)):
+            raise PublicationReadError("unexpected_pull_request")
+        return PullRequestView(number, head, base, title, body, tuple(names), head_sha)
 
     def _branch_here(self, side: object) -> str | None:
         """The branch name of ``side`` (a PR's ``head`` or ``base``) if it is in this repository."""

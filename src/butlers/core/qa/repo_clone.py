@@ -61,6 +61,12 @@ class ManagedRepoClone:
         self._clone_dir = clone_dir or _CLONE_DIR
         self._lock = asyncio.Lock()
         self._clone_path: Path | None = None
+        self._clone_origin: str | None = None
+
+    @property
+    def clone_origin(self) -> str | None:
+        """Configured origin verified when the managed clone was opened."""
+        return self._clone_origin
 
     @property
     def clone_path(self) -> Path | None:
@@ -115,6 +121,7 @@ class ManagedRepoClone:
 
     async def _ensure_cloned_unlocked(self) -> Path:
         """Internal: clone if .git is missing or its origin no longer matches config."""
+        self._clone_origin = None
         repo_url = await self._read_repo_url()
 
         if (self._clone_dir / ".git").is_dir():
@@ -123,6 +130,7 @@ class ManagedRepoClone:
             )
             if origin_rc == 0 and origin_url.strip() == repo_url:
                 self._clone_path = self._clone_dir
+                self._clone_origin = repo_url
                 await self._update_clone_path(str(self._clone_dir))
                 return self._clone_dir
             logger.info(
@@ -157,6 +165,7 @@ class ManagedRepoClone:
             raise RuntimeError(error_msg)
 
         self._clone_path = self._clone_dir
+        self._clone_origin = repo_url
         await self._update_clone_path(str(self._clone_dir))
         await self._update_sync_error(None)
         logger.info("Clone complete: %s", self._clone_dir)

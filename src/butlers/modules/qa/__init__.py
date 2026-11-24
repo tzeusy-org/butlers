@@ -1408,6 +1408,15 @@ class QaModule(Module):
                 try:
                     refreshed_root = await self._managed_clone.refresh()
                     self._repo_root = refreshed_root
+                    # Only the managed clone's verified GitHub origin can bind a proposal.
+                    from urllib.parse import urlsplit
+
+                    origin = self._managed_clone.clone_origin
+                    if origin:
+                        url = urlsplit(origin)
+                        parts = url.path.strip("/").removesuffix(".git").split("/")
+                        if (url.scheme, url.netloc) == ("https", "github.com") and len(parts) == 2:
+                            dispatch_config.proposal_repository = "/".join(parts)
                 except Exception:
                     logger.warning(
                         "QaModule patrol %s: managed repo refresh failed (non-fatal); "
@@ -1984,6 +1993,13 @@ class QaModule(Module):
             )
 
         try:
+            if gh_token:
+                from butlers.core.qa.publication.owner_bindback import bind_owner_publications
+
+                try:
+                    await bind_owner_publications(pool, gh_token)
+                except Exception:
+                    logger.warning("QaModule: owner publication observation unavailable")
             await check_open_pr_statuses(
                 pool,
                 self._repo_root,

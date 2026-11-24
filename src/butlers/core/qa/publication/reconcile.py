@@ -102,6 +102,7 @@ class PullRequestView:
     title: str
     body: str
     labels: tuple[str, ...]
+    head_sha: str | None = None
 
 
 class PublicationReader(Protocol):

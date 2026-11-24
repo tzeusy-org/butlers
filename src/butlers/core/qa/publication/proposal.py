@@ -272,6 +272,7 @@ async def retain_unpublished_proposal(
     identity: GitIdentity | None,
     isolated: bool = False,
     sealed_export: SealedExport | None = None,
+    repository: str | None = None,
 ) -> PublicationResult | None:
     """Seal and retain a committed investigation when no publisher is injected.
 
@@ -306,8 +307,25 @@ async def retain_unpublished_proposal(
         )
         return await _refuse(pool, attempt_id, PublicationStatus.REFUSED, "unbound_export")
     try:
+        target_repository = None
+        if repository is not None:
+            try:
+                target_repository = PublicationBinding(
+                    repository=repository,
+                    branch=branch_name,
+                    base_ref=QA_BASE_REF,
+                    head_sha=export.head_sha,
+                ).repository
+            except (InvalidBinding, TypeError):
+                logger.warning("QA proposal retained without a provable target")
         await retention.retain_export(
-            pool, attempt_id, export, sealed_before_isolation=not isolated
+            pool,
+            attempt_id,
+            export,
+            sealed_before_isolation=not isolated,
+            target_repository=target_repository,
+            target_base_ref=QA_BASE_REF if target_repository else None,
+            target_branch=branch_name if target_repository else None,
         )
     except PublicationRefused as exc:
         # Nothing was retained and no receipt is claimed: the caller keeps today's fail-closed

@@ -1,3 +1,7 @@
+## Owner publication bind-back
+
+- [x] Verify exact retained target, PR identity, expiry and competing patrol association at the persistence and patrol seams (bu-ejow5p.7.4).
+
 ## 1. Bundle
 
 - [x] 1.1 `core/qa/evidence_bundle.py`: sections, ids, digests, caps, anonymizer gate

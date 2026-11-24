@@ -63,6 +63,7 @@ async def test_ensure_cloned_clones_fresh_when_missing(tmp_path):
         result = await clone.ensure_cloned()
 
     assert result == clone_dir
+    assert clone.clone_origin == "https://github.com/tzeusy-org/butlers"
     clone_call = next(c for c in calls if c[0] == "git" and c[1] == "clone")
     assert clone_call[-2] == "https://github.com/tzeusy-org/butlers"
 
@@ -83,6 +84,7 @@ async def test_ensure_cloned_reuses_clone_when_origin_matches(tmp_path):
         result = await clone.ensure_cloned()
 
     assert result == clone_dir
+    assert clone.clone_origin == "https://github.com/tzeusy-org/butlers"
     assert (clone_dir / ".git").is_dir()
     clone_calls = [c for c in mocked.call_args_list if c.args[1:2] == ("clone",)]
     assert clone_calls == []

@@ -29,6 +29,34 @@ Scope: v1-mandatory
 - **WHEN** an evidence item still carries sensitive content after anonymization
 - **THEN** no agent is launched and the attempt is not counted toward the breaker
 
+### Requirement: Patrol Binds Verified Owner-Published Proposals
+
+Patrol SHALL associate an owner-published pull request with a retained QA proposal only when
+read-only evidence proves the uniquely observed PR has the exact repository, head branch, base
+ref and sealed head captured for that attempt. The repository and base ref SHALL be captured from
+the trusted dispatch context with the immutable export; the retained base commit remains unchanged
+even when the live base advances. The repository SHALL remain allowed. An unbound legacy export,
+expired or unavailable export, ambiguous observation, foreign repository or mismatched ref SHALL
+leave the attempt unchanged. An unbound legacy export SHALL report a content-free reason. A database-time conditional write
+SHALL associate the PR once and record `owner_published` provenance; repeated or concurrent
+patrols SHALL be idempotent. Existing PR tracking SHALL continue without autonomous follow-ups for
+owner-published PRs.
+
+ID: REQ-qa-investigation-dispatch-020
+Source: bu-ejow5p.7.4 (run 25)
+Scope: v1-mandatory
+
+#### Scenario: Owner publishes the exact retained proposal
+
+- **WHEN** a unique PR matches the retained target, branch, base and sealed head before expiry
+- **THEN** one patrol associates it with the attempt as `pr_open` and records owner provenance
+- **AND** repeated or competing patrols do not create another association
+
+#### Scenario: The target or observation cannot be proven
+
+- **WHEN** the origin is missing, the export has expired, or PR evidence is unavailable, ambiguous or mismatched
+- **THEN** the proposal remains retained and the attempt is unchanged
+
 ### Requirement: Investigation Notes Cite The Evidence Bundle And Unsupported Lines Are Marked
 
 Investigation notes at schema version 2 SHALL carry a `ref` on each evidence line naming the

@@ -95,6 +95,9 @@ async def retain_export(
     export: SealedExport,
     *,
     sealed_before_isolation: bool = True,
+    target_repository: str | None = None,
+    target_base_ref: str | None = None,
+    target_branch: str | None = None,
 ) -> None:
     """Persist ``export`` for ``attempt_id`` once; raise :class:`PublicationRefused` otherwise.
 
@@ -109,14 +112,14 @@ async def retain_export(
             WITH inserted AS (
                 INSERT INTO public.qa_publication_exports
                     (attempt_id, base_sha, head_sha, commits, objects, digest,
-                     sealed_before_isolation)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     sealed_before_isolation, target_repository, target_base_ref, target_branch)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (attempt_id) DO NOTHING
-                RETURNING digest, false AS pruned
+                RETURNING digest, false AS pruned, target_repository, target_base_ref, target_branch
             )
-            SELECT digest, pruned FROM inserted
+            SELECT digest, pruned, target_repository, target_base_ref, target_branch FROM inserted
             UNION ALL
-            SELECT digest, pruned_at IS NOT NULL
+            SELECT digest, pruned_at IS NOT NULL, target_repository, target_base_ref, target_branch
             FROM public.qa_publication_exports WHERE attempt_id = $1
             LIMIT 1
             """,
@@ -127,6 +130,9 @@ async def retain_export(
             encode_objects(export.objects),
             export.digest,
             sealed_before_isolation,
+            target_repository,
+            target_base_ref,
+            target_branch,
         )
     except asyncpg.ForeignKeyViolationError as exc:
         raise PublicationRefused("unknown_attempt") from exc
@@ -137,6 +143,12 @@ async def retain_export(
         raise PublicationRefused("export_unretained")
     if stored["digest"] != export.digest:
         raise PublicationRefused("export_changed")
+    if target_repository is not None and (
+        stored["target_repository"] != target_repository
+        or stored["target_base_ref"] != target_base_ref
+        or stored["target_branch"] != target_branch
+    ):
+        raise PublicationRefused("export_target_changed")
     if stored["pruned"]:
         raise PublicationRefused("export_pruned")
 

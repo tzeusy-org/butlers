@@ -4428,6 +4428,26 @@
         "dashboard-api"
       ]
     },
+    "src/butlers/core/qa/dispatch.py::_refresh_main_commit::url::09a8b930c8b79e7c313e5e741e1d59c39ae91bc1f10cdefa68b47bf77519be57": {
+      "class": "external",
+      "observed": {
+        "authorities": [
+          "github.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/core/qa/dispatch.py",
+        "scope": "_refresh_main_commit",
+        "sha256": "09a8b930c8b79e7c313e5e741e1d59c39ae91bc1f10cdefa68b47bf77519be57"
+      },
+      "reason": "Tokenless QA proposal base fetch uses the fixed GitHub host already declared for butlers-up.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up"
+      ]
+    },
     "src/butlers/core/qa/dispatch.py::check_open_pr_statuses::url::c4d0e8dabcc21a3afa22987e831ad5cc0d990d64ff567fa424a1ba0a1bf25b64": {
       "class": "reference",
       "observed": {
