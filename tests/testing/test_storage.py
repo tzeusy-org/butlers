@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from butlers.testing import storage
+from butlers.testing import migration, storage
 
 pytestmark = pytest.mark.unit
 
@@ -292,12 +292,15 @@ def test_actual_pg_storage_query_is_readonly_and_aggregate(monkeypatch):
     from testcontainers.postgres import PostgresContainer
 
     container = PostgresContainer("pgvector/pgvector:pg17")
+    database_name = "test_storage_positive"
     try:
         container.start()
-        engine = create_engine(container.get_connection_url(), isolation_level="AUTOCOMMIT")
+        admin_url = container.get_connection_url()
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
         try:
             with engine.connect() as connection:
                 connection.execute(text("CREATE DATABASE test_storage_positive"))
+                migration._record_created_database(container, admin_url, connection, database_name)
         finally:
             engine.dispose()
         result = storage.database_totals(container)
@@ -314,8 +317,9 @@ def test_actual_pg_storage_query_is_readonly_and_aggregate(monkeypatch):
             storage, "identity", lambda: {"worker": "gw0", "run": "1", "attempt": "1"}
         )
         observer = storage.StorageObserver(container)
-        observer.database_event("intent", container, "test_storage_positive", "F")
-        observer.database_event("ready", container, "test_storage_positive", "F")
+        monkeypatch.setattr(storage, "_ACTIVE", observer)
+        observer.database_event("intent", container, database_name, "F")
+        observer.database_event("ready", container, database_name, "F")
         steps = []
         allocated = storage.owned_database_allocation(observer, steps=steps)
         assert allocated["owned_allocation"]["cohort_complete"] is True
@@ -335,8 +339,15 @@ def test_actual_pg_storage_query_is_readonly_and_aggregate(monkeypatch):
             "dispose",
         ]
 
+        migration.drop_test_db(container, database_name)
+        retired = storage.owned_database_allocation(observer)["owned_allocation"]
+        assert retired["cohort_complete"] is True
+        assert retired["registered"] == retired["mapped"] == retired["F_count"] == 0
     finally:
-        container.stop(delete_volume=True)
+        try:
+            migration.drop_test_databases(container)
+        finally:
+            container.stop(delete_volume=True)
 
 
 def test_real_observer_thread_records_owned_events_and_joins(monkeypatch):
@@ -628,6 +639,41 @@ def test_registry_limit_does_not_limit_database_creation(monkeypatch):
         storage.owned_database_allocation(observer)
 
 
+def test_database_drop_preserves_failed_and_other_fixture_receipts(monkeypatch):
+    observer = _allocation_observer(monkeypatch)
+    monkeypatch.setattr(storage, "_ACTIVE", observer)
+    container = observer.container
+    observer.database_event("ready", container, "held", "C")
+    initial_sequence, _, initial_entries = observer.database_snapshot()
+
+    with storage.observe_database_drop(object(), "held"):
+        pass
+    with pytest.raises(RuntimeError, match="drop failed"):
+        with storage.observe_database_drop(container, "held"):
+            raise RuntimeError("drop failed")
+    assert observer.database_snapshot() == (initial_sequence, False, initial_entries)
+
+    with storage.observe_database_drop(container, "held"):
+        assert observer.database_snapshot() == (initial_sequence, False, initial_entries)
+    assert observer.database_snapshot() == (initial_sequence + 1, False, {})
+
+
+@pytest.mark.parametrize("successor_before_drop", [True, False])
+def test_database_drop_preserves_same_name_successor(monkeypatch, successor_before_drop):
+    observer = _allocation_observer(monkeypatch)
+    monkeypatch.setattr(storage, "_ACTIVE", observer)
+    container = observer.container
+    observer.database_event("ready", container, "reused", "C")
+    if successor_before_drop:
+        observer.database_event("intent", container, "reused", "C")
+    with storage.observe_database_drop(container, "reused"):
+        if not successor_before_drop:
+            observer.database_event("intent", container, "reused", "C")
+    assert observer.database_snapshot()[2]["reused"][:2] == ("C", "intent")
+    observer.database_event("ready", container, "reused", "C")
+    assert observer.database_snapshot()[2]["reused"][:2] == ("C", "ready")
+
+
 @pytest.mark.parametrize(
     "rows",
     [
@@ -769,7 +815,7 @@ def test_full_cohort_600_includes_dominant_last_clone_with_fixed_query_count(mon
     )
 
 
-@pytest.mark.parametrize("refusal", ["pending", "missing", "generation", "metadata"])
+@pytest.mark.parametrize("refusal", ["pending", "missing", "generation", "metadata", "retired"])
 def test_full_current_coverage_refuses_partial_or_racing_cohort(monkeypatch, tmp_path, refusal):
     observer = _allocation_observer(monkeypatch)
     data, _ = _real_allocation_command(monkeypatch, tmp_path)
@@ -787,11 +833,14 @@ def test_full_current_coverage_refuses_partial_or_racing_cohort(monkeypatch, tmp
             else []
         )
 
-    change = (
-        (lambda: observer.database_event("intent", observer.container, "new", "F"))
-        if refusal == "generation"
-        else None
-    )
+    def change():
+        if refusal == "generation":
+            observer.database_event("intent", observer.container, "new", "F")
+        elif refusal == "retired":
+            with storage.observe_database_drop(observer.container, "private"):
+                pass
+
+    monkeypatch.setattr(storage, "_ACTIVE", observer)
     _fake_allocation_sql(monkeypatch, metadata, change)
     result = storage.owned_database_allocation(observer)["owned_allocation"]
     assert result["status"] == "unknown" and result["cohort_complete"] is False

@@ -65,6 +65,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from butlers.testing.storage import database_event as _storage_database
 from butlers.testing.storage import note as _storage_note
+from butlers.testing.storage import observe_database_drop
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
@@ -748,7 +749,8 @@ def _drop_created_databases(postgres_container: object, *, db_name: str | None =
                         current = conn.execute(_DATABASE_IDENTITY, {"name": name}).one_or_none()
                         if current is not None:
                             if (current[0], current[1]) == (record.cluster, record.oid):
-                                _drop_database(conn, name, is_template=current[2])
+                                with observe_database_drop(postgres_container, name):
+                                    _drop_database(conn, name, is_template=current[2])
                             else:
                                 _LOGGER.warning(
                                     "Skipping cleanup for replaced test database %s", name

@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -887,6 +887,31 @@ def database_event(event: str, container: Any, name: str, kind: str) -> None:
     if _ACTIVE is not None:
         with contextlib.suppress(Exception):
             _ACTIVE.database_event(event, container, name, kind)
+
+
+@contextlib.contextmanager
+def observe_database_drop(container: Any, name: str) -> Iterator[None]:
+    """Retire an observed generation after its owner confirms a successful drop."""
+    observer = _ACTIVE
+    entry = None
+    with contextlib.suppress(Exception):
+        if observer is not None and observer.container is container:
+            with observer.lock:
+                candidate = observer.databases.get(name)
+                if candidate is not None and candidate[1] in {"created", "ready"}:
+                    entry = candidate
+
+    yield
+
+    with contextlib.suppress(Exception):
+        if observer is not None and entry is not None:
+            with observer.lock:
+                # A successor can have registered the same name while DROP was
+                # in progress. Keep its newer entry and invalidate old samples.
+                if observer.databases.get(name) == entry:
+                    del observer.databases[name]
+                    observer.migrating_databases.discard(name)
+                    observer.database_sequence += 1
 
 
 @contextlib.contextmanager
