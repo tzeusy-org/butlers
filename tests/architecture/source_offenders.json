@@ -269,25 +269,11 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/contracts/test_calendar_quarantine_readers.py",
-      "line": 61,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 1e8886ca6fea1d6c)",
-      "reason": "Initial S1a inventory preserves the landed source scan from #6064 pending migration"
-    },
-    {
       "path": "tests/contracts/test_client_openapi_contract.py",
       "line": 223,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 30f6a61a2465593b)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/contracts/test_connector_ingest_submit_guard.py",
-      "line": 16,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape a023829bbcbae15f)",
-      "reason": "Initial S1a inventory preserves the landed source scan from #6060 pending migration"
     },
     {
       "path": "tests/contracts/test_d6_writers_stamp_taint.py",
