@@ -509,7 +509,8 @@ jobs:
   # main badge; it is not a required check.
   coverage-shards:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
-    runs-on: ubuntu-latest
+    # Covered unit tests share the ordinary unit lane's platform contracts.
+    runs-on: ${{ matrix.lane == 'unit' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     env:
       UV_PYTHON: 3.12.15
       CI_COVERAGE: '1'
