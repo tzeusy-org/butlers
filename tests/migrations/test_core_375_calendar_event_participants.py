@@ -1,4 +1,4 @@
-"""core_373: the participants table and the attendee identity claim read (bu-5ii4gj.3 S1).
+"""core_375: the participants table and the attendee identity claim read (bu-5ii4gj.3 S1).
 
 Real migrated databases only, synthetic people. The function answers exact normalized addresses
 with claimant ids and no names, capped at 200 addresses, to the butler runtime roles only.
@@ -198,9 +198,9 @@ def test_two_schemas_install_once_and_only_the_last_downgrade_drops_the_function
     db_url = create_migration_db(postgres_container, migration_db_name())
     first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
     second = _build_alembic_config(db_url, chains=["core"], target_schema="travel")
-    command.upgrade(first, "core_373")
-    command.upgrade(second, "core_373")
-    command.upgrade(second, "core_373")  # an idempotent replay
+    command.upgrade(first, "core_375")
+    command.upgrade(second, "core_375")
+    command.upgrade(second, "core_375")  # an idempotent replay
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
 
@@ -229,13 +229,13 @@ def test_two_schemas_install_once_and_only_the_last_downgrade_drops_the_function
 def test_a_later_run_converges_a_stray_grantee_away(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
-    command.upgrade(first, "core_373")
+    command.upgrade(first, "core_375")
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.execute(text(f"GRANT EXECUTE ON FUNCTION {_CLAIMS} TO PUBLIC"))
         command.upgrade(
-            _build_alembic_config(db_url, chains=["core"], target_schema="travel"), "core_373"
+            _build_alembic_config(db_url, chains=["core"], target_schema="travel"), "core_375"
         )
         with engine.connect() as conn:
             public = conn.execute(
@@ -266,7 +266,7 @@ def test_only_the_butlers_hosting_the_calendar_module_may_execute(postgres_conta
                 if not exists:
                     conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
         command.upgrade(
-            _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core_373"
+            _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core_375"
         )
         with engine.connect() as conn:
             granted = set(

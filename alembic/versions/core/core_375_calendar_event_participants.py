@@ -1,7 +1,7 @@
 """calendar_event_participants and the attendee identity claim read (bu-5ii4gj.3 S1).
 
-Revision ID: core_373
-Revises: core_372
+Revision ID: core_375
+Revises: core_374
 Create Date: 2026-11-24 12:00:00.000000
 
 ``calendar_event_participants`` is one row per attendee address of a provider calendar event, in
@@ -20,7 +20,7 @@ butlers that enable ``[modules.calendar]`` (PUBLIC revoked): a butler that does 
 cannot probe the address-to-entity map. A butler that later enables the module needs a revision
 that re-converges the ACL. The core chain runs once per butler schema: every run takes one advisory
 lock and replaces the function, which is idempotent; the downgrade drops the function only when
-no other schema-local chain is still at core_373 or later, and always drops this schema's table.
+no other schema-local chain is still at core_375 or later, and always drops this schema's table.
 """
 
 from __future__ import annotations
@@ -28,14 +28,14 @@ from __future__ import annotations
 from alembic import op
 from butlers.db_authority.roles import module_roles
 
-revision = "core_373"
-down_revision = "core_372"
+revision = "core_375"
+down_revision = "core_374"
 branch_labels = None
 depends_on = None
 
 _LOCK = (
     "SELECT pg_advisory_xact_lock("
-    "hashtextextended('butlers:core_373:calendar-event-participants', 0))"
+    "hashtextextended('butlers:core_375:calendar-event-participants', 0))"
 )
 #: Only the butlers that host the calendar module project events, so only they may probe the map.
 _ROLES = module_roles("calendar")
@@ -146,7 +146,7 @@ def _grants(signature: str) -> list[str]:
 
 
 def _installation_count() -> int:
-    """Count schema-local core chains still at core_373 or later (includes this one)."""
+    """Count schema-local core chains still at core_375 or later (includes this one)."""
     bind = op.get_bind()
     schemas = bind.exec_driver_sql(
         """
@@ -167,7 +167,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 373
+                    THEN substring(version_num FROM 6)::integer >= 375
                     ELSE false END
             )
             """
