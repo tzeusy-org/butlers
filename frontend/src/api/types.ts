@@ -6751,7 +6751,7 @@ export interface QaCaseSummary {
 
 /** Parsed QA investigation notes embedded in a case dossier. */
 export interface QaInvestigationNotes {
-  schema_version: 1;
+  schema_version: 1 | 2;
   headline: string;
   hypothesis: string;
   blurb_segments: (
@@ -6766,6 +6766,8 @@ export interface QaInvestigationNotes {
     {
       evidence_ids: string[];
       note: string;
+      /** Set by the dispatcher: none of the cited lines matches its evidence bundle. */
+      unsupported?: boolean;
     }
   >;
   evidence_lines: {
@@ -6774,6 +6776,10 @@ export interface QaInvestigationNotes {
     lvl: string;
     butler: string;
     msg: string;
+    /** Evidence bundle item id (notes v2). */
+    ref?: string | null;
+    /** Set by the dispatcher: not backed by its recorded evidence bundle. */
+    unsupported?: boolean;
   }[];
   counter_evidence: {
     hypothesis: string;

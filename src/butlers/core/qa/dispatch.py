@@ -52,6 +52,7 @@ openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -127,7 +128,12 @@ from butlers.core.qa.journal import (
 )
 from butlers.core.qa.known_issue_links import sync_qa_pr_link
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
+from butlers.core.qa.notes import (
+    InvestigationNotes,
+    ParseStatus,
+    parse_investigation_notes,
+    verify_evidence_against_bundle,
+)
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.publication.diff_snapshot import (
     derive_diff_snapshot,
@@ -797,6 +803,33 @@ async def _emit_investigation_notes_journal_events(
     )
 
 
+async def _recorded_bundle_bodies(
+    pool: asyncpg.Pool, attempt_id: uuid.UUID
+) -> dict[str, Any] | None:
+    """The dispatcher's own anonymized bundle bodies for this attempt, or ``None`` if none."""
+    try:
+        raw = await pool.fetchval(
+            """
+            SELECT structured_evidence->'evidence_bundle'->'bodies'
+            FROM public.qa_findings
+            WHERE healing_attempt_id = $1
+            LIMIT 1
+            """,
+            attempt_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — verification is skipped, notes still persist
+        logger.warning(
+            "Evidence bundle unreadable (attempt=%s): %s", attempt_id, type(exc).__name__
+        )
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
 async def _persist_investigation_notes(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -861,6 +894,9 @@ async def _persist_investigation_notes(
         )
         return status
 
+    bodies = await _recorded_bundle_bodies(pool, attempt_id)
+    if bodies is not None:
+        notes = verify_evidence_against_bundle(notes, bodies)
     payload = notes.model_dump(mode="json")
     if diff_snapshot is not None:
         payload["diff_snapshot"] = diff_snapshot

@@ -62,7 +62,8 @@ export function ClaimAnchoredBlurb({
             )}
             data-claim-id={segment.claim}
             data-testid={`qa-claim-${segment.claim}`}
-            title={claim?.note}
+            title={claim?.unsupported ? `Unsupported claim: ${claim.note}` : claim?.note}
+            data-unsupported={claim?.unsupported ? "true" : undefined}
             onMouseEnter={() => onClaimHover([segment.claim])}
             onMouseLeave={() => onClaimHover(null)}
           >
@@ -75,6 +76,7 @@ export function ClaimAnchoredBlurb({
               data-testid={`qa-claim-${segment.claim}-marker`}
             >
               [{claimNumber}]
+              {claim?.unsupported ? " unsupported" : ""}
             </sup>
           </span>
         );

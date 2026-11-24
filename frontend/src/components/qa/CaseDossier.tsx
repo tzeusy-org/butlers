@@ -76,6 +76,9 @@ export function CaseDossier({
     [notes],
   );
 
+  const claimList = notes ? Object.values(notes.claims) : [];
+  const onlyUnsupportedClaims = claimList.length > 0 && claimList.every((c) => c.unsupported);
+
   if (!caseId) {
     return (
       <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
@@ -148,6 +151,14 @@ export function CaseDossier({
             <>
               <div className="space-y-2">
                 <DossierEyebrow>Diagnosis</DossierEyebrow>
+                {onlyUnsupportedClaims ? (
+                  <p
+                    className="text-[11px] text-[var(--amber-text)]"
+                    data-testid="qa-dossier-unsupported-claims"
+                  >
+                    Unsupported claim: nothing here matches the evidence the dispatcher recorded.
+                  </p>
+                ) : null}
                 {hasUnpublishedProposal ? (
                   <p className="font-serif text-[17px] leading-8 text-foreground">
                     {notes.hypothesis}

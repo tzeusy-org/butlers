@@ -28,3 +28,29 @@ Scope: v1-mandatory
 
 - **WHEN** an evidence item still carries sensitive content after anonymization
 - **THEN** no agent is launched and the attempt is not counted toward the breaker
+
+### Requirement: Investigation Notes Cite The Evidence Bundle And Unsupported Lines Are Marked
+
+Investigation notes at schema version 2 SHALL carry a `ref` on each evidence line naming the
+evidence bundle item it quotes. When persisting notes the dispatcher SHALL verify each line
+against the evidence it recorded before launch, never against any agent-visible copy: a line is
+supported only if its `ref` names a recorded item and its `msg`, after whitespace normalisation,
+is contained in that item's text. All other lines SHALL be stored with `unsupported = true`, and a claim that cites no supported line
+SHALL be stored with `unsupported = true`; a case whose every claim is unsupported SHALL NOT be
+`patch_ready`. An agent-supplied `unsupported` value SHALL be ignored,
+and the dossier SHALL label unsupported lines and claims. Notes persisted for an attempt with no
+recorded bundle SHALL be stored unverified.
+
+ID: REQ-qa-investigation-dispatch-018
+Source: bu-ejow5p.13 (run 25)
+Scope: v1-mandatory
+
+#### Scenario: An invented citation
+
+- **WHEN** the agent cites a ref that is not in the recorded bundle
+- **THEN** that line and any claim resting only on it are stored unsupported and shown as such
+
+#### Scenario: Only unsupported claims
+
+- **WHEN** every claim of a case rests only on unsupported lines
+- **THEN** the dossier renders them as an unsupported claim and the case cannot be `patch_ready`

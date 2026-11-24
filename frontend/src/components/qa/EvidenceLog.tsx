@@ -111,7 +111,18 @@ export function EvidenceLog({
             </span>
             <span className={cn("truncate", levelClass(row.lvl))}>{row.lvl}</span>
             <span className="truncate text-muted-foreground">{row.butler}</span>
-            <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{row.msg}</span>
+            <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">
+              {row.unsupported ? (
+                <span
+                  className="mr-2 rounded-[2px] border border-border px-1 text-[var(--amber-text)]"
+                  data-testid={`qa-evidence-row-${row.id}-unsupported`}
+                  title="Not backed by evidence the dispatcher observed"
+                >
+                  unsupported
+                </span>
+              ) : null}
+              {row.msg}
+            </span>
           </div>
         );
       })}
