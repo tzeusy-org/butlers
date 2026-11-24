@@ -556,13 +556,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/contracts/test_user_context_census.py",
-      "line": 92,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape ce45df4baf1353d2)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/core/qa/test_anonymization_boundary.py",
       "line": 32,
       "rule": "ast-tests-use-source-guard",
@@ -786,13 +779,6 @@
       "line": 1696,
       "rule": "no-private-walkers",
       "detail": "private walker Visitor (shape 78958db032d820e8)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/contracts/test_user_context_census.py",
-      "line": 111,
-      "rule": "no-private-walkers",
-      "detail": "private walker _Scanner (shape 356d40ce07175a83)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {

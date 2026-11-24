@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import parent_map, strip_docstrings
+
 pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -108,112 +110,72 @@ def _is_fixed_offset(node: ast.Call) -> bool:
     )
 
 
-class _Scanner(ast.NodeVisitor):
-    """Collect enclosing qualnames of matching references, docstrings skipped."""
-
-    def __init__(
-        self,
-        text: Callable[[str], bool],
-        *,
-        imports: bool = False,
-        names: frozenset[str] = frozenset(),
-        fixed_offset: bool = False,
-    ) -> None:
-        self.text = text
-        self.imports = imports
-        self.names = names
-        self.fixed_offset = fixed_offset
-        self.stack: list[str] = []
-        self.docstrings: set[int] = set()
-        self.hits: set[str] = set()
-
-    def _hit(self) -> None:
-        self.hits.add(".".join(self.stack) or "<module>")
-
-    def _scope(self, node: ast.AST, name: str | None) -> None:
-        body = getattr(node, "body", None)
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-            self.docstrings.add(id(body[0].value))
-        if name is not None:
-            self.stack.append(name)
-        self.generic_visit(node)
-        if name is not None:
-            self.stack.pop()
-
-    def visit_Module(self, node: ast.Module) -> None:
-        self._scope(node, None)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self._scope(node, node.name)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._scope(node, node.name)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._scope(node, node.name)
-
-    def visit_Constant(self, node: ast.Constant) -> None:
-        if (
-            isinstance(node.value, str)
-            and self.text(node.value)
-            and id(node) not in self.docstrings
-        ):
-            self._hit()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if node.id in self.names:
-            self._hit()
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if node.attr in self.names:
-            self._hit()
-        self.generic_visit(node)
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if self.fixed_offset and _is_fixed_offset(node):
-            self._hit()
-        self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        if self.imports and any(alias.name == _CONTEXT_BUS for alias in node.names):
-            self._hit()
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if any(alias.name in self.names for alias in node.names):
-            self._hit()
-        if self.imports and (
-            node.module == _CONTEXT_BUS
-            or (
-                node.module == "butlers"
-                and any(alias.name == "context_bus" for alias in node.names)
+def _is_user_context_reference(node: ast.AST) -> bool:
+    match node:
+        case ast.Constant(value=str() as text):
+            return _user_context_text(text)
+        case ast.Import(names=aliases):
+            return any(alias.name == _CONTEXT_BUS for alias in aliases)
+        case ast.ImportFrom(module=module, names=aliases):
+            return module == _CONTEXT_BUS or (
+                module == "butlers" and any(alias.name == "context_bus" for alias in aliases)
             )
-        ):
-            self._hit()
+        case _:
+            return False
 
 
-def _references(scanner: Callable[[], _Scanner], needles: tuple[str, ...]) -> set[str]:
-    """Scanner hits as ``path::qualname`` over src/ and roster/, tests and migrations skipped."""
+def _is_owner_zone_reference(node: ast.AST) -> bool:
+    match node:
+        case ast.Constant(value=str() as text):
+            return _owner_zone_text(text)
+        case ast.Name(id=name) | ast.Attribute(attr=name):
+            return name in _SGT_NAMES
+        case ast.Call():
+            return _is_fixed_offset(node)
+        case ast.ImportFrom(names=aliases):
+            return any(alias.name in _SGT_NAMES for alias in aliases)
+        case _:
+            return False
+
+
+def _reference_scopes(tree: ast.Module, matches: Callable[[ast.AST], bool]) -> set[str]:
+    """Collect the enclosing qualnames of matching code, excluding docstrings."""
+    code = strip_docstrings(tree)
+    parents = parent_map(code)
+    found: set[str] = set()
+    for node in ast.walk(code):
+        if not matches(node):
+            continue
+        names = []
+        parent = parents.get(id(node))
+        while parent is not None:
+            if isinstance(parent, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                names.append(parent.name)
+            parent = parents.get(id(parent))
+        found.add(".".join(reversed(names)) or "<module>")
+    return found
+
+
+def _references(matches: Callable[[ast.AST], bool], needles: tuple[str, ...]) -> set[str]:
+    """Return matching path and qualname pairs from source outside tests and migrations."""
     found: set[str] = set()
     for path in _python_files(skip_tests_and_migrations=True):
         source = path.read_text(encoding="utf-8")
         if not any(needle in source for needle in needles):
             continue
-        visitor = scanner()
-        visitor.visit(ast.parse(source, filename=str(path)))
+        scopes = _reference_scopes(ast.parse(source, filename=str(path)), matches)
         relative = path.relative_to(_REPO_ROOT).as_posix()
-        found.update(f"{relative}::{qualname}" for qualname in visitor.hits)
+        found.update(f"{relative}::{qualname}" for qualname in scopes)
     return found
 
 
 def _user_context_references() -> set[str]:
-    return _references(
-        lambda: _Scanner(_user_context_text, imports=True), ("user_context", "context_bus")
-    )
+    return _references(_is_user_context_reference, ("user_context", "context_bus"))
 
 
 def _owner_zone_references() -> set[str]:
     return _references(
-        lambda: _Scanner(_owner_zone_text, names=_SGT_NAMES, fixed_offset=True),
+        _is_owner_zone_reference,
         ("Asia/Singapore", "SGT", "today_sgt", "hours=8"),
     )
 
@@ -295,9 +257,10 @@ def test_the_scanner_skips_docstrings_and_names_the_enclosing_function() -> None
         "        from butlers import context_bus\n"
         "        return context_bus\n"
     )
-    scanner = _Scanner(_user_context_text, imports=True)
-    scanner.visit(ast.parse(source))
-    assert scanner.hits == {"reader", "Holder.nested"}
+    assert _reference_scopes(ast.parse(source), _is_user_context_reference) == {
+        "reader",
+        "Holder.nested",
+    }
 
 
 @pytest.mark.parametrize(
@@ -310,9 +273,8 @@ def test_the_scanner_skips_docstrings_and_names_the_enclosing_function() -> None
     ],
 )
 def test_an_unqualified_sql_reader_is_a_reference(statement: str) -> None:
-    scanner = _Scanner(_user_context_text)
-    scanner.visit(ast.parse(f"def reader():\n    return {statement!r}\n"))
-    assert scanner.hits == {"reader"}
+    tree = ast.parse(f"def reader():\n    return {statement!r}\n")
+    assert _reference_scopes(tree, _is_user_context_reference) == {"reader"}
 
 
 def test_an_audit_namesake_field_is_not_sql() -> None:
@@ -335,9 +297,12 @@ def test_a_new_fixed_offset_or_sgt_site_is_an_owner_zone() -> None:
         "def by_helper():\n"
         "    return briefing.today_sgt()\n"
     )
-    scanner = _Scanner(_owner_zone_text, names=_SGT_NAMES, fixed_offset=True)
-    scanner.visit(ast.parse(source))
-    assert scanner.hits == {"<module>", "offset", "by_name", "by_module", "by_helper"}
-    duration_only = _Scanner(_owner_zone_text, names=_SGT_NAMES, fixed_offset=True)
-    duration_only.visit(ast.parse("from datetime import timedelta\nX = timedelta(hours=8)\n"))
-    assert duration_only.hits == set()
+    assert _reference_scopes(ast.parse(source), _is_owner_zone_reference) == {
+        "<module>",
+        "offset",
+        "by_name",
+        "by_module",
+        "by_helper",
+    }
+    duration_only = ast.parse("from datetime import timedelta\nX = timedelta(hours=8)\n")
+    assert _reference_scopes(duration_only, _is_owner_zone_reference) == set()
