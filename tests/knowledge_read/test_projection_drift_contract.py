@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from butlers.knowledge_read.manifest import ManifestError, _parse_manifest, load_manifest
+from butlers.testing.source_guard import parse_file, scopes
 
 _TESTS = Path(__file__).resolve().parents[1]
 _INTEGRATION = "integration/test_public_mcp_manifest.py"
@@ -131,6 +132,6 @@ def test_finance_and_health_share_what_other_domains_withhold():
 def test_every_drift_check_has_a_named_red_that_exists():
     assert {check for check, *_ in DRIFT_CHECKS} == {1, 2, 3, 4, 5}
     for _, rule, relative, name in DRIFT_CHECKS:
-        tree = ast.parse((_TESTS / relative).read_text())
-        defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        tree = parse_file(_TESTS / relative)
+        defined = {node.name for node in scopes(tree) if isinstance(node, ast.FunctionDef)}
         assert name in defined, f"{rule}: {relative}::{name} is missing"

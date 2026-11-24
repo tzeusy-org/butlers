@@ -269,13 +269,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/connectors/test_channel_kind.py",
-      "line": 98,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape f44bc7b31f0bbac9)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/connectors/test_ingest_sites_write_evidence_first.py",
       "line": 23,
       "rule": "ast-tests-use-source-guard",
@@ -479,13 +472,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/jobs/test_commitment_escalation.py",
-      "line": 32,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 766623401eabdeae)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/jobs/test_home_departure_fixes.py",
       "line": 252,
       "rule": "ast-tests-use-source-guard",
@@ -497,13 +483,6 @@
       "line": 212,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/knowledge_read/test_projection_drift_contract.py",
-      "line": 134,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 51c8837d4edbdf9e)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
@@ -539,13 +518,6 @@
       "line": 445,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 4d5882b861eff456)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/modules/memory/test_write_embedding_offloop.py",
-      "line": 145,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 39964b95bb706d7e)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
