@@ -686,7 +686,15 @@ _GUEST_DECLINED = {
         # Only the owner's own decline or a free marker excludes; these still assert.
         (_GUEST_DECLINED, 40),
         (_self_attendee("response_status", "tentative"), 40),
-        (_self_attendee("response_status", "needsAction"), 40),
+        (
+            {
+                **_self_attendee("response_status", "needsAction"),
+                "organizer_verdict": "known_entity",
+            },
+            40,
+        ),
+        # An unanswered invitation with no trusted verdict holds no time (REQ-module-calendar-041).
+        (_self_attendee("response_status", "needsAction"), 20),
         ({"transparency": "opaque", "attendees": "not-a-list"}, 40),
     ],
 )
@@ -1201,7 +1209,11 @@ class TestContextProducersIntegration:
             assert (await run_calendar_context_producer(pool))["signal"] is None
 
             # The same partner event, with the owner invited, is the owner's time.
-            await event("unclassified", "invited", {"attendees": [{"self": True}]})
+            await event(
+                "unclassified",
+                "invited",
+                {"attendees": [{"self": True}], "organizer_verdict": "known_entity"},
+            )
             assert (await run_calendar_context_producer(pool))["signal"] == "meeting"
         finally:
             await pool.close()

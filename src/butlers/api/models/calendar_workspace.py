@@ -619,8 +619,24 @@ class CalendarInvitationEntry(BaseModel):
     response_configured: bool = False
 
 
+class CalendarQuarantinedInvitation(BaseModel):
+    """An unanswered invitation from an untrusted organizer: time and verdict only.
+
+    Deliberately carries no title, description, location, organizer or attendee: third-party text
+    is data, and the owner decides about the sender, not the content (REQ-module-calendar-041).
+    """
+
+    entry_id: UUID
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    verdict: Literal["first_contact", "blocked", "unknown"]
+    lure_badges: list[str] = Field(default_factory=list)
+
+
 class CalendarInvitationsResponse(BaseModel):
     entries: list[CalendarInvitationEntry] = Field(default_factory=list)
+    quarantined: list[CalendarQuarantinedInvitation] = Field(default_factory=list)
     issues_available: bool = True
     conflicts_available: bool = True
     sources_degraded: list[str] = Field(default_factory=list)
@@ -940,6 +956,27 @@ class CalendarRespondRequest(BaseModel):
     request_id: UUID
     response_status: Literal["accepted", "declined", "tentative"]
     send_updates: Literal["none", "all", "externalOnly"] = "none"
+
+
+class CalendarOrganizerDecisionRequest(BaseModel):
+    """Vouch for or Block the organizer of one stored invitation (REQ-module-calendar-042).
+
+    Only the entry id and the verb come from the caller; the organizer address is read from the
+    stored event, never from the request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    entry_id: UUID
+    verb: Literal["vouch", "block"]
+
+
+class CalendarOrganizerDecisionResponse(BaseModel):
+    verb: Literal["vouch", "block"]
+    endpoints: int
+    rules_written: int
+    rules_removed: int
+    events_restamped: int
+    restamp_degraded: bool = False
 
 
 class CalendarRespondResponse(BaseModel):

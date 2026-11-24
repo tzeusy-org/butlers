@@ -24,6 +24,7 @@ from .constants import (
     SOURCE_KIND_PROVIDER,
     logger,
 )
+from .invitation_guard import guard_event_payload, pool_of
 from .models import CalendarEvent, CalendarEventCreate
 from .party import gate_calendar_party_mutation
 from .time_helpers import (
@@ -621,7 +622,9 @@ class RecurrenceMixin:
             "event_id": normalized_event_id,
             "recurrence_scope": recurrence_scope,
             "recurrence": new_recurrence,
-            "event": self._event_to_payload(detached_event),
+            "event": await guard_event_payload(
+                pool_of(self), detached_event, self._event_to_payload
+            ),
             "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
         }
         result["projection_freshness"] = await self._refresh_user_projection(resolved_calendar_id)

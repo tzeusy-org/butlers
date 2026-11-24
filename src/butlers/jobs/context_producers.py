@@ -159,6 +159,7 @@ async def run_calendar_context_producer(
     del job_args
     rows = await pool.fetch(
         """
+        -- quarantine-exempt: filtered in Python by asserts_owner_time and counts_as_owner_time
         SELECT ce.title, ce.starts_at, ce.ends_at, ce.timezone, ce.all_day, ce.metadata,
                ce.event_type, cs.time_role, ce.status
         FROM calendar_events ce

@@ -847,6 +847,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "chronicler.daily_repair_control",
     ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control read for the owner timezone; schema and relation are constants, not caller-selected",
     (
+        "src/butlers/modules/calendar/organizer_decisions.py",
+        "switchboard.connector_registry",
+    ): "sanctioned:REQ-module-calendar-042: owner-only dashboard verb run on the Switchboard pool; reads the registered calendar endpoints to scope the rules",
+    (
+        "src/butlers/modules/calendar/organizer_decisions.py",
+        "switchboard.ingestion_rules",
+    ): "sanctioned:REQ-module-calendar-042: owner-only dashboard verb run on the Switchboard pool; writes calendar-scoped Vouch and Block rules, never a global rule",
+    (
         "src/butlers/chronicler/adapters/situation.py",
         "chronicler.daily_repair_control",
     ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",

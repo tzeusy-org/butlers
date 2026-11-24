@@ -1592,8 +1592,36 @@ export interface CalendarResponseReceipt {
   reason: string | null;
 }
 
+/** An unanswered invitation from an untrusted organizer: time and verdict only, no text. */
+export interface CalendarQuarantinedInvitation {
+  entry_id: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  verdict: "first_contact" | "blocked" | "unknown";
+  lure_badges: string[];
+}
+
+export type CalendarOrganizerVerb = "vouch" | "block";
+
+/** The body names the entry and the verb only; the server reads the organizer from the row. */
+export interface CalendarOrganizerDecisionRequest {
+  entry_id: string;
+  verb: CalendarOrganizerVerb;
+}
+
+export interface CalendarOrganizerDecisionResponse {
+  verb: CalendarOrganizerVerb;
+  endpoints: number;
+  rules_written: number;
+  rules_removed: number;
+  events_restamped: number;
+  restamp_degraded: boolean;
+}
+
 export interface CalendarInvitationsResponse {
   entries: CalendarInvitationEntry[];
+  quarantined?: CalendarQuarantinedInvitation[];
   issues_available: boolean;
   conflicts_available: boolean;
   sources_degraded: string[];

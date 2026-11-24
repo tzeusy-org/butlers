@@ -375,11 +375,11 @@ anchors the settle), and the stamp is set-once afterwards. A CHECK
 begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
 guard body.
 
-Migration `core_372` requires the result `ambiguous` on every insert or update with stage
+Migration `core_374` requires the result `ambiguous` on every insert or update with stage
 `ambiguous`. It backfills that result on historical rows through the existing QA write role
 under forced row security. The table lock covers both the backfill and CHECK replacement.
 The existing triggers enforce set-once results, bindings, stages, reconciliation and held-row
-protection throughout the migration. Only the last schema to leave `core_372` restores the
+protection throughout the migration. Only the last schema to leave `core_374` restores the
 historical `core_268` CHECK. Downgrade retains canonicalized results and every unresolved hold.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A

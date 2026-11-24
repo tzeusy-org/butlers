@@ -149,7 +149,7 @@ field set to an interactive channel (`telegram_bot`). Email is NOT interactive; 
 
 For detection, response-mode selection, and interactive education examples,
 consult the `interactive-response` skill
-(`.agents/skills/interactive-response/SKILL.md`).
+(`skill_read(name="interactive-response")`).
 
 ## Notes to self
 
@@ -168,7 +168,7 @@ consult the `interactive-response` skill
 
 For education concept entity resolution, the domain taxonomy, permanence and
 tag rules, and example fact patterns, consult the `memory-taxonomy` skill
-(`.agents/skills/memory-taxonomy/SKILL.md`).
+(`skill_read(name="memory-taxonomy")`).
 
 ## Guidelines
 

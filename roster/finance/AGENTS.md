@@ -70,7 +70,7 @@ Check the context for a REQUEST CONTEXT JSON block. If present and its `source_c
 
 For response-mode selection and interactive finance transaction, bill,
 subscription, and question examples, consult the `interactive-response` skill
-(`.agents/skills/interactive-response/SKILL.md`).
+(`skill_read(name="interactive-response")`).
 
 ## Memory Classification
 

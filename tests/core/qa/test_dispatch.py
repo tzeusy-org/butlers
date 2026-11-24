@@ -962,6 +962,7 @@ async def test_check_open_pr_statuses_open_no_review():
     with (
         patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch._sync_pr_link", new_callable=AsyncMock),
     ):
         counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
     assert counts["merged"] == 0

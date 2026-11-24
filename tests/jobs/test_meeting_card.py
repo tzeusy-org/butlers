@@ -159,7 +159,8 @@ def _event(*, attendees: list[dict[str, Any]], **meta: Any) -> dict[str, Any]:
         "title": "Lunch",
         "location": "Amoy St",
         "starts_at": START,
-        "metadata": {"attendees": attendees, **meta},
+        # An unanswered invitation needs a trusted organizer to hold time (REQ-module-calendar-041).
+        "metadata": {"attendees": attendees, "organizer_verdict": "known_entity", **meta},
     }
 
 

@@ -10,13 +10,14 @@
 
 ## 2. Readers (slice S2)
 
-- [ ] 2.1 Invitation read model and route: quarantine section, verdict and badges.
-- [ ] 2.2 Day load, conflict radar, prep, meeting card, debrief and household context exclude
+- [x] 2.1 Invitation read model and route: quarantine section, verdict and badges.
+- [x] 2.2 Day load, conflict radar, prep, meeting card, debrief and household context exclude
       quarantined invitations; an unstamped needsAction non-owner invite reads as `unknown`.
 
 ## 3. Owner verbs (slice S3)
 
-- [ ] 3.1 Vouch and Block verbs with an idempotent re-stamp.
+- [x] 3.1 Vouch and Block verbs with an idempotent re-stamp.
+- [ ] 3.2 Frontend Vouch and Block buttons on the quarantine panel (follow-up).
 
 ## 4. Connector hold (slice S4)
 

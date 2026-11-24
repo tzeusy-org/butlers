@@ -184,7 +184,7 @@ The eight `cross-butler-delegation` skill symlinks die with cross-butler delegat
 
 D19 replaces butler-unit views with goals and regions. bu-idc5mx.3 already moved the tab-only domain views into per-domain component directories such as `frontend/src/components/finance/` (PR #4905); those survive as region bodies and are not listed.
 
-**Dark-build boundary.** The goal, region and overview pages are not built yet; bu-vvsfi8 owns them and has not chosen a route prefix or flag. bu-vvsfi8 records the prefix here when it picks one, so the switch is "flip nav, `git rm` this list".
+**Dark-build boundary.** bu-vvsfi8 builds the partial goal, region, overview and approval-lineage preview under `/d19`, registered only with the explicit build-time `VITE_D19_PREVIEW=true` flag. The default routes and Day Sheet remain unchanged. Notify/Messenger presentation has the separate default-off `BUTLERS_D19_ONE_VOICE=true` switch. Missing backend controls remain unavailable; [preview boundaries and remaining acceptance](../../../docs/frontend/d19-preview.md) name their owners. These flags do not authorize the M6 switch, nav replacement or any deletion in this inventory.
 
 ### 3.1 Frontend files (REMOVE unless marked)
 

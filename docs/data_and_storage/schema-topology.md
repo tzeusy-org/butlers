@@ -43,6 +43,12 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
   binding tombstone. Only `butler_qa_rw` writes (forced RLS);
   every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.qa_known_issue_links`** -- Owner and QA links from a finding fingerprint to the bead,
+  pull request or issue tracking it (core_372): `state` (`tracked`, `fix_merged`,
+  `awaiting_recovery`, `regressed`, `closed`), a required `expires_at` CHECKed to at most 90 days
+  after `linked_at`, and `(fingerprint, tracker_ref)` unique. It is the QA suppression control, so
+  only `butler_qa_rw` can write it, the dashboard API writes it as the database owner, and every
+  other role has no access; the migration converges that ACL exactly on every run.
 - **`public.owner_places`** -- The owner place registry (core_303): named places with a stable
   UUID, kind, five-decimal centre, radius, aliases, exact SSIDs, optional HA zone, `paused`,
   CAS `version` and soft `deleted_at`. Written only by the owner Home dashboard editor (the table

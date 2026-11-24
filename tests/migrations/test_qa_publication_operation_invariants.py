@@ -510,7 +510,7 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
         engine.dispose()
 
 
-# --- core_372: ambiguous outcomes cannot omit their result ---
+# --- core_374: ambiguous outcomes cannot omit their result ---
 
 
 def test_ambiguous_null_result_insert_is_refused(db_url: str) -> None:
@@ -531,7 +531,7 @@ def test_ambiguous_null_result_insert_is_refused(db_url: str) -> None:
         engine.dispose()
 
 
-def test_core_372_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
+def test_core_374_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     postgres_container,
 ) -> None:
     """Only the last schema may restore the old CHECK; neither direction releases holds."""
@@ -540,8 +540,8 @@ def test_core_372_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
-    command.downgrade(general, "core_371")
-    command.downgrade(switchboard, "core_371")
+    command.downgrade(general, "core_372")
+    command.downgrade(switchboard, "core_372")
     engine = create_engine(url)
     # Every previously allowed pair survives; only the ambiguous NULL is canonicalized.
     pairs = [
@@ -615,21 +615,21 @@ def test_core_372_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         stage_result_check = "ck_qa_publication_operations_stage_result"
 
         # The ordinary Switchboard peer keeps the stricter CHECK.
-        command.downgrade(general, "core_371")
+        command.downgrade(general, "core_372")
         _refused(url, bound_id, ambiguous_null, stage_result_check)
 
         # Migrate a real non-system pg-prefixed schema through the ordinary
         # login while the bootstrap-owned roster schemas keep their names.
         pgpeer = _build_alembic_config(url, chains=["core"], target_schema="pgpeer")
-        command.upgrade(pgpeer, "core@core_372")
-        command.downgrade(switchboard, "core_371")
+        command.upgrade(pgpeer, "core@core_374")
+        command.downgrade(switchboard, "core_372")
         with engine.connect() as conn:
             # pinned-revision: the sole peer still at this CHECK repair.
             assert conn.exec_driver_sql(
                 "SELECT version_num FROM pgpeer.alembic_version"
-            ).scalar_one() == ("core_372")
+            ).scalar_one() == ("core_374")
         _refused(url, bound_id, ambiguous_null, stage_result_check)
-        command.downgrade(pgpeer, "core_371")
+        command.downgrade(pgpeer, "core_372")
         # Historical compatibility returns, without erasing any canonicalized result or hold.
         _update_as_qa(url, bound_id, ambiguous_null)
         with engine.connect() as conn:

@@ -55,6 +55,8 @@ import type {
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
+  CalendarOrganizerDecisionRequest,
+  CalendarOrganizerDecisionResponse,
   CalendarInvitationsResponse,
   CalendarResponseRequest,
   CalendarResponseReceipt,
@@ -1638,6 +1640,16 @@ export function respondToCalendarInvitation(
   return apiFetch<ApiResponse<CalendarResponseReceipt>>("/calendar/workspace/respond", {
     method: "POST", body: JSON.stringify(body),
   });
+}
+
+/** Vouch for or Block the organizer of one stored invitation (owner-only). */
+export function decideCalendarOrganizer(
+  body: CalendarOrganizerDecisionRequest,
+): Promise<ApiResponse<CalendarOrganizerDecisionResponse>> {
+  return apiFetch<ApiResponse<CalendarOrganizerDecisionResponse>>(
+    "/calendar/workspace/organizer-decision",
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }
 
 /**

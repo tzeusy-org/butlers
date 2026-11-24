@@ -39,6 +39,15 @@ async def run_eligibility_sweep_job(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """
     result = await run_eligibility_sweep(db_pool)
 
+    # Same cadence: copy the owner's calendar Vouch/Block rules onto newly registered calendar
+    # endpoints (bu-5ii4gj.18). Best effort; the next tick retries.
+    try:
+        from butlers.modules.calendar.organizer_decisions import reconcile_endpoint_rules
+
+        await reconcile_endpoint_rules(db_pool)
+    except Exception:
+        logger.warning("Calendar organizer rule reconcile failed", exc_info=True)
+
     # Log summary
     logger.info(
         "Eligibility sweep job completed: evaluated=%d, skipped=%d, transitioned=%d",

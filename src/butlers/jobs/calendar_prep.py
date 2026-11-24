@@ -68,6 +68,7 @@ import asyncpg
 
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.briefing import SGT, today_sgt
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ class PrepContribution(TypedDict):
 # Upcoming entity-linked events in a window, from the job's own calendar projection. A
 # declared status (out of office, working location) is not a meeting and gets no prep.
 _UPCOMING_LINKED_EVENTS_SQL = """
+    -- quarantine-exempt: filtered in Python by asserts_owner_time
     SELECT ce.id AS event_id,
            ce.title AS title,
            ce.starts_at AS starts_at,
@@ -344,7 +346,7 @@ async def run_relationship_calendar_prep_contribution(
 
         # Last-met: the most recent PAST event each attendee co-attended.
         last_met_rows = await pool.fetch(
-            """
+            f"""
             SELECT DISTINCT ON (cee.entity_id)
                    cee.entity_id AS entity_id,
                    ce.starts_at AS starts_at,
@@ -354,6 +356,7 @@ async def run_relationship_calendar_prep_contribution(
             WHERE cee.entity_id = ANY($1::uuid[])
               AND ce.starts_at < $2
               AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+              AND NOT {quarantined_invitation_sql("ce")}
             ORDER BY cee.entity_id, ce.starts_at DESC
             """,
             entity_id_list,

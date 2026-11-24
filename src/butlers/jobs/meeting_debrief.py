@@ -86,6 +86,7 @@ InsightProposer = Callable[..., Awaitable[dict[str, Any]]]
 # ---------------------------------------------------------------------------
 
 _OCCURRENCE_SQL = """
+    -- quarantine-exempt: filtered in Python by counts_as_owner_time
     SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at,
            ce.ends_at AS ends_at, ce.metadata AS metadata, cs.time_role AS time_role
     FROM calendar_events ce

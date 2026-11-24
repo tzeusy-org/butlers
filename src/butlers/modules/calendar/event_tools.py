@@ -26,6 +26,12 @@ from .constants import (
     logger,
 )
 from .errors import CalendarAuthError, CalendarRequestError, _build_structured_error
+from .invitation_guard import (
+    guard_event_payload,
+    mark_quarantined_pre_state,
+    pool_of,
+    redact_pre_state,
+)
 from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
@@ -317,7 +323,7 @@ def register_event_tools(
             "status": "created",
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "event": module._event_to_payload(event),
+            "event": await guard_event_payload(pool_of(module), event, module._event_to_payload),
         }
         if conflict_result["conflicts"]:
             result["policy"] = resolved_conflict_policy
@@ -484,7 +490,7 @@ def register_event_tools(
             tool_args=overlap_args,
         )
         if replay is not None:
-            return replay
+            return redact_pre_state(replay)
         source_id = await module._resolve_action_source_id(
             source_kind=SOURCE_KIND_PROVIDER,
             lane="user",
@@ -821,6 +827,12 @@ def register_event_tools(
                 "start_at": (start_at or existing_event.start_at).isoformat(),
                 "end_at": (end_at or existing_event.end_at).isoformat(),
             }
+            # A quarantined invitation's title stays out of the owner-facing card text.
+            open_extras: dict[str, Any] = {}
+            if (await guard_event_payload(pool_of(module), existing_event, lambda _: {})).get(
+                "quarantined"
+            ):
+                open_extras["quarantined"] = True
             try:
                 undo_offer_opened = await replan_ledger.open(
                     goal_id=goal_id,
@@ -829,6 +841,7 @@ def register_event_tools(
                     pre_state=pre_state,
                     intended=intended,
                     conflict_policy=resolved_conflict_policy,
+                    **open_extras,
                 )
             except Exception:
                 logger.warning(
@@ -916,7 +929,7 @@ def register_event_tools(
             "status": "updated",
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "event": module._event_to_payload(event),
+            "event": await guard_event_payload(pool_of(module), event, module._event_to_payload),
         }
         if conflict_result["conflicts"]:
             result["policy"] = resolved_conflict_policy
@@ -934,6 +947,7 @@ def register_event_tools(
         # can reverse-apply an inverse calendar_update_event. It reuses the
         # already-fetched provider event plus its local projection links.
         result["pre_state"] = pre_state
+        await mark_quarantined_pre_state(pool_of(module), existing_event, result)
         if replan and replan_ledger is not None and undo_offer_opened is not None:
             # The owner's receipt, parked before the write and bound right after it.
             result["undo"] = {
@@ -950,7 +964,7 @@ def register_event_tools(
             source_id=source_id,
             origin_ref=normalized_event_id,
         )
-        return result
+        return redact_pre_state(result)
 
     @_tool("core")
     async def calendar_delete_event(
@@ -1023,7 +1037,7 @@ def register_event_tools(
             tool_args={**approval_args, "calendar_id": resolved_calendar_id},
         )
         if replay is not None:
-            return replay
+            return redact_pre_state(replay)
         source_id = await module._resolve_action_source_id(
             source_kind=SOURCE_KIND_PROVIDER,
             lane="user",
@@ -1176,6 +1190,7 @@ def register_event_tools(
         # can reverse-apply an inverse calendar_create_event that recreates
         # the event and its local links on its home calendar.
         result["pre_state"] = pre_state
+        await mark_quarantined_pre_state(pool_of(module), existing_event, result)
         await module._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type="workspace_user_delete",
@@ -1186,7 +1201,7 @@ def register_event_tools(
             source_id=source_id,
             origin_ref=normalized_event_id,
         )
-        return result
+        return redact_pre_state(result)
 
     @_tool("core")
     async def calendar_update_event_instance(
