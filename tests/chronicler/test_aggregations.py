@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from butlers.chronicler.aggregations import (
 )
 from butlers.chronicler.contracts import INITIAL_SOURCES
 from butlers.chronicler.models import Compatibility
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 # ── Mapping fixture: all active SUPPORTED source/episode_type pairs ────────
 
@@ -395,20 +395,9 @@ _FORBIDDEN_IMPORTS = frozenset({"anthropic", "openai", "claude_agent_sdk"})
 
 def test_aggregations_no_llm_imports() -> None:
     """aggregations.py must not import any LLM provider package."""
-    source = _AGGREGATIONS_MODULE.read_text()
-    tree = ast.parse(source)
-
-    violations: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".")[0]
-                if root in _FORBIDDEN_IMPORTS:
-                    violations.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                root = node.module.split(".")[0]
-                if root in _FORBIDDEN_IMPORTS:
-                    violations.append(node.module)
+    tree = parse_file(_AGGREGATIONS_MODULE)
+    violations = [
+        name for name in imported_module_names(tree) if name.split(".")[0] in _FORBIDDEN_IMPORTS
+    ]
 
     assert not violations, f"aggregations.py must not import LLM packages; found: {violations}"
