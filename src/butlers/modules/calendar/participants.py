@@ -1,4 +1,4 @@
-"""One participant record per calendar occurrence (REQ-module-calendar-047..049, bu-5ii4gj.3).
+"""One participant record per calendar occurrence (REQ-module-calendar-043..045, bu-5ii4gj.3).
 
 The projection calls :func:`sync_event_participants` after it writes a provider event. A row is an
 "invited" claim: it is never written as an interaction, an encounter or an owner assertion, and a

@@ -1,6 +1,6 @@
 """Calendar event participants: pure resolution, the failure path, and the real projection seam.
 
-Synthetic people and addresses only (REQ-module-calendar-047..049, bu-5ii4gj.3).
+Synthetic people and addresses only (REQ-module-calendar-043..045, bu-5ii4gj.3).
 """
 
 from __future__ import annotations

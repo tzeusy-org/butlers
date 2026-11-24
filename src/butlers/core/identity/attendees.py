@@ -1,4 +1,4 @@
-"""Deterministic attendee resolution (REQ-module-calendar-048, bu-5ii4gj.3).
+"""Deterministic attendee resolution (REQ-module-calendar-044, bu-5ii4gj.3).
 
 A pure function over exact normalized addresses and the active, live ``has-email`` claimants the
 caller read for them. It uses no model, no name, no domain or prefix, and never creates an

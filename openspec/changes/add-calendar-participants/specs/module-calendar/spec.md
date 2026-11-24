@@ -17,7 +17,7 @@ SHALL receive entity ids and the entity's own canonical name, resolved at read t
 organizer-supplied display name; a normalized address SHALL NOT appear in a prompt,
 a log line or an MCP response, and unresolved attendees SHALL be reported as a count.
 
-ID: REQ-module-calendar-047
+ID: REQ-module-calendar-043
 Source: bu-5ii4gj.3 (run 26 move 3), slice S1
 Scope: v1-mandatory
 
@@ -56,7 +56,7 @@ the event's prior participant rows and resolver version SHALL stay, a failure co
 increment, and readers SHALL be told the participants are unavailable rather than shown an empty
 list.
 
-ID: REQ-module-calendar-048
+ID: REQ-module-calendar-044
 Source: bu-5ii4gj.3 (run 26 move 3), slice S1
 Scope: v1-mandatory
 
@@ -81,7 +81,7 @@ Entity rebind SHALL repoint `calendar_event_participants` rows from the source e
 survivor in the same step that repoints `calendar_event_entities`, deleting a `manual` row that
 would duplicate the survivor's on the same event.
 
-ID: REQ-module-calendar-049
+ID: REQ-module-calendar-045
 Source: bu-5ii4gj.3 (run 26 move 3), slice S1
 Scope: v1-mandatory
 
