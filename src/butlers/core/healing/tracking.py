@@ -62,7 +62,10 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.healing.constants import QA_PUBLICATION_UNAVAILABLE_PREFIX
+from butlers.core.healing.constants import (
+    QA_DIAGNOSIS_UNSUPPORTED_PREFIX,
+    QA_PUBLICATION_UNAVAILABLE_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,23 +180,28 @@ async def get_paused_proposal(
 
     A proposal holds while publication is absent (bu-ejow5p.2): the attempt closed
     ``failed`` with ``publication_unavailable`` within *hold_days* and its sealed export
-    is still retained.  A pruned export or an expired window releases the fingerprint.
+    is still retained.  A pruned export or an expired window releases the fingerprint.  An
+    unsupported diagnosis (bu-ejow5p.7.1) holds the same way without an export: nothing was
+    retained, but investigating the same fingerprint again would only repeat it.
     """
     return await pool.fetchval(
         """
         SELECT a.id
         FROM public.healing_attempts AS a
-        JOIN public.qa_publication_exports AS x ON x.attempt_id = a.id
+        LEFT JOIN public.qa_publication_exports AS x ON x.attempt_id = a.id
         WHERE a.fingerprint = $1
           AND a.status = 'failed'
-          AND a.error_detail LIKE $2
-          AND a.closed_at >= now() - ($3 * INTERVAL '1 day')
-          AND x.pruned_at IS NULL
+          AND a.closed_at >= now() - ($4 * INTERVAL '1 day')
+          AND (
+                (a.error_detail LIKE $2 AND x.attempt_id IS NOT NULL AND x.pruned_at IS NULL)
+             OR a.error_detail LIKE $3
+          )
         ORDER BY a.closed_at DESC
         LIMIT 1
         """,
         fingerprint,
         QA_PUBLICATION_UNAVAILABLE_PREFIX + "%",
+        QA_DIAGNOSIS_UNSUPPORTED_PREFIX + "%",
         hold_days,
     )
 

@@ -73,6 +73,7 @@ from butlers.core.healing.constants import (
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
     QA_BREAKER_THRESHOLD,
     QA_BREAKER_WHERE_SQL,
+    QA_DIAGNOSIS_UNSUPPORTED_PREFIX,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
@@ -131,6 +132,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import (
     InvestigationNotes,
     ParseStatus,
+    can_be_patch_ready,
     carry_forward_verification,
     parse_investigation_notes,
     verify_evidence_against_bundle,
@@ -559,6 +561,10 @@ _PUBLICATION_UNRETAINED = "publication_unretained"
 _RETENTION_REFUSALS = frozenset(
     {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
 )
+_DIAGNOSIS_UNSUPPORTED_DETAIL = (
+    f"{QA_DIAGNOSIS_UNSUPPORTED_PREFIX} every claim cites evidence the dispatcher did not "
+    "record; no patch was sealed, retained or published"
+)
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
@@ -857,6 +863,27 @@ async def _stored_investigation_notes(
         "structured_evidence->'investigation_notes'",
         requires="investigation_notes",
     )
+
+
+async def _diagnosis_is_unsupported(
+    pool: asyncpg.Pool, attempt_id: uuid.UUID, worktree_path: Path
+) -> bool:
+    """True when the agent's notes cite only evidence the dispatcher never recorded.
+
+    Notes that are missing, unreadable or unverifiable (no recorded bundle) are not judged:
+    only a positive finding that every claim is unsupported withholds the patch.
+    """
+    try:
+        raw = (worktree_path / _INVESTIGATION_NOTES_JSON).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    notes, _status = parse_investigation_notes(raw)
+    if notes is None:
+        return False
+    bodies = await _recorded_bundle_bodies(pool, attempt_id)
+    if bodies is None:
+        return False
+    return not can_be_patch_ready(verify_evidence_against_bundle(notes, bodies))
 
 
 async def _persist_investigation_notes(
@@ -1698,6 +1725,41 @@ async def _run_investigation_session(
             if isolation is not None
             else await _capture_commit_diff_snapshot(worktree_path)
         )
+        # An investigation whose every claim is unsupported by the recorded evidence yields no
+        # patch worth offering (bu-ejow5p.7.1): nothing is sealed, retained or published.  It is
+        # an execution success for the breaker and holds the fingerprint like a proposal.
+        if await _diagnosis_is_unsupported(pool, attempt_id, worktree_path):
+            if metrics is not None:
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="diagnosis_unsupported",
+                    duration_ms=(_time.monotonic() - _phase_start) * 1000,
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:  # noqa: BLE001
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL,
+                healing_session_id=investigation_session_id,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
         if config.publisher is not None:
             publication = await publish_investigation(
                 config.publisher,

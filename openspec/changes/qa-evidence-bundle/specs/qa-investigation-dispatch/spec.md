@@ -57,3 +57,9 @@ Scope: v1-mandatory
 
 - **WHEN** every claim of a case rests only on unsupported lines
 - **THEN** the dossier renders them as an unsupported claim and the case cannot be `patch_ready`
+
+#### Scenario: An unsupported diagnosis retains no patch
+
+- **WHEN** an investigation commits a change but every claim in its notes is unsupported
+- **THEN** nothing is sealed, retained or published, and the attempt ends `failed` with a `diagnosis_unsupported` reason
+- **AND** the breaker counts it as an execution success and the fingerprint is held like a retained proposal

@@ -1594,6 +1594,90 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
 
 
 @pytest.mark.asyncio
+async def test_an_all_unsupported_diagnosis_retains_nothing_and_is_not_a_breaker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Every claim unsupported: no seal, no retention, a diagnosis_unsupported attempt."""
+    monkeypatch.setenv("GH_TOKEN", _AGENT_TOKEN)
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+    with (
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "butlers.core.qa.dispatch._diagnosis_is_unsupported",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as update,
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree", new_callable=AsyncMock
+        ),
+        patch(
+            "butlers.core.qa.dispatch.retain_unpublished_proposal", new_callable=AsyncMock
+        ) as retain,
+    ):
+        await _run_investigation_session(
+            pool=_qa_pool(),
+            repo_root=tmp_path,
+            attempt_id=uuid.uuid4(),
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abcdef123456",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token=_AGENT_TOKEN,
+        )
+
+    retain.assert_not_awaited()
+    assert update.await_args.args[2] == "failed"
+    assert update.await_args.kwargs["error_detail"].startswith("diagnosis_unsupported:")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("with_file", "bodies", "ref", "expected"),
+    [
+        (False, None, "E1", False),  # no notes file: not judged
+        (True, None, "E1", False),  # no recorded bundle: not judged
+        (True, {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}, "E1", False),
+        (True, {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}, "E9", True),
+    ],
+)
+async def test_unsupported_diagnosis_gate_judges_only_a_positive_finding(
+    tmp_path: Path, with_file, bodies, ref, expected
+):
+    import json
+
+    from butlers.core.qa.dispatch import _diagnosis_is_unsupported
+    from tests.core.qa.test_investigation_notes import _valid_notes_payload
+
+    if with_file:
+        payload = _valid_notes_payload()
+        payload["schema_version"] = 2
+        payload["evidence_lines"] = [
+            {"id": "e1", "ts": "t", "lvl": "ERROR", "butler": "b", "msg": "real", "ref": ref}
+        ]
+        payload["claims"] = {"c1": {"evidence_ids": ["e1"], "note": "n"}}
+        notes_path = tmp_path / ".qa" / "investigation_notes.json"
+        notes_path.parent.mkdir()
+        notes_path.write_text(json.dumps(payload))
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=bodies)
+
+    assert await _diagnosis_is_unsupported(pool, uuid.uuid4(), tmp_path) is expected
+
+
+@pytest.mark.asyncio
 async def test_followup_agent_has_no_credential(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """The review follow-up spawn env is built without the QA token."""
     monkeypatch.setenv("GH_TOKEN", _AGENT_TOKEN)

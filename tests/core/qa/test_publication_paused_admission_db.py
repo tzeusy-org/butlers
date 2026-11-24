@@ -20,6 +20,7 @@ from butlers.api.routers.qa import (
 )
 from butlers.core.healing.tracking import get_paused_proposal
 from butlers.core.qa.dispatch import (
+    _DIAGNOSIS_UNSUPPORTED_DETAIL,
     _PUBLICATION_UNAVAILABLE_DETAIL,
     QaDispatchConfig,
     _is_circuit_breaker_tripped,
@@ -153,3 +154,20 @@ async def test_unretained_with_existing_export_row_counts_as_failure(db_pool) ->
             retained=True,
         )
     assert await _tripped_both_ways(db_pool) == (True, True)
+
+
+async def test_unsupported_diagnoses_are_execution_successes_in_admission_and_dashboard(
+    db_pool,
+) -> None:
+    patrol = await _patrol(db_pool)
+    for _ in range(7):
+        await _attempt(db_pool, patrol, error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL)
+    assert await _tripped_both_ways(db_pool) == (False, False)
+
+
+async def test_an_unsupported_diagnosis_holds_its_fingerprint_without_an_export(db_pool) -> None:
+    patrol = await _patrol(db_pool)
+    attempt = await _attempt(db_pool, patrol, error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL)
+
+    assert await get_paused_proposal(db_pool, _FP, 7) == attempt
+    assert await get_paused_proposal(db_pool, "b" * 64, 7) is None
