@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -22,6 +24,8 @@ from butlers.ingestion_policy import PolicyDecision
 from tests.connectors.test_owntracks_device_identity import _make_connector, _stop_all_heartbeats
 
 pytestmark = pytest.mark.unit
+
+_OBSERVED_AT = datetime(2023, 11, 14, 23, tzinfo=UTC)
 
 _FIX = {
     "_type": "location",
@@ -46,7 +50,9 @@ async def _blocked(body: dict[str, Any]) -> dict[str, Any]:
         )
         recorded: list[dict[str, Any]] = []
         device.filtered_event_buffer.record = lambda **row: recorded.append(row)
-        await connector._process_webhook_event(body)
+        with patch("butlers.connectors.owntracks.datetime", wraps=datetime) as clock:
+            clock.now.return_value = _OBSERVED_AT
+            await connector._process_webhook_event(body)
         tools = [call.args[0] for call in connector._mcp_client.call_tool.await_args_list]
         assert "ingest" not in tools
         (row,) = recorded
@@ -59,6 +65,7 @@ async def test_a_blocked_location_keeps_no_coordinates() -> None:
     row = await _blocked(_FIX)
     stored = row["full_payload"]
     assert stored["payload"]["raw"] is None
+    assert stored["event"]["observed_at"] == _OBSERVED_AT.isoformat()
     text = stored["payload"]["normalized_text"]
     serialized = json.dumps(row)
     for value in ("1.352", "103.81", "home-wifi", "1.35", "103.8"):
