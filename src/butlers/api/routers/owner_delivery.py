@@ -91,7 +91,7 @@ async def read_persisted_owner_why(
     if _callback_authenticated(http_request):
         raise HTTPException(status_code=403, detail="Dashboard owner authentication required")
     failed = False
-    for _, pool in await _find_named_approvals_pools(db_mgr, "pending_actions"):
+    for _, pool in await _receipt_pools(db_mgr):
         try:
             async with pool.acquire() as conn, conn.transaction():
                 owner = await owner_delivery.owner_entity_id(conn)
@@ -116,7 +116,7 @@ async def record_owner_activity(
         raise HTTPException(status_code=404, detail="Not Found")
     callback = _callback_authenticated(http_request)
     _decision_actor_id(callback_actor, callback_authenticated=callback)
-    pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    pools = await _receipt_pools(db_mgr)
     if not pools:
         raise HTTPException(status_code=503, detail="Owner activity unavailable")
     async with pools[0][1].acquire() as conn, conn.transaction():
@@ -251,9 +251,20 @@ def _callback_authenticated(request: Request) -> bool:
     return bool(getattr(request.state, "approval_callback_authenticated", False))
 
 
+async def _receipt_pools(db_mgr: Any) -> list[tuple[str, Any]]:
+    """S6 receipts also belong to Switchboard, which need not load approvals."""
+    pools = list(await _find_named_approvals_pools(db_mgr, "pending_actions"))
+    if not any(name == "switchboard" for name, _ in pools):
+        try:
+            pools.append(("switchboard", db_mgr.pool("switchboard")))
+        except KeyError:
+            pass
+    return pools
+
+
 async def _locate(db_mgr: Any, verifier: str) -> tuple[str, Any, Any] | None:
     """The ``(butler, pool, token row)`` that owns a verifier, searched schema by schema."""
-    for butler_name, pool in await _find_named_approvals_pools(db_mgr, "pending_actions"):
+    for butler_name, pool in await _receipt_pools(db_mgr):
         try:
             row = await pool.fetchrow(
                 "SELECT t.action, s.kind, s.source_ref FROM public.owner_delivery_tokens t "

@@ -37,6 +37,7 @@ from uuid import UUID
 from butlers.capability_broker import owner_decisions
 from butlers.capability_broker.owner_decisions import OwnerContext, SetDecision
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 from butlers.modules.approvals.decision_set_card import (
     action_digest,
     approve_selection,
@@ -85,13 +86,56 @@ async def open_set_subject(conn: Any, view: SetView) -> od.Subject:
     )
 
 
-async def present_set_card(conn: Any, view: SetView, *, owner_recipient: str) -> od.Presentation:
+def set_sensitivity(view: SetView) -> selection.Sensitivity:
+    labels = [
+        selection.action_sensitivity({"tool_name": item.capability.partition("__")[2]})
+        for item in view.items
+    ]
+    if "sensitive" in labels:
+        return "sensitive"
+    return "ordinary" if labels and all(label == "ordinary" for label in labels) else "unknown"
+
+
+async def dashboard_set_receipt(conn: Any, view: SetView) -> tuple[str, str | None, int] | None:
+    """Present a current set for acknowledgement, or retain its read-only historical receipt."""
+    if not selection.live() or not await od.rollout_enabled(conn):
+        return None
+    if view.decidable and approve_selection(view) is not None:
+        subject = await open_set_subject(conn, view)
+        await selection.plan(conn, subject, sensitivity=set_sensitivity(view))
+        card = await od.present(
+            conn,
+            subject.id,
+            surface="dashboard",
+            route_ref="owner:dashboard",
+            actions=("ack",) if subject.state != "acknowledged" else (),
+            expires_at=view.expires_at,
+        )
+        return str(card.id), card.tokens.get("ack"), card.generation
+    row = await conn.fetchrow(
+        "SELECT p.id, p.generation FROM public.owner_delivery_presentations p "
+        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
+        "WHERE s.kind = 'decision_set' AND s.source_ref = $1 "
+        "AND s.owning_schema = current_schema() "
+        "ORDER BY p.generation DESC, p.surface LIMIT 1",
+        set_source_ref(view.set_id, view.version),
+    )
+    return (str(row["id"]), None, row["generation"]) if row else None
+
+
+async def present_set_card(
+    conn: Any, view: SetView, *, owner_recipient: str
+) -> od.Presentation | None:
     """The Telegram presentation of a decidable set, with Approve and Reject tokens.
 
     Call only for a view whose card offers a decision; an open-only card has no tokens and so
     needs no subject.
     """
     subject = await open_set_subject(conn, view)
+    if selection.live() and not await selection.telegram_due(
+        conn, subject, sensitivity=set_sensitivity(view)
+    ):
+        return None
     return await od.present(
         conn,
         subject.id,
@@ -124,7 +168,7 @@ class CardSend:
     Approve and Reject (an open-only card is sent with Open alone and mints no token).
     """
 
-    status: Literal["off", "handed_off", "sent", "failed", "unknown"]
+    status: Literal["off", "deferred", "handed_off", "sent", "failed", "unknown"]
     decision_offered: bool = False
 
 
@@ -151,6 +195,10 @@ async def send_set_card(
         if not await od.rollout_enabled(conn):
             return CardSend("off")
     if not render_set_card(view).offer_decision:
+        if selection.live():
+            # An open-only legacy card has no canonical subject/fence. Its calls
+            # remain reviewable on the dashboard, like count-only approval digests.
+            return CardSend("deferred")
         envelope = build_set_envelope(
             view, origin_butler=origin_butler, owner_recipient=owner_recipient, tokens=None
         )
@@ -158,6 +206,8 @@ async def send_set_card(
         return CardSend(result.outcome, decision_offered=False)
     async with pool.acquire() as conn, conn.transaction():
         presentation = await present_set_card(conn, view, owner_recipient=owner_recipient)
+        if presentation is None:
+            return CardSend("deferred", decision_offered=True)
         if not presentation.tokens or not await od.begin_send(conn, presentation.id):
             return CardSend("handed_off", decision_offered=True)
         # Same transaction as the handoff mark: each item's own card waits while this one is live.

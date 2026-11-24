@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 from butlers.core.goal_admission import Evidence, Grant, Obligation, SourceRef
 from butlers.goal_runner.owner_failure import CAUSE_LINES, OwnerFailureReporter
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
@@ -64,6 +65,55 @@ def reporter(runtime, sender):
 
 async def asks(owner):
     return await owner.fetch("SELECT * FROM switchboard.pending_asks ORDER BY created_at")
+
+
+@pytest.mark.parametrize("acknowledge", [False, True])
+async def test_m7_pending_ask_sender_waits_for_desk_ack_or_timeout(world, monkeypatch, acknowledge):
+    from butlers.goal_runner.owner_recovery import OwnerRecovery
+    from butlers.perception import flags
+
+    owner, runtime, owner_id = world
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await owner_goal(runtime, owner)
+    async with owner.acquire() as conn:
+        await selection.activity(conn, owner=owner_id, surface="dashboard")
+        moment = await conn.fetchval("SELECT clock_timestamp()")
+    sender = Sender()
+
+    def sweep():
+        return OwnerFailureReporter(runtime, sender, clock=lambda: moment).sweep()
+
+    try:
+        assert await sweep() == 0 and sender.lines == []
+        batch = await OwnerRecovery(runtime, None).cards()
+        (card,) = batch.cards
+        assert card.presentation_id and card.tokens["ack"]
+        if acknowledge:
+            async with runtime.acquire() as conn, conn.transaction():
+                await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
+                (ask,) = await asks(owner)
+                result = await od.redeem(
+                    conn,
+                    card.tokens["ack"],
+                    kind="pending_ask",
+                    source_ref=str(card.ask_id),
+                    expected_action="ack",
+                    owner_entity=owner_id,
+                    surface="dashboard",
+                    current_action_digest=od.digest_of(
+                        {"kind": "pending_ask", "ask": str(ask["id"])}
+                    ),
+                )
+                assert result.outcome == "won", result.reason
+        moment += timedelta(minutes=3)
+        assert await sweep() == (0 if acknowledge else 1)
+        assert await sweep() == 0
+        assert len(sender.lines) == (0 if acknowledge else 1)
+        assert (await asks(owner))[0]["state"] == "open"
+    finally:
+        await owner.execute(
+            "DELETE FROM public.owner_delivery_surface_evidence WHERE owner_entity = $1", owner_id
+        )
 
 
 async def test_a_failed_owner_goal_gets_one_ask_and_one_line_however_often_it_is_swept(world):

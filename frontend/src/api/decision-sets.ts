@@ -42,6 +42,9 @@ export interface DecisionSetItem {
 }
 
 export interface DecisionSet {
+  owner_delivery_receipt?: string | null;
+  owner_delivery_ack?: string | null;
+  owner_delivery_generation?: number | null;
   set_id: string;
   version: number;
   goal_id: string;

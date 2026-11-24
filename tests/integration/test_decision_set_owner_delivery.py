@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -22,6 +23,7 @@ from butlers.capability_broker.owner_decisions import (
     SetDecision,
 )
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 from butlers.modules.approvals.decision_set_delivery import (
     close_set_subject,
     open_set_subject,
@@ -29,6 +31,7 @@ from butlers.modules.approvals.decision_set_delivery import (
     redeem_set_token,
 )
 from butlers.modules.approvals.decision_set_view import SetView, build_set_view
+from butlers.perception import flags
 from tests.modules.approvals.test_decision_set_view import NOW, SEND, _item, _row, _set
 
 pytestmark = [
@@ -329,6 +332,64 @@ class Transport:
         if self.boom:
             raise RuntimeError("provider timed out")
         return SendResult(self.outcome, "55")
+
+
+@pytest.mark.parametrize("acknowledge", [False, True])
+async def test_m7_set_sender_and_dashboard_share_the_durable_plan(db, monkeypatch, acknowledge):
+    import httpx
+
+    from butlers.api.deps import get_db
+    from butlers.api.routers import approvals as approvals_route
+    from butlers.modules.approvals.decision_set_delivery import dashboard_set_receipt
+    from butlers.testing.db_manager import db_manager
+    from tests.integration.test_owner_delivery_ledger import _DASHBOARD_API_KEY, _app
+
+    pool = await _owned(db)
+    await _enable(pool)
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    # Explicit ordinary synthetic classification; real absent descriptors fail closed.
+    monkeypatch.setattr(selection, "action_sensitivity", lambda action: "ordinary")
+    moment = datetime.now(UTC)
+    monkeypatch.setattr(selection, "clock", AsyncMock(side_effect=lambda conn: moment))
+    view, transport = _two(), Transport()
+    async with pool.acquire() as conn, conn.transaction():
+        owner = await od.owner_entity_id(conn)
+        await selection.activity(conn, owner=owner, surface="dashboard")
+        moment = await conn.fetchval("SELECT clock_timestamp()")
+        receipt = await dashboard_set_receipt(conn, view)
+        assert receipt and receipt[1]
+        why = await selection.why(conn, UUID(receipt[0]), owner=owner)
+        assert why["cause"] == "desk_first" and why["kind"] == "decision_set"
+    assert (await _send(pool, view, transport)).status == "deferred"
+    assert transport.envelopes == []
+    app = _app(pool, butler="switchboard")
+    # The immutable view is a fixture; this fresh database deliberately has no
+    # approvals authority table, as in a Switchboard without the approvals module.
+    await pool.execute("DROP TABLE pending_actions CASCADE")
+    monkeypatch.setattr(approvals_route, "_TABLE_CACHE", {})
+    manager = db_manager({"switchboard": pool})
+    assert await approvals_route._find_named_approvals_pools(manager) == []
+    app.dependency_overrides[get_db] = lambda: manager
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://dashboard-api:41200"
+    ) as client:
+        headers = {"X-API-Key": _DASHBOARD_API_KEY}
+        shown = await client.post(
+            "/api/owner-delivery/why", json={"token": receipt[1]}, headers=headers
+        )
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["data"]["kind"] == "decision_set"
+        if acknowledge:
+            result = await client.post(
+                "/api/owner-delivery/actions", json={"token": receipt[1]}, headers=headers
+            )
+            assert result.status_code == 200, result.text
+    moment += timedelta(minutes=3)
+    sent = await _send(pool, view, transport)
+    assert sent.status == ("deferred" if acknowledge else "sent")
+    assert len(transport.envelopes) == (0 if acknowledge else 1)
+    assert (await _send(pool, view, transport)).status in {"deferred", "handed_off"}
+    assert len(transport.envelopes) == (0 if acknowledge else 1)
 
 
 async def _enable(pool, enabled: bool = True) -> None:

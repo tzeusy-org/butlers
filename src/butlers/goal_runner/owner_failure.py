@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,15 @@ class OwnerFailureReporter:
             return False
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
+            if selection.live():
+                row = await conn.fetchrow(
+                    "SELECT * FROM public.owner_delivery_subjects WHERE id = $1",
+                    ask["subject_id"],
+                )
+                if row is None or not await selection.telegram_due(
+                    conn, od.Subject.from_row(row), sensitivity="ordinary", now=self.clock()
+                ):
+                    return False
             presentation = await od.present(
                 conn,
                 ask["subject_id"],

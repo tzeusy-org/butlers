@@ -4,7 +4,7 @@ import { acknowledgeOwnerDelivery, getOwnerDeliveryWhy, getPersistedOwnerDeliver
 import type { OwnerDeliveryCard } from "@/api/types";
 
 /** Native disclosure keeps Why keyboard accessible and reads no evidence until opened. */
-export function OwnerDeliveryReceipt({ card, presentationId }: { card?: OwnerDeliveryCard | null; presentationId: string }) {
+export function OwnerDeliveryReceipt({ card, presentationId }: { card?: Pick<OwnerDeliveryCard, "approve_token" | "ack_token" | "generation"> | null; presentationId: string }) {
   const [open, setOpen] = useState(false);
   const client = useQueryClient();
   const receipt = useQuery({
@@ -14,7 +14,10 @@ export function OwnerDeliveryReceipt({ card, presentationId }: { card?: OwnerDel
   });
   const ack = useMutation({
     mutationFn: () => acknowledgeOwnerDelivery(card!.ack_token!),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["approvals"] }); },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["approvals"] });
+      void client.invalidateQueries({ queryKey: ["decision-sets"] });
+    },
   });
   const shown = receipt.isError ? undefined : receipt.data?.data;
   return <section aria-label="Delivery receipt" className="mb-6 text-sm">

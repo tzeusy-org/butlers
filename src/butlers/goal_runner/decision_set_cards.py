@@ -138,7 +138,7 @@ class DecisionSetCards:
                 "  JOIN public.owner_delivery_presentations p ON p.subject_id = s.id "
                 "  WHERE s.owning_schema = current_schema() AND s.kind = 'decision_set' "
                 "  AND s.source_ref = v.set_id::text || ':' || v.version::text "
-                "  AND p.state IN ('sent', 'unknown')) "
+                "  AND p.surface = 'telegram' AND p.state IN ('sent', 'unknown')) "
                 "ORDER BY v.created_at, v.set_id LIMIT $2",
                 now,
                 SCAN_LIMIT,

@@ -38,6 +38,9 @@ class DecisionSetItemView(BaseModel):
 
 
 class DecisionSetView(BaseModel):
+    owner_delivery_receipt: str | None = None
+    owner_delivery_ack: str | None = None
+    owner_delivery_generation: int | None = None
     set_id: str
     version: int
     goal_id: str

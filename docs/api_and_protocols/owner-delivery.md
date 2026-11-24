@@ -296,6 +296,13 @@ three minutes later. The worker releases its queue claim with `surface_wait` unt
 deadline; an ordinary subject then gets the existing Telegram presentation at the same
 generation. Reclaim, restart and replay reuse both identities. The dashboard is not falsely
 marked delivered by selection: only its actual authenticated dossier read presents it.
+The decision-set sender and fixed pending-ask cause-line sender use the same persisted plan
+before their existing `begin_send` marker. Dashboard set reads expose the shared Why disclosure
+and a canonical acknowledgement token; recovery cards retain their presentation reference and
+offer acknowledgement alongside Run/Drop. Acknowledgement leaves the underlying set or ask
+undecided. Set sensitivity is the conservative aggregate of its checked-in tool descriptors;
+unknown or sensitive sets stay on the dashboard. Legacy open-only set cards have no subject
+and are held while M7 is enabled, leaving their calls available for dashboard review.
 Acknowledgement bumps the canonical generation and stales competing tokens. Acknowledgement
 that commits before the provider handoff marker suppresses fallback; a handoff already committed
 retains its possible delivery and honest provider receipts. It cannot be recalled by an ack.
@@ -330,6 +337,8 @@ showing the original presentation as stale and the canonical outcome without rev
 action token. The opaque reference confers no authority and the connector credential is denied.
 The shared receipt includes every surface's persisted presentation state; the Telegram card's
 existing authenticated dashboard door reaches the same subject's disclosure.
+Receipt lookup includes Switchboard even when it does not load the approvals module, so sets
+and pending asks do not depend on a coincidental `pending_actions` table for Why or acknowledgement.
 
 Rollback turns off the selection flag to stop activity and planning, preserving receipts and
 existing token/retraction behavior. Both migrations retain evidence on downgrade. Source

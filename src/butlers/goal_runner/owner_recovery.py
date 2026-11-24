@@ -27,6 +27,7 @@ from typing import Any, Final, Literal
 from uuid import UUID, uuid5
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 from butlers.core.goal_admission import (
     OWNER_RETRY_PREFIX,
     RUN_REDEMPTION,
@@ -62,6 +63,8 @@ class Card:
     ask_id: UUID
     cause: str
     tokens: dict[str, str]
+    presentation_id: str | None = None
+    generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,17 +124,36 @@ class OwnerRecovery:
             counts: dict[str, int] = {}
             for ask in asks:
                 try:
+                    actions: tuple[od.Action, ...] = ("approve", "reject")
+                    if selection.live():
+                        row = await conn.fetchrow(
+                            "SELECT * FROM public.owner_delivery_subjects WHERE id = $1",
+                            ask["subject_id"],
+                        )
+                        if row is None:
+                            continue
+                        await selection.plan(conn, od.Subject.from_row(row), sensitivity="ordinary")
+                        if row["state"] != "acknowledged":
+                            actions = (*actions, "ack")
                     presentation = await od.present(
                         conn,
                         ask["subject_id"],
                         surface=CARD_SURFACE,
                         route_ref=CARD_ROUTE_REF,
-                        actions=("approve", "reject"),
+                        actions=actions,
                         expires_at=await conn.fetchval("SELECT clock_timestamp()") + CARD_TOKEN_TTL,
                     )
                 except od.OwnerDeliveryRefused:
                     continue
-                cards.append(Card(ask["id"], ask["cause"], dict(presentation.tokens)))
+                cards.append(
+                    Card(
+                        ask["id"],
+                        ask["cause"],
+                        dict(presentation.tokens),
+                        str(presentation.id),
+                        presentation.generation,
+                    )
+                )
                 counts[ask["cause"]] = counts.get(ask["cause"], 0) + 1
             return CardBatch(counts, tuple(cards))
 
