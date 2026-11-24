@@ -369,10 +369,7 @@ def _dotted_roster_test_imports(paths):
 
     found = []
     for path in paths:
-        source = path.read_text()
-        if "roster" not in source:
-            continue
-        tree = ast.parse(source)
+        tree = ast.parse(path.read_text())
         lookup_names = {name: name for name in ("__import__", "import_module", "patch")}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
