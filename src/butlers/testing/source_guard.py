@@ -238,6 +238,19 @@ def sql_literals(tree: ast.Module) -> Iterator[str]:
     yield from outermost_matches(strip_docstrings(tree), extract)
 
 
+def imported_module_names(tree: ast.Module) -> Iterator[str]:
+    """Yield module names from explicit imports in AST walk order.
+
+    Ignore aliases and relative levels. A from-import with no module name
+    yields nothing.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            yield node.module
+
+
 def import_edges(tree: ast.Module) -> Iterator[tuple[int, str, bool]]:
     """Yield import sites and TYPE_CHECKING context, preserving relative prefixes.
 

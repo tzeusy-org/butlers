@@ -16,10 +16,10 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +37,7 @@ from butlers.chronicler.adapters.home_assistant_sensor_activity import (
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 _NOW = datetime(2026, 7, 6, 8, 0, 0, tzinfo=UTC)
 _UUID_1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -183,18 +184,10 @@ def test_no_llm_imports_in_sensor_activity_adapter() -> None:
 
     source_path = mod.__file__
     assert source_path is not None
-    with open(source_path) as fh:
-        tree = ast.parse(fh.read(), filename=source_path)
-
+    tree = parse_file(Path(source_path))
     forbidden_prefixes = ("anthropic", "openai", "langchain", "litellm", "llm")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for prefix in forbidden_prefixes:
-                    assert not alias.name.startswith(prefix)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for prefix in forbidden_prefixes:
-                assert not node.module.startswith(prefix)
+    for name in imported_module_names(tree):
+        assert not name.startswith(forbidden_prefixes)
 
 
 def test_adapter_exported_from_package() -> None:

@@ -16,12 +16,12 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -41,6 +41,7 @@ from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
 from butlers.chronicler.projection_coverage import FlushSummary, ProjectionCoverage
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
@@ -129,24 +130,12 @@ def test_no_llm_imports_in_owntracks_adapter() -> None:
     source_path = mod.__file__
     assert source_path is not None
 
-    with open(source_path) as fh:
-        tree = ast.parse(fh.read(), filename=source_path)
-
+    tree = parse_file(Path(source_path))
     forbidden_prefixes = ("anthropic", "openai", "langchain", "litellm", "llm")
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for prefix in forbidden_prefixes:
-                    assert not alias.name.startswith(prefix), (
-                        f"LLM import detected in owntracks adapter: {alias.name!r}"
-                    )
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                for prefix in forbidden_prefixes:
-                    assert not node.module.startswith(prefix), (
-                        f"LLM import detected in owntracks adapter: {node.module!r}"
-                    )
+    for name in imported_module_names(tree):
+        assert not name.startswith(forbidden_prefixes), (
+            f"LLM import detected in owntracks adapter: {name!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

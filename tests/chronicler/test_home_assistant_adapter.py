@@ -16,9 +16,9 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -32,6 +32,7 @@ from butlers.chronicler.adapters.home_assistant import (
 from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 _ENTITY_ID_ALICE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
@@ -158,24 +159,12 @@ def test_no_llm_imports_in_home_assistant_adapter() -> None:
     source_path = mod.__file__
     assert source_path is not None
 
-    with open(source_path) as fh:
-        tree = ast.parse(fh.read(), filename=source_path)
-
+    tree = parse_file(Path(source_path))
     forbidden_prefixes = ("anthropic", "openai", "langchain", "litellm", "llm")
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for prefix in forbidden_prefixes:
-                    assert not alias.name.startswith(prefix), (
-                        f"LLM import detected in home_assistant adapter: {alias.name!r}"
-                    )
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                for prefix in forbidden_prefixes:
-                    assert not node.module.startswith(prefix), (
-                        f"LLM import detected in home_assistant adapter: {node.module!r}"
-                    )
+    for name in imported_module_names(tree):
+        assert not name.startswith(forbidden_prefixes), (
+            f"LLM import detected in home_assistant adapter: {name!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
