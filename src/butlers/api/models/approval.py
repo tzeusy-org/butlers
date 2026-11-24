@@ -242,6 +242,14 @@ class ApprovalDetail(BaseModel):
             "no tool_args."
         ),
     )
+    entity_merge_review: EntityMergeReview | None = Field(
+        default=None,
+        description=(
+            "Typed review of a pending Relationship memory_entity_merge or legacy "
+            "entity_merge with a showable call; null otherwise. Approval requires its "
+            "displayed_call after the dashboard renders the structural comparison."
+        ),
+    )
     goal: ApprovalGoalLineage | None = Field(
         default=None,
         description=(
@@ -445,6 +453,22 @@ class ExternalProposalReview(BaseModel):
     unresolvable_entity: bool = False
     approve_unavailable_reason: str | None = None
     displayed_call: DisplayedApprovalCall | None = None
+
+
+class EntityMergeReview(BaseModel):
+    """Typed review context of a pending Relationship entity merge (REQ-dashboard-approvals-902).
+
+    Returned in place of a generic ``call_preview``, which stays null so an older
+    dashboard or a summary surface without merge review keeps approval disabled. The
+    direction is fixed: ``source_entity_id`` is absorbed (tombstoned) into the surviving
+    ``target_entity_id``, which keeps its own type. The dashboard loads the structural
+    comparison for exactly this pair and echoes ``displayed_call`` (the stored tool name
+    and argument digest, never rewritten) to approve.
+    """
+
+    source_entity_id: str
+    target_entity_id: str
+    displayed_call: DisplayedApprovalCall
 
 
 class ApprovalApproveRequest(BaseModel):

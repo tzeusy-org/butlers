@@ -311,3 +311,28 @@ def test_dossier_keys_are_still_ignored_by_the_preview() -> None:
 
 def test_gmail_send_message_has_no_preview() -> None:
     assert previews.resolve_call_preview("gmail_send_message", {"to": "a@x.com"}) is None
+
+
+@pytest.mark.parametrize("tool_name", ["memory_entity_merge", "entity_merge"])
+def test_entity_merge_cards_offer_review_merge_only(monkeypatch, tool_name: str) -> None:
+    # REQ-module-approvals-009: no inline decision, even if a preview were registered.
+    monkeypatch.setitem(
+        previews._REGISTRY,
+        tool_name,
+        previews.PreviewRegistration(
+            renderer=lambda args: previews.CallPreview(
+                title="Merge", facts=(previews.PreviewFact("Source", "x"),)
+            )
+        ),
+    )
+    envelope = _envelope(
+        tool_name,
+        {
+            "source_entity_id": "28039ce4-c849-49a4-a7bf-c951b68fcb41",
+            "target_entity_id": "22b6c972-626e-49b8-be9b-c13f8b882573",
+        },
+    )
+
+    assert _verbs(envelope) == ["open_dashboard"]
+    assert "Review merge: compare both entities in the dashboard" in _message(envelope)
+    assert "Approve and Reject are not offered here." in _message(envelope)

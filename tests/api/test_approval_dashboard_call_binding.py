@@ -135,6 +135,7 @@ async def binding_http(app, monkeypatch):
         "events": [],
         "dispatches": [],
         "audit_fail": False,
+        "butler": "general",
     }
 
     class Conn:
@@ -165,6 +166,9 @@ async def binding_http(app, monkeypatch):
                 # The create_rule refusal probe for external MCP proposals
                 # (REQ-module-approvals-010); this ordinary action is not one.
                 return {"deduplication_key": None}
+            if sql.startswith("SELECT tool_name FROM pending_actions"):
+                # The create_rule refusal probe for entity merges.
+                return {"tool_name": state["row"]["tool_name"]}
             assert "FOR UPDATE" in sql
             state["events"].append("lock")
             return deepcopy(state["row"])
@@ -182,10 +186,11 @@ async def binding_http(app, monkeypatch):
             yield conn
 
     pool = Pool()
+    state["pool"] = pool
     monkeypatch.setattr(routes, "run_rule_write", _admitted_rule_transaction)
 
     async def find(*args):
-        return "general", pool
+        return state["butler"], pool
 
     async def approve(actual_conn, **kwargs):
         assert actual_conn is conn and state["events"][0:2] == ["begin", "lock"]
@@ -503,3 +508,146 @@ async def test_refused_owner_edit_preserves_stored_call(binding_http, monkeypatc
     assert state["dispatches"] == []
     assert "audit" not in state["events"]
     assert state["events"][-1] == "commit"
+
+
+# --- Parked entity merges (REQ-module-approvals-008/009) ---------------------------
+
+_SOURCE = "28039ce4-c849-49a4-a7bf-c951b68fcb41"
+_TARGET = "22b6c972-626e-49b8-be9b-c13f8b882573"
+
+
+def _park_merge(state, tool_name="memory_entity_merge", **args):
+    state["butler"] = "relationship"
+    state["row"]["tool_name"] = tool_name
+    state["row"]["tool_args"] = args or {"source_entity_id": _SOURCE, "target_entity_id": _TARGET}
+
+
+def _merge_view(row):
+    return {"tool_name": row["tool_name"], "args_digest": args_digest(row["tool_args"])}
+
+
+@pytest.mark.parametrize("legacy_route", [False, True])
+@pytest.mark.parametrize("tool_name", ["memory_entity_merge", "entity_merge"])
+async def test_reviewed_merge_dispatches_the_original_stored_call(
+    binding_http, legacy_route, tool_name
+):
+    # REQ-module-approvals-008 "Confirmation resolves the original pending merge" and
+    # "Legacy tool names keep their original binding".
+    client, state = binding_http
+    _park_merge(state, tool_name)
+    row = state["row"]
+    path = f"/api/approvals/{'actions/' if legacy_route else ''}{row['id']}/approve"
+    response = await client.post(path, json={"displayed_call": _merge_view(row)})
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "approved"
+    assert state["events"] == ["begin", "lock", "approve", "audit", "commit"]
+    assert state["dispatches"] == [
+        (tool_name, {"source_entity_id": _SOURCE, "target_entity_id": _TARGET})
+    ]
+    assert state["approval_kwargs"]["actor_id"] == "dashboard:rest-api"
+
+
+@pytest.mark.parametrize("legacy_route", [False, True])
+async def test_merge_without_its_reviewed_binding_refuses_before_any_effect(
+    binding_http, legacy_route
+):
+    # REQ-module-approvals-008 "Changed or edited calls are refused before decision".
+    client, state = binding_http
+    _park_merge(state)
+    row = state["row"]
+    path = f"/api/approvals/{'actions/' if legacy_route else ''}{row['id']}/approve"
+    view = _merge_view(row)
+    reversed_view = {
+        "tool_name": row["tool_name"],
+        "args_digest": args_digest({"source_entity_id": _TARGET, "target_entity_id": _SOURCE}),
+    }
+    renamed_view = {**view, "tool_name": "entity_merge"}
+    payloads = [{}, {"displayed_call": reversed_view}, {"displayed_call": renamed_view}]
+    if legacy_route:
+        payloads.append({"displayed_call": view, "create_rule": True})
+    else:
+        payloads.append({"displayed_call": view, "edits": {"target_entity_id": _SOURCE}})
+    for payload in payloads:
+        state["events"].clear()
+        response = await client.post(path, json=payload)
+        assert response.status_code == 409, payload
+        assert not {"edit", "approve", "audit", "commit"} & set(state["events"])
+    assert state["dispatches"] == []
+    assert state["row"]["status"] == "pending"
+    assert state["row"]["tool_args"] == {"source_entity_id": _SOURCE, "target_entity_id": _TARGET}
+
+
+@pytest.mark.parametrize(
+    ("butler", "args"),
+    [
+        ("relationship", {"source_entity_id": _SOURCE, "target_entity_id": _SOURCE}),
+        ("relationship", {"source_entity_id": _SOURCE, "target_entity_id": "not-a-uuid"}),
+        ("relationship", {"source_entity_id": _SOURCE}),
+        (
+            "relationship",
+            {"source_entity_id": _SOURCE, "target_entity_id": _TARGET, "force": True},
+        ),
+        ("general", {"source_entity_id": _SOURCE, "target_entity_id": _TARGET}),
+    ],
+)
+async def test_unshowable_merge_is_refused_even_with_a_matching_digest(binding_http, butler, args):
+    # REQ-module-approvals-008 "Unsupported merge arguments remain unapprovable".
+    client, state = binding_http
+    _park_merge(state, **args)
+    state["butler"] = butler
+    row = state["row"]
+    response = await client.post(
+        f"/api/approvals/{row['id']}/approve", json={"displayed_call": _merge_view(row)}
+    )
+    assert response.status_code == 409
+    assert "cannot be reviewed completely" in response.json()["detail"]
+    assert not {"approve", "audit", "commit"} & set(state["events"])
+    assert state["dispatches"] == []
+
+
+async def test_connector_callback_never_approves_a_merge(binding_http):
+    # REQ-module-approvals-009 "Dashboard support does not unlock notification decisions":
+    # the callback route passes require_displayed_call=False
+    # (test_approval_presented_digest proves that wiring); the decision refuses here.
+    from fastapi import HTTPException
+
+    from butlers.api.models.approval import DisplayedApprovalCall
+
+    _, state = binding_http
+    _park_merge(state)
+    row = state["row"]
+    with pytest.raises(HTTPException) as refused:
+        await routes.approve_owning_action(
+            parsed_id=row["id"],
+            actor_id="owner@telegram",
+            edits=None,
+            action_butler="relationship",
+            target_pool=state["pool"],
+            db_mgr=object(),
+            mcp_mgr=object(),
+            check_presented_digests=True,
+            displayed_call=DisplayedApprovalCall(**_merge_view(row)),
+            require_displayed_call=False,
+        )
+    assert refused.value.status_code == 409
+    assert refused.value.detail == routes.ENTITY_MERGE_REVIEW_REQUIRED
+    assert not {"approve", "audit", "commit"} & set(state["events"])
+    assert state["dispatches"] == []
+
+
+async def test_positive_control_callback_still_approves_a_previewable_call(binding_http):
+    # The merge refusal is scoped: an ordinary previewable call still decides by callback.
+    _, state = binding_http
+    row = state["row"]
+    result = await routes.approve_owning_action(
+        parsed_id=row["id"],
+        actor_id="owner@telegram",
+        edits=None,
+        action_butler="general",
+        target_pool=state["pool"],
+        db_mgr=object(),
+        mcp_mgr=object(),
+        require_displayed_call=False,
+    )
+    assert result.data.status == "approved"
+    assert len(state["dispatches"]) == 1

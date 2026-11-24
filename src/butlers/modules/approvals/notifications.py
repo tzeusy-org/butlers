@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.core.approval_callbacks import mint_approval_callback_token
+from butlers.modules.approvals.entity_merge_review import is_entity_merge_tool
 from butlers.modules.approvals.lineage_facts import lineage_facts
 from butlers.modules.approvals.previews import defang_urls, resolve_call_preview
 
@@ -124,7 +125,10 @@ def render_approval_card(
     _action_id(action)
     expires_at = _as_aware_datetime(action.get("expires_at"), field_name="expires_at")
     tool_name = _dossier_value(action.get("tool_name"))
-    preview = resolve_call_preview(tool_name, action.get("tool_args"))
+    # An entity merge is decided only from its dashboard structural review, whatever
+    # preview may ever be registered for it (REQ-module-approvals-009).
+    merge = is_entity_merge_tool(action.get("tool_name"))
+    preview = None if merge else resolve_call_preview(tool_name, action.get("tool_args"))
 
     started_by = origin_butler or action.get("origin_butler")
     lineage = f"Started by: {_dossier_value(started_by)} butler"
@@ -169,13 +173,13 @@ def render_approval_card(
     else:
         reason = "No exact preview for this tool"
 
-    message = "\n".join(
-        (
-            f"Approval needed: {tool_name}",
-            f"{reason}; review the full call before deciding. Approve and Reject are not offered.",
-            *tail,
-        )
+    guidance = (
+        "Review merge: compare both entities in the dashboard before deciding. "
+        "Approve and Reject are not offered here."
+        if merge
+        else f"{reason}; review the full call before deciding. Approve and Reject are not offered."
     )
+    message = "\n".join((f"Approval needed: {tool_name}", guidance, *tail))
     return ApprovalCard(message=message, offer_decision=False)
 
 
