@@ -47,11 +47,6 @@ def test_shared_skill_exists() -> None:
     assert "delegate_ask" in skill_md.read_text(encoding="utf-8")
 
 
-def test_butler_skills_md_mentions_delegation() -> None:
-    content = (ROSTER_DIR / "shared" / "BUTLER_SKILLS.md").read_text(encoding="utf-8")
-    assert "cross-butler-delegation" in content
-
-
 @pytest.mark.parametrize("butler", SYMLINKED_ROSTERS)
 def test_roster_symlinks_shared_skill(butler: str) -> None:
     link = ROSTER_DIR / butler / ".agents" / "skills" / "cross-butler-delegation"

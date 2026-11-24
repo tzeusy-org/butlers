@@ -5,3 +5,9 @@ file = "about/heart-and-soul/v1.md"
 mode = "require"
 phrase = "Chronicler"
 governs = "bu-pa4e0"
+
+[[pin]]
+file = "roster/shared/BUTLER_SKILLS.md"
+mode = "require"
+phrase = "cross-butler-delegation"
+governs = "bu-27dxl.5.3"
