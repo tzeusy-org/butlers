@@ -15,6 +15,7 @@ import {
   getQaAllowedRepos,
   getQaCase,
   getQaCaseJournal,
+  getQaCaseProposal,
   getQaCases,
   getQaCircuitBreaker,
   getQaInvestigations,
@@ -82,6 +83,17 @@ export function useQaCase(caseId: string | undefined) {
     enabled: !!caseId,
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+  });
+}
+
+/** Fetch the retained sealed patch for a QA case (only while one is retained). */
+export function useQaCaseProposal(caseId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["qa-case-proposal", caseId],
+    queryFn: () => getQaCaseProposal(caseId!),
+    enabled: !!caseId && enabled,
+    staleTime: STALE_TIME,
+    retry: false,
   });
 }
 

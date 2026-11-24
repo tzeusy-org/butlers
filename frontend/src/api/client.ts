@@ -287,6 +287,7 @@ import type {
   QaPatrolSummary,
   QaPatrolDetail,
   QaCaseDossier,
+  QaProposalExport,
   QaCaseJournalParams,
   QaCasesParams,
   QaCaseSummary,
@@ -5841,6 +5842,13 @@ export function getQaCases(params?: QaCasesParams): Promise<PaginatedResponse<Qa
 /** GET /api/qa/cases/:caseId — full case dossier */
 export function getQaCase(caseId: string): Promise<ApiResponse<QaCaseDossier>> {
   return apiFetch<ApiResponse<QaCaseDossier>>(`/qa/cases/${encodeURIComponent(caseId)}`);
+}
+
+/** GET /api/qa/cases/:caseId/proposal — the retained sealed patch (metadata only by default) */
+export function getQaCaseProposal(caseId: string): Promise<ApiResponse<QaProposalExport>> {
+  return apiFetch<ApiResponse<QaProposalExport>>(
+    `/qa/cases/${encodeURIComponent(caseId)}/proposal`,
+  );
 }
 
 /** GET /api/qa/cases/:caseId/journal — paginated journal events */
