@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from butlers.tools.switchboard.routing.classify import (
-    _build_routing_guidance,
-    _is_food_intent,
-    _is_scheduling_intent,
-    is_retrospective_time_intent,
-)
+from butlers.roster_imports import roster_module
+
+_classify = roster_module("switchboard", "tools/routing/classify")
+_build_routing_guidance = _classify._build_routing_guidance
+_is_food_intent = _classify._is_food_intent
+_is_scheduling_intent = _classify._is_scheduling_intent
+is_retrospective_time_intent = _classify.is_retrospective_time_intent
 
 # ── Retrospective intent detection ─────────────────────────────────────────
 
