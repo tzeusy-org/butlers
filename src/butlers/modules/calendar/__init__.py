@@ -7,6 +7,7 @@ Behavior mixins share this module instance; tool registrars run only here.
 from __future__ import annotations
 
 import asyncio
+import functools
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -940,6 +941,31 @@ class CalendarModule(
             raise RuntimeError("Calendar provider is not initialized; call on_startup first")
         return self._provider
 
+    async def _refresh_default_target_calendar_id(self) -> None:
+        """Re-read the fleet-shared default-target key so every butler follows ``set_primary``.
+
+        ``GOOGLE_CALENDAR_DEFAULT_TARGET_ID`` is shared by every calendar butler, but each keeps
+        its own in-memory copy; without this read the others keep the old calendar until they
+        restart. A failed read keeps the last known value, and a stored id that is not a
+        discovered calendar is ignored, as at startup.
+        """
+        store = self._credential_store
+        if store is None:
+            return
+        try:
+            stored = await store.load_shared(_CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID)
+        except Exception as exc:
+            logger.warning("CalendarModule: failed to re-read default-target calendar: %s", exc)
+            return
+        if not stored or not isinstance(stored, str) or stored == self._default_target_calendar_id:
+            return
+        if self._all_provider_calendar_ids and stored not in self._all_provider_calendar_ids:
+            logger.warning(
+                "CalendarModule: shared default-target %s is not a known calendar", stored
+            )
+            return
+        self._default_target_calendar_id = stored
+
     def _require_config(self) -> CalendarConfig:
         if self._config is None:
             raise RuntimeError("Calendar config is not initialized")
@@ -1152,7 +1178,22 @@ class CalendarModule(
         self._config = self._coerce_config(config)
         self._db = db
         self._butler_name = self._resolve_effective_butler_name(butler_name)
-        _tool = tool_registrar(mcp, self._config)
+        _register = tool_registrar(mcp, self._config)
+
+        def _tool(group: str) -> Callable[[Any], Any]:
+            registrar = _register(group)
+
+            def decorate(fn: Callable[..., Any]) -> Any:
+                @functools.wraps(fn)
+                async def with_current_default(*args: Any, **kwargs: Any) -> Any:
+                    # Resolve against the fleet-shared default target, not this process's copy.
+                    await self._refresh_default_target_calendar_id()
+                    return await fn(*args, **kwargs)
+
+                return registrar(with_current_default)
+
+            return decorate
+
         register_response_tools(self, mcp, _tool, butler_name)
         register_read_tools(self, mcp, _tool, butler_name)
         register_event_tools(self, mcp, _tool, butler_name)

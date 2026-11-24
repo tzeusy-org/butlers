@@ -316,9 +316,9 @@ def register_sync_tools(
 
         # Update ONLY the default-target selection.  Never mutate
         # ``_resolved_calendar_id`` (the immutable Butlers calendar id).
+        # The shared key is what every calendar butler follows, so it is written first: a save
+        # that failed would otherwise change only this process and still report success.
         old_id = module._default_target_calendar_id
-        module._default_target_calendar_id = normalized
-
         persisted = False
         if module._credential_store is not None:
             try:
@@ -335,6 +335,11 @@ def register_sync_tools(
                     "calendar_set_primary: failed to persist to credential store: %s",
                     exc,
                 )
+                return {
+                    "status": "error",
+                    "error": "Could not save the default calendar for all butlers.",
+                }
+        module._default_target_calendar_id = normalized
 
         return {
             "status": "ok",

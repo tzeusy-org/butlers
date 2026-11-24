@@ -1595,6 +1595,65 @@ class TestCalendarIdRoleSeparation:
         assert mod._default_target_calendar_id is None
         store.store_shared.assert_not_awaited()
 
+    async def _peer(self, store) -> tuple[CalendarModule, FastMCP]:
+        mcp = FastMCP("calendar-peer-tools")
+        mod = CalendarModule()
+        mod._provider = _ProviderDouble()
+        mod._credential_store = store
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        mod._primary_calendar_id = "owner@example.com"
+        mod._all_provider_calendar_ids = ["owner@example.com", "other@example.com"]
+        mod._provider_calendar_discovery_completed = True
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "butlers@group.calendar.google.com"},
+            db=None,
+            butler_name="peer",
+        )
+        return mod, mcp
+
+    async def test_set_primary_on_one_butler_is_followed_by_another_without_restart(self):
+        """The shared key is the fleet's truth: a peer re-reads it when it resolves a call."""
+        shared: dict[str, str] = {}
+        store = AsyncMock()
+        store.load_shared.side_effect = lambda key: shared.get(key)
+        store.store_shared.side_effect = lambda key, value, **_kw: shared.__setitem__(key, value)
+        caller, caller_mcp, _ = await self._make_module_with_store()
+        caller._credential_store = store
+        peer, peer_mcp = await self._peer(store)
+        caller._all_provider_calendar_ids = ["owner@example.com", "other@example.com"]
+
+        await (await tool_fn(caller_mcp, "calendar_set_primary"))(calendar_id="other@example.com")
+        assert peer._default_target_calendar_id is None  # not yet resolved on the peer
+
+        listed = await (await tool_fn(peer_mcp, "calendar_list_events"))(
+            start_at=datetime(2026, 2, 20, tzinfo=UTC), end_at=datetime(2026, 2, 21, tzinfo=UTC)
+        )
+        assert peer._default_target_calendar_id == "other@example.com"
+        assert listed["calendar_id"] == "other@example.com"
+
+    async def test_a_shared_default_that_is_not_a_known_calendar_is_ignored(self):
+        store = AsyncMock()
+        store.load_shared.return_value = "stranger@example.com"
+        peer, _ = await self._peer(store)
+        await peer._refresh_default_target_calendar_id()
+        assert peer._default_target_calendar_id is None
+
+    async def test_a_failed_shared_read_keeps_the_last_known_default(self):
+        store = AsyncMock()
+        store.load_shared.side_effect = RuntimeError("store down")
+        peer, _ = await self._peer(store)
+        peer._default_target_calendar_id = "owner@example.com"
+        await peer._refresh_default_target_calendar_id()
+        assert peer._default_target_calendar_id == "owner@example.com"
+
+    async def test_set_primary_that_cannot_save_the_shared_key_changes_nothing(self):
+        mod, mcp, store = await self._make_module_with_store()
+        store.store_shared.side_effect = RuntimeError("store down")
+        result = await (await tool_fn(mcp, "calendar_set_primary"))(calendar_id="owner@example.com")
+        assert result["status"] == "error"
+        assert mod._default_target_calendar_id is None
+
     def test_resolve_role_butlers_returns_resolved_id(self):
         mod = CalendarModule()
         mod._resolved_calendar_id = "butlers@group.calendar.google.com"
