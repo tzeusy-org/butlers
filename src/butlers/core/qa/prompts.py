@@ -216,7 +216,7 @@ View investigation details at: {dashboard_url}
 # ---------------------------------------------------------------------------
 
 
-_UNRENDERED_EVIDENCE_KEYS = frozenset({"traceback_tail"})
+_UNRENDERED_EVIDENCE_KEYS = frozenset({"traceback_tail", "evidence_bundle"})
 
 
 def _format_evidence_lines(evidence: dict[str, Any]) -> str:

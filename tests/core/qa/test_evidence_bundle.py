@@ -148,7 +148,7 @@ async def test_an_unreadable_source_is_marked_unavailable_and_never_invented(cap
 
 
 async def test_the_bundle_is_capped_with_an_explicit_status(monkeypatch) -> None:
-    monkeypatch.setattr(eb, "MAX_BUNDLE_BYTES", 1200)
+    monkeypatch.setattr(eb, "MAX_BUNDLE_BYTES", 5 * 1200)
     rows = [_session_row(error="x" * 300) for _ in range(5)]
 
     bundle = await _build(_pool(sessions=rows))
@@ -156,6 +156,21 @@ async def test_the_bundle_is_capped_with_an_explicit_status(monkeypatch) -> None
     section = next(s for s in bundle.sections if s.name == "sessions")
     assert section.status == "truncated"
     assert 0 < len(section.items) < 5
+    serialized = len(json.dumps(bundle.to_dict()).encode())
+    assert serialized <= 5 * 1200 + 2000  # the cap counts serialized items, not bare text
+
+
+async def test_unused_section_budget_flows_to_later_sections_in_fixed_order(monkeypatch) -> None:
+    monkeypatch.setattr(eb, "MAX_BUNDLE_BYTES", 5 * 700)
+    sessions = [_session_row(error="x" * 300)]
+    outcomes = [{"status": "failed", "error_detail": "y" * 300, "closed_at": NOW} for _ in range(5)]
+
+    bundle = await _build(_pool(sessions=sessions, outcomes=outcomes))
+    again = await _build(_pool(sessions=sessions, outcomes=outcomes))
+
+    kept = next(s for s in bundle.sections if s.name == "recent_outcomes")
+    assert len(kept.items) > 1  # the empty sections' share reached the last one
+    assert bundle.digest == again.digest
 
 
 async def test_the_manifest_carries_ids_and_digests_without_bodies() -> None:
@@ -238,8 +253,7 @@ async def test_the_bundle_file_is_read_only_and_matches_the_record(tmp_path: Pat
 
     assert json.loads(path.read_text()) == bundle.to_dict()
     assert stat.S_IMODE(path.stat().st_mode) == 0o444
-    assert stat.S_IMODE(directory.stat().st_mode) == 0o555
-    directory.chmod(0o755)  # let tmp_path cleanup remove it
+    assert directory.stat().st_mode & stat.S_IWUSR  # cleanup can still delete the directory
 
 
 # --- the prompt ---------------------------------------------------------------------------
@@ -255,3 +269,76 @@ def test_the_prompt_points_to_the_bundle_and_no_longer_claims_it_is_all_there_is
     for prompt in (with_bundle, without):
         assert "all the information available" not in prompt
         assert "no database, log or tracing access" in prompt
+
+
+def _sign_head_with_a_fake_signature(repo: Path) -> None:
+    """Rewrite HEAD with a gpgsig header so ``log.showSignature`` would invoke gpg.program."""
+    import subprocess
+
+    def git(*args: str, stdin: str | None = None) -> str:
+        done = subprocess.run(
+            ["git", "-C", str(repo), *args], input=stdin, capture_output=True, text=True, check=True
+        )
+        return done.stdout
+
+    raw = git("cat-file", "commit", "HEAD")
+    header, _, message = raw.partition("\n\n")
+    signature = "gpgsig -----BEGIN PGP SIGNATURE-----\n \n AAAA\n -----END PGP SIGNATURE-----"
+    git(
+        "update-ref",
+        "HEAD",
+        git(
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--stdin",
+            stdin=f"{header}\n{signature}\n\n{message}",
+        ).strip(),
+    )
+
+
+async def test_a_planted_repo_config_cannot_run_code_through_git_log(tmp_path: Path) -> None:
+    from tests.core.qa.publication_fakes import commit_file, init_repo
+
+    init_repo(tmp_path)
+    commit_file(tmp_path, "src/butlers/example.py", "a = 1\n", "add example")
+    await asyncio.to_thread(_sign_head_with_a_fake_signature, tmp_path)
+    marker = tmp_path / "ran-marker"
+    script = tmp_path / "planted.sh"
+    script.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    script.chmod(0o755)
+    config = tmp_path / ".git" / "config"
+    with config.open("a") as handle:
+        handle.write(f"[log]\n\tshowSignature = true\n[gpg]\n\tprogram = {script}\n")
+        handle.write(f"[core]\n\tpager = {script}\n\tfsmonitor = {script}\n")
+
+    lines = await eb._git_history(tmp_path, _finding(call_site="src/butlers/example.py:1"))
+
+    assert len(lines) == 1
+    assert not marker.exists()
+
+
+async def test_attempt_cleanup_can_remove_a_worktree_holding_the_bundle(tmp_path: Path) -> None:
+    import subprocess
+
+    from tests.core.qa.publication_fakes import commit_file, init_repo
+
+    init_repo(tmp_path)
+    commit_file(tmp_path, "a.txt", "a\n", "init")
+    worktree = tmp_path / "wt"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["git", "-C", str(tmp_path), "worktree", "add", "-q", "-b", "qa/x", str(worktree)],
+        check=True,
+    )
+    bundle = await _build(_pool(sessions=[_session_row()]))
+    await asyncio.to_thread(write_bundle_file, bundle, worktree / ".tmp" / "qa-agent" / "evidence")
+
+    done = await asyncio.to_thread(
+        subprocess.run,
+        ["git", "-C", str(tmp_path), "worktree", "remove", "--force", str(worktree)],
+        capture_output=True,
+    )
+
+    assert done.returncode == 0 and not worktree.exists()

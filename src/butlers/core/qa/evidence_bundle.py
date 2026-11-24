@@ -293,6 +293,7 @@ async def _git_history(repo_root: Path, finding: QaFinding) -> list[str]:
             "log",
             f"-n{MAX_GIT_COMMITS}",
             "--no-color",
+            "--no-show-signature",  # repo config may set log.showSignature + gpg.program
             "--no-ext-diff",
             "--no-textconv",
             "--format=%h %cs %s",
@@ -324,7 +325,7 @@ async def _outcomes(
         SELECT status, error_detail, closed_at
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL AND butler_name = $1 AND id <> $2
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id
         LIMIT $3
         """,
         finding.source_butler,
@@ -374,7 +375,8 @@ async def build_evidence_bundle(
     }
     sections: list[EvidenceSection] = []
     counter = 0
-    budget = MAX_BUNDLE_BYTES
+    share = MAX_BUNDLE_BYTES // len(SECTION_ORDER)
+    carry = 0
     for name in SECTION_ORDER:
         try:
             texts = await readers[name]()
@@ -385,20 +387,29 @@ async def build_evidence_bundle(
             logger.warning("Evidence bundle section %s unavailable: %s", name, type(exc).__name__)
             sections.append(EvidenceSection(name, "unavailable"))
             continue
+        # Each section gets an equal share plus whatever earlier sections left unused (fixed
+        # order, so the result is deterministic). Size is the serialized JSON the file holds.
+        budget = share + carry
         items: list[EvidenceItem] = []
         truncated = False
         for text in texts:
-            size = len(text.encode("utf-8"))
+            item = EvidenceItem(f"E{counter + 1}", _KINDS[name], text, _digest(text))
+            size = len(json.dumps(_item_dict(item)).encode("utf-8"))
             if size > budget:
                 truncated = True
                 break
             budget -= size
             counter += 1
-            items.append(EvidenceItem(f"E{counter}", _KINDS[name], text, _digest(text)))
+            items.append(item)
+        carry = budget
         status = "truncated" if truncated else ("available" if items else "empty")
         sections.append(EvidenceSection(name, status, tuple(items)))
     frozen = tuple(sections)
     return EvidenceBundle(sections=frozen, digest=_bundle_digest(frozen))
+
+
+def _item_dict(item: EvidenceItem) -> dict[str, str]:
+    return {"id": item.id, "kind": item.kind, "digest": item.digest, "text": item.text}
 
 
 async def _anonymized(source: Awaitable[list[str]], repo_root: Path) -> list[str]:
@@ -406,10 +417,10 @@ async def _anonymized(source: Awaitable[list[str]], repo_root: Path) -> list[str
 
 
 def write_bundle_file(bundle: EvidenceBundle, directory: Path) -> Path:
-    """Write the bundle for the agent to read, owner-writable only (``0444`` file, ``0555`` dir).
+    """Write a convenience copy of the bundle for the agent to read (file ``0444``).
 
-    Where the agent runs as a different user (the Job pod) that is read-only to it. It is a
-    convenience copy: the dispatcher's own record is what citations are checked against.
+    The directory stays owner-writable so ``git worktree remove`` and attempt cleanup can
+    delete it. The DB record, not this file, is what citations are checked against.
     """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / BUNDLE_FILE_NAME
@@ -423,10 +434,6 @@ def write_bundle_file(bundle: EvidenceBundle, directory: Path) -> Path:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
-    os.chmod(
-        directory,
-        stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
-    )
     return path
 
 
