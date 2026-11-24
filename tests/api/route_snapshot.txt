@@ -34,7 +34,7 @@ OP DELETE /api/oauth/google/credentials a75110f3c863
 OP DELETE /api/projections/{projection_id} c36ca2ec3ef8
 OP DELETE /api/qa/dismissals/{fingerprint} f5ea825f2fb5
 OP DELETE /api/qa/known-issues/{fingerprint}/dismiss d557015576ad
-OP DELETE /api/qa/known-issues/{fingerprint}/link 3eb3b3311322
+OP DELETE /api/qa/known-issues/{fingerprint}/link 3605308e7600
 OP DELETE /api/qa/settings/allowed-repos/{owner}/{repo} 7cd50ca32136
 OP DELETE /api/relationship/entities/{entity_id} 6a42dc60bbdc
 OP DELETE /api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash} 6e09857ae6fa
@@ -612,7 +612,7 @@ OP POST /api/qa/circuit-breaker/reset abb5b2f66997
 OP POST /api/qa/dev/synthetic-findings 7c3867151090
 OP POST /api/qa/force-patrol e061d785d64e
 OP POST /api/qa/known-issues/{fingerprint}/dismiss 5076b8ce2a52
-OP POST /api/qa/known-issues/{fingerprint}/link a85350da7dfd
+OP POST /api/qa/known-issues/{fingerprint}/link 0a30d685ae3d
 OP POST /api/qa/settings/allowed-repos c266d311aaea
 OP POST /api/qa/settings/repo/sync 22d317681c49
 OP POST /api/relationship/care/duties dec3d9fe105a

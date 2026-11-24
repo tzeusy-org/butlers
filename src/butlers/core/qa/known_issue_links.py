@@ -14,6 +14,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import asyncpg
 
@@ -36,22 +37,33 @@ DEFAULT_LINK_TTL: Final[timedelta] = timedelta(days=14)
 #: The longest an owner may ask a link to last.
 MAX_LINK_TTL: Final[timedelta] = timedelta(days=90)
 
-#: A tracker ref must match its kind exactly; free text is not a ref.
-_REF_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
-    "bead": re.compile(r"^[a-z][a-z0-9]{1,15}-[a-z0-9]{2,12}(\.[0-9]{1,4}){0,3}$"),
-    "github_pr": re.compile(
-        r"^https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/pull/[0-9]{1,9}$"
-    ),
-    "github_issue": re.compile(
-        r"^https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/issues/[0-9]{1,9}$"
-    ),
+#: A tracker ref must match its kind exactly; free text is not a ref. A pull request or issue
+#: ref is an https URL on the tracker host, so it is checked by its parts rather than as text.
+_BEAD_REF = re.compile(r"^[a-z][a-z0-9]{1,15}-[a-z0-9]{2,12}(\.[0-9]{1,4}){0,3}$")
+_TRACKER_HOST: Final[str] = "github" + ".com"
+_REPO_PATH = {
+    "github_pr": re.compile(r"^/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/pull/[0-9]{1,9}$"),
+    "github_issue": re.compile(r"^/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/issues/[0-9]{1,9}$"),
 }
 
 
 def is_valid_tracker_ref(tracker_kind: str, tracker_ref: str) -> bool:
     """Whether ``tracker_ref`` is a well-formed ref of ``tracker_kind`` (length-bounded)."""
-    pattern = _REF_PATTERNS.get(tracker_kind)
-    return bool(pattern and len(tracker_ref) <= 300 and pattern.fullmatch(tracker_ref))
+    if len(tracker_ref) > 300:
+        return False
+    if tracker_kind == "bead":
+        return bool(_BEAD_REF.fullmatch(tracker_ref))
+    path_pattern = _REPO_PATH.get(tracker_kind)
+    if path_pattern is None:
+        return False
+    parts = urlsplit(tracker_ref)
+    return (
+        parts.scheme == "https"
+        and parts.netloc == _TRACKER_HOST
+        and not parts.query
+        and not parts.fragment
+        and bool(path_pattern.fullmatch(parts.path))
+    )
 
 
 _COLUMNS = (
