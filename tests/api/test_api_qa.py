@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1851,3 +1851,142 @@ class TestUpdateGitAuthor:
             json={"name": "QA Staffer", "email": "qa@butlers.local"},
         )
         assert resp.status_code == 503
+
+
+class TestKnownIssueLinks:
+    """Owner links from a finding to the work that tracks it (bu-ejow5p.9)."""
+
+    FP = "a" * 64
+
+    @staticmethod
+    def _link_row(created: bool = True, **over: Any) -> dict[str, Any]:
+        row = {
+            "id": uuid.uuid4(),
+            "fingerprint": "a" * 64,
+            "tracker_kind": "bead",
+            "tracker_ref": "bu-2cgabc",
+            "linked_by": "owner",
+            "linked_at": _NOW,
+            "fix_ref": None,
+            "state": "tracked",
+            "expires_at": _NOW,
+            "created": created,
+        }
+        row.update(over)
+        return row
+
+    async def _post(self, body: dict[str, Any], **app_kwargs: Any):
+        app, pool = _build_app(**app_kwargs)
+        response = await _call(app, "post", f"/api/qa/known-issues/{self.FP}/link", json=body)
+        return response, pool
+
+    async def test_a_bead_link_is_created_unverified_and_201(self) -> None:
+        response, pool = await self._post(
+            {"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            fetchrow_result=self._link_row(),
+        )
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert data["tracker_ref"] == "bu-2cgabc" and data["state"] == "tracked"
+        args = pool.fetchrow.await_args.args
+        assert args[1:5] == (self.FP, "bead", "bu-2cgabc", "owner")
+        assert args[5] is not None  # a default expiry, never an unbounded suppression
+
+    async def test_a_repeat_link_is_200_idempotent(self) -> None:
+        response, _ = await self._post(
+            {"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            fetchrow_result=self._link_row(created=False),
+        )
+        assert response.status_code == 200
+
+    async def test_a_non_owner_is_refused_403(self) -> None:
+        with patch(
+            "butlers.api.routers.qa.authenticated_principal",
+            side_effect=PermissionError("Authenticated owner principal is required"),
+        ):
+            response, pool = await self._post({"tracker_kind": "bead", "tracker_ref": "bu-1"})
+        assert response.status_code == 403
+        pool.fetchrow.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"tracker_kind": "email", "tracker_ref": "x"},
+            {"tracker_kind": "bead", "tracker_ref": "   "},
+            {"tracker_kind": "bead", "tracker_ref": "see the other ticket"},
+            {"tracker_kind": "bead", "tracker_ref": "bu-" + "a" * 400},
+            {"tracker_kind": "github_pr", "tracker_ref": "not a pr url"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/issues/7"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://evil.example/o/r/pull/7"},
+            {"tracker_kind": "github_issue", "tracker_ref": "https://github.com/o/r/pull/7"},
+        ],
+    )
+    async def test_invalid_links_are_422(self, body: dict[str, Any]) -> None:
+        response, pool = await self._post(body)
+        assert response.status_code == 422
+        pool.fetchrow.assert_not_awaited()
+
+    @pytest.mark.parametrize("state", ["closed", "merged"])
+    async def test_a_pr_that_is_already_done_is_rejected(self, state: str) -> None:
+        meta = MagicMock(state=state)
+        client = MagicMock(fetch=AsyncMock(return_value=meta))
+        with patch("butlers.api.routers.qa.get_pr_client", return_value=client):
+            response, pool = await self._post(
+                {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/pull/7"}
+            )
+        assert response.status_code == 422
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_an_open_or_unverifiable_pr_is_accepted(self) -> None:
+        for state in ("open", None):
+            client = MagicMock(fetch=AsyncMock(return_value=MagicMock(state=state)))
+            with patch("butlers.api.routers.qa.get_pr_client", return_value=client):
+                response, _ = await self._post(
+                    {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/pull/7"},
+                    fetchrow_result=self._link_row(tracker_kind="github_pr"),
+                )
+            assert response.status_code == 201
+
+    async def test_expiry_must_be_future_and_within_ninety_days(self) -> None:
+        now = datetime.now(UTC)
+        for value, status in (
+            (now - timedelta(minutes=1), 422),
+            (now + timedelta(days=91), 422),
+            (now + timedelta(days=90) - timedelta(minutes=1), 201),
+        ):
+            response, _ = await self._post(
+                {
+                    "tracker_kind": "bead",
+                    "tracker_ref": "bu-2cgabc",
+                    "expires_at": value.isoformat(),
+                },
+                fetchrow_result=self._link_row(),
+            )
+            assert response.status_code == status, value
+
+    async def test_a_fingerprint_that_is_not_a_sha256_digest_is_refused(self) -> None:
+        for bad in ("short", "A" * 64, "g" * 64, "a" * 65):
+            app, _ = _build_app()
+            post = await _call(
+                app,
+                "post",
+                f"/api/qa/known-issues/{bad}/link",
+                json={"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            )
+            app, _ = _build_app()
+            delete = await _call(
+                app, "delete", f"/api/qa/known-issues/{bad}/link?tracker_ref=bu-2cgabc"
+            )
+            assert post.status_code == delete.status_code == 422, bad
+
+    async def test_closing_a_link_reports_whether_one_was_open(self) -> None:
+        app, _ = _build_app(fetchval_result=uuid.uuid4())
+        ok = await _call(
+            app, "delete", f"/api/qa/known-issues/{self.FP}/link?tracker_ref=bu-2cgabc"
+        )
+        assert ok.status_code == 200 and ok.json()["data"] == {"closed": True}
+        app, _ = _build_app(fetchval_result=None)
+        missing = await _call(
+            app, "delete", f"/api/qa/known-issues/{self.FP}/link?tracker_ref=bu-2cgabc"
+        )
+        assert missing.status_code == 404
