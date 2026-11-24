@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import parse_file
 from tests import quarantine
 
 pytestmark = pytest.mark.unit
@@ -162,7 +163,7 @@ def test_malformed_registry_is_a_usage_error(tmp_path: Path, rows: object) -> No
 def _defined_tests(path: Path) -> set[str]:
     """Return ``name`` and ``Class::name`` for every test function defined in ``path``."""
     names = set()
-    for node in ast.parse(path.read_text()).body:
+    for node in parse_file(path).body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             names.add(node.name)
         elif isinstance(node, ast.ClassDef):

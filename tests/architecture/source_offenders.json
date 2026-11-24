@@ -423,13 +423,6 @@
       "reason": "Initial S1a inventory preserves the landed source scan from #6064 pending migration"
     },
     {
-      "path": "tests/contracts/test_chronicler_no_cross_schema.py",
-      "line": 128,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d7378aa80a618e1a)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/contracts/test_chronicler_no_llm.py",
       "line": 83,
       "rule": "ast-tests-use-source-guard",
@@ -560,13 +553,6 @@
       "line": 14,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 26b7ce7d4820be65)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/core/test_asyncio_marker_hygiene.py",
-      "line": 20,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 78aed703e09f50c7)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
@@ -703,13 +689,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/scripts/test_conftest_teardown_patch.py",
-      "line": 83,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape ba949b78eb02a7de)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/scripts/test_dockerfile_base_runtime_tools.py",
       "line": 207,
       "rule": "ast-tests-use-source-guard",
@@ -742,13 +721,6 @@
       "line": 576,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 6f9e233183dfc26f)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/testing/test_quarantine.py",
-      "line": 165,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 7c9ac8461e86d2af)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     }
   ],
