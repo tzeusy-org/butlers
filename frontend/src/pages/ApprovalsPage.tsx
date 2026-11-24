@@ -51,6 +51,7 @@ import {
 } from "@/api/index.ts";
 import type { DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
 import { useDocumentVisible } from "@/hooks/use-document-visible";
+import { OwnerDeliveryReceipt } from "@/components/approvals/OwnerDeliveryReceipt";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -748,12 +749,16 @@ function Dossier({
     isPending && externalReview && !approvable ? externalReview.approve_unavailable_reason : null;
   const refEntities = detail.referenced_entities ?? [];
   const expiryChip = expiryCountdown(detail.expires_at);
+  const deliveryReceiptId = detail.owner_delivery?.presentation_id ?? detail.owner_delivery_receipt;
 
   return (
     <div
       className={`flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative${paneOrder}`}
       data-testid="approval-dossier-pane"
     >
+      {deliveryReceiptId && <OwnerDeliveryReceipt
+        key={`${deliveryReceiptId}:${detail.owner_delivery?.generation}`}
+        card={detail.owner_delivery} presentationId={deliveryReceiptId} />}
       {externalReview ? (
         <ExternalProposalReviewPanel review={externalReview} pending={isPending} />
       ) : <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">

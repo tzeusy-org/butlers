@@ -212,6 +212,8 @@ class OwnerDeliveryCard(BaseModel):
     generation: int
     approve_token: str
     reject_token: str
+    presentation_id: str | None = None
+    ack_token: str | None = None
 
 
 class ApprovalDetail(BaseModel):
@@ -283,6 +285,7 @@ class ApprovalDetail(BaseModel):
             "Null while owner delivery is off, for connector reads, or when unavailable."
         ),
     )
+    owner_delivery_receipt: str | None = None
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,

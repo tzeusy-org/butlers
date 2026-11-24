@@ -35,3 +35,6 @@ PLACE_RETENTION_LIVE = False
 #: (``core.owner_delivery_holds``). Holds only hold; they never raise urgency. Reads need the
 #: owner reader role and overlay grants that exist only at activation.
 OWNER_DELIVERY_MODE_HOLDS_LIVE = False
+
+#: M7 desk-first selection, activity collection and Why UI. Scheduling is not activation.
+OWNER_DELIVERY_SELECTION_LIVE = False

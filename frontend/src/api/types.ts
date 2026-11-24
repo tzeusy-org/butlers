@@ -3889,6 +3889,31 @@ export interface OwnerDeliveryCard {
   generation: number;
   approve_token: string;
   reject_token: string;
+  presentation_id?: string | null;
+  ack_token?: string | null;
+}
+
+export interface OwnerDeliveryWhy {
+  subject_id: string;
+  presentation_id: string;
+  generation: number;
+  current: boolean;
+  kind: string;
+  state: string;
+  decision: string | null;
+  surface: string;
+  delivery_state: string;
+  urgency_class: string;
+  urgency_reason: string | null;
+  cause: string;
+  deadline: string | null;
+  evidence: { source: string; surface: string; age_seconds: number; state: string }[];
+  presentations: { surface: string; state: string; generation: number }[];
+  holding_reason: { stage: string; terms: unknown[]; generation: number } | null;
+  effect_ref: string | null;
+  effect_status: string;
+  budget_status: string;
+  origin: string;
 }
 
 export interface OwnerDeliveryActionRequest {
@@ -3912,6 +3937,7 @@ export interface ApprovalDetail {
   /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
   goal?: ApprovalGoalLineage | null;
   owner_delivery?: OwnerDeliveryCard | null;
+  owner_delivery_receipt?: string | null;
   id: string;
   title: string;
   butler: string;

@@ -14,6 +14,7 @@ import type {
   ApprovalActionParams,
   ApprovalApproveRequest,
   OwnerDeliveryActionRequest,
+  OwnerDeliveryWhy,
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
@@ -3819,6 +3820,25 @@ export function redeemOwnerDeliveryAction(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
+  });
+}
+
+/** Read persisted evidence through a current authenticated presentation; never acts. */
+export function getOwnerDeliveryWhy(token: string): Promise<ApiResponse<OwnerDeliveryWhy>> {
+  return apiFetch("/owner-delivery/why", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function getPersistedOwnerDeliveryWhy(id: string): Promise<ApiResponse<OwnerDeliveryWhy>> {
+  return apiFetch(`/owner-delivery/presentations/${encodeURIComponent(id)}/why`);
+}
+
+export function acknowledgeOwnerDelivery(token: string): Promise<ApiResponse<{ status: string }>> {
+  return apiFetch("/owner-delivery/actions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
   });
 }
 

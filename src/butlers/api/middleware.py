@@ -52,6 +52,8 @@ def _is_approval_callback_route(request: Request) -> bool:
         # Canonical owner-delivery card actions and stale-card retraction (bu-dhloi1.13).
         if request.method == "POST" and segments[3:] == ["actions"]:
             return True
+        if request.method == "POST" and segments[3:] == ["activity"]:
+            return True
         if request.method == "GET" and segments[3:] == ["retractions"]:
             return True
         if request.method != "POST" or len(segments) != 5 or segments[3] != "retractions":

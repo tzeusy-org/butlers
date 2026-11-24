@@ -8,11 +8,12 @@ import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from butlers.core import owner_delivery as od
 from butlers.core import owner_delivery_holds as holds
+from butlers.core import owner_delivery_selection as selection
 from butlers.core.approval_delivery_worker import (
     SAFE_REASON_CODES,
     DeliveryClaim,
@@ -496,7 +497,15 @@ class ApprovalDeliveryRepository:
         tokens exist only in memory until the envelope is handed to Messenger.
         """
         if claim.presentation_mode != "single":
+            if selection.live():
+                # A legacy count-only digest has no S6 subject to acknowledge or fence.
+                # Its actions remain available in the dashboard pending list.
+                async with self._pool.acquire() as connection:
+                    if await od.rollout_enabled(connection):
+                        raise od.OwnerDeliveryDeferred()
             return await self._prepare_digest_delivery(claim)
+        deferred = False
+        deadline = None
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 if not await od.rollout_enabled(connection):
@@ -527,7 +536,20 @@ class ApprovalDeliveryRepository:
                     effect_class=action_effect_class(action),
                     defers_push=True,
                 )
-                if hold is None:
+                if hold is None and selection.live():
+                    selected = await selection.plan(
+                        connection, subject, sensitivity=selection.action_sensitivity(action)
+                    )
+                    if not await selection.telegram_due(
+                        connection, subject, sensitivity=selection.action_sensitivity(action)
+                    ):
+                        deferred = True
+                        deadline = (
+                            datetime.fromisoformat(selected["deadline"])
+                            if selected.get("deadline")
+                            else None
+                        )
+                if hold is None and not deferred:
                     presentation = await prepare_telegram_presentation(
                         connection,
                         action=action,
@@ -537,8 +559,27 @@ class ApprovalDeliveryRepository:
                         owner_recipient=owner_recipient,
                     )
                     return dict(presentation.tokens)
+        if deferred:
+            raise od.OwnerDeliveryDeferred(deadline)
         # Raised after the transaction commits, so the hold receipt is kept.
         raise od.OwnerDeliveryHeld
+
+    async def defer_surface(self, claim: DeliveryClaim, deadline: datetime | None) -> None:
+        """Release this fence until its selection deadline; no provider attempt occurred."""
+        self._rendered_digests.pop(_claim_key(claim), None)
+        await self._pool.execute(
+            "UPDATE approval_delivery_presentations SET state = 'retry_wait', "
+            "last_reason_code = 'surface_wait', "
+            "next_attempt_at = COALESCE($5, clock_timestamp() + interval '60 seconds'), "
+            "claim_token = NULL, claim_expires_at = NULL, updated_at = clock_timestamp() "
+            "WHERE id = $1 AND presentation_generation = $2 AND claim_token = $3 "
+            "AND claim_fence = $4 AND state = 'claimed'",
+            claim.presentation_id,
+            claim.presentation_generation,
+            claim.claim_token,
+            claim.claim_fence,
+            deadline,
+        )
 
     async def _prepare_digest_delivery(self, claim: DeliveryClaim) -> None:
         """Defer a digest card while an owner mode holds every counted member; else ``None``.
@@ -646,6 +687,24 @@ class ApprovalDeliveryRepository:
                 eligible = await self._lock_and_check_subject(connection, claim)
                 if not eligible:
                     return False
+                if selection.live() and claim.presentation_mode == "single":
+                    # Ack can win after rendering but before the final provider marker.
+                    # The action and subject locks are held; do not hand off stale work.
+                    subject = await connection.fetchrow(
+                        "SELECT s.* FROM public.owner_delivery_subjects s "
+                        "JOIN approval_delivery_intents i ON i.action_id::text = s.source_ref "
+                        "JOIN approval_delivery_presentations p ON p.intent_id = i.id "
+                        "WHERE p.id = $1 AND s.kind = 'approval' "
+                        "AND s.owning_schema = current_schema()",
+                        claim.presentation_id,
+                    )
+                    if subject is None:
+                        if await od.rollout_enabled(connection):
+                            return False
+                    elif not await selection.telegram_due(
+                        connection, od.Subject.from_row(subject), sensitivity="unknown"
+                    ):
+                        return False
                 rendered_digest = self._rendered_digests.pop(_claim_key(claim), None)
                 current_args = await connection.fetchval(
                     """

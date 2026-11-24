@@ -52,7 +52,7 @@ Server-derived — no caller input reaches the recorded actor:
   the channel rather than a principal; they are not forgeable, but see the
   follow-up note at the end of this docstring.
 - Server-verified caller provenance: ``POST /api/approvals/{id}/approve``,
-  ``/deny`` and ``POST /api/owner-delivery/actions`` read
+  ``/deny``, ``POST /api/owner-delivery/actions`` and ``POST /api/owner-delivery/activity`` read
   ``X-Butlers-Decision-Actor``, but
   ``approvals._decision_actor_id`` accepts ``owner@telegram`` **only** when the
   request also passed callback authentication (401 otherwise) and rejects any
@@ -121,6 +121,10 @@ _ALLOWED_ACTOR_HEADERS: frozenset[tuple[str, str, str]] = frozenset(
         ("POST", "/api/approvals/{action_id}/approve", "X-Butlers-Decision-Actor"),
         ("POST", "/api/approvals/{action_id}/deny", "X-Butlers-Decision-Actor"),
         ("POST", "/api/owner-delivery/actions", "X-Butlers-Decision-Actor"),
+        # bu-4c7nvp.1.8: same _decision_actor_id verification; a fixed channel signal,
+        # never caller-chosen attribution. Real HTTP denial/positive controls:
+        # test_m7_activity_route_verifies_callback_actor_and_never_acknowledges.
+        ("POST", "/api/owner-delivery/activity", "X-Butlers-Decision-Actor"),
     }
 )
 

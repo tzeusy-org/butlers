@@ -29,6 +29,7 @@ from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as approvals_router
 from butlers.api.routers import owner_delivery as owner_delivery_router
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
 from butlers.core.approval_delivery_worker import (
     ApprovalDeliveryWorker,
@@ -55,6 +56,7 @@ from butlers.modules.approvals.owner_delivery_bridge import (
 )
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.approvals.previews import dashboard_call_preview
+from butlers.perception import flags
 from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
@@ -2344,3 +2346,375 @@ async def test_a_mode_hold_defers_the_push_keeps_its_receipt_and_never_touches_u
     held["on"] = False
     tokens = await repository.prepare_owner_delivery(claim, _RECIPIENT)
     assert tokens and all(token.startswith("od1:") for token in tokens.values())
+
+
+async def _m7_desk_action(pool, monkeypatch):
+    """Synthetic ordinary descriptor, real admission/selection/transport queue."""
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await _enable(pool)
+    async with pool.acquire() as conn:
+        await selection.activity(conn, owner=await _owner(pool), surface="dashboard")
+    admission = await park_pending_action(
+        pool,
+        action_id=uuid.uuid4(),
+        tool_name="skill_read",
+        tool_args={"name": "synthetic"},
+        agent_summary="Synthetic ordinary alert/decision",
+        requested_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        origin_butler="general",
+    )
+    return admission.action_id
+
+
+async def _m7_due(pool):
+    await pool.execute(
+        "UPDATE approval_delivery_presentations "
+        "SET next_attempt_at = clock_timestamp() "
+        "WHERE state = 'retry_wait'"
+    )
+
+
+async def test_m7_desk_deadline_survives_worker_restart_and_provider_replay(
+    ledger_pool,
+    monkeypatch,
+):
+    action_id = await _m7_desk_action(ledger_pool, monkeypatch)
+    moment = datetime.now(UTC)
+    monkeypatch.setattr(selection, "clock", AsyncMock(side_effect=lambda conn: moment))
+    runtime = _Runtime(HandoffResult("confirmed", provider_reference="synthetic-message"))
+
+    def worker():
+        return ApprovalDeliveryWorker(
+            ApprovalDeliveryRepository(ledger_pool), ApprovalDeliveryRenderer(), runtime
+        )
+
+    assert await worker().process_one()
+    assert runtime.envelopes == []
+    stored = await ledger_pool.fetchrow(
+        "SELECT detail, generation FROM public.owner_delivery_receipts WHERE kind = 'selected'"
+    )
+    assert stored["detail"]["reason"] == "desk_first"
+    deadline = datetime.fromisoformat(stored["detail"]["deadline"])
+    assert deadline == moment + timedelta(minutes=3)
+    assert (
+        await ledger_pool.fetchval("SELECT next_attempt_at FROM approval_delivery_presentations")
+        == deadline
+    )
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card and card.ack_token  # dashboard render is not acknowledgement
+
+    moment = deadline - timedelta(microseconds=1)
+    await _m7_due(ledger_pool)
+    assert await worker().process_one() and runtime.envelopes == []
+    moment = deadline
+    await _m7_due(ledger_pool)
+    assert await worker().process_one()
+    assert len(runtime.envelopes) == 1
+    assert await worker().process_one() is False
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT count(*) FROM public.owner_delivery_receipts WHERE kind = 'selected'"
+        )
+        == 1
+    )
+    rows = await ledger_pool.fetch(
+        "SELECT surface, state, generation FROM public.owner_delivery_presentations ORDER BY surface"
+    )
+    assert [(r["surface"], r["state"], r["generation"]) for r in rows] == [
+        ("dashboard", "sent", 1),
+        ("telegram", "sent", 1),
+    ]
+    assert await _state(ledger_pool, action_id) == ("pending", "delivered", 1)
+
+
+async def test_m7_ack_fences_a_prepared_fallback_and_does_not_approve(ledger_pool, monkeypatch):
+    action_id = await _m7_desk_action(ledger_pool, monkeypatch)
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card and card.ack_token
+    monkeypatch.setattr(
+        selection,
+        "clock",
+        AsyncMock(return_value=datetime.now(UTC) + timedelta(minutes=3, seconds=1)),
+    )
+    repository = ApprovalDeliveryRepository(ledger_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    await repository.load_render_subject(claim)
+    tokens = await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert tokens is not None
+    won = await _redeem(ledger_pool, action_id, card.ack_token, surface="dashboard")
+    assert won.outcome == "won"
+    # The final provider marker rechecks under subject lock after the ack committed.
+    assert await repository.mark_handoff_started(claim) is False
+    assert await _state(ledger_pool, action_id) == ("pending", "acknowledged", 2)
+    assert await ledger_pool.fetchval("SELECT count(*) FROM approval_delivery_attempts") == 0
+    duplicate = await _redeem(ledger_pool, action_id, card.ack_token, surface="dashboard")
+    assert duplicate.outcome == "duplicate"
+
+
+async def test_m7_ack_serializes_with_due_plan_and_stops_escalation(ledger_pool, monkeypatch):
+    action_id = await _m7_desk_action(ledger_pool, monkeypatch)
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card and card.ack_token
+    subject = None
+    acquired = asyncio.Event()
+    release = asyncio.Event()
+
+    async def ack():
+        async with ledger_pool.acquire() as conn, conn.transaction():
+            action = await conn.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+            )
+            nonlocal subject
+            subject = await open_approval_subject(conn, action)
+            await conn.fetchrow(
+                "SELECT id FROM public.owner_delivery_subjects WHERE id = $1 FOR UPDATE", subject.id
+            )
+            acquired.set()
+            await release.wait()
+            _, digest = approval_digests(action["tool_name"], action["tool_args"])
+            return await od.redeem(
+                conn,
+                card.ack_token,
+                kind="approval",
+                source_ref=str(action_id),
+                expected_action="ack",
+                owner_entity=subject.owner_entity,
+                surface="dashboard",
+                current_action_digest=digest,
+            )
+
+    async def fallback():
+        async with ledger_pool.acquire() as conn, conn.transaction():
+            return await selection.telegram_due(
+                conn, subject, sensitivity="ordinary", now=datetime.now(UTC) + timedelta(minutes=4)
+            )
+
+    first = asyncio.create_task(ack())
+    await asyncio.wait_for(acquired.wait(), 5)
+    second = asyncio.create_task(fallback())
+    try:
+        # Prove actual lock contention, not merely sequential task creation.
+        for _ in range(100):
+            waiting = await ledger_pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                "AND query LIKE 'SELECT * FROM public.owner_delivery_subjects%')"
+            )
+            if waiting:
+                break
+            await asyncio.sleep(0.01)
+        assert waiting
+    finally:
+        release.set()
+    assert (await asyncio.wait_for(first, 5)).outcome == "won"
+    assert await asyncio.wait_for(second, 5) is False
+    assert await _state(ledger_pool, action_id) == ("pending", "acknowledged", 2)
+
+
+async def test_m7_authenticated_why_is_read_only_and_stale_tokens_refuse(ledger_pool, monkeypatch):
+    action_id = await _m7_desk_action(ledger_pool, monkeypatch)
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card and card.ack_token
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(ledger_pool)), base_url="http://dashboard-api:41200"
+    ) as client:
+        path = "/api/owner-delivery/why"
+        assert (await client.post(path, json={"token": card.approve_token})).status_code == 401
+        headers = {"X-API-Key": _DASHBOARD_API_KEY}
+        receipt = await client.post(path, json={"token": card.approve_token}, headers=headers)
+        assert receipt.status_code == 200, receipt.text
+        shown = receipt.json()["data"]
+        assert (
+            shown["cause"] == "desk_first" and shown["evidence"][0]["source"] == "dashboard_focus"
+        )
+        assert shown["budget_status"] == shown["origin"] == "unknown"
+        assert shown["effect_status"] == "pending"
+        assert await _state(ledger_pool, action_id) == ("pending", "delivered", 1)
+        assert (
+            await ledger_pool.fetchval(
+                "SELECT count(*) FROM public.owner_delivery_tokens WHERE consumed_at IS NOT NULL"
+            )
+            == 0
+        )
+        ack = await client.post(
+            "/api/owner-delivery/actions", json={"token": card.ack_token}, headers=headers
+        )
+        assert ack.status_code == 200, ack.text
+        stale = await client.post(path, json={"token": card.approve_token}, headers=headers)
+        assert stale.status_code == 409 and stale.json()["detail"]["reason"] == "stale_generation"
+        assert await _state(ledger_pool, action_id) == ("pending", "acknowledged", 2)
+        # The authenticated historical read remains useful, without restoring any token.
+        historical = await client.get(
+            f"/api/owner-delivery/presentations/{card.presentation_id}/why", headers=headers
+        )
+        assert historical.status_code == 200
+        assert historical.json()["data"]["current"] is False
+        assert historical.json()["data"]["state"] == "acknowledged"
+
+
+async def test_m7_activity_has_a_real_runtime_write_fence(role_pools):
+    owner, runtime = role_pools
+    entity = await _owner(owner)
+    async with owner.acquire() as conn:
+        await selection.activity(conn, owner=entity, surface="dashboard")
+        # init-db's public grants can re-widen DML. Prove the RLS fence even then.
+        await conn.execute(
+            "GRANT INSERT, UPDATE, DELETE ON public.owner_delivery_surface_evidence "
+            "TO butler_general_rw"
+        )
+    async with runtime.acquire() as conn:
+        evidence = await selection.read_evidence(conn, entity)
+        assert len(evidence) == 1 and evidence[0].source == "dashboard_focus"
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with conn.transaction():
+                await selection.activity(conn, owner=entity, surface="telegram")
+    assert await owner.fetchval("SELECT count(*) FROM public.owner_delivery_surface_evidence") == 1
+
+
+async def test_m7_alert_adapter_and_original_reply_keep_canonical_identity(
+    ledger_pool, monkeypatch
+):
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await _enable(ledger_pool)
+    now = datetime.now(UTC)
+    owner = await _owner(ledger_pool)
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        await selection.activity(conn, owner=owner, surface="dashboard")
+        now = await conn.fetchval("SELECT clock_timestamp()")
+        alert = await od.open_subject(
+            conn,
+            kind="pending_ask",
+            source_ref="synthetic-alert",
+            owner_entity=owner,
+            content_digest="a" * 64,
+            action_digest="b" * 64,
+            urgency=od.Urgency("interrupt", "home_safety"),
+        )
+        options = {
+            "route_ref": _RECIPIENT,
+            "sensitivity": "ordinary",
+            "actions": ("ack",),
+            "expires_at": now + timedelta(hours=1),
+        }
+        assert (
+            await selection.prepare_presentation(
+                conn, alert, surface="telegram", now=now, **options
+            )
+            is None
+        )
+        first = await selection.prepare_presentation(
+            conn,
+            alert,
+            surface="dashboard",
+            now=now,
+            route_ref="owner:dashboard",
+            sensitivity="ordinary",
+            actions=("ack",),
+            expires_at=now + timedelta(hours=1),
+        )
+        assert first is not None
+        fallback = await selection.prepare_presentation(
+            conn, alert, surface="telegram", now=now + timedelta(minutes=3), **options
+        )
+        assert fallback is not None and fallback.subject_id == first.subject_id
+        assert await od.begin_send(conn, fallback.id)
+        await od.record_send(conn, fallback.id, outcome="unknown")
+        replay = await selection.prepare_presentation(
+            conn, alert, surface="telegram", now=now + timedelta(minutes=4), **options
+        )
+        assert replay.id == fallback.id and not replay.tokens and replay.state == "unknown"
+        assert not await od.begin_send(conn, replay.id)
+        inputs = await od.delivery_inputs(conn, alert.id)
+        assert (inputs.urgency_class, inputs.urgency_reason) == ("interrupt", "home_safety")
+        answer = await od.open_subject(
+            conn,
+            kind="goal_answer",
+            source_ref="synthetic-answer",
+            owner_entity=owner,
+            content_digest="c" * 64,
+            action_digest="d" * 64,
+        )
+        assert (
+            await selection.prepare_presentation(
+                conn, answer, surface="dashboard", origin="telegram", now=now, **options
+            )
+            is None
+        )
+        reply = await selection.prepare_presentation(
+            conn, answer, surface="telegram", origin="telegram", now=now, **options
+        )
+        assert reply is not None and reply.surface == "telegram"
+
+
+async def test_m7_missing_plan_and_aged_evidence_do_not_claim_healthy(ledger_pool, monkeypatch):
+    action_id = await _park(ledger_pool)
+    subject, cards = await _present(ledger_pool, action_id, "dashboard")
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        absent = await selection.why(conn, cards["dashboard"].id, owner=subject.owner_entity)
+        assert absent["cause"] == "unknown" and absent["evidence"] == []
+        # A receipt deliberately records an already-expired activity assertion.
+        await selection.activity(conn, owner=subject.owner_entity, surface="dashboard")
+        expired = datetime.now(UTC) - timedelta(minutes=5)
+        await conn.execute(
+            "UPDATE public.owner_delivery_surface_evidence SET observed_at = $1, "
+            "valid_until = $1::timestamptz + interval '90 seconds'",
+            expired,
+        )
+        await selection.plan(conn, subject, sensitivity="ordinary")
+        stale = await selection.why(conn, cards["dashboard"].id, owner=subject.owner_entity)
+        assert stale["evidence"][0]["state"] == "stale"
+        assert stale["cause"] == "surface_liveness_unknown"
+        assert await selection.why(conn, cards["dashboard"].id, owner=uuid.uuid4()) is None
+
+
+async def test_m7_requires_owner_rollout_before_deferring_legacy_delivery(ledger_pool, monkeypatch):
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await _park(ledger_pool, card=True)
+    runtime = await _deliver(
+        ledger_pool, HandoffResult("confirmed", provider_reference="synthetic")
+    )
+    assert len(runtime.envelopes) == 1
+    assert all(t.startswith("apr1:") for t in _card_tokens(runtime.envelopes[0]))
+    assert await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+
+
+async def test_m7_activity_route_verifies_callback_actor_and_never_acknowledges(
+    ledger_pool,
+    monkeypatch,
+):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(ledger_pool)), base_url="http://dashboard-api:41200"
+    ) as client:
+        path = "/api/owner-delivery/activity"
+        owner_headers = {"X-API-Key": _DASHBOARD_API_KEY}
+        assert (await client.post(path, json={}, headers=owner_headers)).status_code == 404
+        monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+        assert (await client.post(path, json={})).status_code == 401
+        callback = {
+            APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN,
+            "X-Butlers-Decision-Actor": "forged",
+        }
+        assert (await client.post(path, json={}, headers=callback)).status_code == 403
+        assert (
+            await ledger_pool.fetchval(
+                "SELECT count(*) FROM public.owner_delivery_surface_evidence"
+            )
+            == 0
+        )
+        callback["X-Butlers-Decision-Actor"] = "owner@telegram"
+        assert (await client.post(path, json={}, headers=callback)).status_code == 200
+        assert (
+            await client.post(path, json={"focused": True}, headers=owner_headers)
+        ).status_code == 200
+        rows = await ledger_pool.fetch(
+            "SELECT surface, source FROM public.owner_delivery_surface_evidence ORDER BY surface"
+        )
+        assert [(r["surface"], r["source"]) for r in rows] == [
+            ("dashboard", "dashboard_focus"),
+            ("telegram", "owner_inbound"),
+        ]
+        assert (
+            await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+        )

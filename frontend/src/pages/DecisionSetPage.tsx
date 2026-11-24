@@ -5,6 +5,7 @@ import { decisionRefusalReason } from "@/api/decision-sets.ts";
 import type { DecisionSet, DecisionSetItem, DecisionSetVerdict } from "@/api/decision-sets.ts";
 import { ApiError } from "@/api/client.ts";
 import { Button } from "@/components/ui/button";
+import { OwnerDeliveryReceipt } from "@/components/approvals/OwnerDeliveryReceipt";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Time } from "@/components/ui/time";
 import { useDecideDecisionSet, useDecisionSet } from "@/hooks/use-decision-set";
@@ -199,6 +200,14 @@ export default function DecisionSetPage() {
       <p className="text-sm text-muted-foreground">
         Expires <Time value={set.expires_at} mode="absolute" />
       </p>
+      {set.owner_delivery_receipt && <OwnerDeliveryReceipt
+        presentationId={set.owner_delivery_receipt}
+        card={set.owner_delivery_ack ? {
+          approve_token: set.owner_delivery_ack,
+          ack_token: set.owner_delivery_ack,
+          generation: set.owner_delivery_generation ?? 0,
+        } : undefined}
+      />}
 
       {query.data?.sourcesDegraded.length ? (
         <p role="status" className="text-sm">

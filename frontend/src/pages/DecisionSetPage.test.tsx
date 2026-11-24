@@ -30,6 +30,12 @@ vi.mock("@/api/client.ts", async () => {
   const actual = await vi.importActual<typeof import("@/api/client.ts")>("@/api/client.ts");
   return {
     ...actual,
+    getPersistedOwnerDeliveryWhy: vi.fn(async () => ({ data: {
+      current: true, cause: "desk_first", origin: "unknown", decision: null,
+      state: "open", delivery_state: "sent", urgency_class: "routine", urgency_reason: null,
+      effect_status: "unknown", budget_status: "unknown", holding_reason: null,
+      evidence: [], presentations: [],
+    }, meta: {} })),
     apiFetch: vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
       if (init?.method === "POST") {
         server.posts.push({ path, body: JSON.parse(init.body ?? "{}") });
@@ -109,6 +115,17 @@ beforeEach(() => {
   server.postFailure = null;
   server.afterPost = null;
   server.reads = 0;
+});
+
+it("opens the shared persisted Why receipt from a set presentation", async () => {
+  server.view = setView([item(0, E1)], { owner_delivery_receipt: "presentation" });
+  renderPage();
+  const disclosure = await screen.findByText("Why this delivery?");
+  const details = disclosure.closest("details")!;
+  details.open = true;
+  fireEvent(details, new Event("toggle"));
+  expect(await screen.findByText("desk first")).not.toBeNull();
+  expect(server.posts).toEqual([]);
 });
 afterEach(cleanup);
 

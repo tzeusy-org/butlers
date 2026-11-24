@@ -30,11 +30,13 @@ from butlers.api.models.decision_set import (
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.approvals import _find_named_approvals_pools
 from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisionRefused
+from butlers.core import owner_delivery_selection as selection
 from butlers.modules.approvals.decision_set_card import approve_selection
 from butlers.modules.approvals.decision_set_delivery import (
     Resolver,
     SelectionRefused,
     close_set_subject,
+    dashboard_set_receipt,
     decide_selected,
 )
 from butlers.modules.approvals.decision_set_view import ItemView, SetView, load_set_view
@@ -142,12 +144,22 @@ async def get_decision_set(
 ) -> ApiResponse[DecisionSetView]:
     """One decision set version as the owner is shown it."""
     tracker = DegradedSources(logger)
-    _, view = await read_set_view(db_mgr, set_id, version, tracker)
+    ledger_pool, view = await read_set_view(db_mgr, set_id, version, tracker)
     if view is None:
         raise HTTPException(status_code=404, detail="Decision set not found")
     # ApiMeta allows the fleet-wide additive ``sources_degraded`` key (response-conventions).
     meta = ApiMeta.model_validate({"sources_degraded": tracker.names} if tracker.failed else {})
-    return ApiResponse(data=_view(view, live=resolver is not None), meta=meta)
+    shown = _view(view, live=resolver is not None)
+    if selection.live():
+        async with ledger_pool.acquire() as conn, conn.transaction():
+            receipt = await dashboard_set_receipt(conn, view)
+        if receipt is not None:
+            (
+                shown.owner_delivery_receipt,
+                shown.owner_delivery_ack,
+                shown.owner_delivery_generation,
+            ) = receipt
+    return ApiResponse(data=shown, meta=meta)
 
 
 class DecisionSetPick(BaseModel):

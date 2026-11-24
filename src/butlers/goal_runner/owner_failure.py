@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_selection as selection
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ SELECT p.id, p.cause, p.subject_id, p.original_ask ->> 'refusal' AS refusal, p.l
   FROM switchboard.pending_asks p
   JOIN public.owner_delivery_subjects s ON s.id = p.subject_id
  WHERE p.state = 'open' AND p.expires_at > clock_timestamp() AND p.cause = ANY($3::text[])
+   AND s.state NOT IN ('acknowledged', 'decided', 'cancelled', 'expired')
    AND p.line_attempts < $4
    AND NOT EXISTS (SELECT 1 FROM public.owner_delivery_presentations x
                     WHERE x.subject_id = s.id AND x.surface = $1 AND x.generation = s.generation
@@ -378,6 +380,15 @@ class OwnerFailureReporter:
             return False
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT set_config('search_path', 'switchboard,public', true)")
+            if selection.live():
+                row = await conn.fetchrow(
+                    "SELECT * FROM public.owner_delivery_subjects WHERE id = $1",
+                    ask["subject_id"],
+                )
+                if row is None or not await selection.telegram_due(
+                    conn, od.Subject.from_row(row), sensitivity="ordinary", now=self.clock()
+                ):
+                    return False
             presentation = await od.present(
                 conn,
                 ask["subject_id"],
