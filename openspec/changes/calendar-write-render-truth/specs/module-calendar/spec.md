@@ -7,16 +7,18 @@ checked against the calendar the write targets, through the provider's free/busy
 every other owner calendar from the stored projection: every source whose stored role is `owner`
 or `butler`, and the primary calendar even when it has no source row yet. Another person's shared
 calendar SHALL NOT be consulted. Stored rows SHALL exclude cancelled events, free (transparent)
-events and quarantined invitations (REQ-module-calendar-041), so an outsider's invite cannot veto a
+events, invitations the owner declined and quarantined invitations (REQ-module-calendar-041), so an outsider's invite cannot veto a
 write, and an event being updated SHALL be excluded by its event id rather than by its time
 window. An owner calendar with no source row, or with no successful sync within
-`PROJECTION_STALENESS_MULTIPLIER` poll intervals (10 minutes at the 5 minute default, the sync
-deadman's own grace), SHALL make the check unavailable. When the check is unavailable, because
+`PROJECTION_STALENESS_MULTIPLIER` configured poll intervals (10 minutes at the 5 minute default,
+the sync deadman's own expression), SHALL make the check unavailable. When the check is unavailable, because
 free/busy, the role ledger or a stored read failed, the write SHALL be refused with "Couldn't read
 your calendars to check for overlaps. Try again, or allow overlap to write anyway."; a replan move
 SHALL be declined with the reason `conflict_check_unavailable`. Under the `allow_overlap` policy an
 unavailable check SHALL NOT block the owner's write, no conflict SHALL be claimed, and no approval
-SHALL be queued from it; a replan move is still declined. A write SHALL NOT report `clear` from a
+SHALL be queued from it; a replan move is still declined. A source the owner switched off in the sources toggle SHALL be left out of the owner set, with one
+warning per check. Dates and naive datetimes SHALL be read in the candidate's timezone, so an
+all-day write is checked like any other. A write SHALL NOT report `clear` from a
 check that did not read the owner's calendars, except by that explicit `allow_overlap` choice.
 
 ID: REQ-module-calendar-046
@@ -47,6 +49,16 @@ Scope: v1-mandatory
 
 - **WHEN** the primary calendar has no successful sync within 10 minutes, or has no source row
 - **THEN** the write is refused as unavailable, not checked against a narrower set
+
+#### Scenario: An all-day write is checked against all-day events
+
+- **WHEN** an all-day event is created on a day the primary calendar already has an all-day event
+- **THEN** the conflict is reported, and an all-day write on a free day proceeds
+
+#### Scenario: A switched-off source does not block writes
+
+- **WHEN** the primary calendar's sync is switched off in the sources toggle
+- **THEN** it is left out of the owner set rather than reading as stale forever
 
 #### Scenario: Allow overlap proceeds when the check cannot run
 

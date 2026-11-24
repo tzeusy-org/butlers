@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import json
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
+import asyncpg
 
 from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
 from butlers.core.temporal.household_context import (
@@ -20,12 +23,11 @@ from butlers.modules.approvals.execution_context import get_approval_execution_c
 from .constants import (
     _SUGGESTION_SEARCH_HORIZON,
     DEFAULT_CONFLICT_SUGGESTION_COUNT,
-    DEFAULT_SYNC_INTERVAL_MINUTES,
-    PROJECTION_STALENESS_MULTIPLIER,
     SYNC_CURSOR_PROVIDER,
     VALID_CONFLICT_POLICIES,
     CalendarConflictPolicy,
     logger,
+    projection_staleness_threshold,
 )
 from .errors import CalendarAuthError, ConflictCheckUnavailable, _build_structured_error
 from .google_mapping import _coerce_zoneinfo
@@ -192,6 +194,37 @@ def _compute_free_slots(
         }
         for start, end, _ in candidates[:limit]
     ]
+
+
+# Only a failed read may read as "unavailable"; a coding error must surface as itself.
+_DB_READ_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.PostgresError,
+    asyncpg.InterfaceError,
+    OSError,
+    TimeoutError,
+)
+
+
+def _as_aware(value: date | datetime, timezone_name: str) -> datetime:
+    """An instant for a stored-time comparison, coerced exactly as ``find_conflicts`` does.
+
+    A bare date is midnight in the candidate's timezone and a naive datetime is read in that
+    timezone, never in UTC.
+    """
+    tz = _coerce_zoneinfo(timezone_name)
+    if not isinstance(value, datetime):
+        return datetime(value.year, value.month, value.day, tzinfo=tz)
+    return value if value.tzinfo is not None else value.replace(tzinfo=tz)
+
+
+def _sync_disabled(metadata: object) -> bool:
+    """Whether the sources toggle switched this source off (``metadata.sync_enabled`` false)."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return False
+    return isinstance(metadata, dict) and metadata.get("sync_enabled") is False
 
 
 class ConflictsMixin:
@@ -419,21 +452,30 @@ class ConflictsMixin:
         pool = getattr(getattr(self, "_db", None), "pool", None)
         primary = getattr(self, "_primary_calendar_id", None)
         owner_ids: list[str] = []
+        disabled: set[str] = set()
         if known and pool is not None:
             try:
                 rows = await pool.fetch(
-                    "SELECT calendar_id FROM calendar_sources "
+                    "SELECT calendar_id, metadata FROM calendar_sources "
                     "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
                     f"AND time_role IN {owner_time_roles_sql()}",
                     getattr(self, "_require_provider")().name,  # noqa: B009
                     known,
                 )
-            except Exception as exc:
+            except _DB_READ_ERRORS as exc:
                 logger.warning("Failed to read calendar source roles for a write", exc_info=True)
                 raise ConflictCheckUnavailable() from exc
-            granted = {row["calendar_id"] for row in rows}
+            disabled = {row["calendar_id"] for row in rows if _sync_disabled(row["metadata"])}
+            granted = {row["calendar_id"] for row in rows} - disabled
             owner_ids = [cid for cid in known if cid in granted]
-        if primary and primary not in owner_ids:
+            if disabled:
+                # A source the owner switched off is never synced, so it would read as stale
+                # forever; it holds no time the owner asked us to protect.
+                logger.warning(
+                    "Owner calendars %s have sync disabled; left out of the overlap check",
+                    sorted(disabled),
+                )
+        if primary and primary not in owner_ids and primary not in disabled:
             owner_ids.append(primary)
         return [cid for cid in dict.fromkeys(owner_ids) if cid != calendar_id]
 
@@ -458,9 +500,12 @@ class ConflictsMixin:
         if pool is None:
             raise ConflictCheckUnavailable()
         provider_name = getattr(self, "_require_provider")().name  # noqa: B009
-        threshold = timedelta(
-            minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER
-        )
+        config = getattr(self, "_config", None)
+        sync_config = getattr(config, "sync", None)
+        threshold = projection_staleness_threshold(getattr(sync_config, "interval_minutes", None))
+        tz_name = candidate.timezone or getattr(config, "timezone", None) or "UTC"
+        window_start = _as_aware(candidate.start_at, tz_name)
+        window_end = _as_aware(candidate.end_at, tz_name)
         try:
             fresh = await pool.fetch(
                 "SELECT s.calendar_id, max(c.last_success_at) AS last_success_at "
@@ -487,21 +532,26 @@ class ConflictsMixin:
                 "WHERE s.provider = $1 AND s.calendar_id = ANY($2::text[]) "
                 "AND i.status <> 'cancelled' AND e.status <> 'cancelled' "
                 "AND i.starts_at < $4 AND i.ends_at > $3 "
+                "AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements("
+                "CASE WHEN jsonb_typeof(e.metadata -> 'attendees') = 'array' "
+                "THEN e.metadata -> 'attendees' ELSE '[]'::jsonb END) AS me "
+                "WHERE me ->> 'self' = 'true' AND lower(btrim(COALESCE("
+                "me ->> 'response_status', me ->> 'responseStatus', ''))) = 'declined') "
                 "AND COALESCE(e.metadata ->> 'transparency', '') <> 'transparent' "
                 "AND ($5::text IS NULL OR e.origin_ref IS DISTINCT FROM $5) "
                 f"AND NOT {quarantined_invitation_sql('e')}",
                 provider_name,
                 others,
-                candidate.start_at,
-                candidate.end_at,
+                window_start,
+                window_end,
                 ignore_event_id,
             )
         except ConflictCheckUnavailable:
             raise
-        except Exception as exc:
+        except _DB_READ_ERRORS as exc:
             logger.warning("Failed to read stored owner busy time", exc_info=True)
             raise ConflictCheckUnavailable() from exc
-        timezone = candidate.timezone or "UTC"
+        timezone = tz_name
         return [
             CalendarEvent(
                 event_id=f"busy-stored-{index + 1}",

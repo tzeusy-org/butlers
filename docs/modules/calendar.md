@@ -83,10 +83,10 @@ Every create/update operation runs through the conflict engine before writing:
 The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-046).
 The target calendar goes through the provider's free/busy. Every other owner calendar (sources
 with role `owner` or `butler`, plus the primary even before it has a source row) is read from the
-stored projection, with cancelled, free and quarantined-invitation rows excluded, so an outsider's
+stored projection, with cancelled, free, owner-declined and quarantined-invitation rows excluded, so an outsider's
 invite cannot veto a write; an updated event is excluded by its event id. Another person's shared
-calendar is never consulted. If an owner calendar has no successful sync within 10 minutes (2x the
-5 minute poll, the sync deadman's grace), or any read fails, the write is refused with "Couldn't
+calendar is never consulted, and a source switched off in the sources toggle is left out. If an owner calendar has no successful sync within twice the configured poll
+interval (10 minutes at the 5 minute default, as the sync deadman computes it), or any read fails, the write is refused with "Couldn't
 read your calendars to check for overlaps. Try again, or allow overlap to write anyway." (a replan
 move is declined as `conflict_check_unavailable`). Under the `allow_overlap` policy an unavailable
 check does not block the owner's write and claims no conflict.
