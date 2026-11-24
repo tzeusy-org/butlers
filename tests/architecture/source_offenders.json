@@ -626,13 +626,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/daemon/test_non_messenger_approval_command_contracts.py",
-      "line": 585,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 8bf69a0c92fcde00)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/integration/test_ambient_projections_store.py",
       "line": 184,
       "rule": "ast-tests-use-source-guard",
@@ -779,13 +772,6 @@
       "line": 1700,
       "rule": "no-private-walkers",
       "detail": "private walker Visitor (shape 78958db032d820e8)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/daemon/test_non_messenger_approval_command_contracts.py",
-      "line": 588,
-      "rule": "no-private-walkers",
-      "detail": "private walker Visitor (shape a1ba99c88c9db850)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     }
   ]

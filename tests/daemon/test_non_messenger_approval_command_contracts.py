@@ -33,6 +33,7 @@ from butlers.modules.calendar.replan_undo import undo_card_args
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.registry import default_registry
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.source_guard import parent_map, parse_file
 from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
@@ -582,31 +583,24 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
 
 def _direct_park_sources(path: Path, relative: str) -> set[tuple[str, str]]:
     """Return direct ``park_pending_action`` call sites as (file, function)."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = parse_file(path)
+    parents = parent_map(tree)
     sources: set[tuple[str, str]] = set()
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.functions: list[str] = []
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.functions.append(node.name)
-            self.generic_visit(node)
-            self.functions.pop()
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.functions.append(node.name)
-            self.generic_visit(node)
-            self.functions.pop()
-
-        def visit_Call(self, node: ast.Call) -> None:
-            name = node.func.id if isinstance(node.func, ast.Name) else None
-            if name == "park_pending_action":
-                owner = ".".join(self.functions) if self.functions else "<module>"
-                sources.add((relative, owner))
-            self.generic_visit(node)
-
-    Visitor().visit(tree)
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "park_pending_action"
+        ):
+            continue
+        functions: list[str] = []
+        ancestor = parents.get(id(node))
+        while ancestor is not None:
+            if isinstance(ancestor, ast.FunctionDef | ast.AsyncFunctionDef):
+                functions.append(ancestor.name)
+            ancestor = parents.get(id(ancestor))
+        owner = ".".join(reversed(functions)) or "<module>"
+        sources.add((relative, owner))
     return sources
 
 
