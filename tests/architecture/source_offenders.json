@@ -783,7 +783,7 @@
     },
     {
       "path": "tests/contracts/test_schema_reach.py",
-      "line": 1696,
+      "line": 1700,
       "rule": "no-private-walkers",
       "detail": "private walker Visitor (shape 78958db032d820e8)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
