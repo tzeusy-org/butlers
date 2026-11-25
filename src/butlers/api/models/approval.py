@@ -245,7 +245,7 @@ class ApprovalDetail(BaseModel):
     entity_merge_review: EntityMergeReview | None = Field(
         default=None,
         description=(
-            "Typed review of a pending Relationship memory_entity_merge or legacy "
+            "Typed review of a pending memory_entity_merge or legacy Relationship "
             "entity_merge with a showable call; null otherwise. Approval requires its "
             "displayed_call after the dashboard renders the structural comparison."
         ),
@@ -456,7 +456,7 @@ class ExternalProposalReview(BaseModel):
 
 
 class EntityMergeReview(BaseModel):
-    """Typed review context of a pending Relationship entity merge (REQ-dashboard-approvals-902).
+    """Typed review context of a pending entity merge (REQ-dashboard-approvals-902).
 
     Returned in place of a generic ``call_preview``, which stays null so an older
     dashboard or a summary surface without merge review keeps approval disabled. The

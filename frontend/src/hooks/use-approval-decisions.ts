@@ -45,13 +45,20 @@ import {
   redeemOwnerDeliveryAction,
 } from "@/api/index.ts";
 import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.ts";
-import type { ApprovalCallPreview, DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
+import type {
+  ApprovalCallPreview,
+  DisplayedApprovalCall,
+  EntityMergeReview,
+  OwnerDeliveryCard,
+} from "@/api/types";
 import { toast } from "sonner";
 
 import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { useUndoWindow } from "@/hooks/use-undo-window";
 
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { EntityMergeSummaryReview } from "@/components/approvals/entity-merge-review";
+import { validMergeReview } from "@/hooks/use-entity-merge-review";
 import { Button } from "@/components/ui/button";
 
 export interface ViewedApproval {
@@ -61,13 +68,18 @@ export interface ViewedApproval {
   owner_delivery?: OwnerDeliveryCard | null;
   /** An external MCP proposal: never offered as a standing rule. Not sent to the API. */
   external_proposal?: boolean;
+  /** A parked entity merge: approved only through its final confirmation. Not sent to the API. */
+  entity_merge?: boolean;
 }
 
-interface ApprovalReview {
+type ApprovalReview = {
   id: string;
-  preview: ApprovalCallPreview;
   owner_delivery?: OwnerDeliveryCard | null;
-}
+} & (
+  | { preview: ApprovalCallPreview; merge?: undefined }
+  /** A parked entity merge: reviewed structurally, never from a generic preview. */
+  | { merge: EntityMergeReview; preview?: undefined }
+);
 
 function isOwnerDeliveryRefusal(error: unknown): boolean {
   return error instanceof ApiError
@@ -81,6 +93,11 @@ export function ApprovalCallReview({ review, onConfirm, onCancel }: {
   onCancel: () => void;
 }) {
   if (!review) return null;
+  if (review.merge) {
+    return createElement(EntityMergeSummaryReview, {
+      id: review.id, review: review.merge, ownerDelivery: review.owner_delivery, onConfirm, onCancel,
+    });
+  }
   return createElement(Dialog, { open: true, onOpenChange: (open) => { if (!open) onCancel(); } },
     createElement(DialogContent, { className: "max-h-[85vh] overflow-y-auto" },
       createElement(DialogTitle, null, review.preview.title),
@@ -156,6 +173,11 @@ export function useApprovalDecisionMutations(
       const response = await getApprovalDetail(id);
       if (generation !== reviewGeneration.current) return;
       const detail = response.data;
+      const merge = validMergeReview(detail.entity_merge_review);
+      if (detail.id === id && detail.status === "pending" && merge && !detail.call_preview) {
+        setReview({ id, merge, owner_delivery: detail.owner_delivery });
+        return;
+      }
       const preview = detail.call_preview;
       if (detail.id !== id || detail.status !== "pending" || !preview
           || typeof preview.title !== "string" || !Array.isArray(preview.facts)

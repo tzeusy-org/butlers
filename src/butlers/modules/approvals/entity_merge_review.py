@@ -9,8 +9,8 @@ a typed binding built here, and only the dashboard approval routes accept it.
 
 The binding keeps the stored tool name and hashes the stored arguments unchanged, so a
 legacy row is reviewed as stored, never renamed. Anything the review cannot show
-completely (an extra argument, a non-UUID or identical pair, a non-Relationship owner) has
-no binding and stays unapprovable.
+completely (an extra argument, a non-UUID or identical pair) has no binding and stays
+unapprovable.
 """
 
 from __future__ import annotations
@@ -26,8 +26,6 @@ from butlers.modules.approvals.previews import args_digest
 #: Both names dispatch to Relationship's single merge authority (``daemon.py`` aliases
 #: the legacy name). Notification callbacks never decide either one.
 ENTITY_MERGE_TOOLS = frozenset({"memory_entity_merge", "entity_merge"})
-#: The only butler whose parked merges are reviewed; its curation job parks them.
-ENTITY_MERGE_OWNER_BUTLER = "relationship"
 _MERGE_ARG_KEYS = frozenset({"source_entity_id", "target_entity_id"})
 
 
@@ -62,11 +60,13 @@ def _uuid(value: Any) -> UUID | None:
         return None
 
 
-def entity_merge_binding(
-    butler_name: str, tool_name: Any, tool_args: Any
-) -> EntityMergeBinding | None:
-    """The review binding for a showable Relationship merge call, else ``None``."""
-    if butler_name != ENTITY_MERGE_OWNER_BUTLER or not is_entity_merge_tool(tool_name):
+def entity_merge_binding(tool_name: Any, tool_args: Any) -> EntityMergeBinding | None:
+    """The review binding for a showable merge call, else ``None``.
+
+    Both names reach Relationship's single merge authority wherever they are parked, so
+    the review does not depend on the parking butler; dispatch still goes to that butler.
+    """
+    if not is_entity_merge_tool(tool_name):
         return None
     if isinstance(tool_args, str):
         try:
@@ -88,7 +88,6 @@ def entity_merge_binding(
 
 
 __all__ = [
-    "ENTITY_MERGE_OWNER_BUTLER",
     "ENTITY_MERGE_TOOLS",
     "EntityMergeBinding",
     "entity_merge_binding",

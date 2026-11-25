@@ -60,7 +60,6 @@ def test_pending_relationship_merge_gets_a_typed_review_and_no_generic_preview(t
         ({"source_entity_id": _SOURCE}, "pending", "relationship"),
         (_ARGS, "approved", "relationship"),
         (_ARGS, "rejected", "relationship"),
-        (_ARGS, "pending", "general"),
     ],
 )
 def test_unshowable_or_decided_merges_get_no_review(tool_args, status, butler):

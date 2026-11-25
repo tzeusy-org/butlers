@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -764,8 +765,8 @@ async def _latest_rejection_reason(conn: Any, action_id: UUID) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
-def _entity_merge_review(action: PendingAction, butler_name: str) -> EntityMergeReview | None:
-    """The typed merge review of a pending, showable Relationship merge (REQ-module-approvals-008).
+def _entity_merge_review(action: PendingAction) -> EntityMergeReview | None:
+    """The typed merge review of a pending, showable entity merge (REQ-module-approvals-008).
 
     Only a pending action gets one: a decided or historical merge is never offered as
     newly approvable. ``call_preview`` stays null for every merge, so a client without
@@ -773,7 +774,7 @@ def _entity_merge_review(action: PendingAction, butler_name: str) -> EntityMerge
     """
     if action.status.value != "pending":
         return None
-    binding = entity_merge_binding(butler_name, action.tool_name, action.tool_args)
+    binding = entity_merge_binding(action.tool_name, action.tool_args)
     if binding is None:
         return None
     return EntityMergeReview(
@@ -827,7 +828,7 @@ def _pending_action_to_detail(
             else dashboard_call_preview(action.tool_name, action.tool_args)
         ),
         external_proposal_review=external_review,
-        entity_merge_review=_entity_merge_review(action, butler_name),
+        entity_merge_review=_entity_merge_review(action),
         goal=_goal_lineage(action),
         status=action.status.value,
         decided_by=action.decided_by,
@@ -3713,6 +3714,39 @@ ENTITY_MERGE_UNSHOWABLE = (
 ENTITY_MERGE_RULE_REFUSAL = "An entity merge cannot become a standing rule; nothing was executed."
 
 
+def _check_entity_merge_decision(
+    action_row: Mapping[str, Any] | None,
+    *,
+    edits: dict[str, Any] | None,
+    displayed_call: DisplayedApprovalCall | None,
+    require_displayed_call: bool,
+) -> bool:
+    """Refuse an entity-merge decision that is not its reviewed dashboard call.
+
+    Returns whether *action_row* is a merge (so the generic preview check is skipped).
+    A merge is approvable only from its dashboard structural review, bound to the stored
+    tool name and argument digest read under the caller's row lock. A connector callback
+    never decides one (no card can show the comparison), and an edit would change the
+    reviewed direction (REQ-module-approvals-008/009).
+    """
+    if action_row is None or not is_entity_merge_tool(action_row["tool_name"]):
+        return False
+    if edits:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_EDIT_REFUSAL)
+    if not require_displayed_call:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
+    binding = entity_merge_binding(action_row["tool_name"], action_row["tool_args"])
+    if binding is None:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_UNSHOWABLE)
+    if displayed_call is None:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
+    if displayed_call != DisplayedApprovalCall(
+        tool_name=binding.tool_name, args_digest=binding.args_digest
+    ):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    return True
+
+
 async def _require_presented_call_unchanged(
     conn: Any, action_id: UUID, stored_tool_args: Any
 ) -> None:
@@ -3869,27 +3903,14 @@ async def approve_owning_action(
         # no card ever showed it (REQ-dashboard-approvals-904).
         # Its call is decided as reviewed: an edit would execute arguments no review
         # showed, including provenance the importer refuses at park time.
-        # An entity merge is approvable only from its dashboard structural review, bound
-        # to the stored tool name and argument digest re-read under this row lock. A
-        # connector callback never decides one (no card can show the comparison), and an
-        # edit would change the reviewed direction (REQ-module-approvals-008/009).
-        if action_row is not None and is_entity_merge_tool(action_row["tool_name"]):
-            if edits:
-                raise HTTPException(status_code=409, detail=ENTITY_MERGE_EDIT_REFUSAL)
-            if not require_displayed_call:
-                raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
-            binding = entity_merge_binding(
-                action_butler, action_row["tool_name"], action_row["tool_args"]
-            )
-            if binding is None:
-                raise HTTPException(status_code=409, detail=ENTITY_MERGE_UNSHOWABLE)
-            if displayed_call is None:
-                raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
-            if displayed_call != DisplayedApprovalCall(
-                tool_name=binding.tool_name, args_digest=binding.args_digest
-            ):
-                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
-        elif is_external_proposal_row(action_row):
+        # An entity merge is decided only as its reviewed dashboard call (see helper).
+        merge_row = _check_entity_merge_decision(
+            action_row,
+            edits=edits,
+            displayed_call=displayed_call,
+            require_displayed_call=require_displayed_call,
+        )
+        if is_external_proposal_row(action_row):
             if edits:
                 raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_EDIT_REFUSAL)
             review = await read_external_proposal_review(conn, action_id=parsed_id, row=action_row)
@@ -3906,7 +3927,7 @@ async def approve_owning_action(
             external_binding = ExternalReviewBinding(
                 action_id=parsed_id, args_digest=review.displayed_call.args_digest
             )
-        elif require_displayed_call:
+        elif require_displayed_call and not merge_row:
             preview = (
                 dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
                 if action_row is not None

@@ -284,6 +284,43 @@ the stated reason when unavailable, no raw arguments, and no "Always allow this
 shape" teaching prompt after approval. Summary surfaces keep requiring a generic
 preview, so they send the owner to the dossier.
 
+## Parked entity merges (REQ-dashboard-approvals-902/903, REQ-module-approvals-008/009)
+
+Relationship's entity-dedup curation parks `memory_entity_merge` (older rows: the legacy
+`entity_merge` alias) with exactly `{source_entity_id, target_entity_id}`. No shared preview
+is registered for either name: a preview would also unlock notification buttons and an older
+dashboard's plain Approve, neither of which shows the comparison a merge needs.
+
+- **Typed review.** `GET /api/approvals/{id}` returns `entity_merge_review`
+  (`source_entity_id`, `target_entity_id`, `displayed_call`) for a *pending* merge whose
+  arguments are exactly two distinct UUIDs (either name reaches Relationship's single merge
+  authority, so the review does not depend on the parking butler)
+  (`butlers.modules.approvals.entity_merge_review.entity_merge_binding`). `call_preview`
+  stays null for every merge, so a client without merge review stays Open only. The binding
+  keeps the stored tool name and hashes the stored arguments unchanged; rows are never
+  renamed or rewritten.
+- **Approval binding.** Both dashboard routes (`POST /api/approvals/{id}/approve` and
+  `/api/approvals/actions/{id}/approve`) and the dashboard owner-delivery token path re-derive
+  the binding under the row lock and require the echoed `displayed_call`. A missing or
+  mismatched call, any `edits`, `create_rule`, an unshowable call, and every connector
+  callback are refused with 409 before decision, audit or dispatch. Execution is the ordinary
+  approved-action dispatch to Relationship's merge authority, which writes the merge review
+  and the fleet-rebind receipt cohort; a failure leaves the existing approved, null-result
+  recovery state with an `action_execution_failed` event, with no substitution or replay.
+- **Notifications.** Merge cards never offer Approve or Reject, whatever preview is
+  registered; the card text says "Review merge" and the dashboard link opens the dossier.
+- **Dashboard.** The dossier and the Overview summary dialog render
+  `frontend/src/components/approvals/entity-merge-review.tsx`: the existing
+  `POST /api/relationship/entities/compare` diff for exactly source → target, columns
+  "Absorb source" / "Keep target" with names, types and IDs, shared evidence, divergences and
+  consequences. Eligibility is keyed to (action, tool, digest, source, target)
+  (`hooks/use-entity-merge-review.ts`); loading, failed, refetching or other-pair reads keep
+  approval disabled with a retry. Approve, the keyboard `a` verb and the summary dialog all
+  open one accessible confirmation naming both entities by name, type and ID. Deny and Defer
+  stay available while the comparison is unavailable.
+- **Type.** A person/organization difference never rejects; the surviving target keeps its
+  own `entity_type` (REQ-entity-identity-009).
+
 ## Risk Tiers
 
 Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `critical`. Higher tiers (`high`, `critical`) require narrower constraints (at least one `exact` or `pattern`) and bounded scope (`expires_at` or `max_uses`) for standing rules.

@@ -587,7 +587,6 @@ async def test_merge_without_its_reviewed_binding_refuses_before_any_effect(
             "relationship",
             {"source_entity_id": _SOURCE, "target_entity_id": _TARGET, "force": True},
         ),
-        ("general", {"source_entity_id": _SOURCE, "target_entity_id": _TARGET}),
     ],
 )
 async def test_unshowable_merge_is_refused_even_with_a_matching_digest(binding_http, butler, args):
