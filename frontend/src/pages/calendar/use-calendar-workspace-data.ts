@@ -148,6 +148,10 @@ export function useCalendarWorkspaceData({
   const entriesSourceAvailable =
     workspaceQuery.data?.data.entries_source_available !== false;
 
+  const suppressedGroups = workspaceQuery.data?.data.suppressed_groups;
+  // The page cap ended the walk with rows still behind it: the window is not complete.
+  const truncated = workspaceQuery.data?.data.has_more === true;
+
   const lanes = useMemo(
     () =>
       workspaceQuery.data?.data.lanes.length
@@ -252,6 +256,8 @@ export function useCalendarWorkspaceData({
     entries,
     peopleSourceAvailable,
     entriesSourceAvailable,
+    suppressedGroups,
+    truncated,
     entriesByDay,
     monthDays,
     weekDays,

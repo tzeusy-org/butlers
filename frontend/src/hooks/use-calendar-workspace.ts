@@ -34,6 +34,7 @@ import type {
   CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
+  CalendarSuppressedGroup,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
@@ -74,6 +75,7 @@ async function fetchAllWorkspacePages(
   params: CalendarWorkspaceParams,
 ): Promise<ApiResponse<CalendarWorkspaceReadResponse>> {
   const entries: CalendarWorkspaceReadResponse["entries"] = [];
+  const groups = new Map<string, CalendarSuppressedGroup>();
   let cursor: string | undefined = params.cursor;
   let last: ApiResponse<CalendarWorkspaceReadResponse> | null = null;
 
@@ -85,18 +87,29 @@ async function fetchAllWorkspacePages(
     });
     last = resp;
     entries.push(...resp.data.entries);
+    for (const group of resp.data.suppressed_groups ?? []) {
+      const key = `${group.day}\u0000${group.title}`;
+      const seen = groups.get(key);
+      groups.set(
+        key,
+        seen
+          ? { ...seen, count: seen.count + group.count, entries: [...seen.entries, ...group.entries] }
+          : group,
+      );
+    }
     if (!resp.data.has_more || !resp.data.next_cursor) break;
     cursor = resp.data.next_cursor;
   }
 
+  // When the page cap ends the walk with rows still behind it, `has_more` stays true so the
+  // page can say the window is truncated instead of presenting it as complete.
   const base = last as ApiResponse<CalendarWorkspaceReadResponse>;
   return {
     ...base,
     data: {
       ...base.data,
       entries,
-      next_cursor: null,
-      has_more: false,
+      suppressed_groups: [...groups.values()],
     },
   };
 }

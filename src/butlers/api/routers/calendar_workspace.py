@@ -7,7 +7,7 @@ import contextlib
 import json
 import logging
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
@@ -57,6 +57,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
+    CalendarSuppressedGroup,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
@@ -191,6 +192,8 @@ _RRULE_FREQ_UNIT = {
 # Keyset pagination bounds for the workspace read.
 _WORKSPACE_DEFAULT_LIMIT = 200
 _WORKSPACE_MAX_LIMIT = 1000
+#: A title repeated more than this many times on one day is collapsed into a suppressed group.
+_WORKSPACE_NOISY_GROUP_SIZE = 20
 
 # Allowed values for the server-side facets. ``status`` mirrors the computed
 # values produced by ``_entry_status`` / ``STATUS_SQL``; ``source_type`` mirrors
@@ -550,7 +553,8 @@ async def _fetch_workspace_rows(
     limit: int | None = None,
     dedup_strategy: str | None = None,
     keep_separate: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+    page_size: int | None = None,
+) -> tuple[list[dict[str, Any]], list[str], tuple[bool, tuple[datetime, UUID] | None]]:
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
     Delegates to
@@ -571,8 +575,12 @@ async def _fetch_workspace_rows(
     ``balanced``); ``keep_separate`` pins cluster keys the user chose not to
     collapse.  Both flow into :func:`_dedup_workspace_rows`.
 
-    Returns ``(deduped_rows, failed_butlers)`` — ``failed_butlers`` is threaded up
-    so the endpoint can surface an honest degraded flag on a partial fan-out
+    ``page_size`` pages the raw rows by keyset *before* dedup: the third return value is
+    ``(has_more, last_raw_keyset)`` taken from the raw page, so a page that dedup shrinks (or whose
+    rows are later dropped) still reports the rows behind it. Without it every row is returned.
+
+    Returns ``(deduped_rows, failed_butlers, (has_more, last_raw_keyset))`` — ``failed_butlers``
+    is threaded up so the endpoint can surface an honest degraded flag on a partial fan-out
     failure.
     """
     flattened, failed = await _fetch_flattened_workspace_rows(
@@ -588,10 +596,21 @@ async def _fetch_workspace_rows(
         cursor=cursor,
         limit=limit,
     )
+    has_more = False
+    last_keyset: tuple[datetime, UUID] | None = None
+    if page_size is not None:
+        has_more = len(flattened) > page_size
+        flattened = flattened[:page_size]
+        if has_more and flattened:
+            last = flattened[-1]
+            last_starts_at = _coerce_datetime(last.get("instance_starts_at"))
+            last_id = last.get("instance_id")
+            if last_starts_at is not None and isinstance(last_id, UUID):
+                last_keyset = (last_starts_at, last_id)
     deduped, _clusters = _dedup_workspace_rows(
         flattened, strategy=dedup_strategy, keep_separate=keep_separate
     )
-    return deduped, failed
+    return deduped, failed, (has_more, last_keyset)
 
 
 async def _fetch_flattened_workspace_rows(
@@ -1311,7 +1330,7 @@ async def get_workspace(
 
     # Fetch one extra row beyond the page so we can derive ``has_more`` without
     # a separate count query (keyset pagination, no ``total``).
-    workspace_rows, workspace_failed = await _fetch_workspace_rows(
+    workspace_rows, workspace_failed, (has_more, last_keyset) = await _fetch_workspace_rows(
         db,
         view=view,
         start=start,
@@ -1325,6 +1344,7 @@ async def get_workspace(
         limit=limit + 1,
         dedup_strategy=dedup_rules.match_strategy,
         keep_separate=keep_separate,
+        page_size=limit,
     )
     # Honesty flag: a partial events fan-out failure silently drops the failed
     # schema's entries, so a short grid would otherwise read as "nothing
@@ -1386,31 +1406,30 @@ async def get_workspace(
         except ValueError:
             continue
 
-    # Hide noisy events: if the same title appears >20 times on a single
-    # day, suppress all instances of that title for that day.
-    day_title_counts: Counter[tuple[str, str]] = Counter()
-    for _row, entry in pairs:
-        day_key = entry.start_at.date().isoformat()
-        day_title_counts[(day_key, entry.title)] += 1
-
-    noisy: set[tuple[str, str]] = {k for k, v in day_title_counts.items() if v > 20}
-    if noisy:
-        pairs = [(r, e) for r, e in pairs if (e.start_at.date().isoformat(), e.title) not in noisy]
-
-    # Keyset pagination: we fetched ``limit + 1`` rows, so anything beyond the
-    # page means more rows remain. The cursor encodes the last returned row's
-    # raw ``(instance_starts_at, instance_id)`` keyset position.
-    has_more = len(pairs) > limit
-    page = pairs[:limit]
+    # Keyset pagination: ``has_more`` and the cursor come from the raw page (before dedup, the
+    # bad-timestamp drop and suppression), so a page that shrinks still reports the rows behind
+    # it. The cursor encodes the last raw row's ``(instance_starts_at, instance_id)``.
+    raw_page = pairs
     next_cursor: str | None = None
-    if has_more and page:
-        last_row, _last_entry = page[-1]
-        last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
-        last_instance_id = last_row.get("instance_id")
-        if last_starts_at is not None and isinstance(last_instance_id, UUID):
-            next_cursor = encode_cursor(
-                (last_starts_at, last_instance_id), scope="calendar-workspace"
-            )
+    if has_more and last_keyset is not None:
+        next_cursor = encode_cursor(last_keyset, scope="calendar-workspace")
+
+    # A title repeated more than the noise threshold on one display-timezone day is held out of
+    # ``entries`` and disclosed, with its entries, in ``suppressed_groups``.
+    day_title_groups: dict[tuple[str, str], list[UnifiedCalendarEntry]] = defaultdict(list)
+    for _row, entry in raw_page:
+        day_title_groups[(entry.start_at.date().isoformat(), entry.title)].append(entry)
+    noisy = {k for k, v in day_title_groups.items() if len(v) > _WORKSPACE_NOISY_GROUP_SIZE}
+    page = [(r, e) for r, e in raw_page if (e.start_at.date().isoformat(), e.title) not in noisy]
+    suppressed_groups = [
+        CalendarSuppressedGroup(
+            title=title,
+            day=day,
+            count=len(day_title_groups[(day, title)]),
+            entries=day_title_groups[(day, title)],
+        )
+        for (day, title) in sorted(noisy)
+    ]
 
     # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
     # batch-join over calendar_event_entities → public.entities, keyed by
@@ -1445,6 +1464,7 @@ async def get_workspace(
 
     data = CalendarWorkspaceReadResponse(
         entries=[entry for _row, entry in page],
+        suppressed_groups=suppressed_groups,
         source_freshness=source_freshness,
         lanes=_build_lane_definitions(source_freshness),
         next_cursor=next_cursor,

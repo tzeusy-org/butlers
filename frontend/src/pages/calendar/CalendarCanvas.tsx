@@ -14,6 +14,7 @@ import { Voice } from "@/components/ui/Voice";
 import { AgendaList } from "@/pages/calendar/AgendaList";
 import { ButlerLanes } from "@/pages/calendar/ButlerLanes";
 import { MonthGrid } from "@/pages/calendar/MonthGrid";
+import { SuppressedGroups } from "@/pages/calendar/SuppressedGroups";
 import { TimeGrid } from "@/pages/calendar/TimeGrid";
 import type { UpdateCalendarQuery } from "@/pages/calendar/use-calendar-url-state";
 import type { useCalendarContextData } from "@/pages/calendar/use-calendar-context-data";
@@ -133,6 +134,11 @@ export function CalendarCanvas({
           detail="some sources unavailable: this view may be missing events"
         />
       ) : null}
+      <SuppressedGroups
+        groups={data.suppressedGroups}
+        truncated={data.truncated}
+        onOpenDetail={onOpenDetail}
+      />
       {overlaysEnabled && overlaysQuery.isError ? (
         <DegradedNote
           testId="calendar-overlays-error"

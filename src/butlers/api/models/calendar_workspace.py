@@ -158,6 +158,21 @@ class CalendarWorkspaceLaneDefinition(BaseModel):
     source_keys: list[str] = Field(default_factory=list)
 
 
+class CalendarSuppressedGroup(BaseModel):
+    """A same-title group the workspace read held back from ``entries`` (bu-5ii4gj.4).
+
+    A title that repeats more than the noise threshold on one display-timezone day is collapsed
+    out of ``entries`` so a feed does not bury the grid. The group is disclosed here, with its
+    entries, so the client can show a counted chip and expand it rather than read a packed day
+    as complete. Counts cover the page the group was found on.
+    """
+
+    title: str
+    day: str
+    count: int
+    entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+
+
 class CalendarWorkspaceReadResponse(BaseModel):
     """Read payload for GET /api/calendar/workspace.
 
@@ -169,6 +184,9 @@ class CalendarWorkspaceReadResponse(BaseModel):
     """
 
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
+    #: Same-title groups held back from ``entries`` (see ``CalendarSuppressedGroup``). Empty
+    #: when nothing was suppressed. Additive.
+    suppressed_groups: list[CalendarSuppressedGroup] = Field(default_factory=list)
     source_freshness: list[CalendarWorkspaceSourceFreshness] = Field(default_factory=list)
     lanes: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
     next_cursor: str | None = None
