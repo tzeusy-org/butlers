@@ -971,7 +971,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     resource and not ``declined``. Each counted guest gets ``interaction_log()`` with
     ``type='calendar_event'``. Events the owner declined, a quarantined invitation, an occurrence
     the owner did not accept (``calendar_events_not_encounters``) and one whose participants are
-    not resolved yet log nothing; the last also holds the checkpoint, as does a failed read.
+    not resolved yet log nothing; a not-yet-resolved event (``calendar_participants_pending``) and
+    a failed participant read stop the checkpoint just before the earliest affected event.
 
     Args:
         db_pool: Database connection pool (relationship butler pool).
@@ -980,7 +981,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         Dictionary with keys: scan_window_start (ISO8601), scan_window_end
         (ISO8601), processed, logged, skipped_unresolved, skipped_owner,
         skipped_ineligible, skipped_group_too_large,
-        calendar_events_scanned, calendar_events_not_encounters, errors.
+        calendar_events_scanned, calendar_events_not_encounters,
+        calendar_participants_pending, errors.
     """
     from butlers.tools.relationship.interactions import interaction_log
     from butlers.tools.relationship.stale_contacts import interaction_sync_attestation
@@ -1054,6 +1056,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "skipped_unresolved": 0,
         "skipped_owner": 0,
         "calendar_events_not_encounters": 0,
+        "calendar_participants_pending": 0,
         "skipped_ineligible": 0,
         "skipped_group_too_large": 0,
         "calendar_events_scanned": 0,
@@ -1463,7 +1466,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # event_tasks: list of (event_id, event_title, event_starts_at, is_provider_event)
     # for events that pass the owner-declined and attendee checks.
     event_tasks: list[tuple[str, str, datetime, bool]] = []
-    participants_pending = False
+    pending: dict[str, datetime] = {}
 
     for cal_row in cal_rows:
         event_id = str(cal_row["id"])
@@ -1508,7 +1511,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             (event_id, event_title, event_starts_at, meta.get("source_type") == "provider_event")
         )
 
-    # INTERIM (bu-5ii4gj.3 E1, REQ-relationship-interaction-sync-encounters): an occurrence counts
+    # INTERIM (bu-5ii4gj.3 E1, REQ-passive-interaction-sync-001): an occurrence counts
     # when the owner accepted it and it has started, until the encounter ledger records what
     # happened. An occurrence whose participants are not resolved yet counts for nothing and is
     # retried by the next run; the invitation's addresses are never a fallback.
@@ -1521,7 +1524,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         except Exception:
             logger.exception("interaction_sync: failed to read calendar participants")
             stats["errors"] += 1
-            participants_pending = True
+            pending = {task[0]: task[2] for task in event_tasks}
 
     # Collects resolved non-owner entity IDs per event for co-attended edge derivation.
     event_to_entities: dict[str, list[uuid.UUID]] = {}
@@ -1530,8 +1533,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         resolved_for_event: list[uuid.UUID] = []
         found = candidates.get(uuid.UUID(event_id))
         if found is None and is_provider_event:
-            # Not resolved yet: hold the checkpoint so the next run sees it again.
-            participants_pending = True
+            # Not resolved yet: the checkpoint stops before it so the next run sees it again.
+            pending[event_id] = event_starts_at
         if found is None or not found.counted:
             stats["calendar_events_not_encounters"] += 1
             continue
@@ -1717,8 +1720,16 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     # A failed calendar read is not an empty successful scan. Preserve the
     # bounded interval; committed message work deduplicates on the next run.
-    if calendar_query_succeeded and not participants_pending:
-        next_checkpoint = scan_window_end.isoformat()
+    stats["calendar_participants_pending"] = len(pending)
+    if calendar_query_succeeded:
+        # Events whose participants are not resolved yet are seen again: the checkpoint advances
+        # only to just before the earliest of them (bounded below by this window's start).
+        checkpoint_at = scan_window_end
+        if pending:
+            checkpoint_at = max(
+                scan_window_start, min(pending.values()) - timedelta(microseconds=1)
+            )
+        next_checkpoint = checkpoint_at.isoformat()
         try:
             await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
         except Exception:

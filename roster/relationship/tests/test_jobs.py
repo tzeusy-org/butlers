@@ -2565,8 +2565,9 @@ async def test_interaction_sync_calendar_missing_participants_log_nothing_and_ho
     async with interaction_sync_pool() as pool:
         eid = await _contact_with_email(pool, "Later", "later@example.com")
         event_at = await pool.fetchval("SELECT now() - interval '3 hours'")
-        checkpoint = (event_at - timedelta(days=1)).isoformat()
-        await state_set(pool, "interaction_sync.last_scan_at", checkpoint)
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
         event_id = await _insert_calendar_event(
             pool,
             starts_at=event_at,
@@ -2581,7 +2582,12 @@ async def test_interaction_sync_calendar_missing_participants_log_nothing_and_ho
 
         assert held["logged"] == 0 and held["errors"] == 0
         assert held["calendar_events_not_encounters"] == 1
-        assert await state_get(pool, "interaction_sync.last_scan_at") == checkpoint
+        assert held["calendar_participants_pending"] == 1
+        # The checkpoint stops just before the pending event instead of staying put.
+        assert (
+            await state_get(pool, "interaction_sync.last_scan_at")
+            == (event_at - timedelta(microseconds=1)).isoformat()
+        )
 
         await sync_event_participants(pool, uuid.UUID(event_id))
         counted = await run_interaction_sync(pool)
@@ -2607,8 +2613,9 @@ async def test_interaction_sync_calendar_participant_read_failure_is_an_error_no
     async with interaction_sync_pool() as pool:
         await _contact_with_email(pool, "Gap", "gap@example.com")
         event_at = await pool.fetchval("SELECT now() - interval '3 hours'")
-        checkpoint = (event_at - timedelta(days=1)).isoformat()
-        await state_set(pool, "interaction_sync.last_scan_at", checkpoint)
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
         await _insert_calendar_event(
             pool,
             starts_at=event_at,
@@ -2619,7 +2626,11 @@ async def test_interaction_sync_calendar_participant_read_failure_is_an_error_no
         result = await run_interaction_sync(pool)
 
         assert result["errors"] == 1 and result["logged"] == 0
-        assert await state_get(pool, "interaction_sync.last_scan_at") == checkpoint
+        assert result["calendar_participants_pending"] == 1
+        assert (
+            await state_get(pool, "interaction_sync.last_scan_at")
+            == (event_at - timedelta(microseconds=1)).isoformat()
+        )
 
 
 @pytest.mark.pg_clock
@@ -2686,3 +2697,144 @@ async def test_prep_last_met_keeps_an_owner_made_link_without_participants(inter
         rows = await pool.fetch(LAST_MET_SQL, [guest], now)
 
         assert [r["title"] for r in rows] == ["Coffee"]
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_checkpoint_advances_to_just_before_the_pending_event(
+    interaction_sync_pool,
+):
+    """A resolved earlier event is passed; the pending later one is seen again next run."""
+    from butlers.core.state import state_get, state_set
+
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Done", "done@example.com")
+        await _contact_with_email(pool, "Soon", "soon@example.com")
+        anchor = await pool.fetchval("SELECT now()")
+        early, late = anchor - timedelta(hours=10), anchor - timedelta(hours=3)
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (anchor - timedelta(days=1)).isoformat()
+        )
+        await _insert_calendar_event(
+            pool,
+            title="Done",
+            starts_at=early,
+            attendees=[{"email": "done@example.com"}, _OWNER_ACCEPTED],
+        )
+        pending = await _insert_calendar_event(
+            pool,
+            title="Pending",
+            starts_at=late,
+            attendees=[{"email": "soon@example.com"}, _OWNER_ACCEPTED],
+        )
+        await pool.execute(
+            "DELETE FROM calendar_event_participants WHERE event_id = $1", uuid.UUID(pending)
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1 and result["calendar_participants_pending"] == 1
+        stored = datetime.fromisoformat(str(await state_get(pool, "interaction_sync.last_scan_at")))
+        assert stored == late - timedelta(microseconds=1) and stored > early
+
+
+async def _owner_with_email(pool, email: str) -> None:
+    entity_id = await _insert_public_entity(pool, roles=["owner"])
+    contact_id = await _insert_contact_anchor(pool, first_name="Owner", entity_id=entity_id)
+    await _insert_contact_info(pool, contact_id=contact_id, ci_type="email", value=email)
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_counts_an_event_the_owner_organised_without_a_seat(
+    interaction_sync_pool,
+):
+    """No owner row, organizer in metadata.organizer only (an API or butler made invite)."""
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _owner_with_email(pool, "owner@mine.example")
+        guest = await _contact_with_email(pool, "Seatless", "seatless@example.com")
+        event_id = await _insert_calendar_event(
+            pool, attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}]
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+            uuid.UUID(event_id),
+            {"organizer": " Owner@Mine.Example "},
+        )
+        from butlers.modules.calendar.participants import sync_event_participants
+
+        await sync_event_participants(pool, uuid.UUID(event_id))
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1 and result["calendar_events_not_encounters"] == 0
+        assert await _calendar_fact_entities(pool) == {guest}
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_an_unknown_organizer_without_a_seat_counts_nothing(
+    interaction_sync_pool,
+):
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Stranger", "stranger@example.com")
+        event_id = await _insert_calendar_event(
+            pool, attendees=[{"email": "stranger@example.com", "responseStatus": "accepted"}]
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+            uuid.UUID(event_id),
+            {"organizer": "someone@elsewhere.example"},
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 0 and result["calendar_events_not_encounters"] == 1
+
+
+@pytest.mark.pg_clock
+async def test_prep_last_met_counts_an_event_the_owner_organised_without_a_seat(
+    interaction_sync_pool,
+):
+    from butlers.jobs.calendar_prep import LAST_MET_SQL
+
+    async with interaction_sync_pool() as pool:
+        await _owner_with_email(pool, "owner@mine.example")
+        guest = await _contact_with_email(pool, "Seatless", "seatless@example.com")
+        now = await pool.fetchval("SELECT now()")
+        mine = await _insert_calendar_event(
+            pool,
+            title="Mine",
+            starts_at=now - timedelta(days=1),
+            attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}],
+        )
+        theirs = await _insert_calendar_event(
+            pool,
+            title="Theirs",
+            starts_at=now - timedelta(days=3),
+            attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}],
+        )
+        for event_id, organizer in (
+            (mine, "owner@mine.example"),
+            (theirs, "other@elsewhere.example"),
+        ):
+            await pool.execute(
+                "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+                uuid.UUID(event_id),
+                {"organizer": organizer},
+            )
+            await pool.execute(
+                "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+                uuid.UUID(event_id),
+                guest,
+            )
+
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+        assert [r["title"] for r in rows] == ["Mine"]
+
+        await pool.execute("DELETE FROM calendar_events WHERE id = $1", uuid.UUID(mine))
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+        assert rows == []

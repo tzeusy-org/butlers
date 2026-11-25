@@ -64,3 +64,16 @@ def test_a_manual_link_counts_and_a_repeated_guest_counts_once():
     )
 
     assert found.entity_ids == (ALICE,)
+
+
+def test_an_owner_organised_event_with_no_owner_row_counts():
+    rows = [_row("exact", entity_id=ALICE)]
+
+    assert encounter_candidates(rows, owner_organized=True).entity_ids == (ALICE,)
+    assert not encounter_candidates(rows).counted
+
+
+def test_an_owner_rows_own_answer_beats_the_organizer_fallback():
+    rows = [_row("owner", "declined"), _row("exact", entity_id=ALICE)]
+
+    assert not encounter_candidates(rows, owner_organized=True).counted

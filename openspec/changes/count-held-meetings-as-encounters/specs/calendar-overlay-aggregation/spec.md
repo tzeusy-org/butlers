@@ -54,3 +54,5 @@ Scope: v1-mandatory
 - **WHEN** an attendee's most recent prior linked event is a native reminder, an event the owner declined or never accepted, or one that attendee declined
 - **THEN** that event SHALL NOT set `last_met` or `last_met_event`, and an earlier held candidate SHALL
 - **AND** a butler-created event linked by the owner, which has no provider participants, SHALL still count
+- **AND** an event with no owner participant row counts when its `metadata.organizer` is an address the owner holds, as in interaction sync
+- **AND** this differs from interaction sync on purpose for a provider event that was never backfilled: sync logs nothing without participant rows, while an owner-made link is the owner's own word

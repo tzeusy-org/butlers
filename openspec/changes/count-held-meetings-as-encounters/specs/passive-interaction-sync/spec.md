@@ -32,13 +32,20 @@ Scope: v1-mandatory
 - **WHEN** the owner's own participant row does not say `accepted` (declined, tentative, unanswered or absent)
 - **THEN** the job SHALL log no interaction and mint no co-attended edge for that event
 - **AND** it SHALL count the event in `calendar_events_not_encounters`
+- **AND** an event whose participants carry no owner row at all counts as accepted when its `metadata.organizer` is an address the owner holds (an event the owner organised through the API or a butler has no seat of the owner's own); an owner row's own answer always decides
 - **AND** this is an interim stand-in for "the meeting happened" that the encounter ledger replaces
+
+#### Scenario: An event the owner organised without a seat counts
+
+- **WHEN** an event has no owner participant row and `metadata.organizer` is an address the owner holds
+- **THEN** its exact and manual guests who did not decline SHALL count as for an accepted occurrence
 
 #### Scenario: Missing participants are never a fallback
 
 - **WHEN** a provider event has no participant rows, or its rows are not current for its attendee list or the resolver version
-- **THEN** the job SHALL log nothing for it, SHALL NOT fall back to the invitation's addresses and SHALL NOT advance the checkpoint past it
-- **AND** a failed participant read SHALL increment `errors` and hold the checkpoint, and SHALL NOT read as an empty calendar
+- **THEN** the job SHALL log nothing for it, SHALL NOT fall back to the invitation's addresses and SHALL NOT advance the checkpoint past it (see the checkpoint requirement for where it stops)
+- **AND** it SHALL count such events in `calendar_participants_pending`
+- **AND** a failed participant read SHALL increment `errors`, treat every scanned event as pending, and SHALL NOT read as an empty calendar
 
 #### Scenario: Calendar interaction fact creation
 
@@ -94,8 +101,57 @@ Scope: v1-mandatory
     before stats aggregation
   - `skipped_group_too_large` (int) — chat groups exceeding the 20-participant gate
   - `calendar_events_scanned` (int)
+  - `calendar_participants_pending` (int) — scanned provider events whose participants are not resolved yet, or every scanned event when the participant read failed
   - `calendar_events_not_encounters` (int) — scanned occurrences that counted for nothing: the owner did not accept them, or their participants are not resolved yet
   - `errors` (int) — checkpoint I/O failures and other non-fatal errors
   - `resolution_degraded` (bool) — `true` when a non-empty set of sender identities resolved to zero entities, which the fail-open resolver cannot distinguish from a genuine "no known contacts" result; callers MUST NOT read a zero-fact run as an all-clear while this is set
   - `co_attended_edges_minted` (int), count of co-attendance relationship edges created from shared calendar events
   - `knows_edges_minted` (int), count of "knows" relationship edges minted during the sync
+
+### Requirement: Scan window and checkpoint
+
+The job SHALL maintain a durable checkpoint to avoid re-scanning the full history
+on every run.
+
+ID: REQ-passive-interaction-sync-002
+Source: Existing passive-interaction-sync Checkpoint persistence scenario and 30-day bound; RFC 0029 honest absence; bu-2mpps3 bounded failure/recovery correction; bu-5ii4gj.3 slice E1 (pending participants)
+Scope: v1-mandatory
+
+#### Scenario: Checkpoint persistence
+
+- **WHEN** the job completes successfully and no scanned event is pending
+- **THEN** it SHALL store the scan window end time in the butler's state store
+  under key `interaction_sync.last_scan_at`
+- **AND** the next run SHALL use this as the scan window start time
+
+#### Scenario: Events whose participants are not resolved stop the checkpoint before them
+
+- **WHEN** one or more scanned provider events have no current participant records, or the participant read failed
+- **THEN** the job SHALL store a checkpoint just before the earliest such event's `starts_at`, never earlier than this window's start, instead of the scan window end
+- **AND** the next run SHALL scan those events again, so a late resolution is counted once and an already-logged interaction is not duplicated
+- **AND** the existing 30-day scan cap SHALL still bound how long an unresolved event holds the window
+
+#### Scenario: First run without checkpoint
+
+- **WHEN** the job runs for the first time (no checkpoint exists)
+- **THEN** it SHALL scan the last 30 days of messages and calendar events
+  as a backfill window
+
+#### Scenario: Scan window cap
+
+- **WHEN** the checkpoint is older than 30 days (e.g., after a long outage)
+- **THEN** the scan window start SHALL be capped at 30 days ago to prevent
+  unbounded backfill
+
+#### Scenario: Calendar query failure retains the checkpoint
+
+- **WHEN** the message portion has completed but the calendar projection query fails
+- **THEN** the job SHALL leave `interaction_sync.last_scan_at` unchanged so the next scheduled run can read the unprocessed calendar events in the original bounded window
+- **AND** it SHALL preserve message interactions already created by that run
+- **AND** after the calendar query becomes available, rerunning SHALL create the recovered calendar interactions and co-attended edges once without duplicating the previously-created message interactions
+- **AND** the existing 30-day scan cap SHALL still apply
+
+#### Scenario: A successful empty calendar read advances normally
+
+- **WHEN** the calendar query succeeds and returns no qualifying events, and the job otherwise reaches checkpoint persistence
+- **THEN** the job SHALL persist the scan window end normally rather than treating a genuine empty result as a failed read
