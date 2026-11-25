@@ -1476,3 +1476,200 @@ async def test_explicit_audit_order_preserves_endpoint_entity_a_and_b(merge_pool
         result.review_id,
     )
     assert tuple(review.values()) == (source_id, target_id)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize(
+    ("source_type", "target_type"), [("person", "organization"), ("organization", "person")]
+)
+async def test_cross_type_merge_keeps_the_target_type(merge_pool, source_type, target_type) -> None:
+    """REQ-entity-identity-009: a type difference never rejects; the survivor keeps its type."""
+    pool = merge_pool
+    source = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
+        f"Synthetic same name {uuid4()}",
+        source_type,
+    )
+    target = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
+        f"Synthetic same name {uuid4()}",
+        target_type,
+    )
+
+    await merge_entity_pair(pool, source_entity_id=source, target_entity_id=target)
+
+    rows = {
+        row["id"]: row
+        for row in await pool.fetch(
+            "SELECT id, entity_type, metadata FROM public.entities WHERE id = ANY($1::uuid[])",
+            [source, target],
+        )
+    }
+    assert rows[target]["entity_type"] == target_type
+    assert rows[source]["metadata"]["merged_into"] == str(target)
+
+
+async def _approve_parked_merge(pool, monkeypatch, *, tool_name, before_dispatch=None):
+    """Park a merge, approve it over HTTP with the reviewed call, execute it for real.
+
+    The dashboard route, approval transition, audit and the shared executor run on this
+    PostgreSQL; the dispatch hop calls ``execute_approved_action`` in-process with the
+    registered Relationship merge handler instead of an MCP round trip to the daemon.
+    """
+    from types import SimpleNamespace
+
+    import httpx
+
+    from butlers.api.deps import get_db
+    from butlers.api.routers import approvals as routes
+    from butlers.modules.approvals.executor import execute_approved_action
+    from butlers.modules.memory.tools.entities import entity_merge
+    from tests.api.auth_helpers import create_authenticated_domain_app
+
+    source = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, 'person') "
+        "RETURNING id",
+        f"Synthetic same name {uuid4()}",
+    )
+    target = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, 'organization') "
+        "RETURNING id",
+        f"Synthetic same name {uuid4()}",
+    )
+    action_id = uuid4()
+    await pool.execute(
+        "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, expires_at) "
+        "VALUES ($1, $2, $3, 'pending', now(), now() + interval '1 day')",
+        action_id,
+        tool_name,
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+    )
+
+    async def find(*_args):
+        return "relationship", pool
+
+    async def named(*_args):
+        return [("relationship", pool)]
+
+    async def no_card(*_args):
+        return None
+
+    async def dispatch(_mcp, _db, _pool, dispatched_id, name, args, _butler):
+        if before_dispatch is not None:
+            await before_dispatch(source, target)
+
+        async def handler(**kwargs):
+            return await entity_merge(pool, **kwargs)
+
+        result = await execute_approved_action(
+            pool, UUID(str(dispatched_id)), name, args, handler, origin_butler="relationship"
+        )
+        return routes._DispatchOutcome(kind="executed" if result.success else "rejected")
+
+    monkeypatch.setattr(routes, "_find_action_pool", find)
+    monkeypatch.setattr(routes, "_find_named_approvals_pools", named)
+    monkeypatch.setattr(routes, "_dashboard_owner_delivery_card", no_card)
+    monkeypatch.setattr(routes, "_decision_memory_writer_for", lambda *a: None)
+    monkeypatch.setattr(routes, "_dispatch_approved_action_outcome", dispatch)
+    app = create_authenticated_domain_app()
+    app.dependency_overrides[get_db] = lambda: SimpleNamespace(
+        butler_names=["relationship"], pool=lambda _name: pool
+    )
+    app.dependency_overrides[routes.get_mcp_manager] = lambda: object()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        detail = (await http.get(f"/api/approvals/{action_id}")).json()["data"]
+        assert detail["call_preview"] is None
+        review = detail["entity_merge_review"]
+        assert (review["source_entity_id"], review["target_entity_id"]) == (
+            str(source),
+            str(target),
+        )
+        response = await http.post(
+            f"/api/approvals/{action_id}/approve", json={"displayed_call": review["displayed_call"]}
+        )
+    return SimpleNamespace(action_id=action_id, source=source, target=target, response=response)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize("tool_name", ["memory_entity_merge", "entity_merge"])
+async def test_reviewed_approval_executes_the_original_merge(
+    merge_pool, monkeypatch, tool_name
+) -> None:
+    """REQ-module-approvals-008 "Confirmation resolves the original pending merge"."""
+    pool = merge_pool
+    run = await _approve_parked_merge(pool, monkeypatch, tool_name=tool_name)
+    assert run.response.status_code == 200, run.response.text
+
+    action = await pool.fetchrow(
+        "SELECT tool_name, status, execution_result FROM pending_actions WHERE id = $1",
+        run.action_id,
+    )
+    assert action["tool_name"] == tool_name  # never rewritten
+    assert action["status"] == "executed"
+    assert action["execution_result"]["success"] is True
+    entities = {
+        row["id"]: row
+        for row in await pool.fetch(
+            "SELECT id, entity_type, metadata FROM public.entities WHERE id = ANY($1::uuid[])",
+            [run.source, run.target],
+        )
+    }
+    assert entities[run.source]["metadata"]["merged_into"] == str(run.target)
+    assert entities[run.target]["entity_type"] == "organization"
+    assert await pool.fetchval(
+        "SELECT count(*) FROM relationship.merge_reviews WHERE outcome = 'merged' "
+        "AND $1 IN (entity_a, entity_b) AND $2 IN (entity_a, entity_b)",
+        run.source,
+        run.target,
+    )
+    assert await pool.fetchval(
+        "SELECT count(*) FROM public.entity_rebind_log WHERE source_entity_id = $1", run.source
+    )
+    events = await pool.fetch(
+        "SELECT event_type FROM approval_events WHERE action_id = $1", run.action_id
+    )
+    assert {"action_approved", "action_execution_succeeded"} <= {e["event_type"] for e in events}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_entity_lost_after_review_leaves_honest_failed_execution(
+    merge_pool, monkeypatch
+) -> None:
+    """REQ-module-approvals-008 "Merge execution failure remains an explicit recovery state"."""
+    pool = merge_pool
+
+    async def forget_source(source, _target):
+        await pool.execute(
+            "UPDATE public.entities SET metadata = metadata || jsonb_build_object("
+            "'merged_into', $2::text) WHERE id = $1",
+            source,
+            str(uuid4()),
+        )
+
+    run = await _approve_parked_merge(
+        pool, monkeypatch, tool_name="memory_entity_merge", before_dispatch=forget_source
+    )
+    action = await pool.fetchrow(
+        "SELECT status, execution_result FROM pending_actions WHERE id = $1", run.action_id
+    )
+    assert action["status"] == "approved"
+    assert action["execution_result"] is None
+    target_type = await pool.fetchval(
+        "SELECT entity_type FROM public.entities WHERE id = $1", run.target
+    )
+    assert target_type == "organization"
+    assert not await pool.fetchval(
+        "SELECT count(*) FROM public.entity_rebind_log WHERE source_entity_id = $1", run.source
+    )
+    events = await pool.fetch(
+        "SELECT event_type FROM approval_events WHERE action_id = $1", run.action_id
+    )
+    assert "action_execution_failed" in {e["event_type"] for e in events}

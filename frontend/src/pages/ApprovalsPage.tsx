@@ -90,6 +90,11 @@ import {
   EXTERNAL_REVIEW_REASON_ID,
   ExternalProposalReviewPanel,
 } from "@/components/approvals/external-proposal-review.tsx";
+import {
+  EntityMergeConfirmDialog,
+  EntityMergeReviewPanel,
+} from "@/components/approvals/entity-merge-review.tsx";
+import { useEntityMergeComparison, validMergeReview } from "@/hooks/use-entity-merge-review";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ReplyTemplateDraftsPanel } from "@/components/approvals/reply-template-drafts-panel.tsx";
 import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
@@ -622,6 +627,8 @@ function Dossier({
   phoneFirst,
   focusHeadingOnLoad,
   onHeadingFocused,
+  mergeConfirmOpen = false,
+  onMergeConfirmOpenChange = () => {},
 }: {
   actionId: string;
   /** Deep link: below the md band the dossier leads the stacked workspace, above the rail. */
@@ -644,6 +651,8 @@ function Dossier({
     displayedCall: DisplayedApprovalCall,
     ownerDelivery: OwnerDeliveryCard | null | undefined,
     externalProposal: boolean,
+    /** A parked entity merge: never offered as a standing rule afterwards. */
+    entityMerge?: boolean,
   ) => void;
   onCallShown: (view: ViewedApproval | null) => void;
   onDeny: (reason?: string, ownerDelivery?: OwnerDeliveryCard | null) => void;
@@ -660,6 +669,13 @@ function Dossier({
    */
   pendingVerb?: DecisionVerb | null;
   onCancelPending?: () => void;
+  /**
+   * The final merge confirmation for this dossier's parked entity merge. Owned
+   * by the page so the keyboard `a` verb opens the same confirmation as the
+   * Approve button (REQ-dashboard-approvals-902).
+   */
+  mergeConfirmOpen?: boolean;
+  onMergeConfirmOpenChange?: (open: boolean) => void;
 }) {
   const [deferHours, setDeferHours] = useState("24");
   const [showDefer, setShowDefer] = useState(false);
@@ -682,21 +698,37 @@ function Dossier({
   const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
   const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
     shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
+  // A parked entity merge is approvable only once the comparison of exactly its
+  // stored pair has rendered here; a loading, failed or refetching read never is.
+  const mergeReview = shownDetail?.id === actionId && shownDetail.status === "pending"
+    ? validMergeReview(shownDetail.entity_merge_review)
+    : null;
+  const mergeComparison = useEntityMergeComparison(actionId, mergeReview);
+  const mergeReady = !!mergeReview && mergeComparison.isSuccess && !mergeComparison.isFetching;
+  const shownApprovableCall = !shownDetail
+    ? null
+    : mergeReview
+      ? (mergeReady ? mergeReview.displayed_call : null)
+      : approvableCall(shownDetail);
   useLayoutEffect(() => {
     // Query data can survive a hidden loading/error pane. Only hand the
     // keyboard a call whose safe preview is actually rendered in this pane,
     // clearing it before a newly hidden pane can receive another keypress.
-    const shownCall = shownDetail ? approvableCall(shownDetail) : null;
-    onCallShown(canApproveShownCall && shownDetail && shownCall
+    onCallShown(canApproveShownCall && shownDetail && shownApprovableCall
       ? {
           id: actionId,
-          displayed_call: { ...shownCall },
+          displayed_call: { ...shownApprovableCall },
           owner_delivery: shownDetail.owner_delivery,
           external_proposal: !!shownDetail.external_proposal_review,
+          entity_merge: !!mergeReview,
         }
       : null);
     return () => onCallShown(null);
-  }, [actionId, shownDetail, canApproveShownCall, onCallShown]);
+  }, [actionId, shownDetail, canApproveShownCall, shownApprovableCall, mergeReview, onCallShown]);
+  useEffect(() => {
+    // Losing eligibility (refetch, error, decided) closes a pending confirmation.
+    if (mergeConfirmOpen && !(mergeReady && canApproveShownCall)) onMergeConfirmOpenChange(false);
+  }, [mergeConfirmOpen, mergeReady, canApproveShownCall, onMergeConfirmOpenChange]);
 
   function handleDefer() {
     const h = parseInt(deferHours, 10);
@@ -743,7 +775,7 @@ function Dossier({
   const isScheduled = !!pendingVerb;
   const digest = predicateDigest(detail);
   const externalReview = detail.external_proposal_review ?? null;
-  const approvable = approvableCall(detail);
+  const approvable = shownApprovableCall;
   const approveUnavailableReason =
     isPending && externalReview && !approvable ? externalReview.approve_unavailable_reason : null;
   const refEntities = detail.referenced_entities ?? [];
@@ -756,6 +788,22 @@ function Dossier({
     >
       {externalReview ? (
         <ExternalProposalReviewPanel review={externalReview} pending={isPending} />
+      ) : mergeReview ? (
+        <>
+          <EntityMergeReviewPanel comparison={mergeComparison} />
+          <EntityMergeConfirmDialog
+            open={mergeConfirmOpen && mergeReady}
+            diff={mergeComparison.data}
+            submitting={approvePending}
+            onOpenChange={onMergeConfirmOpenChange}
+            onConfirm={() => {
+              if (approvePending || !mergeReady || detail.id !== actionId) return;
+              // Closing first means a second activation has nothing to click.
+              onMergeConfirmOpenChange(false);
+              onApprove({ ...mergeReview.displayed_call }, detail.owner_delivery, false, true);
+            }}
+          />
+        </>
       ) : <section aria-label="Stored call preview" className="mb-6 whitespace-pre-wrap break-words">
         {detail.call_preview ? <>
           <h3 className="font-medium">{detail.call_preview.title}</h3>
@@ -808,7 +856,11 @@ function Dossier({
               <>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-background/85 backdrop-blur-sm px-2 py-2 shadow-sm">
                   <button
-                    onClick={() => { if (detail.id === actionId && approvable) onApprove({ ...approvable }, detail.owner_delivery, !!externalReview); }}
+                    onClick={() => {
+                      if (detail.id !== actionId || !approvable) return;
+                      if (mergeReview) onMergeConfirmOpenChange(true);
+                      else onApprove({ ...approvable }, detail.owner_delivery, !!externalReview);
+                    }}
                     disabled={approvePending || detail.id !== actionId || !approvable}
                     aria-describedby={approveUnavailableReason ? EXTERNAL_REVIEW_REASON_ID : undefined}
                     className={[
@@ -817,7 +869,7 @@ function Dossier({
                       "hover:opacity-90 disabled:opacity-50 transition-opacity",
                     ].join(" ")}
                   >
-                    {approvePending ? "Approving…" : "Approve"}
+                    {approvePending ? "Approving…" : mergeReview ? "Approve merge…" : "Approve"}
                   </button>
                   <button
                     onClick={() => onDeny(denyReason.trim() || undefined, detail.owner_delivery)}
@@ -2075,13 +2127,17 @@ export default function ApprovalsPage() {
     undoWindow: true,
   });
   const [shownCall, setShownCall] = useState<ViewedApproval | null>(null);
+  const [mergeConfirmFor, setMergeConfirmFor] = useState<string | null>(null);
   const approve = useCallback(
     (view: ViewedApproval) => {
       const actionId = view.id;
       approveMut.mutate(view, {
         // An external MCP proposal never becomes a standing rule, so it gets no
         // "always allow" prompt (REQ-dashboard-approvals-904, REQ-module-approvals-010).
-        onSuccess: () => { if (!view.external_proposal) setTeachingActionId(actionId); },
+        // Neither an outside proposal nor a merge may become a standing rule.
+        onSuccess: () => {
+          if (!view.external_proposal && !view.entity_merge) setTeachingActionId(actionId);
+        },
       });
     },
     [approveMut],
@@ -2210,6 +2266,12 @@ export default function ApprovalsPage() {
         handler: () => {
           if (shownCall?.id !== id) {
             toast.error("Review the stored call before approving.");
+            return;
+          }
+          if (shownCall.entity_merge) {
+            // A merge never schedules from the rail: it opens the same final
+            // confirmation as the dossier's Approve button.
+            setMergeConfirmFor(id);
             return;
           }
           const view = {
@@ -2487,7 +2549,7 @@ export default function ApprovalsPage() {
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={(displayed_call, owner_delivery, external_proposal) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal })}
+            onApprove={(displayed_call, owner_delivery, external_proposal, entity_merge) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal, entity_merge })}
             onCallShown={setShownCall}
             onDeny={(reason, owner_delivery) => denyMut.mutate({ id: dossierSelected, reason, owner_delivery })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
@@ -2500,6 +2562,8 @@ export default function ApprovalsPage() {
             deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
             pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
             onCancelPending={() => cancelDecision(dossierSelected)}
+            mergeConfirmOpen={mergeConfirmFor === dossierSelected}
+            onMergeConfirmOpenChange={(open) => setMergeConfirmFor(open ? dossierSelected : null)}
             phoneFirst={routeId !== undefined}
             focusHeadingOnLoad={entryFocusPending && routeId === dossierSelected}
             onHeadingFocused={() => setEntryFocusPending(false)}

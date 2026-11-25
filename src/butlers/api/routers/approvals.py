@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -67,6 +68,7 @@ from butlers.api.models.approval import (
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
     DisplayedApprovalCall,
+    EntityMergeReview,
     EntityRef,
     ExpireStaleActionsResponse,
     ExternalProposalReview,
@@ -106,6 +108,12 @@ from butlers.modules.approvals.delivery_lifecycle import (
     transition_pending_action,
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+from butlers.modules.approvals.entity_merge_review import (
+    ENTITY_MERGE_RULE_REFUSAL,
+    entity_merge_binding,
+    is_entity_merge_action,
+    is_entity_merge_tool,
+)
 from butlers.modules.approvals.external_proposals import (
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
     ExternalReviewBinding,
@@ -758,6 +766,27 @@ async def _latest_rejection_reason(conn: Any, action_id: UUID) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
+def _entity_merge_review(action: PendingAction) -> EntityMergeReview | None:
+    """The typed merge review of a pending, showable entity merge (REQ-module-approvals-008).
+
+    Only a pending action gets one: a decided or historical merge is never offered as
+    newly approvable. ``call_preview`` stays null for every merge, so a client without
+    merge review keeps approval disabled.
+    """
+    if action.status.value != "pending":
+        return None
+    binding = entity_merge_binding(action.tool_name, action.tool_args)
+    if binding is None:
+        return None
+    return EntityMergeReview(
+        source_entity_id=str(binding.source_entity_id),
+        target_entity_id=str(binding.target_entity_id),
+        displayed_call=DisplayedApprovalCall(
+            tool_name=binding.tool_name, args_digest=binding.args_digest
+        ),
+    )
+
+
 def _pending_action_to_detail(
     action: PendingAction,
     butler_name: str,
@@ -796,10 +825,11 @@ def _pending_action_to_detail(
         proposed_action=proposed_action,
         call_preview=(
             None
-            if external_review is not None
+            if external_review is not None or is_entity_merge_tool(action.tool_name)
             else dashboard_call_preview(action.tool_name, action.tool_args)
         ),
         external_proposal_review=external_review,
+        entity_merge_review=_entity_merge_review(action),
         goal=_goal_lineage(action),
         status=action.status.value,
         decided_by=action.decided_by,
@@ -3672,6 +3702,49 @@ EXTERNAL_PROPOSAL_REVIEW_REQUIRED = (
 EXTERNAL_PROPOSAL_EDIT_REFUSAL = (
     "An external proposal is decided as reviewed and cannot be edited; nothing was executed."
 )
+ENTITY_MERGE_REVIEW_REQUIRED = (
+    "An entity merge is approved only after its dashboard review; nothing was executed."
+)
+ENTITY_MERGE_EDIT_REFUSAL = (
+    "An entity merge is decided as reviewed and cannot be edited; nothing was executed."
+)
+ENTITY_MERGE_UNSHOWABLE = (
+    "This stored merge cannot be reviewed completely, so it cannot be approved; "
+    "nothing was executed."
+)
+
+
+def _check_entity_merge_decision(
+    action_row: Mapping[str, Any] | None,
+    *,
+    edits: dict[str, Any] | None,
+    displayed_call: DisplayedApprovalCall | None,
+    require_displayed_call: bool,
+) -> bool:
+    """Refuse an entity-merge decision that is not its reviewed dashboard call.
+
+    Returns whether *action_row* is a merge (so the generic preview check is skipped).
+    A merge is approvable only from its dashboard structural review, bound to the stored
+    tool name and argument digest read under the caller's row lock. A connector callback
+    never decides one (no card can show the comparison), and an edit would change the
+    reviewed direction (REQ-module-approvals-008/009).
+    """
+    if action_row is None or not is_entity_merge_tool(action_row["tool_name"]):
+        return False
+    if edits:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_EDIT_REFUSAL)
+    if not require_displayed_call:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
+    binding = entity_merge_binding(action_row["tool_name"], action_row["tool_args"])
+    if binding is None:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_UNSHOWABLE)
+    if displayed_call is None:
+        raise HTTPException(status_code=409, detail=ENTITY_MERGE_REVIEW_REQUIRED)
+    if displayed_call != DisplayedApprovalCall(
+        tool_name=binding.tool_name, args_digest=binding.args_digest
+    ):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    return True
 
 
 async def _require_presented_call_unchanged(
@@ -3830,6 +3903,13 @@ async def approve_owning_action(
         # no card ever showed it (REQ-dashboard-approvals-904).
         # Its call is decided as reviewed: an edit would execute arguments no review
         # showed, including provenance the importer refuses at park time.
+        # An entity merge is decided only as its reviewed dashboard call (see helper).
+        merge_row = _check_entity_merge_decision(
+            action_row,
+            edits=edits,
+            displayed_call=displayed_call,
+            require_displayed_call=require_displayed_call,
+        )
         if is_external_proposal_row(action_row):
             if edits:
                 raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_EDIT_REFUSAL)
@@ -3847,7 +3927,7 @@ async def approve_owning_action(
             external_binding = ExternalReviewBinding(
                 action_id=parsed_id, args_digest=review.displayed_call.args_digest
             )
-        elif require_displayed_call:
+        elif require_displayed_call and not merge_row:
             preview = (
                 dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
                 if action_row is not None
@@ -3963,6 +4043,9 @@ async def approve_owning_action(
             # Refused before any step-up is consumed or status changes: an outside
             # proposal never becomes a standing rule (REQ-module-approvals-010).
             raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_RULE_REFUSAL)
+        if create_rule and await is_entity_merge_action(conn, parsed_id):
+            # A standing rule would merge future pairs without their structural review.
+            raise HTTPException(status_code=409, detail=ENTITY_MERGE_RULE_REFUSAL)
         if create_rule:
             parameters = dict(
                 action_id=action_id,

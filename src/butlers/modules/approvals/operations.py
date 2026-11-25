@@ -35,6 +35,10 @@ from butlers.modules.approvals.autonomy_tracker import (
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.entity_merge_review import (
+    ENTITY_MERGE_RULE_REFUSAL,
+    is_entity_merge_tool,
+)
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.external_proposals import (
@@ -311,6 +315,9 @@ async def _approve_action_write(
     # Validate transition: only pending → approved is valid
     if action.status != ActionStatus.PENDING:
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
+    if create_rule and is_entity_merge_tool(action.tool_name):
+        # A rule would merge future pairs without their structural review.
+        return {"error": ENTITY_MERGE_RULE_REFUSAL}
     if is_external_proposal_key(action.deduplication_key):
         # Before any status change: an outside proposal never becomes a rule, and
         # approves only as the dashboard review displayed it (REQ-dashboard-approvals-904).
@@ -812,6 +819,8 @@ async def _create_rule_from_action_write(
     action = PendingAction.from_row(row)
     if is_external_proposal_key(action.deduplication_key):
         return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+    if is_entity_merge_tool(action.tool_name):
+        return {"error": ENTITY_MERGE_RULE_REFUSAL}
 
     # Generate suggested constraints via sensitivity analysis
     suggested = suggest_constraints(action.tool_name, action.tool_args)

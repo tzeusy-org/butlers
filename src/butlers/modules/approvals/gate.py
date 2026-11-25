@@ -37,6 +37,7 @@ from butlers.identity import (
     ResolvedContact,
     resolve_channel_contact_with_owner_corroboration,
 )
+from butlers.modules.approvals.entity_merge_review import is_entity_merge_tool
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
@@ -329,7 +330,12 @@ async def admit_standing_rule(
     an admitted owner permission for a relationship fact rule, and refuse a
     rule that leaves a safety-critical argument unpinned. ``db`` is a pool or
     a connection. The caller still claims the rule's use atomically.
+
+    An entity merge is never auto-approved, whatever rule exists: it is approved only
+    after its dashboard structural review (REQ-module-approvals-008).
     """
+    if is_entity_merge_tool(tool_name):
+        return RuleAdmission(None)
     rows = await db.fetch(
         "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
         "ORDER BY created_at DESC, id ASC",

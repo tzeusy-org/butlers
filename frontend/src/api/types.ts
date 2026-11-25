@@ -3939,10 +3939,24 @@ export interface ApprovalExecutionFailure {
   terminal?: boolean;
 }
 
+/**
+ * Typed review context of a parked entity merge (REQ-dashboard-approvals-902).
+ * Direction is fixed: the source is absorbed into the surviving target, which
+ * keeps its own type. Approve echoes ``displayed_call`` only after the
+ * structural comparison of exactly this pair has rendered.
+ */
+export interface EntityMergeReview {
+  source_entity_id: string;
+  target_entity_id: string;
+  displayed_call: DisplayedApprovalCall;
+}
+
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
   /** Present only for an external MCP proposal; its proposed_action has no tool_args. */
   external_proposal_review?: ExternalProposalReview | null;
+  /** Present only for a pending, showable Relationship entity merge; call_preview is then null. */
+  entity_merge_review?: EntityMergeReview | null;
   /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
   goal?: ApprovalGoalLineage | null;
   owner_delivery?: OwnerDeliveryCard | null;
