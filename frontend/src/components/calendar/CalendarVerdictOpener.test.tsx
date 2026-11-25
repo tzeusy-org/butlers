@@ -2,6 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { format } from "date-fns";
+import { dayViewDoor } from "@/lib/calendar-doors";
 import { MemoryRouter } from "react-router";
 import { cleanup, render as mount, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -123,6 +125,23 @@ describe("CalendarVerdictOpener", () => {
     expect(next).toBeGreaterThan(-1);
     expect(needs).toBeGreaterThan(next);
     expect(committed).toBeGreaterThan(needs);
+  });
+
+  it("makes committed hours and the free window doors to the calendar day view", () => {
+    const html = render({ dayVerdict: dayVerdict(busy) });
+    const day = "view=user&amp;range=day&amp;anchor=2026-11-27";
+
+    // The committed-hours clause opens that date's day view.
+    expect(html).toMatch(new RegExp(`href="/calendar\\?${day}"[^>]*>2h 30m committed`));
+    // The free window opens it scrolled to the window's start, in the browser's own zone.
+    const start = format(new Date("2026-11-27T16:00:00+08:00"), "HH:mm").replace(":", "%3A");
+    expect(html).toMatch(
+      new RegExp(`href="/calendar\\?${day}&amp;time=${start}"[^>]*>Longest free window`),
+    );
+  });
+
+  it("builds a day-view door without a time when none is given", () => {
+    expect(dayViewDoor("2026-11-27")).toBe("/calendar?view=user&range=day&anchor=2026-11-27");
   });
 
   it("makes the next clause a door that selects the entry", async () => {

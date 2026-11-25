@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { formatInTimeZone } from "date-fns-tz";
 import type { CalendarInvitationEntry, ConflictIssue, DayVerdictResponse } from "@/api/types";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
+import { dayViewDoor } from "@/lib/calendar-doors";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 
 /** The day verdict read, as the page's query reports it. */
@@ -99,12 +100,14 @@ function verdictClauses(
     clauses.push({
       key: "day-committed",
       text: `${duration(verdict.committed_minutes)} committed across ${plural(verdict.committed_count, "meeting")}`,
+      href: dayViewDoor(verdict.date),
     });
   }
   if (verdict.free_window) {
     clauses.push({
       key: "day-free",
       text: `Longest free window ${clock(verdict.free_window.start, zone)}-${clock(verdict.free_window.end, zone)}`,
+      href: dayViewDoor(verdict.date, verdict.free_window.start),
     });
   }
   return { lead, tail: clauses };

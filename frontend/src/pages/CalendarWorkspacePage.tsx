@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { format } from "date-fns";
 
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
@@ -17,6 +18,7 @@ import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePan
 import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { scrollHourFor } from "@/lib/calendar-doors";
 import { HOUR_HEIGHT_PX } from "@/lib/calendar-grid";
 import { CalendarActivityPanel } from "@/pages/calendar/CalendarActivityPanel";
 import { CalendarCanvas } from "@/pages/calendar/CalendarCanvas";
@@ -42,9 +44,6 @@ import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspac
 import { useEntrySelection } from "@/pages/calendar/use-entry-selection";
 import { useQuickAddCreate } from "@/pages/calendar/use-quick-add-create";
 import { headlineLabel } from "@/pages/calendar/workspace-model";
-
-/** Default scroll-to position (in hours) when the time grid first mounts. */
-const DEFAULT_SCROLL_HOUR = 7.5;
 
 export default function CalendarWorkspacePage() {
   const {
@@ -132,13 +131,16 @@ export default function CalendarWorkspacePage() {
     openSearch: () => setSearchOpen(true),
   });
 
-  // Scroll the time grid to the default hour when it mounts or the window moves.
+  // Scroll the time grid to the default hour when it mounts or the window moves, or to a
+  // `time=HH:mm` deep link (a verdict door to a free window).
   const timeGridRef = useRef<HTMLDivElement>(null);
+  const [timeSearchParams] = useSearchParams();
+  const timeParam = timeSearchParams.get("time");
   useEffect(() => {
     if ((range === "week" || range === "day") && timeGridRef.current) {
-      timeGridRef.current.scrollTop = DEFAULT_SCROLL_HOUR * HOUR_HEIGHT_PX;
+      timeGridRef.current.scrollTop = scrollHourFor(timeParam) * HOUR_HEIGHT_PX;
     }
-  }, [range, anchor]);
+  }, [range, anchor, timeParam]);
 
   const { invitationsQuery, overlaysQuery, dayBriefingQuery } = context;
   const dayBriefing = dayBriefingQuery.data?.data;
