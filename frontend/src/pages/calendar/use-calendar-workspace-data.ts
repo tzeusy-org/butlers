@@ -5,7 +5,7 @@
  */
 
 import { useMemo } from "react";
-import { addDays, startOfWeek } from "date-fns";
+import { addDays, format, startOfWeek } from "date-fns";
 
 import type {
   CalendarWorkspaceStatusFacet,
@@ -13,8 +13,12 @@ import type {
   UnifiedCalendarEntry,
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
-import { useCalendarWorkspace, useCalendarWorkspaceMeta } from "@/hooks/use-calendar-workspace";
-import { tzCalendarWindow, tzDayKey } from "@/lib/calendar-grid";
+import {
+  useCalendarWorkspace,
+  useCalendarWorkspaceMeta,
+} from "@/hooks/use-calendar-workspace";
+import { tzCalendarWindow } from "@/lib/calendar-grid";
+import { bucketEntriesByDay } from "@/lib/calendar-span";
 import { computeFreshnessPlaque } from "@/pages/calendar/freshness";
 import { useSourceControls } from "@/pages/calendar/use-source-controls";
 import {
@@ -56,7 +60,11 @@ export function useCalendarWorkspaceData({
     () =>
       computeFreshnessPlaque(
         connectedSources,
-        metaQuery.isError ? "error" : metaQuery.isPending ? "pending" : "success",
+        metaQuery.isError
+          ? "error"
+          : metaQuery.isPending
+            ? "pending"
+            : "success",
         metaQuery.data?.data.sources_available !== false,
       ),
     [
@@ -110,8 +118,10 @@ export function useCalendarWorkspaceData({
       ? userSources
           .filter(
             (source) =>
-              (selectedCalendarId === "all" || source.calendar_id === selectedCalendarId) &&
-              (selectedSourceKey === "all" || source.source_key === selectedSourceKey),
+              (selectedCalendarId === "all" ||
+                source.calendar_id === selectedCalendarId) &&
+              (selectedSourceKey === "all" ||
+                source.source_key === selectedSourceKey),
           )
           .map((source) => source.source_key)
       : userSources.map((source) => source.source_key);
@@ -160,17 +170,6 @@ export function useCalendarWorkspaceData({
     [workspaceQuery.data, metaQuery.data?.data],
   );
 
-  const entriesByDay = useMemo(() => {
-    const buckets = new Map<string, UnifiedCalendarEntry[]>();
-    entries.forEach((entry) => {
-      const key = tzDayKey(entry.start_at, defaultTimezone);
-      const bucket = buckets.get(key) ?? [];
-      bucket.push(entry);
-      buckets.set(key, bucket);
-    });
-    return buckets;
-  }, [entries, defaultTimezone]);
-
   const monthDays = useMemo(() => {
     if (range !== "month") return [] as Date[];
     const gridStart = startOfWeek(start, { weekStartsOn: 1 });
@@ -178,10 +177,25 @@ export function useCalendarWorkspaceData({
   }, [range, start]);
 
   const weekDays = useMemo(() => {
-    if (range === "week") return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+    if (range === "week")
+      return Array.from({ length: 7 }, (_, i) => addDays(start, i));
     if (range === "day") return [start];
     return [] as Date[];
   }, [range, start]);
+
+  // Every covered day gets the event (a multi-day event is not only on its start day), clipped to
+  // the days the grid shows so a long event stays visible in later months.
+  const entriesByDay = useMemo(() => {
+    const shown = range === "month" ? monthDays : weekDays;
+    const window =
+      shown.length > 0
+        ? {
+            startKey: format(shown[0], "yyyy-MM-dd"),
+            endKey: format(shown[shown.length - 1], "yyyy-MM-dd"),
+          }
+        : undefined;
+    return bucketEntriesByDay(entries, defaultTimezone, window);
+  }, [entries, defaultTimezone, range, monthDays, weekDays]);
 
   const calendarFilterOptions = useMemo(() => {
     const deduped = new Map<string, string>();
@@ -199,7 +213,10 @@ export function useCalendarWorkspaceData({
   const butlerLaneRows = useMemo(() => {
     const laneMap = new Map<string, { butlerName: string; title: string }>();
     lanes.forEach((lane) => {
-      laneMap.set(lane.lane_id, { butlerName: lane.butler_name, title: lane.title });
+      laneMap.set(lane.lane_id, {
+        butlerName: lane.butler_name,
+        title: lane.title,
+      });
     });
     const grouped = new Map<string, UnifiedCalendarEntry[]>();
     entries.forEach((entry) => {
@@ -215,16 +232,14 @@ export function useCalendarWorkspaceData({
       grouped.set(entry.butler_name, bucket);
     });
     return [...laneMap.entries()]
-      .map(
-        ([laneId, descriptor]): ButlerLaneRows => ({
-          laneId,
-          butlerName: descriptor.butlerName,
-          title: descriptor.title,
-          entries: [...(grouped.get(descriptor.butlerName) ?? [])].sort((a, b) =>
-            a.start_at.localeCompare(b.start_at),
-          ),
-        }),
-      )
+      .map(([laneId, descriptor]): ButlerLaneRows => ({
+        laneId,
+        butlerName: descriptor.butlerName,
+        title: descriptor.title,
+        entries: [...(grouped.get(descriptor.butlerName) ?? [])].sort((a, b) =>
+          a.start_at.localeCompare(b.start_at),
+        ),
+      }))
       .sort((a, b) => a.title.localeCompare(b.title));
   }, [entries, lanes]);
 
@@ -234,7 +249,8 @@ export function useCalendarWorkspaceData({
       if (lane.butlerName) names.add(lane.butlerName);
     });
     connectedSources.forEach((source) => {
-      if (source.lane === "butler" && source.butler_name) names.add(source.butler_name);
+      if (source.lane === "butler" && source.butler_name)
+        names.add(source.butler_name);
     });
     return [...names].sort((a, b) => a.localeCompare(b));
   }, [butlerLaneRows, connectedSources]);
