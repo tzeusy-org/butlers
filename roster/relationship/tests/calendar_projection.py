@@ -82,7 +82,8 @@ class InteractionSyncDatabase:
             await control.execute(
                 "TRUNCATE relationship.facts, relationship.entity_facts, "
                 "relationship.contact_entity_map, relationship.calendar_sources, "
-                "relationship.state, switchboard.message_inbox CASCADE"
+                "relationship.state, relationship.encounters, relationship.meeting_debriefs, "
+                "switchboard.message_inbox CASCADE"
             )
             await control.execute(
                 "DELETE FROM public.entities WHERE canonical_name LIKE 'projection-test-%'"

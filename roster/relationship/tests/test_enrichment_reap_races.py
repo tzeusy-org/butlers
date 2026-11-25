@@ -90,6 +90,9 @@ _EXCUSED: set[tuple[str, str]] = {
     # a relationship role cannot read (calendar, finance, credentials).
     ("calendar_event_entities", "entity_id"),
     ("calendar_event_participants", "entity_id"),
+    # The encounter ledger is derived: the reducer recomputes a row from participants that are
+    # themselves excused, and a merge repoints it, so a placeholder is never pinned by it.
+    ("encounters", "entity_id"),
     ("cost_claims", "counterparty_entity_id"),
     ("google_accounts", "entity_id"),
     ("steam_accounts", "entity_id"),

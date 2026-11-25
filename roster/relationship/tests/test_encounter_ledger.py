@@ -13,13 +13,6 @@ _OWNER = "owner@mine.example"
 _ACCEPTED = {"email": _OWNER, "responseStatus": "accepted", "self": True}
 
 
-@pytest.fixture(autouse=True)
-async def _empty_ledger(interaction_sync_database):
-    """The harness resets calendar sources per case, not these two relationship tables."""
-    async with interaction_sync_database.control() as control:
-        await control.execute("TRUNCATE relationship.encounters, relationship.meeting_debriefs")
-
-
 def _reducer():
     from butlers.jobs import encounter_ledger
 
