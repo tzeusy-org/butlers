@@ -93,6 +93,7 @@ function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
 const LAST_MET_BASIS_LABEL: Record<string, string> = {
   you_confirmed: "you confirmed",
   evidence: "evidence",
+  recorded: "recorded",
   interim: "accepted, not confirmed",
 };
 

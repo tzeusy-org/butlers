@@ -126,7 +126,7 @@ reports `complete: false`. The reducer runs hourly (`encounter_ledger`). Prep, t
 (slice E2b of bu-5ii4gj.3): "last met" comes only from a meeting the owner or evidence vouches for,
 with a basis chip (`you_confirmed`, `evidence`); a meeting nobody vouches for is "last scheduled".
 A person the ledger has no row for yet, or any person while the ledger is unreadable, keeps the
-interim rule, shown as `interim` (accepted, not confirmed). `interaction_sync` and the Dunbar and
+interim rule, shown as `interim` (accepted, not confirmed); so does a covered person with no happened row, for history older than the ledger's 90-day window. `interaction_sync` and the Dunbar and
 stale-contact weights still use the interim rule until the owner decides retraction and weighting. The debrief keeps its own people resolver on purpose: it withholds
 tombstoned (`no_contact`, `memorial`) people whose `has-email` facts stay active, which the
 participant records do not.

@@ -103,7 +103,10 @@ is `happened_attested` or `happened_corroborated`, and SHALL report the row's ba
 SHALL be reported as `last_scheduled`, never as `last_met`. A person the ledger has no row for yet,
 or any person when the ledger read fails, SHALL keep the interim rule and SHALL be labelled
 `interim` (accepted, not confirmed), so a failed read is never an empty ledger and a ledger that has
-not caught up never hides a meeting. A person whose posture is not `active` SHALL never be reported
+not caught up never hides a meeting. A person the ledger covers but with no happened row SHALL
+also get the interim rule over history older than the ledger window (before now minus the reducer's
+lookback), labelled `interim`, so a rollout never erases an older meeting. A happened row with an
+unrecognised basis SHALL log a warning and show the neutral basis `recorded`. A person whose posture is not `active` SHALL never be reported
 from the ledger. The reducer SHALL run on an hourly schedule. The meeting card and the prep rail
 SHALL render "last met" only from a vouched-for meeting (with its basis), "last met, unconfirmed"
 for the interim basis, and "last scheduled" otherwise.

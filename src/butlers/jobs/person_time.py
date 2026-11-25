@@ -11,16 +11,29 @@ A person the ledger does cover with no happened row has ``last_met`` None.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["PersonTime", "read_person_time"]
 
 #: The chip a reader shows beside "Last met", keyed by the ledger row's basis.
 _BASIS_LABEL: Final = {"owner_debrief": "you_confirmed", "chronicler": "evidence"}
+#: A happened row with a basis this reader does not know still shows a neutral chip.
+_UNKNOWN_BASIS_LABEL: Final = "recorded"
+
+
+def _label(basis: str | None) -> str:
+    if basis in _BASIS_LABEL:
+        return _BASIS_LABEL[basis]
+    logger.warning("encounter ledger: unrecognised basis %r on a happened row", basis)
+    return _UNKNOWN_BASIS_LABEL
+
 
 _COVERED_SQL: Final = """
     SELECT DISTINCT en.entity_id
@@ -30,6 +43,7 @@ _COVERED_SQL: Final = """
 """
 
 _LAST_SQL: Final = """
+    -- quarantine-exempt: title only; the reducer already excluded quarantined events
     SELECT DISTINCT ON (en.entity_id)
            en.entity_id, en.occurrence_start, en.basis, ce.title AS title
     FROM encounters en
@@ -84,7 +98,7 @@ async def read_person_time(
             covered=True,
             last_met=met["occurrence_start"] if met else None,
             last_met_event=met["title"] if met else None,
-            last_met_basis=_BASIS_LABEL.get(met["basis"]) if met else None,
+            last_met_basis=_label(met["basis"]) if met else None,
             last_scheduled=sched["occurrence_start"] if sched else None,
             last_scheduled_event=sched["title"] if sched else None,
         )
