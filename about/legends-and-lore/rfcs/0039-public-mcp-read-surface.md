@@ -2237,7 +2237,8 @@ because they must survive a Butlers outage and must never start a model.
   firing and 0 when any is.
 - **Delivery.** The owner's existing homelab Uptime Kuma polls each flag with
   one `json-query` monitor, declared in the homelab's
-  `ansible/roles/proxmox/files/uptimekuma-monitors.toml` and synced by
+  `ansible/roles/proxmox_sentinel/files/uptimekuma-monitors.toml` (path
+  corrected 2026-11-25) and synced by
   Ansible, and its existing Telegram notification delivers. Each monitor
   follows the homelab's established pattern: a Prometheus query URL ending in
   `query=<flag> == bool 1`, `jsonPath = "data.result[0].value[1]"` and
@@ -2481,7 +2482,7 @@ carries no normative text of its own.
 6. Add `butlers` to `MCP_SERVERS`, keep `KNOWN_CLIENT_DOMAINS` at
    `claude.ai,chatgpt.com`, redeploy the Worker.
 7. Uptime Kuma (OD11): add two `json-query` monitors to
-   `ansible/roles/proxmox/files/uptimekuma-monitors.toml`, one per D16 flag
+   `ansible/roles/proxmox_sentinel/files/uptimekuma-monitors.toml`, one per D16 flag
    (`butlers_public_mcp:critical_ok` with `interval = 60`, and
    `butlers_public_mcp:warning_ok`), on the existing Telegram notification,
    and let Ansible sync them.

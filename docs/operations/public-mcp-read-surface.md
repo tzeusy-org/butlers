@@ -587,6 +587,7 @@ table.
 | JSON-RPC `-32001` | Bearer or assertion refused | Gateway acts 4-6; bearer digest (ExternalSecret `butlers-public-mcp-bearer`, Bitwarden `MCP_PUBLIC_HOP_BEARER_DIGEST`) and keyring (ConfigMap `butlers-public-mcp-keyring`) in 3d |
 | Pod not Ready, or the `kubectl` rollout never finishes | The TAG has no `butlers-public-mcp` entrypoint (chart switched on before the server PRs merged), or the bearer-digest Secret is missing, so the server fails closed at startup | Check `PUBLIC_MCP_CHART_dev` and the TAG; `kubectl -n butlers-public-<env> get externalsecret` |
 | Every request refused after a hop-bearer change | The digest Secret lags the Bitwarden item (refresh interval 1h) | Force an ExternalSecret refresh; the server accepts the current and next digest during a rotation (D6) |
+| An occasional `unavailable` whose audit `cause` is `query_canceled`, gone on retry | A statement ran past the public role's 2 s `statement_timeout`. [Observed: dev, 2026-11-23 and 2026-11-24] Both such cancels on dev came while the single shared node was saturated (load 47 and 70 on 12 CPUs, during image builds and test runs); the cancelled statements take 25-150 ms otherwise, one of them a one-row status read | Retry; the refusal is retryable by design. Check the node's load (`node_load1`) and the Postgres log's `canceling statement due to statement timeout` lines for the role. Repeated cancels at normal load mean a slow query: `EXPLAIN (ANALYZE, BUFFERS)` it as the public role with `search_path = pg_catalog, pg_temp` |
 
 ## 5. Upkeep cadence
 
