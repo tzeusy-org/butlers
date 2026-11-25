@@ -3289,6 +3289,11 @@ async def confirm_suggestion(
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"
 
+    # A suggestion recorded before the per-event refusal existed still cannot become a rule,
+    # and the owner is told so before any step-up is asked for.
+    if row.get("suggestion_type") != "demotion" and per_event_rule_refusal(row["tool_name"]):
+        raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
+
     async def write(conn):
         row = await conn.fetchrow(
             "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
@@ -3349,6 +3354,8 @@ async def confirm_suggestion(
                 actor_id=actor,
                 decision_memory_writer=None,
             )
+            if create_result.get("error") == RULE_REFUSED_ALWAYS_PER_EVENT:
+                raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
             if "error" in create_result:
                 raise HTTPException(
                     status_code=500,

@@ -8,6 +8,9 @@ registered module's ``tool_metadata()`` with its enabling flags on and pins the 
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from butlers.core.tool_presentation_inventory import (
     ALWAYS_PER_EVENT_TOOLS,
     TOOL_PRESENTATION_INVENTORY,
@@ -28,19 +31,14 @@ def _declared_per_event_by_modules() -> tuple[set[str], list[str]]:
     declared: set[str] = set()
     swept: list[str] = []
     for name, module_cls in default_registry()._modules.items():
-        try:
-            module = module_cls()
-        except Exception:  # noqa: BLE001 - a module needing runtime wiring declares no tools here
-            continue
+        # A constructor or tool_metadata() failure is a failure here: a module that cannot be
+        # swept could hide a per-event declaration.
+        module = module_cls()
         enable = _ENABLED_MODULE_STATE.get(name)
         if enable is not None:
             enable(module)
-        try:
-            metadata = module.tool_metadata()
-        except Exception:  # noqa: BLE001
-            continue
         swept.append(name)
-        for tool_name, meta in metadata.items():
+        for tool_name, meta in module.tool_metadata().items():
             policy = getattr(meta, "approval_policy", None) or {}
             if policy.get("mode") == "always_per_event":
                 declared.add(tool_name)
@@ -64,3 +62,24 @@ def test_the_rule_gate_reads_the_inventory_without_a_module() -> None:
     assert is_always_per_event("calendar_respond")
     assert not is_always_per_event("calendar_create_event")
     assert not is_always_per_event(None)
+
+
+_PER_EVENT_DECLARATION = re.compile(r"""["']?mode["']?\s*[:=]\s*["']always_per_event["']""")
+
+
+def test_every_module_source_declaring_per_event_has_an_enabling_entry() -> None:
+    """A module whose source declares the mode must be swept with its flags on."""
+    modules_dir = Path(__file__).resolve().parents[2] / "src" / "butlers" / "modules"
+    declaring: set[str] = set()
+    for path in modules_dir.rglob("*.py"):
+        relative = path.relative_to(modules_dir)
+        if relative.parts[0] == "approvals":
+            continue  # the refusal machinery names the mode; it declares no tool
+        if _PER_EVENT_DECLARATION.search(path.read_text(encoding="utf-8")):
+            declaring.add(relative.parts[0].removesuffix(".py"))
+
+    assert declaring, "the guard must find the calendar declaration"
+    assert declaring <= set(_ENABLED_MODULE_STATE), (
+        f"modules declaring always_per_event need an _ENABLED_MODULE_STATE entry: "
+        f"{sorted(declaring - set(_ENABLED_MODULE_STATE))}"
+    )

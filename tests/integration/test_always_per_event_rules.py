@@ -243,3 +243,125 @@ async def test_the_action_view_flags_a_per_event_tool_as_rule_ineligible(routed)
 
     assert await eligible(per_event) is False
     assert await eligible(ordinary) is True
+
+
+async def _seed_promotion_suggestion(pool, tool_name: str) -> str:
+    from butlers.modules.approvals import autonomy_suggestions
+
+    suggestion = await autonomy_suggestions.create_promotion_suggestion(
+        pool, uuid4().hex * 2, tool_name, {"recipient": "synthetic"}, 5
+    )
+    return suggestion["id"]
+
+
+async def _no_rule_and_still_pending(pool, suggestion_id: str) -> None:
+    await _nothing_written(pool)
+    status = await pool.fetchval(
+        "SELECT status FROM autonomy_suggestions WHERE id=$1::uuid", suggestion_id
+    )
+    assert status == "pending", "a refused confirmation must leave the suggestion pending"
+
+
+@pytest.mark.parametrize("entry", ["operations", "module"])
+async def test_a_legacy_promotion_suggestion_cannot_mint_a_rule(authority, entry):
+    from butlers.modules.approvals import autonomy_suggestions
+
+    pool = authority[0]
+    suggestion_id = await _seed_promotion_suggestion(pool, PER_EVENT_TOOL)
+    token = dashboard_stepup_proof.set(
+        await proof_for(authority, "promotion", dict(suggestion_id=suggestion_id))
+    )
+    try:
+        if entry == "operations":
+            result = await autonomy_suggestions.confirm_suggestion(pool, suggestion_id, ACTOR["id"])
+        else:
+            result = await _module(pool)._confirm_promotion_suggestion(suggestion_id, actor=ACTOR)
+    finally:
+        dashboard_stepup_proof.reset(token)
+
+    assert result == {"error": RULE_REFUSED_ALWAYS_PER_EVENT}
+    await _no_rule_and_still_pending(pool, suggestion_id)
+
+
+async def test_the_dashboard_confirm_route_answers_409_for_a_legacy_suggestion(routed):
+    pool, db = routed
+    suggestion_id = await _seed_promotion_suggestion(pool, PER_EVENT_TOOL)
+
+    with pytest.raises(HTTPException) as refused:
+        await routes.confirm_suggestion(suggestion_id, db_mgr=db)
+
+    assert refused.value.status_code == 409
+    assert refused.value.detail == RULE_REFUSED_ALWAYS_PER_EVENT
+    await _no_rule_and_still_pending(pool, suggestion_id)
+
+
+async def test_an_existing_active_rule_never_auto_approves_a_per_event_call(authority):
+    """The gate wrapper parks first: a pre-existing rule is not consulted (REQ-module-calendar-029)."""
+    from fastmcp import FastMCP
+
+    from butlers.config import parse_approval_config
+    from butlers.modules.approvals.gate import apply_approval_gates
+    from butlers.modules.calendar import CalendarModule
+
+    pool = authority[0]
+    arguments = {"entry_id": "entry", "request_id": "request", "response_status": "accepted"}
+    await pool.execute(
+        "INSERT INTO approval_rules(id, tool_name, arg_constraints, description, created_at, active) "
+        "VALUES($1,$2,$3,'Synthetic legacy rule',now(),true)",
+        uuid4(),
+        PER_EVENT_TOOL,
+        {key: {"type": "exact", "value": value} for key, value in arguments.items()},
+    )
+    executed: list[dict] = []
+    mcp = FastMCP("per-event-rule-bypass")
+
+    @mcp.tool(name=PER_EVENT_TOOL)
+    async def calendar_respond(entry_id: str, request_id: str, response_status: str) -> dict:
+        executed.append({"entry_id": entry_id})
+        return {"status": "executed"}
+
+    class Preparer:
+        public_arguments = frozenset(arguments)
+
+        async def prepare_and_park(self, *, tool_args, requested_at, expires_at, dossier):
+            action_id = uuid4()
+            await pool.execute(
+                "INSERT INTO pending_actions(id,tool_name,tool_args,status,requested_at,expires_at) "
+                "VALUES($1,$2,$3,'pending',$4,$5)",
+                action_id,
+                PER_EVENT_TOOL,
+                tool_args,
+                requested_at,
+                expires_at,
+            )
+            return {"status": "pending_approval", "action_id": str(action_id)}
+
+    module = CalendarModule()
+    module._butler_name = "messenger"
+    module._config = module.config_schema(provider="google", response_enabled=True)
+    config = parse_approval_config({"enabled": True, "gated_tools": {PER_EVENT_TOOL: {}}})
+    await apply_approval_gates(
+        mcp,
+        config,
+        pool,
+        "messenger",
+        tool_metadata=module.tool_metadata(),
+        canonical_preparers={PER_EVENT_TOOL: Preparer()},
+    )
+
+    wrapped = (await mcp.get_tool(PER_EVENT_TOOL)).fn
+    result = await wrapped(
+        **arguments,
+        _why="Owner chose this occurrence",
+        _evidence=[],
+        _blast_radius="self",
+        _reversibility="compensable",
+    )
+
+    assert result["status"] == "pending_approval"
+    assert executed == [], "the matching rule must not run the handler"
+    row = await pool.fetchrow(
+        "SELECT status FROM pending_actions WHERE id=$1", UUID(result["action_id"])
+    )
+    assert row["status"] == "pending"
+    assert await pool.fetchval("SELECT count(*) FROM approval_rules WHERE active") == 1

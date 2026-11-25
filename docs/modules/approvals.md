@@ -327,7 +327,7 @@ Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `crit
 
 ## Per-Event Tools
 
-A tool whose approval mode is `always_per_event` (`calendar_respond`) is a decision of its own on every call. The gate never matches a standing rule for it, so the rule writes refuse it too: direct create, create from an action, approve with a rule and the suggestion preview answer `rule_refused_always_per_event` (HTTP 409), before a step-up factor is consumed and before anything is written. Approving such an action records no promotion history, and its dossier carries `rule_eligible: false` so the dashboard shows no "always allow" prompt. The mode is read from `ALWAYS_PER_EVENT_TOOLS` in `core/tool_presentation_inventory.py` (the dashboard has no module instance); `tests/contracts/test_always_per_event_inventory.py` keeps it equal to every module's declaration.
+A tool whose approval mode is `always_per_event` (`calendar_respond`) is a decision of its own on every call. The gate never matches a standing rule for it, so the rule writes refuse it too: direct create, create from an action, approve with a rule, the suggestion preview and the confirmation of a promotion suggestion (even one recorded earlier) answer `rule_refused_always_per_event` (HTTP 409), before a step-up factor is consumed and before anything is written. Approving such an action records no promotion history, and its dossier carries `rule_eligible: false` so the dashboard shows no "always allow" prompt. The mode is read from `ALWAYS_PER_EVENT_TOOLS` in `core/tool_presentation_inventory.py` (the dashboard has no module instance); `tests/contracts/test_always_per_event_inventory.py` keeps it equal to every module's declaration.
 
 ## Database Tables
 

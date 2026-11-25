@@ -4,7 +4,7 @@
 
 A tool whose approval mode is `always_per_event` (`REQ-capability-authorization-017`) SHALL be a
 decision of its own on every call. A standing rule SHALL NOT be created for it: direct creation,
-creation from a pending action, approval with a rule and the suggestion preview SHALL each refuse
+creation from a pending action, approval with a rule, the suggestion preview and the confirmation of a promotion suggestion (including one recorded before this refusal existed) SHALL each refuse
 with the typed reason `rule_refused_always_per_event` (HTTP 409 on the dashboard), through the
 dashboard routes and the MCP tools alike. The refusal SHALL come before a step-up factor is consumed
 and before any rule or `rule_created` event is written, and an approval refused for this reason SHALL
@@ -22,6 +22,11 @@ Scope: v1-mandatory
 
 - **WHEN** an owner approves a parked `calendar_respond` with a standing rule, or asks to create a rule for it
 - **THEN** the call is refused with `rule_refused_always_per_event`, no `approval_rules` row and no `rule_created` event exist, and the action stays pending
+
+#### Scenario: A legacy promotion suggestion cannot mint a rule
+
+- **WHEN** a pending promotion suggestion for `calendar_respond` is confirmed through the MCP tool or the dashboard
+- **THEN** it is refused with `rule_refused_always_per_event` (HTTP 409 on the dashboard), no rule is created and the suggestion stays pending
 
 #### Scenario: An RSVP approval is not promotion evidence
 
