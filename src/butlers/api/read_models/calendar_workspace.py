@@ -925,6 +925,10 @@ async def query_calendar_entry_people(
             else:
                 unresolved[row["event_id"]] = unresolved.get(row["event_id"], 0) + row["unresolved"]
 
+    if failed:
+        # A schema that failed may hold this event's participants: unknown, never "no one".
+        unavailable |= set(event_ids)
+
     by_event: dict[UUID, list[CalendarEntryPerson]] = {}
     for _butler_name, raw_rows in results.items():
         for row in raw_rows:
