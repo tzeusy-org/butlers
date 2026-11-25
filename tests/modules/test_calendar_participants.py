@@ -594,6 +594,28 @@ class TestProjectionSeam:
         assert await participants.reresolve_participants(pool, limit=2) == 1
         assert await participants.reresolve_participants(pool, limit=2) == 0
 
+    async def test_attendee_less_events_do_not_spend_the_sweep_budget(self, db):
+        pool, _, _, source = await self._seed(db)
+        module = _module(pool)
+        await _project(module, source, *[_event(f"empty{i}", attendees=[]) for i in range(3)])
+        await _project(module, source, _event("with-people"))
+        with_people = await pool.fetchval(
+            "SELECT e.id FROM calendar_events e JOIN calendar_event_participants p "
+            "ON p.event_id = e.id LIMIT 1"
+        )
+        await pool.execute("UPDATE calendar_events SET starts_at = now() + interval '1 hour'")
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() + interval '5 days' WHERE id = $1",
+            with_people,
+        )
+        participants._reresolved_at.clear()
+        late = await _person(pool, "Late", "stranger@nowhere.test")
+
+        assert await participants.reresolve_participants(pool, limit=1) == 1
+
+        rows = {r["email_norm"]: r for r in await _rows(pool)}
+        assert rows["stranger@nowhere.test"]["entity_id"] == late
+
     async def test_a_failing_claimant_read_in_the_sweep_keeps_the_prior_rows(self, db, monkeypatch):
         pool, _, _, source = await self._seed(db)
         await _project(_module(pool), source, _event())

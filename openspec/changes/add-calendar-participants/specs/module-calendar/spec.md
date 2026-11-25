@@ -96,8 +96,8 @@ A change to who holds an address (a `has-email` fact that appears, is retracted,
 holder) SHALL reach the participant rows of events whose attendee list did not change. A bounded
 sweep run after each successful provider sync SHALL re-derive the provider rows of non-quarantined
 provider events starting within 30 days before and 14 days after now that already have current
-rows, nearest to now first, at most a fixed batch per run, skipping an event checked within the
-last hour. An unchanged event SHALL be left untouched, `manual` rows SHALL be kept, a failed
+provider rows (an event with no attendees is skipped, so it cannot spend the batch), nearest to
+now first, at most a fixed batch per run, skipping an event checked within the last hour. An unchanged event SHALL be left untouched, `manual` rows SHALL be kept, a failed
 claimant read SHALL leave the prior rows in place (never an empty list), and a sweep failure SHALL
 NOT fail the sync. Re-resolution SHALL NOT rewrite any interaction or encounter already written
 from earlier rows.
