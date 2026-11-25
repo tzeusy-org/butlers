@@ -139,6 +139,24 @@ async def assert_peer_closed(server: SimpleNamespace) -> None:
     assert not server.tearing_down
 
 
+async def wait_until_served(server: SimpleNamespace, task: asyncio.Task) -> None:
+    """Return once the server has read the request, or raise if the client task ended first.
+
+    The sync point is the server's own signal, not a wall-clock budget: a loaded runner can delay
+    the request arbitrarily without failing the test, and a client that dies early surfaces its
+    error instead of a timeout. A genuine hang is bounded by the suite's per-test timeout.
+    """
+    served = asyncio.ensure_future(server.ready.wait())
+    try:
+        await asyncio.wait({served, task}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        served.cancel()
+        await asyncio.gather(served, return_exceptions=True)
+    if not server.ready.is_set():
+        task.result()  # the client finished before the server saw it: surface why
+        raise AssertionError("client finished without sending a request")
+
+
 def connector_for(path: str) -> WhatsAppUserClientConnector:
     return WhatsAppUserClientConnector(
         WhatsAppUserClientConnectorConfig(
@@ -263,8 +281,7 @@ async def test_ack_cancellation_closes_owned_connection(tmp_path, prefix):
     async with bridge_server(tmp_path, prefix, keep_open=True) as server:
         task = asyncio.create_task(BridgeClient(server.path).request_backfill(24))
         try:
-            async with asyncio.timeout(1):
-                await server.ready.wait()
+            await wait_until_served(server, task)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -443,8 +460,7 @@ async def test_events_cancellation_closes_owned_client(tmp_path):
         events = BridgeClient(server.path).stream_events()
         task = asyncio.create_task(anext(events))
         try:
-            async with asyncio.timeout(1):
-                await server.ready.wait()
+            await wait_until_served(server, task)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
