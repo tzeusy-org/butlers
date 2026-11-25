@@ -40,6 +40,7 @@ export {
   getCalendarDayBriefing,
   getCalendarDaySheet,
   getCalendarDayVerdict,
+  getNow,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,

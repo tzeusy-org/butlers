@@ -56,14 +56,16 @@ ID: REQ-module-calendar-052
 Source: bu-5ii4gj.2 (run 26 move 2), slice P3
 Scope: v1-mandatory
 
-`/now` SHALL carry an `owner.agenda` situation produced deterministically from the calendar, in
-the owner's local time, with these slot texts: "In meeting until HH:MM; next HH:MM" when in a
-meeting, "Free until HH:MM" when free with a later meeting, "No more today" when nothing remains,
-and "Unknown (last known ...)" when the calendar cannot be read. Declined and transparent events
-SHALL be ignored. Its freshness SHALL end at the next boundary or the sync staleness bound,
-whichever is sooner, and the situation SHALL be recomputed at the local midnight boundary. An
-unreadable calendar SHALL NOT produce a free claim. Event titles SHALL be omitted from the text for
-any audience that is not the owner.
+`/now` SHALL carry an `owner.agenda` line derived at read time from the day verdict
+(REQ-module-calendar-051), not from a stored slot, in the owner's local time. Its texts SHALL be
+"In meeting until HH:MM; next HH:MM" when in a meeting, "Free until HH:MM" when free with a later
+meeting, "No more today" when nothing remains, and "Unknown (last known ...)" when the calendar
+cannot be read or is stale. Declined and transparent events SHALL be ignored. The line SHALL carry
+`fresh_until`, the next boundary or the sync staleness bound, whichever is sooner, and the day
+rolls over at local midnight. An unreadable or stale calendar SHALL NOT produce a free claim, and
+with no last-known value (or one older than six hours) it SHALL read "Unknown (calendar ...)" with
+no time in it. The last-known value is held per process and in memory only. No text SHALL carry an
+event title, and a non-owner audience SHALL get no door to the event.
 
 #### Scenario: In a meeting
 

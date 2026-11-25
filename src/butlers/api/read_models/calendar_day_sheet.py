@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # An all-day event is a date range read in its own zone, so across the date line it can share the
 # owner's date with no UTC overlap. Read a day either side and let the pure date matcher decide.
 _ALL_DAY_SLACK = timedelta(hours=26)
-_STALE_AFTER = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
+STALE_AFTER = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
 
 
 def _calendar_butlers(db: DatabaseManager) -> list[str]:
@@ -109,9 +109,7 @@ async def query_calendar_day_sheet(
             stamps = [r.last_success_at for r in provider if r.last_success_at is not None]
             # One source that never succeeded makes the whole schema's freshness unknown.
             as_of = min(stamps) if stamps and len(stamps) == len(provider) else None
-            units.append(
-                SourceRead(name=name, readable=True, as_of=as_of, stale_after=_STALE_AFTER)
-            )
+            units.append(SourceRead(name=name, readable=True, as_of=as_of, stale_after=STALE_AFTER))
 
     try:
         # One instance belongs to one lane; collapse repeats so a view overlap cannot double a row.

@@ -12,6 +12,6 @@
 
 ## 3. P3: owner.agenda on /now
 
-- [ ] 3.1 `owner.agenda` producer and slot fixtures (in meeting, free, none left, unreadable, stale)
-- [ ] 3.2 `NOW_LABELS`, text rendering and API model field
-- [ ] 3.3 `useNow`, the shell strip, the Overview link and `['now']` invalidation on `calendar` events
+- [x] 3.1 `owner.agenda` reducer (`perception/agenda.py`) and fixtures: in meeting, free, none left, declined and transparent ignored, unreadable, stale. Read at request time from the day verdict, not a store slot: a slot kind needs a privileged migration and source registry, tracked separately
+- [x] 3.2 Agenda line appended by `/api/now` with `door` and `fresh_until` fields; per-process last-known value
+- [x] 3.3 `useNow`, the shell strip, the Overview link and `['now']` invalidation on `calendar` events

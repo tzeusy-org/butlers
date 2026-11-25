@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,8 +29,14 @@ from pydantic import BaseModel
 from butlers.api.deps import get_db_optional
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.api.owner_time_bounds import owner_zoneinfo
+from butlers.api.read_models.calendar_day_sheet import (
+    STALE_AFTER,
+    query_calendar_day_verdict,
+)
 from butlers.db import register_jsonb_codec
 from butlers.perception import flags
+from butlers.perception.agenda import LastKnownAgenda, agenda_line
 from butlers.perception.now import read_now, render_text
 
 logger = logging.getLogger(__name__)
@@ -48,6 +55,8 @@ class NowLineModel(BaseModel):
     stale: bool
     source: str | None
     age_seconds: float | None
+    door: str | None = None
+    fresh_until: datetime | None = None
 
 
 class NowCardModel(BaseModel):
@@ -60,6 +69,35 @@ class NowCardModel(BaseModel):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+#: The last agenda read from a current calendar, so an unreadable one can say what was last known.
+#: Per process and in memory only: a restart forgets it and the line then says plainly unknown.
+_last_agenda: LastKnownAgenda | None = None
+
+
+async def _agenda_line(as_of: datetime):
+    """The owner's agenda line for today. Any failure reads as unknown, never as free."""
+    global _last_agenda
+    db = get_db_optional()
+    zone = ZoneInfo("UTC")
+    verdict = None
+    if db is not None:
+        try:
+            try:
+                shared = db.credential_shared_pool()
+            except KeyError:
+                shared = None
+            zone = await owner_zoneinfo(shared)
+            verdict = await query_calendar_day_verdict(
+                db, local_date=as_of.astimezone(zone).date(), zone=zone, now=as_of
+            )
+        except Exception:
+            logger.warning("/now agenda read failed", exc_info=True)
+    line, _last_agenda = agenda_line(
+        verdict, now=as_of, zone=zone, stale_after=STALE_AFTER, last_known=_last_agenda
+    )
+    return line
 
 
 async def _owner_subject() -> UUID | None:
@@ -120,6 +158,7 @@ async def get_now(
     finally:
         if connection is not None:
             await connection.close()
+    card = replace(card, lines=(*card.lines, await _agenda_line(as_of)))
     model = NowCardModel(
         as_of=card.as_of,
         headline=card.headline,

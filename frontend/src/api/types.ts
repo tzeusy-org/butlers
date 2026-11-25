@@ -1756,6 +1756,29 @@ export interface DaySheetResponse {
   text: string;
 }
 
+/** One signal on the owner's `/now` card (GET /api/now). */
+export interface NowLine {
+  kind: string;
+  label: string;
+  state: "known" | "unknown" | "unmeasurable" | "unconfigured" | string;
+  text: string;
+  stale: boolean;
+  source: string | null;
+  age_seconds: number | null;
+  /** A page or entry this line opens, when it names one. */
+  door?: string | null;
+  /** When this line stops being current; the strip re-reads then. */
+  fresh_until?: string | null;
+}
+
+export interface NowCard {
+  as_of: string;
+  headline: string;
+  all_current: boolean;
+  lines: NowLine[];
+  text: string;
+}
+
 /** The meeting a day-verdict clause points at; `door` opens it in the calendar. */
 export interface DayVerdictEntry {
   ref: string;

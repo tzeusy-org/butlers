@@ -32916,6 +32916,10 @@ export interface components {
         NowLineModel: {
             /** Age Seconds */
             age_seconds: number | null;
+            /** Door */
+            door?: string | null;
+            /** Fresh Until */
+            fresh_until?: string | null;
             /** Kind */
             kind: string;
             /** Label */

@@ -94,6 +94,7 @@ import {
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
 import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
+import { NowStrip } from "@/components/layout/NowStrip";
 import { DaySheetStrip } from "@/components/overview/DaySheetStrip";
 import { Elaboration } from "@/components/overview/Elaboration";
 import { Headline } from "@/components/overview/Headline";
@@ -520,6 +521,7 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Today">
+            <NowStrip className="mb-2 text-sm" />
             <DaySheetStrip
               sheet={daySheet.data?.data ?? null}
               isLoading={daySheet.isLoading}
