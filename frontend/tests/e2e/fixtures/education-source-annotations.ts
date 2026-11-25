@@ -63,6 +63,8 @@ export const test = base.extend<{ registryAvailable: boolean }>({
           // Reuse the existing local harness's synthetic owner session only.
           case "/api/auth/owner/status":
           case "/api/auth/owner/csrf": return route.fallback();
+          // The shell's NowStrip polls /api/now on every page; answer as the surface being off.
+          case "/api/now": return reply(JSON.stringify({ detail: "Not Found" }), 404);
           case "/api/settings/pricing":
           case "/api/butlers/switchboard/conversations":
           case "/api/spend":

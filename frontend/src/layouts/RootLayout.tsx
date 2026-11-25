@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router'
 import Shell from '../components/layout/Shell'
 import PageHeader from '../components/layout/PageHeader'
+import { NowStrip } from '../components/layout/NowStrip'
 import EntityFinder from '../components/layout/EntityFinder'
 import { GlobalActionsRegistrar } from '../components/layout/GlobalActionsRegistrar'
 import { ErrorBoundary } from '../components/ErrorBoundary'
@@ -170,11 +171,14 @@ function RootLayoutInner() {
             </a>
             <Shell
               header={
-                <PageHeader
-                  liveStatus={eventBusHealth}
-                  clientLink={clientLinkStatus}
-                  lastEventAt={lastEventAt}
-                />
+                <>
+                  <PageHeader
+                    liveStatus={eventBusHealth}
+                    clientLink={clientLinkStatus}
+                    lastEventAt={lastEventAt}
+                  />
+                  <NowStrip className="ml-4 hidden shrink md:block" />
+                </>
               }
               chatDock={showDock ? <ChatDock onClose={closeDock} /> : undefined}
             >

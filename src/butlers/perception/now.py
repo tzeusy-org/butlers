@@ -64,6 +64,10 @@ class NowLine:
     stale: bool
     source: str | None
     age_seconds: float | None
+    #: A page or entry this line opens, when it names one.
+    door: str | None = None
+    #: When this line stops being current, so a client re-reads then rather than polling.
+    fresh_until: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

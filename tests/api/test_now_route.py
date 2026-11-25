@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -136,10 +137,13 @@ async def test_live_owner_gets_the_card_read_in_the_owner_role(live):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     card = response.json()["data"]
-    assert [line["kind"] for line in card["lines"]] == list(NOW_KINDS)
+    # The slot signals, then the agenda line, which here has no calendar to read.
+    assert [line["kind"] for line in card["lines"]] == [*NOW_KINDS, "owner.agenda"]
+    agenda = card["lines"][-1]
+    assert agenda["state"] == "unknown" and agenda["text"] == "Unknown (calendar unreadable)"
     assert card["all_current"] is False
-    assert card["headline"] == "5 of 5 signals not current"
-    assert card["text"].startswith("Now (2026-07-01 09:30 UTC): 5 of 5 signals not current")
+    assert card["headline"] == "6 of 6 signals not current"
+    assert card["text"].startswith("Now (2026-07-01 09:30 UTC): 6 of 6 signals not current")
     assert live.statements == ["SET LOCAL ROLE perception_owner_reader"]
     assert live.closed is True
 
@@ -170,3 +174,109 @@ async def test_a_reader_failure_is_unavailable_and_closes(live):
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "now_unavailable"
     assert live.closed is True
+
+
+def _verdict(**kw):
+    from butlers.core.temporal.day_sheet import DayItem, Freshness
+    from butlers.core.temporal.day_verdict import DayVerdict
+
+    zone = ZoneInfo("Asia/Singapore")
+    item = DayItem(
+        ref="inst-1",
+        start=datetime(2026, 7, 1, 18, 0, tzinfo=zone),
+        end=datetime(2026, 7, 1, 19, 0, tzinfo=zone),
+        all_day=False,
+        kind="attended",
+        title="Secret title",
+        label_class="third_party",
+        people_count=1,
+        conflict_ref=None,
+        door="/calendar?entry=inst-1",
+    )
+    base = dict(
+        available=True,
+        date="2026-07-01",
+        zone="Asia/Singapore",
+        freshness=Freshness(state="current", as_of=AS_OF, sources_unreadable=[], sources_total=1),
+        current=None,
+        next=item,
+        committed_minutes=60,
+        committed_count=1,
+        tentative_count=0,
+        free_window=None,
+        empty=False,
+    )
+    return DayVerdict(**{**base, **kw})
+
+
+@pytest.fixture
+def calendar(monkeypatch, live):
+    """A db manager and a calendar verdict the route reads for today."""
+    state = {"verdict": _verdict(), "raise": False}
+
+    class _Db:
+        def credential_shared_pool(self):
+            raise KeyError("none")
+
+    async def zone(_pool):
+        return ZoneInfo("Asia/Singapore")
+
+    async def verdict(_db, *, local_date, zone, now):
+        assert local_date == date(2026, 7, 1)  # today in the owner's zone (17:30 local)
+        if state["raise"]:
+            raise RuntimeError("calendar down")
+        return state["verdict"]
+
+    monkeypatch.setattr(now_route, "get_db_optional", lambda: _Db())
+    monkeypatch.setattr(now_route, "owner_zoneinfo", zone)
+    monkeypatch.setattr(now_route, "query_calendar_day_verdict", verdict)
+    monkeypatch.setattr(now_route, "_last_agenda", None)
+    return state
+
+
+async def _agenda():
+    card = (await _get(_app())).json()["data"]
+    return card["lines"][-1], card
+
+
+async def test_the_card_carries_the_agenda_line_with_its_door(calendar):
+    line, card = await _agenda()
+
+    assert line["kind"] == "owner.agenda" and line["label"] == "Next"
+    assert line["state"] == "known" and line["text"] == "Free until 18:00"
+    assert line["door"] == "/calendar?entry=inst-1"
+    assert line["fresh_until"] is not None
+    assert "Secret title" not in card["text"] and "Secret title" not in str(card)
+
+
+async def test_an_unreadable_calendar_keeps_the_last_known_line_and_claims_nothing(calendar):
+    first, _ = await _agenda()
+    assert first["text"] == "Free until 18:00"
+
+    calendar["raise"] = True
+    line, _ = await _agenda()
+
+    assert line["state"] == "unknown" and line["stale"] is True
+    assert line["text"] == "Unknown (last known: Free until 18:00, as of 17:30)"
+    assert line["door"] is None
+
+
+async def test_an_unavailable_verdict_is_unknown_not_free(calendar):
+    calendar["verdict"] = _verdict(available=False, next=None, empty=False)
+
+    line, _ = await _agenda()
+
+    assert line["state"] == "unknown" and "free" not in line["text"].lower()
+
+
+async def test_an_unreadable_calendar_is_counted_in_the_headline(calendar):
+    _, ok = await _agenda()
+    total = len(ok["lines"])
+    # The slot signals are unread in this harness; a current calendar adds no further shortfall.
+    assert ok["headline"] == f"{total - 1} of {total} signals not current"
+
+    calendar["raise"] = True
+    _, card = await _agenda()
+
+    assert card["all_current"] is False
+    assert card["headline"] == f"{total} of {total} signals not current"

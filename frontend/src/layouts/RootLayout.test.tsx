@@ -61,6 +61,9 @@ vi.mock("../components/layout/PageHeader", () => ({
     return null
   },
 }))
+vi.mock("../components/layout/NowStrip", () => ({
+  NowStrip: () => <div data-testid="now-strip-stub" />,
+}))
 vi.mock("../hooks/use-client-link", () => ({
   useClientLink: () => ({ status: mockClientLinkStatus }),
 }))
@@ -135,6 +138,12 @@ describe("RootLayout", () => {
     expect(skipLink.getAttribute("href")).toBe("#main-content")
     expect(skipLink.className).toContain("sr-only")
     expect(skipLink.className).toContain("focus:not-sr-only")
+  })
+
+  it("puts the owner agenda strip in the shell header", () => {
+    render(<RootLayout />)
+
+    expect(screen.getByTestId("now-strip-stub")).toBeTruthy()
   })
 
   it("propagates late shared health to the shell indicator and announcement", () => {

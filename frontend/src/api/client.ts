@@ -53,6 +53,7 @@ import type {
   CalendarDayBriefingResponse,
   DaySheetResponse,
   DayVerdictResponse,
+  NowCard,
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
@@ -1689,6 +1690,14 @@ export function getCalendarDaySheet(
   return apiFetch<ApiResponse<DaySheetResponse>>(
     `/calendar/workspace/day-sheet${query ? `?${query}` : ""}`,
   );
+}
+
+/**
+ * Fetch the owner's `/now` card. Answers 404 while the surface is off (the strip then renders
+ * nothing) and 503 when the perception reader is unavailable.
+ */
+export function getNow(): Promise<ApiResponse<NowCard>> {
+  return apiFetch<ApiResponse<NowCard>>("/now");
 }
 
 /**

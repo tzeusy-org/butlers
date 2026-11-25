@@ -2286,7 +2286,7 @@ SCHEMA NotificationListResponse 76b1537a9bef
 SCHEMA NotificationStats 87332b2cb7d9
 SCHEMA NotificationSummary 2aeec4c7da8c
 SCHEMA NowCardModel 92dd2004cf88
-SCHEMA NowLineModel 37ff9f1ae277
+SCHEMA NowLineModel 2846013983c4
 SCHEMA NutritionDailyAverage 92f5354bf6dd
 SCHEMA NutritionSummaryResponse 2b1b68a0cd85
 SCHEMA OAuthCredentialState 20eeca9cdb20

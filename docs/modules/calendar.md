@@ -117,6 +117,16 @@ hours, so it can differ from the owner-zone clause text when the two zones diffe
 the verdict when the current meeting ends, the next one starts, at 18:00 owner-local and at
 midnight.
 
+### Agenda line on /now
+
+`GET /api/now` appends an `owner.agenda` line (`src/butlers/perception/agenda.py`,
+REQ-module-calendar-052) to the slot signals: "In meeting until HH:MM; next HH:MM", "Free until
+HH:MM", "No more today", or "Unknown (last known: ..., as of HH:MM)". It is read at request time
+from the same day verdict as the opener, in the owner's zone, with no event title in the text. An
+unreadable or stale calendar is unknown and never free; the last known text is held in process
+memory only. The dashboard shows it in the shell header and on the Overview through `useNow`
+(`["now"]`, invalidated by `calendar` bus events and at the line's `fresh_until`).
+
 ### Overcommitment owner conditions
 
 The dashboard-api process runs a supervised `calendar_overcommitment` loop
