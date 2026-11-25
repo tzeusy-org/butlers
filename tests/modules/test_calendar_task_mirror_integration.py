@@ -483,22 +483,28 @@ async def test_the_backoff_grows_and_is_capped(db_pool):
     assert wait(50) == wait(40) == timedelta(hours=1)
 
 
-async def test_a_row_parks_as_failed_after_repeated_attempts_until_the_task_changes(db_pool):
+async def test_a_row_parks_as_failed_after_repeated_attempts_until_what_is_sent_changes(db_pool):
     task_id = await _task(db_pool)
     provider = _Provider()
+    provider.fail_create = RuntimeError("boom")
     mod = _module(db_pool, provider)
-    await db_pool.execute(
-        "UPDATE scheduled_tasks SET mirror_state = 'failed', mirror_attempts = 8, "
-        "mirror_error = 'boom', mirror_attempted_at = now() - interval '1 day', "
-        "updated_at = now() - interval '2 days' WHERE id = $1",
-        task_id,
-    )
+    for _ in range(8):
+        await mod._push_internal_events_to_provider()
+        await _age(db_pool, task_id)
 
+    provider.fail_create = None
     await mod._push_internal_events_to_provider()
     assert provider.creates == 0, "parked rows are not retried"
     assert (await read_mirror_health(db_pool))["failed"] == 1, "but they still count as failed"
 
+    # A dispatch run bumps updated_at on every tick; that is not an edit and must not unpark.
     await db_pool.execute("UPDATE scheduled_tasks SET updated_at = now() WHERE id = $1", task_id)
+    await mod._push_internal_events_to_provider()
+    assert provider.creates == 0
+
+    await db_pool.execute(
+        "UPDATE scheduled_tasks SET display_title = 'Edited' WHERE id = $1", task_id
+    )
     await mod._push_internal_events_to_provider()
     assert provider.creates == 1
 
@@ -560,3 +566,63 @@ async def test_the_dashboard_source_freshness_reports_failing_mirrors(db_pool):
     (shown,) = await _with_mirror_health(_Db(), [item], butlers=None)
 
     assert shown.sync_state == "failed" and shown.mirror_failed == 1
+
+
+async def test_a_retired_task_is_not_projected_as_an_event(db_pool):
+    task_id = await _task(db_pool)
+    # Without a display title the projection falls back to the task name.
+    await db_pool.execute("UPDATE scheduled_tasks SET display_title = NULL WHERE id = $1", task_id)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    await mod._project_internal_sources(emit_event=False)
+    assert await db_pool.fetchval("SELECT count(*) FROM calendar_events") >= 1
+
+    await schedule_delete(db_pool, task_id)
+    await mod._project_internal_sources(emit_event=False)
+
+    assert (
+        await db_pool.fetchval("SELECT count(*) FROM calendar_events WHERE title ILIKE '%deleted%'")
+        == 0
+    ), "the retired row's renamed task must not surface as an event"
+
+
+async def test_deleting_a_mirrored_event_through_the_tool_retires_then_purges(db_pool, monkeypatch):
+    from fastmcp import FastMCP
+
+    from butlers.testing.mcp import tool_fn
+
+    # The delete is a high-impact action that normally runs once approved; model that execution.
+    monkeypatch.setattr(
+        "butlers.modules.calendar.recurrence.get_approval_execution_context",
+        lambda **_kw: object(),
+    )
+    task_id = await _task(db_pool, link=str(uuid.uuid4()))
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    provider_id = (await _row(db_pool, task_id))["calendar_event_id"]
+    mcp = FastMCP("calendar-delete-e2e")
+    await mod.register_tools(
+        mcp=mcp,
+        config={"provider": "google", "calendar_id": "butlers-calendar"},
+        db=mod._db,
+        butler_name="general",
+    )
+    mod._provider = provider
+    mod._resolved_calendar_id = "butlers-calendar"
+    provider.fail_delete = RuntimeError("503")  # the tool's own refresh pass cannot delete yet
+
+    result = await (await tool_fn(mcp, "calendar_delete_butler_event"))(
+        event_id=str(task_id), source_hint="scheduled_task"
+    )
+
+    assert result["status"] == "deleted", result
+    row = await _row(db_pool, task_id)
+    assert row["mirror_state"] == "retiring" and provider_id in provider.events
+
+    provider.fail_delete = None
+    await _age(db_pool, task_id)
+    await mod._push_internal_events_to_provider()
+    assert provider_id not in provider.events
+    assert not await _exists(db_pool, task_id)

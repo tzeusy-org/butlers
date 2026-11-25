@@ -17,6 +17,8 @@ retried instead of erased:
 * ``mirror_error``, ``mirror_attempts`` and ``mirror_attempted_at`` describe the last failure
   (``mirror_attempted_at`` is also stamped just before a create, so a row that may own a provider
   event is never hard-deleted).
+* ``mirror_attempt_fingerprint``: what the last failed push tried to send, so a row that parked
+  after repeated failures resumes only when the task changes.
 * ``delete_requested_at``: the owner deleted the task while it had, or may have had, a provider
   copy. The row is kept disabled in ``retiring`` until the mirror has deleted that copy, then
   purged, so a delete never leaves a ghost event.
@@ -37,7 +39,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision = "core_377"
-down_revision = "core_374"
+down_revision = "core_375"
 branch_labels = None
 depends_on = None
 
@@ -63,6 +65,7 @@ def upgrade() -> None:
         "ADD COLUMN IF NOT EXISTS mirror_attempts INTEGER NOT NULL DEFAULT 0, "
         "ADD COLUMN IF NOT EXISTS mirror_attempted_at TIMESTAMPTZ, "
         "ADD COLUMN IF NOT EXISTS mirror_fingerprint TEXT, "
+        "ADD COLUMN IF NOT EXISTS mirror_attempt_fingerprint TEXT, "
         "ADD COLUMN IF NOT EXISTS delete_requested_at TIMESTAMPTZ"
     )
     has_check = bind.execute(

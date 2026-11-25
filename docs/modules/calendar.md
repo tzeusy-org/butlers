@@ -339,7 +339,7 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   task's stable handle lives in `calendar_link_id` (core_377). Each mirrored task records
   `mirror_state` (`pending`, `mirrored`, `failed`, `retiring`), its last error and attempt count: a
   failed push or delete keeps the provider id and is retried with a capped exponential backoff (a
-  create row parks after 8 attempts until the task changes), an unchanged task sends nothing, and
+  push row parks after 8 attempts until what is sent changes), an unchanged task sends nothing, and
   calendar sync health and the dashboard source freshness report the failing counts and mark the
   internal scheduler source failed. Creates are idempotent: the provider id derives from the task
   id, one pass runs at a time per module and a 409 adopts the existing event. Deleting a task that

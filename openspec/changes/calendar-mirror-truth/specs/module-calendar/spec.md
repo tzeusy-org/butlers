@@ -17,8 +17,8 @@ counts and report the internal scheduler source `failed` while any are non-zero.
 
 A failed mirror SHALL be retried with a bounded exponential backoff (a minute doubling to an hour)
 and the warning SHALL be logged only when the row enters a failure state, not on every retry. A
-failed create or update SHALL park after 8 attempts, no longer retried until the task changes, and
-still count as failed. A retiring row SHALL keep retrying at the capped interval. A delete answered
+failed create or update SHALL park after 8 attempts, no longer retried until what would be sent changes
+(not merely until the row is touched), and still count as failed. A retiring row SHALL keep retrying at the capped interval. A delete answered
 404 or 410 SHALL count as deleted.
 
 A create SHALL be idempotent: the provider event id SHALL be derived from the task id, passes over
@@ -29,7 +29,8 @@ Deleting a scheduled task, through `calendar_delete_butler_event`, `schedule_del
 `deadline_delete`, SHALL NOT strand its provider copy. A task that has, or may have, a provider copy
 SHALL be retired: disabled, hidden from listings and lookups, and kept as `retiring` until the
 mirror has deleted the provider copy, then purged. A task that was never mirrored SHALL be deleted
-outright. A task deleted while its create is in flight SHALL have the just-created event removed.
+outright. A retired task SHALL NOT be dispatched, claimed by a tick that read it before the retire,
+triggered, edited, re-enabled, listed or projected as an event. A task deleted while its create is in flight SHALL have the just-created event removed.
 
 ID: REQ-module-calendar-048
 Source: bu-5ii4gj.4 (run 26 move 4), slice B

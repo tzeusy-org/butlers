@@ -82,8 +82,15 @@ class InternalProjectionMixin:
         return timedelta(seconds=min(_MIRROR_BACKOFF_CAP_S, _MIRROR_BACKOFF_BASE_S * 2**exponent))
 
     @classmethod
-    def _mirror_attempt_allowed(cls, record: dict[str, Any], now: datetime) -> bool:
-        """Whether a failed or retiring row may be tried again yet (backoff and parking)."""
+    def _mirror_attempt_allowed(
+        cls, record: dict[str, Any], now: datetime, fingerprint: str | None = None
+    ) -> bool:
+        """Whether a failed or retiring row may be tried again yet (backoff and parking).
+
+        A parked row (a failed push that used up its attempts) is tried again only when what
+        would be sent differs from what kept failing: ``fingerprint`` against the one recorded
+        with the failure. Dispatch bumps ``updated_at`` on every run, so that is no edit signal.
+        """
         state = record.get("mirror_state")
         attempts = int(record.get("mirror_attempts") or 0)
         attempted_at = record.get("mirror_attempted_at")
@@ -92,9 +99,9 @@ class InternalProjectionMixin:
         if (
             state == "failed"
             and attempts >= _MIRROR_PARK_AFTER_ATTEMPTS
-            and not (record.get("updated_at") and record["updated_at"] > attempted_at)
+            and (fingerprint is None or fingerprint == record.get("mirror_attempt_fingerprint"))
         ):
-            return False  # parked: it stays counted as failed until the task is edited
+            return False  # parked: it stays counted as failed until what is sent changes
         return now >= attempted_at + cls._mirror_backoff_wait(attempts)
 
     @staticmethod
@@ -105,6 +112,7 @@ class InternalProjectionMixin:
         exc: BaseException,
         *,
         previous: dict[str, Any] | None = None,
+        fingerprint: str | None = None,
     ) -> None:
         """Record a failed mirror push so health shows it and a later pass retries it.
 
@@ -132,11 +140,13 @@ class InternalProjectionMixin:
         try:
             await pool.execute(
                 "UPDATE scheduled_tasks SET mirror_state = $2, mirror_error = $3, "
-                "mirror_attempts = mirror_attempts + 1, mirror_attempted_at = now() "
+                "mirror_attempts = mirror_attempts + 1, mirror_attempted_at = now(), "
+                "mirror_attempt_fingerprint = COALESCE($4, mirror_attempt_fingerprint) "
                 "WHERE id = $1",
                 task_id,
                 state,
                 detail,
+                fingerprint,
             )
         except Exception:
             logger.warning("Could not record mirror failure for task %s", task_id, exc_info=True)
@@ -202,7 +212,7 @@ class InternalProjectionMixin:
                    display_title, description, location,
                    calendar_event_id, enabled, updated_at,
                    mirror_state, mirror_fingerprint, mirror_attempts, mirror_attempted_at,
-                   delete_requested_at
+                   mirror_attempt_fingerprint, delete_requested_at
             FROM scheduled_tasks
             WHERE dispatch_mode != 'job'
             """
@@ -309,7 +319,7 @@ class InternalProjectionMixin:
             and record.get("mirror_fingerprint") == fingerprint
         ):
             return None  # the provider copy already matches; nothing to send
-        if not self._mirror_attempt_allowed(record, now):
+        if not self._mirror_attempt_allowed(record, now, fingerprint):
             return None
 
         patch = CalendarEventUpdate(
@@ -328,11 +338,15 @@ class InternalProjectionMixin:
                 )
             except CalendarRequestError as exc:
                 if exc.status_code not in (404, 410):
-                    await self._mirror_failed(pool, task_id, "failed", exc, previous=record)
+                    await self._mirror_failed(
+                        pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                    )
                     return None
                 google_event_id = None  # the provider copy is gone: create it again
             except Exception as exc:
-                await self._mirror_failed(pool, task_id, "failed", exc, previous=record)
+                await self._mirror_failed(
+                    pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                )
                 return None
 
         if google_event_id is None:
@@ -364,7 +378,9 @@ class InternalProjectionMixin:
                 outcome = "pushed"
             except CalendarRequestError as exc:
                 if exc.status_code != 409:
-                    await self._mirror_failed(pool, task_id, "failed", exc, previous=record)
+                    await self._mirror_failed(
+                        pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                    )
                     return None
                 # The event already exists (an earlier create whose record was lost, or another
                 # process): adopt it and bring it up to date.
@@ -376,12 +392,21 @@ class InternalProjectionMixin:
                         task_id,
                         derived,
                     )
-                    await self._mirror_failed(pool, task_id, "failed", update_exc, previous=record)
+                    await self._mirror_failed(
+                        pool,
+                        task_id,
+                        "failed",
+                        update_exc,
+                        previous=record,
+                        fingerprint=fingerprint,
+                    )
                     return None
                 google_event_id = derived
                 outcome = "updated"
             except Exception as exc:
-                await self._mirror_failed(pool, task_id, "failed", exc, previous=record)
+                await self._mirror_failed(
+                    pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                )
                 return None
 
         if not await self._mirror_done(pool, task_id, str(google_event_id), fingerprint):
@@ -761,7 +786,7 @@ class InternalProjectionMixin:
                    description, location,
                    calendar_event_id, enabled, updated_at
             FROM scheduled_tasks
-            WHERE dispatch_mode != 'job'
+            WHERE dispatch_mode != 'job' AND delete_requested_at IS NULL
             """
         )
 

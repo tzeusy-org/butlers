@@ -95,7 +95,7 @@ async def schedule_update(
                complexity, timezone, start_at, end_at, until_at, display_title,
                calendar_event_id
         FROM scheduled_tasks
-        WHERE id = $1
+        WHERE id = $1 AND delete_requested_at IS NULL
         """,
         task_id,
     )
@@ -224,7 +224,8 @@ async def schedule_update(
 
     # Single atomic UPDATE statement
     query = (
-        f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1 "
+        f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} "
+        "WHERE id = $1 AND delete_requested_at IS NULL "
         "RETURNING dashboard_attention.final_claim(current_schema(), id, NULL)"
     )
     await pool.execute(query, *params)
@@ -282,7 +283,7 @@ async def schedule_toggle(
                 """
                 SELECT id, name, cron, timezone, source, enabled, next_run_at
                 FROM scheduled_tasks
-                WHERE id = $1
+                WHERE id = $1 AND delete_requested_at IS NULL
                 FOR UPDATE
                 """,
                 task_id,
@@ -335,7 +336,7 @@ async def schedule_toggle(
                     """
                     UPDATE scheduled_tasks
                     SET enabled = $2, next_run_at = $3, updated_at = now()
-                    WHERE id = $1
+                    WHERE id = $1 AND delete_requested_at IS NULL
                     RETURNING next_run_at, dashboard_attention.final_claim(
                         current_schema(), id, NULL
                     ) AS attention_claim

@@ -47,3 +47,16 @@ async def delete_or_retire_scheduled_task(pool: asyncpg.Pool, task_id: uuid.UUID
         "DELETE FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NULL", task_id
     )
     return False
+
+
+async def delete_or_retire_scheduled_task_by_name(pool: asyncpg.Pool, name: str) -> bool:
+    """:func:`delete_or_retire_scheduled_task` for a caller that knows the task by name.
+
+    Returns ``False`` when no live task has that name.
+    """
+    task_id = await pool.fetchval(
+        "SELECT id FROM scheduled_tasks WHERE name = $1 AND delete_requested_at IS NULL", name
+    )
+    if task_id is None:
+        return False
+    return await delete_or_retire_scheduled_task(pool, task_id)

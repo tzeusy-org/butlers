@@ -976,9 +976,13 @@ class CalendarModule(
             # re-read the provider's list (at most every few minutes) before refusing the id.
             await self._rediscover_calendars_for(stored)
             if stored not in self._all_provider_calendar_ids:
-                logger.warning(
-                    "CalendarModule: shared default-target %s is not a known calendar", stored
-                )
+                warned: set[str] = getattr(self, "_warned_unknown_default_ids", set())
+                self._warned_unknown_default_ids = warned
+                if stored not in warned:
+                    warned.add(stored)
+                    logger.warning(
+                        "CalendarModule: shared default-target %s is not a known calendar", stored
+                    )
                 return
         if self._default_target_calendar_id != snapshot:
             return  # changed while we were reading; the newer value wins

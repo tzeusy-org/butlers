@@ -20,7 +20,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
 
-_PREVIOUS = "core_374"
+_PREVIOUS = "core_375"
 _REVISION = "core_377"
 _GOOGLE_ID = "k3v9a1b2c3d4e5f6g7h8i9j0kl"
 
@@ -125,6 +125,7 @@ def test_two_schemas_each_get_the_columns_and_a_rerun_changes_nothing(postgres_c
             "mirror_attempts",
             "mirror_attempted_at",
             "mirror_fingerprint",
+            "mirror_attempt_fingerprint",
             "delete_requested_at",
         } <= columns, schema
     assert _run(db_url, "travel", "SELECT calendar_link_id FROM scheduled_tasks") == [(local,)]
