@@ -387,14 +387,26 @@ async def test_kernel_socket_late_success_is_not_reported_as_failure(
     nested verify + Messenger calls, so a late successful send surfaced as a
     failure and left the row retryable (a second send on Retry).
     """
+    # One companion deadline is 1 s for the outer hop's arithmetic (deadline = 2 * 1 + margin).
     monkeypatch.setattr(authority, "_CALL_TIMEOUT_SECONDS", 1.0)
     source, _, action_id, digest, payload = _source()
+    live_approved_notify = source._live_approved_notify
+
+    async def slow_verifier_lookup(*args: Any) -> Any:
+        # The nested verify hop is slower than that shrunk deadline, as it is on a loaded host.
+        await asyncio.sleep(1.2)
+        return await live_approved_notify(*args)
+
+    monkeypatch.setattr(source, "_live_approved_notify", slow_verifier_lookup)
     switchboard = FastMCP("approved-notify-slow-switchboard")
     messenger = FastMCP("approved-notify-slow-messenger")
     module = SimpleNamespace()
 
     @switchboard.tool(name="deliver")
     async def deliver(source_butler: str, notify_request: dict) -> dict:
+        # The nested verify hop keeps its production bound: only the outer hop's deadline was
+        # computed from the shrunk value, so a loaded host cannot time the verifier out.
+        monkeypatch.setattr(authority, "_CALL_TIMEOUT_SECONDS", 10.0)
         attestation = await verify_switchboard_approved_notify(module, notify_request)
         # Messenger's protected call may legitimately take most of its own deadline.
         await asyncio.sleep(1.5)
