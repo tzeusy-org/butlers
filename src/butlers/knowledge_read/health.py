@@ -1,7 +1,8 @@
 """Health readers over published tables: series, profile and records (RFC 0039 D10, OD17).
 
-``health_series`` reads ``health.measurements_public`` (numeric readings only, as the source
-materialization admits); ``health_profile`` reads the typed medication and condition tables and
+``health_metrics`` lists the metric names ``health_series`` accepts. ``health_series`` reads
+``health.measurements_public`` (numeric readings only, as the source materialization admits);
+``health_profile`` reads the typed medication and condition tables and
 the allergy and provider facts. A reading's unit is never converted.
 """
 
@@ -32,6 +33,28 @@ PROFILE_LIMIT = 200
 SECTIONS = ("medications", "conditions", "allergies", "providers")
 ALLERGY_PREDICATES = ("allergy", "food_allergy")
 PROVIDER_PREDICATES = ("doctor_name", "doctor_primary_care", "pharmacy")
+
+
+async def published_metrics(conn: asyncpg.Connection, view: str) -> list[str]:
+    """The distinct metric names of the published measurements view, sorted."""
+    rows = await conn.fetch(f"SELECT DISTINCT fields->>'metric' AS metric FROM {view} ORDER BY 1")
+    return [r["metric"] for r in rows if r["metric"] is not None]
+
+
+async def health_metrics(
+    conn: asyncpg.Connection, context: ReadContext, arguments: object
+) -> dict[str, Any]:
+    """The metric names ``health_series`` accepts, as published (no arguments)."""
+    Arguments(arguments, set())
+    context.require("health")
+    _, view = published("health.measurements_public", "health_metrics")
+    names = await in_snapshot(conn, lambda: published_metrics(conn, view))
+    source = context.aggregate_source("health", "health_metrics")
+
+    def build(kept: list, _: bool) -> dict[str, Any]:
+        return {"metrics": kept, "source": source}
+
+    return fit(names, build)
 
 
 async def health_series(
@@ -66,10 +89,7 @@ async def health_series(
         tail = "GROUP BY 1 ORDER BY 1"
 
     async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
-        metrics = await conn.fetch(
-            f"SELECT DISTINCT fields->>'metric' AS metric FROM {view} ORDER BY 1"
-        )
-        if metric not in {m["metric"] for m in metrics}:
+        if metric not in await published_metrics(conn, view):
             raise ReadError("invalid_argument", argument="metric")
         units = await conn.fetch(
             f"""SELECT fields->>'unit' AS unit,

@@ -251,6 +251,7 @@ def default_fake_tools(calls: list | None = None) -> dict[str, Tool]:
         ("finance_ledger", "finance"),
         ("finance_summary", "finance"),
         ("health_series", "health"),
+        ("health_metrics", "health"),
         ("trips", "travel"),
         ("propose_fact", "proposals"),
     ):

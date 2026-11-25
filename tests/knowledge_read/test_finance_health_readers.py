@@ -11,7 +11,12 @@ import pytest
 
 from butlers.knowledge_read.core import ReadContext, ReadError
 from butlers.knowledge_read.finance import finance_obligations, finance_records, finance_summary
-from butlers.knowledge_read.health import health_profile, health_records, health_series
+from butlers.knowledge_read.health import (
+    health_metrics,
+    health_profile,
+    health_records,
+    health_series,
+)
 from butlers.knowledge_read.records import record_kinds
 
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
@@ -293,6 +298,31 @@ def test_finance_obligations_horizon_and_shape():
     bills_call, subs_call = conn.calls
     assert bills_call[1][1:] == (date(2026, 12, 9),)  # past-due bills are included
     assert subs_call[1][1:] == (date(2026, 11, 9), date(2026, 12, 9))
+
+
+def test_health_metrics_lists_the_published_metric_names():
+    conn = FakeConn(
+        {"DISTINCT": [{"metric": "measurement_pulse"}, {"metric": "measurement_weight"}]}
+    )
+    result = _run(health_metrics(conn, CONTEXT, {}))
+    assert result["metrics"] == ["measurement_pulse", "measurement_weight"]
+    assert result["source"]["uri"] == "butlers://health/health_metrics"
+    assert result["source"]["kind"] == "health_metrics"
+    assert "mcp_read.health__measurements_public" in conn.calls[0][0]
+
+
+def test_health_metrics_is_empty_when_nothing_is_published():
+    result = _run(health_metrics(FakeConn(), CONTEXT, {}))
+    assert result["metrics"] == []
+
+
+def test_health_metrics_refuses_arguments_and_a_disabled_domain():
+    assert _refused(health_metrics(FakeConn(), CONTEXT, {"metric": "x"})).code == (
+        "invalid_argument"
+    )
+    off = replace(CONTEXT, disabled_domains=frozenset({"health"}))
+    error = _refused(health_metrics(FakeConn(), off, {}))
+    assert error.code == "domain_disabled" and error.domain == "health"
 
 
 def test_health_series_refuses_unknown_metric_and_oversized_raw():

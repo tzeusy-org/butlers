@@ -73,7 +73,14 @@ async def test_a_replicated_switch_refuses_its_domain_only(env: Env):
 
 async def test_the_all_switch_stops_every_tool_but_describe(env: Env):
     env.projection.disabled = ["all"]
-    for name in ("entity_lookup", "finance_ledger", "health_series", "trips", "propose_fact"):
+    for name in (
+        "entity_lookup",
+        "finance_ledger",
+        "health_series",
+        "health_metrics",
+        "trips",
+        "propose_fact",
+    ):
         assert error_code(await env.tool(name)) == "domain_disabled"
     described = await env.tool("describe")
     assert set(described["result"]["structuredContent"]["domains"]) == set(DOMAINS)
@@ -239,6 +246,16 @@ async def test_a_pending_owner_step_wins_over_staleness_and_switches(env: Env):
     message = await env.tool("finance_ledger")
     assert _error(message)["code"] == "projection_apply_pending"
     assert _error(message)["retryable"] is True and _error(message)["retry_after_s"] is None
+
+
+async def test_health_metrics_follows_the_health_gates(env: Env):
+    assert error_code(await env.tool("health_metrics")) is None
+    env.projection.disabled = ["health"]
+    refused = await env.tool("health_metrics")
+    assert _error(refused)["code"] == "domain_disabled" and _error(refused)["domain"] == "health"
+    env.projection.disabled = []
+    env.projection.applied = None
+    assert error_code(await env.tool("health_metrics")) == "projection_apply_pending"
 
 
 async def test_deploy_skew_wins_over_a_pending_owner_step(env: Env):

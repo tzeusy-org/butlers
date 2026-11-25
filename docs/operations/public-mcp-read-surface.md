@@ -147,7 +147,7 @@ threshold it pins to 0.3), so the planner answers it from a BitmapOr of both ind
 ranking and the exact match condition stay as before. Dropping `pg_trgm` now needs `CASCADE`,
 which takes the trigram index with it; the next owner step rebuilds both.
 
-The pure readers in `butlers.knowledge_read` serve the 19 tools of the pinned v1 catalogue
+The pure readers in `butlers.knowledge_read` serve the 20 tools of the pinned v1 catalogue
 (`describe` lists them). Each takes an asyncpg connection to `butlers_public`, a host-built
 `ReadContext` (caller `sub`, the request's `replication_as_of()`, the union of kill-switch layers,
 the process cursor key) and the raw arguments, and returns JSON-ready data or raises `ReadError`
@@ -1116,7 +1116,7 @@ note the deployed tag (handles above) as `tag`.
    - In the cluster Prometheus, `butlers_public_mcp:critical_ok` and
      `butlers_public_mcp:warning_ok` both read 1, and both Kuma monitors are UP again.
    - `describe` from a connected client: `manifest_digest` is that digest, every domain is
-     `enabled`, and `tools` lists 19 names.
+     `enabled`, and `tools` lists 20 names.
 
 **Widening and narrowing rehearsal (task 8.2).** A reviewed PR edits
 `src/butlers/knowledge_read/projection.toml`: a narrowing removes a column (or a table), a

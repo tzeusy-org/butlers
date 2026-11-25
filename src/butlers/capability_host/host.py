@@ -112,7 +112,7 @@ class Tool:
 
 
 def default_tools() -> dict[str, Tool]:
-    """The 18 knowledge_read tools; ``propose_fact`` is added by the server (``mcp_public``)."""
+    """The 19 knowledge_read tools; ``propose_fact`` is added by the server (``mcp_public``)."""
     pairs: list[tuple[Reader, str | None]] = [
         (search.search, None),
         (search.fetch, None),
@@ -128,6 +128,7 @@ def default_tools() -> dict[str, Tool]:
         (finance.finance_ledger, "finance"),
         (finance.finance_obligations, "finance"),
         (finance.finance_records, "finance"),
+        (health.health_metrics, "health"),
         (health.health_series, "health"),
         (health.health_profile, "health"),
         (health.health_records, "health"),

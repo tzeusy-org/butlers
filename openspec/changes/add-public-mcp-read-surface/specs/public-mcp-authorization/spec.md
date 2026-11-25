@@ -305,7 +305,7 @@ Scope: v1-mandatory
 - **THEN** tools SHALL serve again subject to every other check, and the canary alert record SHALL remain
 
 ### Requirement: Per-user and per-tool budgets
-The server SHALL enforce token-bucket budgets keyed per client: 60 calls per minute per `(sub, cid)` across all tools; for `finance_ledger`, `finance_records`, `health_series` and `health_records`, 20 calls per minute and 20,000 returned rows per day per `(sub, cid, tool)`; 20 `propose_fact` calls per day per `(sub, cid)`; and 600 calls per minute for the whole server. A call over budget SHALL return `budget_exhausted` with `retryable: true` and `retry_after_s`. Budget values SHALL be configuration.
+The server SHALL enforce token-bucket budgets keyed per client: 60 calls per minute per `(sub, cid)` across all tools; for `finance_ledger`, `finance_records`, `health_metrics`, `health_series` and `health_records`, 20 calls per minute and 20,000 returned rows per day per `(sub, cid, tool)`; 20 `propose_fact` calls per day per `(sub, cid)`; and 600 calls per minute for the whole server. A call over budget SHALL return `budget_exhausted` with `retryable: true` and `retry_after_s`. Budget values SHALL be configuration.
 
 ID: REQ-public-mcp-authorization-012
 Source: RFC 0039 D15 (budgets; residual risk of steered clients)

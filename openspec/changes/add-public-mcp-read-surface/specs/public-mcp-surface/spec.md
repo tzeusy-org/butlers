@@ -26,15 +26,15 @@ Scope: v1-mandatory
 - **THEN** the import-ban contract check SHALL fail and name the import chain
 
 ### Requirement: Static pinned tool catalogue
-The server SHALL register exactly the 19 tools of RFC 0039 D10 (`search`, `fetch`, `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`, `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`, `finance_ledger`, `finance_obligations`, `finance_records`, `health_series`, `health_profile`, `health_records`, `propose_fact`) and no generic `query`, `sql` or `invoke` tool. `tools/list` SHALL be identical regardless of kill-switch state or caller. Every tool SHALL declare `title`, `readOnlyHint`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` annotations (`readOnlyHint: false` for `propose_fact` only) and an `outputSchema`. Every success result SHALL be returned as `structuredContent` and as the same object in one JSON text block. A call with an unknown argument or an argument outside its declared type, enum or length SHALL return `invalid_argument`, and text arguments SHALL be NFC-normalized before validation.
+The server SHALL register exactly the 20 tools of RFC 0039 D10 (`search`, `fetch`, `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`, `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`, `finance_ledger`, `finance_obligations`, `finance_records`, `health_metrics`, `health_series`, `health_profile`, `health_records`, `propose_fact`) and no generic `query`, `sql` or `invoke` tool. `tools/list` SHALL be identical regardless of kill-switch state or caller. Every tool SHALL declare `title`, `readOnlyHint`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` annotations (`readOnlyHint: false` for `propose_fact` only) and an `outputSchema`. Every success result SHALL be returned as `structuredContent` and as the same object in one JSON text block. A call with an unknown argument or an argument outside its declared type, enum or length SHALL return `invalid_argument`, and text arguments SHALL be NFC-normalized before validation.
 
 ID: REQ-public-mcp-surface-002
-Source: RFC 0039 D5 and D10; owner decision OD17 (the two records tools); RFC 0027 (no meta-tools); craft-and-care/interfaces-and-dependencies.md Interface Hygiene
+Source: RFC 0039 D5 and D10; owner decisions OD17 (the two records tools) and OD23 (`health_metrics`); RFC 0027 (no meta-tools); craft-and-care/interfaces-and-dependencies.md Interface Hygiene
 Scope: v1-mandatory
 
 #### Scenario: The catalogue matches the pinned list
 - **WHEN** `tools/list` is called
-- **THEN** it SHALL return exactly the 19 named tools, with names and schema digests equal to the pinned catalogue
+- **THEN** it SHALL return exactly the 20 named tools, with names and schema digests equal to the pinned catalogue
 
 #### Scenario: A disabled domain does not change the list
 - **WHEN** the `finance` domain is disabled and `tools/list` is called
@@ -97,7 +97,7 @@ Scope: v1-mandatory
 - **AND** it SHALL contain no subject, predicate, object, note, evidence URL or submitter identity
 
 ### Requirement: Source envelope, deep links and freshness on every item
-Every record item returned by a typed tool (an entity, fact, edge, timeline item, trip, ledger row, obligation, medication, condition, profile entry, or finance or health record) SHALL carry `source: {kind, uri, as_of, content_authority}`, where `uri` is `butlers://<domain>/<kind>/<id>`, `as_of` is the projection replication time read once per request, and `content_authority` is the source row's value or `null`. An aggregate output (`time_use`, `finance_summary`, `health_series`) SHALL carry one response-level `source` with `kind`, a `uri` naming the domain and tool, and `as_of`. Any `url` SHALL be a dashboard deep link built from a configured base URL that requires an owner dashboard session and carries no token, argument echo or query secret. When replication is between 2 and 15 minutes old, results SHALL still be served with `as_of`, and tools whose output has `sources_degraded` SHALL list each affected domain with reason `"lagging"`.
+Every record item returned by a typed tool (an entity, fact, edge, timeline item, trip, ledger row, obligation, medication, condition, profile entry, or finance or health record) SHALL carry `source: {kind, uri, as_of, content_authority}`, where `uri` is `butlers://<domain>/<kind>/<id>`, `as_of` is the projection replication time read once per request, and `content_authority` is the source row's value or `null`. An aggregate output (`time_use`, `finance_summary`, `health_metrics`, `health_series`) SHALL carry one response-level `source` with `kind`, a `uri` naming the domain and tool, and `as_of`. Any `url` SHALL be a dashboard deep link built from a configured base URL that requires an owner dashboard session and carries no token, argument echo or query secret. When replication is between 2 and 15 minutes old, results SHALL still be served with `as_of`, and tools whose output has `sources_degraded` SHALL list each affected domain with reason `"lagging"`.
 
 ID: REQ-public-mcp-surface-005
 Source: RFC 0039 D10 rules and D17 (freshness); module-dashboard-read source envelope precedent
@@ -237,15 +237,23 @@ Scope: v1-mandatory
 - **THEN** the result SHALL be `invalid_argument`
 
 ### Requirement: Health tools
-`health_series` SHALL accept a `metric` from an enum generated from the published `health.measurements_public` metric names, `start`, `end` (a span of at most 366 days) and a bucket of `raw`, `day` or `week`, and SHALL return `{unit, points: [{t, value}], source}` with numeric values only and at most 2,000 points; a `day` or `week` bucket SHALL return the arithmetic mean of the bucket's values, in the unit unchanged. `health_profile` SHALL accept an optional `sections` subset of `medications`, `conditions`, `allergies` and `providers` (default all) and SHALL return `{medications: [{name, dose, frequency, schedule, status, since, notes, source}], conditions: [{name, status, since, notes, source}], allergies: [{text, predicate, since, fields, source}], providers: [{text, predicate, entity_id, fields, source}]}`, where a medication's `status` is `active` or `stopped` and `since` is when it was recorded, a condition's `since` is its diagnosis date or `null`, allergies are the active `allergy` and `food_allergy` facts, providers are the active `doctor_name`, `doctor_primary_care` and `pharmacy` facts, `text` is the fact's content and `fields` its published JSON fields, with at most 200 entries per section. Health tools SHALL return notes, clinicians and providers, and SHALL never return a credential-tier column or JSON path.
+`health_metrics` SHALL accept no argument and SHALL return `{metrics: [name], source}`, the distinct metric names published in `health.measurements_public`, sorted, under the same health gates, DLP and budget as `health_series`; `describe` SHALL NOT list metrics. `health_series` SHALL accept a `metric` as free text naming one of those published metric names (an unpublished name is `invalid_argument`; `health_metrics` lists them), `start`, `end` (a span of at most 366 days) and a bucket of `raw`, `day` or `week`, and SHALL return `{unit, points: [{t, value}], source}` with numeric values only and at most 2,000 points; a `day` or `week` bucket SHALL return the arithmetic mean of the bucket's values, in the unit unchanged. `health_profile` SHALL accept an optional `sections` subset of `medications`, `conditions`, `allergies` and `providers` (default all) and SHALL return `{medications: [{name, dose, frequency, schedule, status, since, notes, source}], conditions: [{name, status, since, notes, source}], allergies: [{text, predicate, since, fields, source}], providers: [{text, predicate, entity_id, fields, source}]}`, where a medication's `status` is `active` or `stopped` and `since` is when it was recorded, a condition's `since` is its diagnosis date or `null`, allergies are the active `allergy` and `food_allergy` facts, providers are the active `doctor_name`, `doctor_primary_care` and `pharmacy` facts, `text` is the fact's content and `fields` its published JSON fields, with at most 200 entries per section. Health tools SHALL return notes, clinicians and providers, and SHALL never return a credential-tier column or JSON path.
 
 ID: REQ-public-mcp-surface-010
 Source: RFC 0039 D2 (health values), D4 (health row; finance and health breadth) and D10; owner decisions OD3 and OD17; [Observed] roster/health/.agents/skills/memory-taxonomy/SKILL.md (allergy and provider predicates)
 Scope: v1-mandatory
 
 #### Scenario: Unknown metric is refused
-- **WHEN** `health_series` is called with a metric that is not in the generated enum
+- **WHEN** `health_series` is called with a metric that `health_metrics` does not list
 - **THEN** the result SHALL be `invalid_argument`
+
+#### Scenario: Metric names are discoverable
+- **WHEN** `health_metrics` is called and two metrics are published
+- **THEN** the result SHALL be `{metrics, source}` with both names, sorted, and `describe` SHALL list no metric
+
+#### Scenario: Metric discovery follows the health gates
+- **WHEN** the `health` domain is disabled, or the projection apply is pending, and `health_metrics` is called
+- **THEN** the result SHALL be `domain_disabled` or `projection_apply_pending` and no metric name SHALL be returned
 
 #### Scenario: Profile carries notes
 - **WHEN** a medication fact carries a free-text note
