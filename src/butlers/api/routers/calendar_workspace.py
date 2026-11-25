@@ -1906,6 +1906,11 @@ async def get_day_sheet(
     )
 
 
+def _now() -> datetime:
+    """The clock the verdict route reads; a seam so tests can pin the 18:00 rollover."""
+    return datetime.now(UTC)
+
+
 #: Local hour from which an unspecified verdict day is tomorrow: tonight's meetings are behind you.
 _VERDICT_ROLLOVER_HOUR = 18
 
@@ -1947,7 +1952,7 @@ async def get_day_verdict(
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
     else:
         zone = await owner_zoneinfo(_calendar_accounts_shared_pool(db))
-    now = datetime.now(zone)
+    now = _now().astimezone(zone)
     today = now.date()
     local_date = date or (
         today + timedelta(days=1) if now.hour >= _VERDICT_ROLLOVER_HOUR else today

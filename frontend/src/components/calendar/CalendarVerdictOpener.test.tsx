@@ -127,6 +127,35 @@ describe("CalendarVerdictOpener", () => {
     expect(committed).toBeGreaterThan(needs);
   });
 
+  it("names the day the clauses describe once the verdict has flipped to tomorrow", () => {
+    const html = render({ dayVerdict: dayVerdict(busy) });
+    expect(html).toContain("Tomorrow (Fri 27 Nov)");
+    expect(html.indexOf("Tomorrow (Fri 27 Nov)")).toBeLessThan(html.indexOf("Next Design review"));
+
+    const today = render({ dayVerdict: dayVerdict({ ...busy, relative: "today" }) });
+    expect(today).not.toContain("calendar-verdict-day");
+  });
+
+  it("drops a current or next clause that the clock has already passed", () => {
+    vi.useFakeTimers();
+    try {
+      // 15:30 SGT: the 14:00-15:00 meeting is over, so it is neither current nor next.
+      vi.setSystemTime(new Date("2026-11-27T07:30:00Z"));
+      const stale = render({
+        dayVerdict: dayVerdict({
+          ...busy,
+          relative: "today",
+          current: { ...busy.next!, ref: "gone" },
+        }),
+      });
+      expect(stale).not.toContain("In Design review");
+      expect(stale).not.toContain("Next Design review");
+      expect(stale).toContain("2h 30m committed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("makes committed hours and the free window doors to the calendar day view", () => {
     const html = render({ dayVerdict: dayVerdict(busy) });
     const day = "view=user&amp;range=day&amp;anchor=2026-11-27";

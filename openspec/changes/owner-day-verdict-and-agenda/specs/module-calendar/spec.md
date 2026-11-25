@@ -9,7 +9,8 @@ Scope: v1-mandatory
 The calendar workspace SHALL expose a deterministic day verdict read, computed without a model,
 from the owner day sheet (REQ-module-calendar-036) so the two cannot disagree. It SHALL return the
 next commitment, committed minutes and the longest free window ahead of now for a local day, each
-with the entry it came from. Tentative, declined and transparent events SHALL NOT count toward
+with the entry it came from, the meeting in progress leading before the next one. Without a date it
+SHALL read the owner's today, or tomorrow from 18:00 owner-local. Tentative, declined and transparent events SHALL NOT count toward
 committed minutes. The opener SHALL order its clauses by urgency: the next commitment with a
 start-in countdown, then what needs the owner, then committed hours, then the longest free window,
 and each clause SHALL be a door to the entry or picker it names. A stale read SHALL withhold the

@@ -64,6 +64,10 @@ function dayLabel(verdict: DayVerdictResponse): string {
   return verdict.relative === "tomorrow" ? `tomorrow (${date})` : "today";
 }
 
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** Clauses in urgency order: what is on now or next, how much is committed, where the air is. */
 function verdictClauses(
   verdict: DayVerdictResponse,
@@ -79,14 +83,16 @@ function verdictClauses(
         : "calendar read may be out of date",
     });
   }
-  if (verdict.current) {
+  // A read can be minutes old at a boundary: a meeting that has ended is not still current, and one
+  // that has started is not still next. The hook refetches at the boundary; until then, drop them.
+  if (verdict.current && new Date(verdict.current.end).getTime() > nowMs) {
     clauses.push({
       key: "day-current",
       text: `In ${verdict.current.title} until ${clock(verdict.current.end, zone)}`,
       href: verdict.current.door,
     });
   }
-  if (verdict.next) {
+  if (verdict.next && new Date(verdict.next.start).getTime() > nowMs) {
     const minutes = Math.round((new Date(verdict.next.start).getTime() - nowMs) / 60000);
     const countdown = verdict.relative === "today" && minutes > 0 ? ` (in ${duration(minutes)})` : "";
     clauses.push({
@@ -224,6 +230,13 @@ export function CalendarVerdictOpener({
   ];
   // Only a readable, current, empty day is "nothing on"; a day that merely has no committed
   // meeting (tentative or butler holds only) says so instead of claiming it is empty.
+  // After the 18:00 flip, or for any day but today, say which day the clauses describe.
+  const dayHeader =
+    verdict?.available && verdict.relative !== "today" ? (
+      <p data-testid="calendar-verdict-day" className="text-sm font-medium text-foreground">
+        {capitalize(dayLabel(verdict))}
+      </p>
+    ) : undefined;
   const calmDay = verdict?.available
     ? verdict.empty
       ? `Nothing on ${dayLabel(verdict)}`
@@ -237,6 +250,7 @@ export function CalendarVerdictOpener({
       landmarkLabel="Calendar verdict"
       sources={sources}
       clauses={clauses}
+      clausesHeader={dayHeader}
       allClear={`${calmDay}${calmConflictText}`}
     />
     <section id="unanswered-invitations" tabIndex={-1} aria-label="Unanswered invitations" className="mt-2 space-y-2">

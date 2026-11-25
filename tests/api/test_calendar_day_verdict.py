@@ -142,3 +142,55 @@ async def test_without_a_date_the_day_is_today_or_tomorrow_by_local_hour(app):
     data = (await get_verdict(app, date=None)).json()["data"]
 
     assert data["relative"] in {"today", "tomorrow"}
+
+
+def _pin_clock(monkeypatch, instant: datetime) -> None:
+    from butlers.api.routers import calendar_workspace as routes
+
+    monkeypatch.setattr(routes, "_now", lambda: instant)
+
+
+@pytest.mark.parametrize(
+    ("instant", "relative", "day"),
+    [
+        (datetime(2026, 11, 26, 9, 59, tzinfo=UTC), "today", "2026-11-26"),  # 17:59 SGT
+        (datetime(2026, 11, 26, 10, 0, tzinfo=UTC), "tomorrow", "2026-11-27"),  # 18:00 SGT
+        (datetime(2026, 11, 26, 15, 59, tzinfo=UTC), "tomorrow", "2026-11-27"),  # 23:59 SGT
+        (datetime(2026, 11, 26, 16, 0, tzinfo=UTC), "today", "2026-11-27"),  # 00:00 SGT next day
+    ],
+)
+async def test_the_verdict_day_flips_at_18_local_and_is_named_by_its_real_date(
+    app, monkeypatch, instant, relative, day
+):
+    _pin_clock(monkeypatch, instant)
+    app, _ = _build_app(app, workspace_rows={"general": [row("a", 9)]})
+
+    data = (await get_verdict(app, date=None, timezone="Asia/Singapore")).json()["data"]
+
+    assert (data["relative"], data["date"]) == (relative, day)
+
+
+async def test_the_18_local_flip_uses_the_owners_zone_on_a_daylight_saving_day(app, monkeypatch):
+    # 2026-03-08 is spring-forward in New York: 18:00 local is 22:00Z (UTC-4), not 23:00Z.
+    _pin_clock(monkeypatch, datetime(2026, 3, 8, 22, 0, tzinfo=UTC))
+    app, _ = _build_app(app, workspace_rows={"general": [row("a", 9)]})
+
+    data = (await get_verdict(app, date=None, timezone="America/New_York")).json()["data"]
+    before = datetime(2026, 3, 8, 21, 59, tzinfo=UTC)
+    _pin_clock(monkeypatch, before)
+    earlier = (await get_verdict(app, date=None, timezone="America/New_York")).json()["data"]
+
+    assert (data["relative"], data["date"]) == ("tomorrow", "2026-03-09")
+    assert (earlier["relative"], earlier["date"]) == ("today", "2026-03-08")
+
+
+async def test_committed_minutes_on_a_spring_forward_day_are_elapsed_time(app):
+    # 01:00 EST to 04:00 EDT spans the skipped 02:00 hour: two elapsed hours, not three.
+    start = datetime(2026, 3, 8, 6, 0, tzinfo=UTC)
+    spanning = _ws_row(entry_id="dst", title="Overnight", start=start, minutes=120)
+    spanning["last_success_at"] = datetime.now(UTC)
+    app, _ = _build_app(app, workspace_rows={"general": [spanning]})
+
+    data = (await get_verdict(app, date="2026-03-08", timezone="America/New_York")).json()["data"]
+
+    assert data["committed_minutes"] == 120 and data["committed_count"] == 1
