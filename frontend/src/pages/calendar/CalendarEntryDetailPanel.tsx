@@ -304,8 +304,14 @@ export function CalendarEntryDetailPanel({
 
       {entry.attendees_unavailable ? (
         <div className="flex flex-col gap-1" data-testid="detail-attendees-unavailable">
-          <span className={FIELD_LABEL_CLASS}>People</span>
-          <span className="text-sm text-muted-foreground">Attendees unavailable</span>
+          {entry.linked_people && entry.linked_people.length > 0 ? null : (
+            <span className={FIELD_LABEL_CLASS}>People</span>
+          )}
+          <span className="text-sm text-muted-foreground">
+            {entry.linked_people && entry.linked_people.length > 0
+              ? "(attendees still resolving)"
+              : "Attendees unavailable"}
+          </span>
         </div>
       ) : entry.unresolved_attendees ? (
         <span className="text-xs text-muted-foreground" data-testid="detail-unresolved-attendees">

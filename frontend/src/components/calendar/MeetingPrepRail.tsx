@@ -380,13 +380,23 @@ export function MeetingPrepRail({
         // Honest empty-state — no specialist contributed prep context for this
         // event (co-attended / contact-link coverage not yet populated, or the
         // cached view is unavailable). The expected state for most events today.
-        <p
-          data-testid="meeting-prep-empty"
-          className="font-mono text-[11px] leading-snug text-[var(--mfg)]"
-        >
-          No prep context yet. Attendee relationships and message history will
-          appear here once they are linked.
-        </p>
+        <div className="flex flex-col gap-2">
+          <p
+            data-testid="meeting-prep-empty"
+            className="font-mono text-[11px] leading-snug text-[var(--mfg)]"
+          >
+            No prep context yet. Attendee relationships and message history will
+            appear here once they are linked.
+          </p>
+          {unresolvedAttendees > 0 ? (
+            <p
+              data-testid="meeting-prep-unresolved"
+              className="font-mono text-[11px] text-[var(--mfg)]"
+            >
+              +{unresolvedAttendees} not identified
+            </p>
+          ) : null}
+        </div>
       ) : (
         <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-2">

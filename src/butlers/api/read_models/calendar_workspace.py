@@ -900,7 +900,9 @@ async def query_calendar_entry_people(
             "query_calendar_entry_people fan-out failed; degrading (people unavailable)",
             exc_info=True,
         )
-        return CalendarEntryPeopleResult(by_event={}, available=False)
+        return CalendarEntryPeopleResult(
+            by_event={}, available=False, attendees_unavailable=set(event_ids)
+        )
 
     unavailable: set[UUID] = set()
     unresolved: dict[UUID, int] = {}
