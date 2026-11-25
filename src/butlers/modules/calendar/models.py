@@ -359,6 +359,9 @@ class CalendarEvent(BaseModel):
 class CalendarEventCreate(BaseModel):
     """Payload for creating a calendar event."""
 
+    #: A caller-chosen provider event id (Google: 5-1024 chars of ``a-v0-9``). A second create
+    #: with the same id is refused by the provider with 409, so a retried create cannot duplicate.
+    event_id: str | None = None
     title: str
     start_at: date | datetime
     end_at: date | datetime

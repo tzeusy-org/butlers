@@ -266,7 +266,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
 
             row = await pool.fetchrow(
                 "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity, timezone "
-                "FROM scheduled_tasks WHERE id = $1",
+                "FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NULL",
                 task_uuid,
             )
             if row is None:

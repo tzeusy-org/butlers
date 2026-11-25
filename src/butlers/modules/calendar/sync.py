@@ -18,6 +18,7 @@ from .constants import (
     PROJECTION_STATUS_FAILED,
     PROJECTION_STATUS_FRESH,
     PROJECTION_STATUS_STALE,
+    SOURCE_KIND_INTERNAL_SCHEDULER,
     SOURCE_KIND_PROVIDER,
     SYNC_CURSOR_PROVIDER,
     SYNC_ERROR_KIND_TOKEN_EXPIRED,
@@ -32,6 +33,46 @@ from .errors import (
     classify_sync_error_kind,
 )
 from .models import CalendarSyncState
+
+_MIRROR_UNAVAILABLE: dict[str, Any] = {"available": False, "failed": 0, "retiring": 0}
+
+
+async def read_mirror_health(pool: Any) -> dict[str, Any]:
+    """Per-row mirror state of this butler's scheduled-task events, as counts.
+
+    ``failed`` rows could not be created or updated on the provider and ``retiring`` rows are
+    off but their provider copy could not be deleted; both are retried every sync. No task
+    ids or titles are returned. ``available`` is ``False`` when the state cannot be read.
+    """
+    try:
+        if not await pool.fetchval(
+            "SELECT to_regclass(quote_ident(current_schema()) || '.scheduled_tasks') IS NOT NULL"
+        ):
+            return dict(_MIRROR_UNAVAILABLE)
+        row = await pool.fetchrow(
+            "SELECT count(*) FILTER (WHERE mirror_state = 'failed') AS failed, "
+            "count(*) FILTER (WHERE mirror_state = 'retiring') AS retiring, "
+            "min(mirror_attempted_at) FILTER "
+            "(WHERE mirror_state IN ('failed', 'retiring')) AS oldest_attempt_at, "
+            "max(mirror_attempts) AS max_attempts, "
+            "(array_agg(mirror_error ORDER BY mirror_attempted_at DESC) "
+            "FILTER (WHERE mirror_state IN ('failed', 'retiring')))[1] AS last_error "
+            "FROM scheduled_tasks"
+        )
+    except Exception:
+        logger.warning("Failed to read calendar mirror state", exc_info=True)
+        return dict(_MIRROR_UNAVAILABLE)
+    if row is None:
+        return dict(_MIRROR_UNAVAILABLE)
+    oldest = row["oldest_attempt_at"]
+    return {
+        "available": True,
+        "failed": int(row["failed"] or 0),
+        "retiring": int(row["retiring"] or 0),
+        "oldest_attempt_at": oldest.isoformat() if oldest else None,
+        "max_attempts": int(row["max_attempts"] or 0),
+        "last_error": row["last_error"],
+    }
 
 
 class SyncMixin:
@@ -117,6 +158,7 @@ class SyncMixin:
             300_000,
         )
 
+        mirror = await read_mirror_health(pool)
         source_payloads: list[dict[str, Any]] = []
         freshest_at: datetime | None = None
         for row in rows:
@@ -134,7 +176,18 @@ class SyncMixin:
                 if freshest_at is None or last_synced_at > freshest_at:
                     freshest_at = last_synced_at
 
-            if last_error and (
+            if row["source_kind"] == SOURCE_KIND_INTERNAL_SCHEDULER and (
+                mirror["failed"] or mirror["retiring"]
+            ):
+                # A task event that could not reach the provider is not healthy, however fresh
+                # the local projection is.
+                sync_state = PROJECTION_STATUS_FAILED
+                # The mirror failure is the current truth; an older sync error must not mask it.
+                last_error = (
+                    f"{mirror['failed'] + mirror['retiring']} calendar mirror(s) failing: "
+                    f"{mirror['last_error']}"
+                )
+            elif last_error and (
                 last_success_at is None or (last_error_at and last_error_at >= last_success_at)
             ):
                 sync_state = PROJECTION_STATUS_FAILED
@@ -175,6 +228,7 @@ class SyncMixin:
             "last_refreshed_at": freshest_at.isoformat() if freshest_at else None,
             "staleness_ms": overall_staleness_ms,
             "sources": source_payloads,
+            "mirror": mirror,
         }
 
     async def _sync_calendar(self, calendar_id: str, *, full: bool = False) -> bool:

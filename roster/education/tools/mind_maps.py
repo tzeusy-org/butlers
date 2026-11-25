@@ -185,10 +185,11 @@ async def mind_map_abandon_stale(
     list of str
         The UUIDs of the mind maps that were transitioned to ``'abandoned'``.
     """
+    from butlers.core.scheduler.retire import delete_or_retire_scheduled_task_by_name
     from butlers.tools.education.teaching_flows import _abandon_stale_maps
 
     async def delete_schedule(name: str) -> None:
-        await pool.execute("DELETE FROM scheduled_tasks WHERE name = $1", name)
+        await delete_or_retire_scheduled_task_by_name(pool, name)
 
     return await _abandon_stale_maps(
         pool, node_activity=True, stale_days=inactivity_days, schedule_delete=delete_schedule

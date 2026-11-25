@@ -266,7 +266,10 @@ async def list_schedules(
             detail=f"Butler '{name}' database is not available",
         ) from exc
 
-    rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
+    rows = await pool.fetch(
+        f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks "
+        "WHERE delete_requested_at IS NULL ORDER BY created_at"
+    )
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
 
@@ -306,7 +309,7 @@ async def get_deadline(
     row = await pool.fetchrow(
         "SELECT id, name, display_title, target_date, deadline_status, enabled "
         "FROM scheduled_tasks WHERE id = $1 AND task_type = 'deadline' "
-        "AND target_date IS NOT NULL",
+        "AND delete_requested_at IS NULL AND target_date IS NOT NULL",
         deadline_id,
     )
     if row is None:

@@ -257,6 +257,7 @@ async def tick(
                        {_continuity_col_select}
                 FROM scheduled_tasks
                 WHERE enabled = true
+                  AND delete_requested_at IS NULL
                   {cron_filter}
                   AND next_run_at <= $1
                 ORDER BY next_run_at
@@ -336,7 +337,8 @@ async def tick(
                     """
                     UPDATE scheduled_tasks
                     SET enabled = false, next_run_at = NULL, updated_at = now()
-                    WHERE id = $1 AND enabled AND next_run_at IS NOT DISTINCT FROM $2
+                    WHERE id = $1 AND enabled AND delete_requested_at IS NULL
+                      AND next_run_at IS NOT DISTINCT FROM $2
                     RETURNING id, dashboard_attention.final_claim(
                         current_schema(), id, $2
                     ) AS attention_claim
@@ -349,7 +351,8 @@ async def tick(
                     """
                     UPDATE scheduled_tasks
                     SET next_run_at = $2, updated_at = now()
-                    WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $3
+                    WHERE id = $1 AND enabled AND delete_requested_at IS NULL
+                      AND next_run_at IS NOT DISTINCT FROM $3
                     RETURNING id
                     """,
                     task_id,

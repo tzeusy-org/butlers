@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -31,9 +34,133 @@ from .models import (
 )
 from .time_helpers import _cron_next_occurrence, _cron_occurrences_in_window
 
+_MIRROR_BACKOFF_BASE_S = 60
+_MIRROR_BACKOFF_CAP_S = 3600
+_MIRROR_PARK_AFTER_ATTEMPTS = 8
+
+
+def _mirror_fingerprint(*parts: Any) -> str:
+    """A stable digest of what a mirrored task sends, so an unchanged task sends nothing."""
+    return hashlib.sha256(
+        json.dumps([str(part) for part in parts], ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
 
 class InternalProjectionMixin:
     """Existing Calendar internal projection behavior on the owning module instance."""
+
+    @staticmethod
+    async def _mirror_done(
+        pool: Any, task_id: Any, provider_event_id: str, fingerprint: str
+    ) -> bool:
+        """Record a pushed mirror. Returns ``False`` when the task row is gone."""
+        status = await pool.execute(
+            "UPDATE scheduled_tasks SET calendar_event_id = $2, "
+            "mirror_state = CASE WHEN delete_requested_at IS NULL THEN 'mirrored' "
+            "ELSE mirror_state END, "
+            "mirror_error = NULL, mirror_attempts = 0, mirror_attempted_at = now(), "
+            "mirror_fingerprint = $3 WHERE id = $1",
+            task_id,
+            provider_event_id,
+            fingerprint,
+        )
+        return not str(status).endswith(" 0")
+
+    @staticmethod
+    def _mirror_provider_id(task_id: Any) -> str:
+        """The provider event id a task's mirror always uses (hex is valid base32hex).
+
+        Deriving it from the task makes a create idempotent: a retry after a crash, or a second
+        process, gets a 409 from the provider and adopts the event instead of duplicating it.
+        """
+        return uuid.UUID(str(task_id)).hex
+
+    @staticmethod
+    def _mirror_backoff_wait(attempts: int) -> timedelta:
+        """Wait before the next try after ``attempts`` failures: base doubling, capped."""
+        exponent = min(max(attempts - 1, 0), 16)
+        return timedelta(seconds=min(_MIRROR_BACKOFF_CAP_S, _MIRROR_BACKOFF_BASE_S * 2**exponent))
+
+    @classmethod
+    def _mirror_attempt_allowed(
+        cls, record: dict[str, Any], now: datetime, fingerprint: str | None = None
+    ) -> bool:
+        """Whether a failed or retiring row may be tried again yet (backoff and parking).
+
+        A parked row (a failed push that used up its attempts) is tried again only when what
+        would be sent differs from what kept failing: ``fingerprint`` against the one recorded
+        with the failure. Dispatch bumps ``updated_at`` on every run, so that is no edit signal.
+        """
+        state = record.get("mirror_state")
+        attempts = int(record.get("mirror_attempts") or 0)
+        attempted_at = record.get("mirror_attempted_at")
+        if state not in ("failed", "retiring") or attempts <= 0 or attempted_at is None:
+            return True
+        if (
+            state == "failed"
+            and attempts >= _MIRROR_PARK_AFTER_ATTEMPTS
+            and fingerprint is not None
+            and fingerprint == record.get("mirror_attempt_fingerprint")
+        ):
+            # Parked: it stays counted as failed until what is sent changes. Only a push passes
+            # a fingerprint; a delete (disabled or retiring row) is never parked.
+            return False
+        return now >= attempted_at + cls._mirror_backoff_wait(attempts)
+
+    @staticmethod
+    async def _mirror_failed(
+        pool: Any,
+        task_id: Any,
+        state: str,
+        exc: BaseException,
+        *,
+        previous: dict[str, Any] | None = None,
+        fingerprint: str | None = None,
+    ) -> None:
+        """Record a failed mirror push so health shows it and a later pass retries it.
+
+        The WARNING is logged on the transition into a failure state; repeats of the same failure
+        are logged at DEBUG so a long outage does not flood the log.
+        """
+        attempts = int((previous or {}).get("mirror_attempts") or 0) + 1
+        transition = (previous or {}).get("mirror_state") != state
+        log = logger.warning if transition else logger.debug
+        log(
+            "Calendar mirror %s for scheduled task %s failed (attempt %d): %s",
+            state,
+            task_id,
+            attempts,
+            exc,
+        )
+        if state == "failed" and attempts == _MIRROR_PARK_AFTER_ATTEMPTS:
+            logger.warning(
+                "Calendar mirror for scheduled task %s parked after %d attempts; "
+                "it is retried when the task changes",
+                task_id,
+                attempts,
+            )
+        detail = f"{type(exc).__name__}: {exc}"[:300]
+        try:
+            await pool.execute(
+                "UPDATE scheduled_tasks SET mirror_state = $2, mirror_error = $3, "
+                "mirror_attempts = mirror_attempts + 1, mirror_attempted_at = now(), "
+                "mirror_attempt_fingerprint = COALESCE($4, mirror_attempt_fingerprint) "
+                "WHERE id = $1",
+                task_id,
+                state,
+                detail,
+                fingerprint,
+            )
+        except Exception:
+            logger.warning("Could not record mirror failure for task %s", task_id, exc_info=True)
+
+    def _mirror_push_lock(self) -> asyncio.Lock:
+        """One lock per module instance: overlapping passes would race the same creates."""
+        lock = getattr(self, "_mirror_push_lock_instance", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mirror_push_lock_instance = lock
+        return lock
 
     async def _push_internal_events_to_provider(self) -> None:
         """Push butler-generated events (scheduled tasks, reminders) to the Butlers Google Calendar.
@@ -42,6 +169,273 @@ class InternalProjectionMixin:
         yet have a ``calendar_event_id``, and updates existing ones if the title
         or time has changed. Cancelled/disabled items are deleted from Google.
         """
+        async with self._mirror_push_lock():
+            await self._push_internal_events_unlocked()
+
+    async def _mirror_scheduled_tasks(
+        self, provider: Any, pool: Any, cal_id: str
+    ) -> tuple[int, int, int]:
+        """Mirror scheduled tasks to the provider. Returns ``(pushed, updated, deleted)``."""
+        pushed = updated = deleted = 0
+        now = datetime.now(UTC)
+        if not await self._table_exists("scheduled_tasks"):
+            return pushed, updated, deleted
+
+        # Job tasks are internal automation (e.g. eligibility_sweep) and shouldn't appear on the
+        # user's Google Calendar. Clean up any that were previously pushed.
+        stale_job_rows = await pool.fetch(
+            """
+            SELECT id, calendar_event_id
+            FROM scheduled_tasks
+            WHERE dispatch_mode = 'job' AND calendar_event_id IS NOT NULL
+            """
+        )
+        for stale in stale_job_rows:
+            try:
+                await provider.delete_event(
+                    calendar_id=cal_id, event_id=str(stale["calendar_event_id"])
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete stale Google event for job task %s: %s "
+                    "(will retry next sync)",
+                    stale["id"],
+                    exc,
+                )
+                continue
+            await pool.execute(
+                "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
+                stale["id"],
+            )
+            deleted += 1
+
+        rows = await pool.fetch(
+            """
+            SELECT id, name, cron, timezone, start_at, end_at, until_at,
+                   display_title, description, location,
+                   calendar_event_id, enabled, updated_at,
+                   mirror_state, mirror_fingerprint, mirror_attempts, mirror_attempted_at,
+                   mirror_attempt_fingerprint, delete_requested_at
+            FROM scheduled_tasks
+            WHERE dispatch_mode != 'job'
+            """
+        )
+        for row in rows:
+            try:
+                outcome = await self._mirror_one_task(provider, pool, cal_id, dict(row), now)
+            except Exception:
+                # One row must never stop the others; its state stays as it was and the next pass
+                # tries it again.
+                logger.warning("Calendar mirror pass failed for task %s", row["id"], exc_info=True)
+                continue
+            if outcome == "pushed":
+                pushed += 1
+            elif outcome == "updated":
+                updated += 1
+            elif outcome == "deleted":
+                deleted += 1
+        return pushed, updated, deleted
+
+    async def _delete_mirror_copy(self, provider: Any, cal_id: str, event_id: str) -> None:
+        """Delete a provider copy; a copy that is already gone (404 or 410) counts as deleted."""
+        try:
+            await provider.delete_event(calendar_id=cal_id, event_id=event_id)
+        except CalendarRequestError as exc:
+            if exc.status_code not in (404, 410):
+                raise
+
+    async def _mirror_one_task(
+        self, provider: Any, pool: Any, cal_id: str, record: dict[str, Any], now: datetime
+    ) -> str | None:
+        """Bring one task's provider copy in line. Returns what was done, if anything."""
+        task_id = record["id"]
+        enabled = record.get("enabled", True)
+        google_event_id = record.get("calendar_event_id")
+
+        if record.get("delete_requested_at") is not None:
+            # The owner deleted the task; the row is kept only to find the provider copy. The id
+            # may be unrecorded when a create was cut short, so fall back to the derived one.
+            if google_event_id is None and record.get("mirror_attempted_at") is None:
+                await pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
+                return "deleted"
+            if not self._mirror_attempt_allowed(record, now):
+                return None
+            target = str(google_event_id or self._mirror_provider_id(task_id))
+            try:
+                await self._delete_mirror_copy(provider, cal_id, target)
+            except Exception as exc:
+                await self._mirror_failed(pool, task_id, "retiring", exc, previous=record)
+                return None
+            await pool.execute(
+                "DELETE FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NOT NULL",
+                task_id,
+            )
+            return "deleted"
+
+        if not enabled and google_event_id:
+            # The provider copy must be gone before the link is dropped: a delete that failed
+            # keeps the id and the row says so, and a later pass retries it.
+            if not self._mirror_attempt_allowed(record, now):
+                return None
+            try:
+                await self._delete_mirror_copy(provider, cal_id, str(google_event_id))
+            except Exception as exc:
+                await self._mirror_failed(pool, task_id, "retiring", exc, previous=record)
+                return None
+            await pool.execute(
+                "UPDATE scheduled_tasks SET calendar_event_id = NULL, "
+                "mirror_state = 'pending', mirror_error = NULL, mirror_attempts = 0, "
+                "mirror_fingerprint = NULL WHERE id = $1",
+                task_id,
+            )
+            return "deleted"
+        if not enabled:
+            return None
+
+        title = str(record.get("display_title") or record.get("name") or "Scheduled task")
+        timezone = str(record.get("timezone") or "UTC")
+        cron_expr = record.get("cron")
+        task_description = _normalize_optional_text(record.get("description"))
+        task_location = _normalize_optional_text(record.get("location"))
+        # Prefer the author-supplied description; fall back to a cron note
+        # so recurring tasks still show their schedule on Google.
+        event_description = task_description or (f"Cron: {cron_expr}" if cron_expr else None)
+        start_at = self._coerce_datetime(record.get("start_at"))
+        end_at = self._coerce_datetime(record.get("end_at"))
+        if cron_expr and start_at is None:
+            occ_start = _cron_next_occurrence(str(cron_expr), now=now)
+            occ_end = occ_start + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+        elif start_at is not None:
+            occ_start = start_at
+            occ_end = end_at or (
+                start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+            )
+        else:
+            return None
+
+        fingerprint = _mirror_fingerprint(
+            title, occ_start, occ_end, timezone, event_description, task_location
+        )
+        # What the owner edited, without the derived next occurrence: a cron task's occurrence
+        # moves every run, which must not unpark a push that keeps failing.
+        attempt_fingerprint = _mirror_fingerprint(
+            title, cron_expr, start_at, end_at, timezone, task_description, task_location
+        )
+        if (
+            google_event_id is not None
+            and record.get("mirror_state") == "mirrored"
+            and record.get("mirror_fingerprint") == fingerprint
+        ):
+            return None  # the provider copy already matches; nothing to send
+        if not self._mirror_attempt_allowed(record, now, attempt_fingerprint):
+            return None
+
+        patch = CalendarEventUpdate(
+            title=title,
+            start_at=occ_start,
+            end_at=occ_end,
+            timezone=timezone,
+            description=event_description,
+            location=task_location,
+        )
+        outcome = "updated"
+        if google_event_id is not None:
+            try:
+                await provider.update_event(
+                    calendar_id=cal_id, event_id=str(google_event_id), patch=patch
+                )
+            except CalendarRequestError as exc:
+                if exc.status_code not in (404, 410):
+                    await self._mirror_failed(
+                        pool,
+                        task_id,
+                        "failed",
+                        exc,
+                        previous=record,
+                        fingerprint=attempt_fingerprint,
+                    )
+                    return None
+                google_event_id = None  # the provider copy is gone: create it again
+            except Exception as exc:
+                await self._mirror_failed(
+                    pool, task_id, "failed", exc, previous=record, fingerprint=attempt_fingerprint
+                )
+                return None
+
+        if google_event_id is None:
+            derived = self._mirror_provider_id(task_id)
+            # Stamp the attempt before the create: a crash between create and record leaves a
+            # provider event this row must still be able to find (and a delete must retire).
+            await pool.execute(
+                "UPDATE scheduled_tasks SET mirror_attempted_at = now() WHERE id = $1", task_id
+            )
+            try:
+                event = await provider.create_event(
+                    calendar_id=cal_id,
+                    payload=CalendarEventCreate(
+                        event_id=derived,
+                        title=title,
+                        start_at=occ_start,
+                        end_at=occ_end,
+                        timezone=timezone,
+                        description=event_description,
+                        location=task_location,
+                        private_metadata={
+                            "butler_generated": "true",
+                            "butler_name": self._butler_name,
+                            "task_id": str(task_id),
+                        },
+                    ),
+                )
+                google_event_id = event.event_id
+                outcome = "pushed"
+            except CalendarRequestError as exc:
+                if exc.status_code != 409:
+                    await self._mirror_failed(
+                        pool,
+                        task_id,
+                        "failed",
+                        exc,
+                        previous=record,
+                        fingerprint=attempt_fingerprint,
+                    )
+                    return None
+                # The event already exists (an earlier create whose record was lost, or another
+                # process): adopt it and bring it up to date.
+                try:
+                    await provider.update_event(calendar_id=cal_id, event_id=derived, patch=patch)
+                except Exception as update_exc:
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET calendar_event_id = $2 WHERE id = $1",
+                        task_id,
+                        derived,
+                    )
+                    await self._mirror_failed(
+                        pool,
+                        task_id,
+                        "failed",
+                        update_exc,
+                        previous=record,
+                        fingerprint=attempt_fingerprint,
+                    )
+                    return None
+                google_event_id = derived
+                outcome = "updated"
+            except Exception as exc:
+                await self._mirror_failed(
+                    pool, task_id, "failed", exc, previous=record, fingerprint=attempt_fingerprint
+                )
+                return None
+
+        if not await self._mirror_done(pool, task_id, str(google_event_id), fingerprint):
+            # The owner deleted the task while this pass was running: the event just written has
+            # no row to find it, so remove it now.
+            with contextlib.suppress(Exception):
+                await self._delete_mirror_copy(provider, cal_id, str(google_event_id))
+            return None
+        return outcome
+
+    async def _push_internal_events_unlocked(self) -> None:
         provider = self._provider
         if provider is None or self._resolved_calendar_id is None:
             return
@@ -50,143 +444,7 @@ class InternalProjectionMixin:
             return
 
         cal_id = self._resolved_calendar_id
-        pushed = 0
-        updated = 0
-        deleted = 0
-
-        # --- Push scheduled_tasks ---
-        # Only push user-facing (prompt) tasks. Job tasks are internal
-        # automation (e.g. eligibility_sweep) and shouldn't appear on the
-        # user's Google Calendar.
-        if await self._table_exists("scheduled_tasks"):
-            # Clean up any job tasks that were previously pushed to Google
-            stale_job_rows = await pool.fetch(
-                """
-                SELECT id, calendar_event_id
-                FROM scheduled_tasks
-                WHERE dispatch_mode = 'job' AND calendar_event_id IS NOT NULL
-                """
-            )
-            for stale in stale_job_rows:
-                try:
-                    await provider.delete_event(
-                        calendar_id=cal_id, event_id=str(stale["calendar_event_id"])
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to delete stale Google event for job task %s: %s "
-                        "(will retry next sync)",
-                        stale["id"],
-                        exc,
-                    )
-                    continue
-                await pool.execute(
-                    "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
-                    stale["id"],
-                )
-                deleted += 1
-
-            rows = await pool.fetch(
-                """
-                SELECT id, name, cron, timezone, start_at, end_at, until_at,
-                       display_title, description, location,
-                       calendar_event_id, enabled, updated_at
-                FROM scheduled_tasks
-                WHERE dispatch_mode != 'job'
-                """
-            )
-            for row in rows:
-                record = dict(row)
-                task_id = record["id"]
-                enabled = record.get("enabled", True)
-                google_event_id = record.get("calendar_event_id")
-                title = str(record.get("display_title") or record.get("name") or "Scheduled task")
-                timezone = str(record.get("timezone") or "UTC")
-                cron_expr = record.get("cron")
-                task_description = _normalize_optional_text(record.get("description"))
-                task_location = _normalize_optional_text(record.get("location"))
-                # Prefer the author-supplied description; fall back to a cron note
-                # so recurring tasks still show their schedule on Google.
-                event_description = task_description or (
-                    f"Cron: {cron_expr}" if cron_expr else None
-                )
-                start_at = self._coerce_datetime(record.get("start_at"))
-                end_at = self._coerce_datetime(record.get("end_at"))
-
-                # Determine event times
-                if cron_expr and start_at is None:
-                    occ_start = _cron_next_occurrence(str(cron_expr), now=datetime.now(UTC))
-                    occ_end = occ_start + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
-                elif start_at is not None:
-                    occ_start = start_at
-                    occ_end = end_at or (
-                        start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
-                    )
-                else:
-                    continue
-
-                if not enabled and google_event_id:
-                    # Delete from Google
-                    try:
-                        await provider.delete_event(
-                            calendar_id=cal_id, event_id=str(google_event_id)
-                        )
-                    except Exception as exc:
-                        logger.debug("Failed to delete Google event for task %s: %s", task_id, exc)
-                    await pool.execute(
-                        "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
-                        task_id,
-                    )
-                    deleted += 1
-                elif not enabled:
-                    continue
-                elif google_event_id is None:
-                    # Create in Google
-                    try:
-                        event = await provider.create_event(
-                            calendar_id=cal_id,
-                            payload=CalendarEventCreate(
-                                title=title,
-                                start_at=occ_start,
-                                end_at=occ_end,
-                                timezone=timezone,
-                                description=event_description,
-                                location=task_location,
-                                private_metadata={
-                                    "butler_generated": "true",
-                                    "butler_name": self._butler_name,
-                                    "task_id": str(task_id),
-                                },
-                            ),
-                        )
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET calendar_event_id = $1 WHERE id = $2",
-                            event.event_id,
-                            task_id,
-                        )
-                        pushed += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to push task %s to Google Calendar: %s", task_id, exc
-                        )
-                else:
-                    # Update existing Google event
-                    try:
-                        await provider.update_event(
-                            calendar_id=cal_id,
-                            event_id=str(google_event_id),
-                            patch=CalendarEventUpdate(
-                                title=title,
-                                start_at=occ_start,
-                                end_at=occ_end,
-                                timezone=timezone,
-                                description=event_description,
-                                location=task_location,
-                            ),
-                        )
-                        updated += 1
-                    except Exception as exc:
-                        logger.debug("Failed to update Google event for task %s: %s", task_id, exc)
+        pushed, updated, deleted = await self._mirror_scheduled_tasks(provider, pool, cal_id)
 
         # --- Push calendar-native reminders ---
         # The local calendar_events row is authoritative.  Its provider event id
@@ -546,7 +804,7 @@ class InternalProjectionMixin:
                    description, location,
                    calendar_event_id, enabled, updated_at
             FROM scheduled_tasks
-            WHERE dispatch_mode != 'job'
+            WHERE dispatch_mode != 'job' AND delete_requested_at IS NULL
             """
         )
 

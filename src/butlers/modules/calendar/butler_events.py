@@ -36,6 +36,15 @@ if TYPE_CHECKING:
     from . import CalendarModule
 
 
+def _event_link(row: Any, task_id: uuid.UUID) -> str:
+    """The handle a caller uses for a scheduled-task event: its link id, else the task id."""
+    if row is not None:
+        for key in ("calendar_link_id", "calendar_event_id"):
+            if row[key] is not None:
+                return str(row[key])
+    return str(task_id)
+
+
 class ButlerEventsMixin:
     """Existing Calendar butler events behavior on the owning module instance."""
 
@@ -57,21 +66,24 @@ class ButlerEventsMixin:
             return None
 
         columns = await self._table_columns("scheduled_tasks")
-        # Try calendar_event_id (text) first — works for Google Calendar IDs
-        if "calendar_event_id" in columns:
-            row = await pool.fetchrow(
-                "SELECT id FROM scheduled_tasks WHERE calendar_event_id = $1 LIMIT 1",
-                event_id,
-            )
-            if row is not None:
-                return row["id"]
+        # The stable link id the create call returned, then the provider id (Google event id)
+        # the grid shows for a mirrored task.
+        for column in ("calendar_link_id", "calendar_event_id"):
+            if column in columns:
+                row = await pool.fetchrow(
+                    f"SELECT id FROM scheduled_tasks WHERE {column} = $1 "
+                    "AND delete_requested_at IS NULL LIMIT 1",
+                    event_id,
+                )
+                if row is not None:
+                    return row["id"]
         # Try as UUID primary key
         try:
             event_uuid = uuid.UUID(event_id)
         except ValueError:
             return None
         row = await pool.fetchrow(
-            "SELECT id FROM scheduled_tasks WHERE id = $1 LIMIT 1",
+            "SELECT id FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NULL LIMIT 1",
             event_uuid,
         )
         if row is None:
@@ -372,7 +384,7 @@ def register_butler_event_tools(
                         display_title=normalized_title,
                         description=normalized_description,
                         location=normalized_location,
-                        calendar_event_id=str(event_link_id),
+                        calendar_link_id=str(event_link_id),
                         stagger_key=module._butler_name,
                     )
                 else:
@@ -408,7 +420,7 @@ def register_butler_event_tools(
                         display_title=normalized_title,
                         description=normalized_description,
                         location=normalized_location,
-                        calendar_event_id=str(event_link_id),
+                        calendar_link_id=str(event_link_id),
                         stagger_key=module._butler_name,
                     )
                 origin_ref = str(task_id)
@@ -593,14 +605,10 @@ def register_butler_event_tools(
                     **update_fields,
                 )
                 schedule_row = await pool.fetchrow(
-                    "SELECT calendar_event_id FROM scheduled_tasks WHERE id = $1",
+                    "SELECT calendar_link_id, calendar_event_id FROM scheduled_tasks WHERE id = $1",
                     target_id,
                 )
-                event_link = (
-                    str(schedule_row["calendar_event_id"])
-                    if schedule_row is not None and schedule_row["calendar_event_id"] is not None
-                    else str(target_id)
-                )
+                event_link = _event_link(schedule_row, target_id)
                 origin_ref = str(target_id)
                 result = {
                     "status": "updated",
@@ -882,14 +890,10 @@ def register_butler_event_tools(
                     enabled=enabled,
                 )
                 row = await pool.fetchrow(
-                    "SELECT calendar_event_id FROM scheduled_tasks WHERE id = $1",
+                    "SELECT calendar_link_id, calendar_event_id FROM scheduled_tasks WHERE id = $1",
                     target_id,
                 )
-                event_link = (
-                    str(row["calendar_event_id"])
-                    if row is not None and row["calendar_event_id"] is not None
-                    else str(target_id)
-                )
+                event_link = _event_link(row, target_id)
                 result = {
                     "status": "updated",
                     "source_type": source_type,

@@ -2295,3 +2295,33 @@ async def _read_keep_separate_keys(db: DatabaseManager) -> tuple[set[str], bool]
         logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
         return set(), False
     return {row["cluster_key"] for row in rows}, True
+
+
+async def query_scheduler_mirror_counts(
+    db: DatabaseManager, *, butlers: list[str] | None = None
+) -> dict[str, tuple[int, int]]:
+    """Per-butler ``(failed, retiring)`` counts of scheduled-task calendar mirrors (bu-5ii4gj.4).
+
+    A mirror row that could not be created, updated or deleted on the provider is retried by its
+    butler; the dashboard shows the internal scheduler source as failed while any is outstanding.
+    A butler whose read fails, or whose schema lacks the columns, is left out (no claim either
+    way) rather than reported as clean.
+    """
+    targets = butlers or db.butlers_with_module("calendar")
+    if not targets:
+        return {}
+    sql = (
+        "SELECT count(*) FILTER (WHERE mirror_state = 'failed') AS failed, "
+        "count(*) FILTER (WHERE mirror_state = 'retiring') AS retiring "
+        "FROM scheduled_tasks"
+    )
+    try:
+        results, _failed = await db.fan_out_with_status(sql, (), butler_names=list(targets))
+    except Exception:
+        logger.warning("query_scheduler_mirror_counts read failed", exc_info=True)
+        return {}
+    counts: dict[str, tuple[int, int]] = {}
+    for butler, raw_rows in results.items():
+        for row in raw_rows:
+            counts[butler] = (int(row["failed"] or 0), int(row["retiring"] or 0))
+    return counts

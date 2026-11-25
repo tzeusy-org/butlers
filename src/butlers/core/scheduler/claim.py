@@ -41,7 +41,8 @@ async def _defer_cron_for_allowance(
         """
         UPDATE scheduled_tasks
         SET next_run_at = $2, last_result = $3, updated_at = now()
-        WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $4
+        WHERE id = $1 AND enabled AND delete_requested_at IS NULL
+          AND next_run_at IS NOT DISTINCT FROM $4
         RETURNING id
         """,
         task_id,

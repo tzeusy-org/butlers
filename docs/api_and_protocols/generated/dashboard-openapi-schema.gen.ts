@@ -22458,6 +22458,16 @@ export interface components {
             metadata?: {
                 [key: string]: unknown;
             };
+            /**
+             * Mirror Failed
+             * @default 0
+             */
+            mirror_failed?: number;
+            /**
+             * Mirror Retiring
+             * @default 0
+             */
+            mirror_retiring?: number;
             /** Provider */
             provider?: string | null;
             /**
