@@ -40,11 +40,14 @@ function card(text: string, extra: Record<string, unknown> = {}): { data: NowCar
   };
 }
 
-function mount(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+function mount(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  announce?: boolean | "below-md",
+) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <NowStrip />
+        <NowStrip announce={announce} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -116,6 +119,18 @@ describe("NowStrip", () => {
       ),
     );
     expect(screen.getByTestId("now-strip-live").getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("renders no live region when announce is off, and a below-md one otherwise", async () => {
+    getNow.mockResolvedValue(card("Free until 14:00"));
+    mount(undefined, false);
+    await screen.findByTestId("now-strip");
+    expect(screen.queryByTestId("now-strip-live")).toBeNull();
+    cleanup();
+
+    mount(undefined, "below-md");
+    await screen.findByTestId("now-strip");
+    expect(screen.getByTestId("now-strip-live").className).toContain("md:hidden");
   });
 });
 

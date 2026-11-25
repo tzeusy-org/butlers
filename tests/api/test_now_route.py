@@ -142,8 +142,8 @@ async def test_live_owner_gets_the_card_read_in_the_owner_role(live):
     agenda = card["lines"][-1]
     assert agenda["state"] == "unknown" and agenda["text"] == "Unknown (calendar unreadable)"
     assert card["all_current"] is False
-    assert card["headline"] == "5 of 5 signals not current"
-    assert card["text"].startswith("Now (2026-07-01 09:30 UTC): 5 of 5 signals not current")
+    assert card["headline"] == "6 of 6 signals not current"
+    assert card["text"].startswith("Now (2026-07-01 09:30 UTC): 6 of 6 signals not current")
     assert live.statements == ["SET LOCAL ROLE perception_owner_reader"]
     assert live.closed is True
 
@@ -267,3 +267,16 @@ async def test_an_unavailable_verdict_is_unknown_not_free(calendar):
     line, _ = await _agenda()
 
     assert line["state"] == "unknown" and "free" not in line["text"].lower()
+
+
+async def test_an_unreadable_calendar_is_counted_in_the_headline(calendar):
+    _, ok = await _agenda()
+    total = len(ok["lines"])
+    # The slot signals are unread in this harness; a current calendar adds no further shortfall.
+    assert ok["headline"] == f"{total - 1} of {total} signals not current"
+
+    calendar["raise"] = True
+    _, card = await _agenda()
+
+    assert card["all_current"] is False
+    assert card["headline"] == f"{total} of {total} signals not current"

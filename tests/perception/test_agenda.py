@@ -71,7 +71,7 @@ def test_in_a_meeting_says_until_when_and_what_is_next() -> None:
     assert line.kind == AGENDA_KIND and line.state == "known" and not line.stale
     assert line.text == "In meeting until 15:00; next 16:00"
     assert line.door == "/calendar?entry=a"
-    assert line.fresh_until == at(14, 50)  # the sync staleness bound is sooner than 15:00
+    assert line.fresh_until == at(14, 45)  # sync (14:15) + 30m bound is sooner than 15:00
     assert last is not None and last.text == line.text
 
 
@@ -91,7 +91,7 @@ def test_nothing_left_today() -> None:
     line, _ = line_for([occ("a", at(9), at(10))], now=at(14, 0))
 
     assert line.text == "No more today" and line.state == "known" and line.door is None
-    assert line.fresh_until == at(14, 30)
+    assert line.fresh_until == at(14, 25)  # sync (13:55) + 30m bound
 
 
 def test_an_empty_current_day_is_no_more_today_not_unknown() -> None:
@@ -193,3 +193,17 @@ def test_owner_and_non_owner_renders_both_omit_titles_and_the_non_owner_gets_no_
     assert owner.text == other.text == "In meeting until 15:00; next 16:00"
     assert "Secret" not in owner.text and "Secret" not in other.text
     assert owner.door == "/calendar?entry=a" and other.door is None
+
+
+def test_last_known_from_yesterday_is_forgotten_at_owner_midnight() -> None:
+    yesterday = LastKnownAgenda(text="Free until 23:00", read_at=at(23, 30) - timedelta(days=1))
+    line, last = line_for([], now=at(0, 10), unreadable=True, last=yesterday)
+
+    assert line.text == "Unknown (calendar unreadable)" and last is None
+
+
+def test_fresh_until_runs_from_the_last_sync_not_from_now() -> None:
+    line, _ = line_for([occ("b", at(18), at(19))], now=at(14, 0), age=timedelta(minutes=20))
+
+    # Synced 20 minutes ago with a 30 minute bound: current for 10 more minutes, not 30.
+    assert line.fresh_until == at(14, 10)

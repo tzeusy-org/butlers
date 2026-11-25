@@ -2,7 +2,8 @@
  * The owner's agenda line from `/now` (bu-5ii4gj.2 P3): next, or free until. Rendered in the Shell
  * header and at the top of the Overview. It never invents a line: while the surface is off (404)
  * or the card carries no agenda it renders nothing, and an unreadable calendar says so.
- * A polite live region announces the line only when its text changes.
+ * A polite live region announces the line only when its text changes; a page showing two strips
+ * (header and Overview at md+) lets only the header one announce (`announce="below-md"` on the other).
  */
 
 import { useState } from "react";
@@ -13,7 +14,17 @@ import { cn } from "@/lib/utils.ts";
 
 export const AGENDA_KIND = "owner.agenda";
 
-export function NowStrip({ className }: { className?: string }) {
+export function NowStrip({
+  className,
+  announce = true,
+}: {
+  className?: string;
+  /**
+   * The polite live region. Only one strip may announce at a time or a change is read twice:
+   * `"below-md"` announces only where the header strip is hidden, `false` never.
+   */
+  announce?: boolean | "below-md";
+}) {
   const { data, isError, error } = useNow();
   const line = data?.data.lines.find((l) => l.kind === AGENDA_KIND) ?? null;
 
@@ -51,9 +62,16 @@ export function NowStrip({ className }: { className?: string }) {
       ) : (
         body
       )}
-      <span role="status" aria-live="polite" className="sr-only" data-testid="now-strip-live">
-        {announced}
-      </span>
+      {announce ? (
+        <span
+          role="status"
+          aria-live="polite"
+          className={cn("sr-only", announce === "below-md" && "md:hidden")}
+          data-testid="now-strip-live"
+        >
+          {announced}
+        </span>
+      ) : null}
     </div>
   );
 }

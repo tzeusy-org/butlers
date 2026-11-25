@@ -83,10 +83,15 @@ def agenda_line(
 
     ``verdict`` is ``None`` when the calendar could not be asked at all. The returned last-known is
     replaced only by a read from a current calendar, so unknown never overwrites what was known, and
-    it is dropped once older than ``MAX_LAST_KNOWN_AGE``. For any audience but the owner the line
-    carries no door, which would name a third party's event; the text never carries a title.
+    it is dropped once older than ``MAX_LAST_KNOWN_AGE`` or at owner-local midnight. For any
+    audience but the owner the line carries no door, which would name a third party's event; the
+    text never carries a title.
     """
-    if last_known is not None and now - last_known.read_at > MAX_LAST_KNOWN_AGE:
+    if last_known is not None and (
+        now - last_known.read_at > MAX_LAST_KNOWN_AGE
+        or last_known.read_at.astimezone(zone).date() != now.astimezone(zone).date()
+    ):
+        # Too old, or from another owner-local day: yesterday's agenda is not last known today.
         last_known = None
     bound = now + stale_after
     if verdict is None or not verdict.available:
@@ -102,7 +107,9 @@ def agenda_line(
     text, door, boundary = agenda_text(verdict, zone)
     # Current until the text next changes (a meeting ends or starts, or the day rolls over), or the
     # sync staleness bound, whichever is sooner.
-    fresh_until = min(bound, boundary or _midnight_after(now, zone))
+    synced = verdict.freshness.as_of
+    sync_bound = synced.astimezone(now.tzinfo) + stale_after if synced is not None else bound
+    fresh_until = min(sync_bound, boundary or _midnight_after(now, zone))
     if audience is not Audience.OWNER:
         door = None
     line = NowLine(AGENDA_KIND, AGENDA_LABEL, "known", text, False, _SOURCE, 0.0, door, fresh_until)

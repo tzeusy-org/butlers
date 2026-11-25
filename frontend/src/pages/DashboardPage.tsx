@@ -521,7 +521,7 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Today">
-            <NowStrip className="mb-2 text-sm" />
+            <NowStrip className="mb-2 text-sm" announce="below-md" />
             <DaySheetStrip
               sheet={daySheet.data?.data ?? null}
               isLoading={daySheet.isLoading}

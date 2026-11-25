@@ -158,7 +158,15 @@ async def get_now(
     finally:
         if connection is not None:
             await connection.close()
-    card = replace(card, lines=(*card.lines, await _agenda_line(as_of)))
+    lines = (*card.lines, await _agenda_line(as_of))
+    # The headline counts every line, the agenda included: an unreadable calendar is not "current".
+    behind = sum(1 for line in lines if line.state != "known")
+    headline = (
+        f"All {len(lines)} signals current"
+        if behind == 0
+        else f"{behind} of {len(lines)} signals not current"
+    )
+    card = replace(card, lines=lines, headline=headline, all_current=behind == 0)
     model = NowCardModel(
         as_of=card.as_of,
         headline=card.headline,

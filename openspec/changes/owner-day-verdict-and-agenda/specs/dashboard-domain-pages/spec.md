@@ -28,11 +28,12 @@ Source: bu-5ii4gj.2 (run 26 move 2), slice P3
 Scope: v1-mandatory
 
 The dashboard SHALL read `/api/now` through a `useNow` hook under the `['now']` query key and show a
-`NowStrip` in the Shell header and at the top of the Overview, each line a door to its page or
-entry. The key SHALL be invalidated on `calendar` bus events and on a boundary timer, not polled.
+`NowStrip` in the Shell header and at the top of the Overview. The strip SHALL show only the
+`owner.agenda` line of the card (not the other signals), which is a door to its page or entry. The key SHALL be invalidated on `calendar` bus events and on a boundary timer, not polled.
 When the `/now` surface is off and answers 404, the strip SHALL render nothing and no invented
 line. A change of the agenda line SHALL be announced through a polite live region only when the
-line changes.
+line changes, and where two strips are on screen (Overview at md and wider) only one SHALL carry a
+live region, so a change is read once.
 
 #### Scenario: Agenda lines render with a door
 
