@@ -368,3 +368,98 @@ def test_only_describe_skips_dlp():
 
     assert {t.name for t in default_tools().values() if not t.dlp} == {"describe"}
     assert len(default_tools()) == 18
+
+
+# bu-y66o00.70: invisible fillers that are not Cc or Cf, token-shaped userinfo, secret names.
+_FILLERS = {
+    "hangul-filler": "ㅤ",
+    "halfwidth-hangul-filler": "ﾠ",
+    "choseong-filler": "ᅟ",
+    "jungseong-filler": "ᅠ",
+    "cgj": "͏",
+    "braille-blank": "⠀",
+    "variation-selector": "️",
+    "khmer-inherent-vowel": "឴",
+    "mongolian-fvs": "᠋",
+    "tag-space": "\U000e0020",
+}
+
+
+@pytest.mark.parametrize("filler", list(_FILLERS.values()), ids=list(_FILLERS))
+def test_invisible_fillers_inside_a_card_number_are_removed_before_the_scan(filler):
+    hidden = CARD[:6] + filler + CARD[6:]
+    text, scan = _text("search", None, f"card: {hidden}.")
+    assert text == "card: [redacted:luhn]." and scan.counted == 1
+
+
+def test_combining_marks_and_ordinary_accents_survive_normalization():
+    assert normalize("café näive") == "café näive"
+    assert normalize("à́b") == "à́b"
+
+
+_TOKEN = "a1B2c3D4e5" * 2  # synthetic, built at runtime
+
+
+def test_token_shaped_userinfo_without_a_password_is_redacted():
+    text, scan = _text("search", None, f"see https://{_TOKEN}@bridge.example/x now")
+    assert text == "see [redacted:url_userinfo] now" and scan.counted == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://git@github.example/o/r.git",
+        "ssh://git@host.example/repo",
+        "https://user@host.example/x",
+        "https://a1B2c3D4e5@host.example/x",  # short userinfo
+        "https://abcdefghijklmnopqrstuvwxyz@host.example/x",  # long but not token-shaped
+    ],
+)
+def test_ordinary_userinfo_is_left_alone(url):
+    # finance shares contact details, so only the userinfo rule is under test.
+    text, scan = _text("finance_ledger", "finance", f"clone {url} here")
+    assert text == f"clone {url} here" and scan.counted == 0
+
+
+def test_token_shaped_userinfo_is_redacted_on_marked_columns_and_paths():
+    url = f"https://{_TOKEN}@bridge.example/x"
+    column = {"kind": "transactions", "id": "a", "fields": {"receipt_url": url}}
+    path = {"kind": "facts", "id": "f", "fields": {}, "json_fields": {"metadata.external_ref": url}}
+    out, scan = scan_result("finance_records", "finance", {"items": [column, path]})
+    assert out["items"][0]["fields"]["receipt_url"] == "[redacted:url_userinfo]"
+    assert out["items"][1]["json_fields"]["metadata.external_ref"] == "[redacted:url_userinfo]"
+    assert scan.counted == 2
+
+
+def test_git_userinfo_survives_on_marked_columns():
+    url = "https://git@host.example/o/r.git"
+    row = {"kind": "transactions", "id": "a", "fields": {"receipt_url": url}}
+    out, scan = scan_result("finance_records", "finance", {"items": [row]})
+    assert out["items"][0]["fields"]["receipt_url"] == url and scan.counted == 0
+
+
+@pytest.mark.parametrize("name", ["secret", "client_secret", "clientSecret", "apikey", "ApiKey"])
+def test_secret_and_apikey_query_names_are_redacted_on_marked_columns(name):
+    row = {
+        "kind": "transactions",
+        "id": "a",
+        "fields": {"receipt_url": f"https://r.example/x?{name}=abc"},
+    }
+    out, scan = scan_result("finance_records", "finance", {"items": [row]})
+    assert out["items"][0]["fields"]["receipt_url"] == "[redacted:url_secret]"
+    assert scan.counted == 1
+
+
+def test_secretary_style_query_names_are_not_secret_names():
+    url = "https://r.example/x?secretary=abc&page=2"
+    text, scan = _text("search", None, url)
+    assert text == url and scan.counted == 0
+
+
+def test_find_canary_sees_through_invisible_fillers():
+    from butlers.capability_host.dlp import find_canary
+
+    canary = "CANARY-ZZ-0001"
+    assert find_canary({"a": canary[:6] + "ㅤ" + canary[6:]}, (canary,))
+    assert find_canary({"a": canary[:6] + "⠀" + canary[6:]}, (canary,))
+    assert not find_canary({"a": "café"}, (canary,))

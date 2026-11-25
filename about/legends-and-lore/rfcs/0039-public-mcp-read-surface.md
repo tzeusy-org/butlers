@@ -2011,7 +2011,9 @@ which are a model-use kind. This surface uses no model.
 text fields only; numeric money and measurement fields are skipped, which
 limits false positives on amounts. Each text field is first normalized with
 NFKC, and characters of Unicode categories Cc and Cf (controls, zero-width
-and format characters) are removed, so full-width digits or zero-width joiners
+and format characters) and the invisible filler code points that are neither
+(the Unicode Default_Ignorable_Code_Point set, such as U+034F, U+115F, U+1160,
+U+3164 and U+FFA0, plus U+2800) are removed, so full-width digits or zero-width joiners
 cannot split a match.
 
 - *Credential rules* (redacted and counted, in every domain): Luhn-valid
@@ -2019,11 +2021,14 @@ cannot split a match.
   number is payment credential material, and finance stores only
   `last_four`); `AKIA…`, `ghp_…`, `xox…`, `sk-…` and JWT-shaped tokens; PEM
   blocks; URLs whose authority carries userinfo with a password
-  (`scheme://user:pass@host`, the shape of a SimpleFIN access URL); URLs
+  (`scheme://user:pass@host`, the shape of a SimpleFIN access URL) or userinfo
+  of 20 or more token characters with no password (`scheme://<token>@host`;
+  `git@host` and `user@host` stay unredacted, and the marks that switch off the
+  entropy and path-segment rules do not switch this off); URLs
   with a query parameter whose name, split on `-`, `_` and camelCase
   boundaries and compared case-insensitively, has a segment equal to
   `token`, `code`, `sig`, `signature`, `key`, `pwd`, `passcode`, `password`,
-  `credential` or `auth` (so `X-Amz-Signature`, `X-Amz-Credential`,
+  `credential`, `auth`, `secret` or `apikey` (so `client_secret`, `apikey`, `X-Amz-Signature`, `X-Amz-Credential`,
   `X-Amz-Security-Token` and `X-Goog-Signature` match; `pwd`, `passcode` and
   `password` since OD17, because Health's calendar descriptions, now
   published, can carry meeting links with an embedded passcode), or with a

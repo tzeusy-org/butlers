@@ -210,3 +210,19 @@ def test_an_instruction_bearing_evidence_url_reaches_the_owner_as_scheme_and_hos
         "external_mcp:url_host=https://example.org:8443",
         f"external_mcp:url_sha256={digest}",
     }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "4111111111ㅤ111111",  # invisible filler splits a Luhn run
+        "https://" + "a1B2c3D4e5" * 2 + "@bridge.example/x",  # token-shaped userinfo
+        "https://r.example/x?client_secret=abc",
+    ],
+)
+def test_secret_shaped_uses_the_widened_dlp_rules(value):
+    assert importer._secret_shaped(value)
+
+
+def test_secret_shaped_leaves_ordinary_text_alone():
+    assert not importer._secret_shaped("clone https://git@host.example/o/r.git, café")

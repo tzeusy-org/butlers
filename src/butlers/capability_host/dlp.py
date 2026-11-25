@@ -63,7 +63,7 @@ _OTP = re.compile(
 _ENTROPY = re.compile(r"[A-Za-z0-9+_=-]{20,}")
 _SECRET_PARAMS = frozenset(
     {"token", "code", "sig", "signature", "key", "pwd", "passcode", "password", "credential"}
-    | {"auth"}
+    | {"auth", "secret", "apikey"}
 )
 _PARAM_SPLIT = re.compile(r"[-_]|(?<=[a-z0-9])(?=[A-Z])")
 _PATH_TOKEN = re.compile(r"[A-Za-z0-9_-]{20,}\Z")
@@ -88,12 +88,34 @@ _PHONE = re.compile(
 )
 
 
+# Invisible filler code points that are not Cc or Cf and survive NFKC: the Unicode
+# Default_Ignorable_Code_Point set (UCD DerivedCoreProperties) minus the Cc/Cf members already
+# dropped by category, plus U+2800 (braille blank, a visible-width blank that is not default
+# ignorable). Combining marks outside this set (accents, diacritics) are kept.
+_INVISIBLE_RANGES = (
+    (0x034F, 0x034F),  # combining grapheme joiner (Mn)
+    (0x115F, 0x1160),  # Hangul choseong and jungseong fillers (Lo)
+    (0x17B4, 0x17B5),  # Khmer inherent vowels (Mn)
+    (0x180B, 0x180D),  # Mongolian free variation selectors (Mn)
+    (0x2800, 0x2800),  # braille pattern blank (So)
+    (0x3164, 0x3164),  # Hangul filler (Lo)
+    (0xFE00, 0xFE0F),  # variation selectors (Mn)
+    (0xFFA0, 0xFFA0),  # halfwidth Hangul filler (Lo)
+    (0xE0000, 0xE0FFF),  # tags and variation selectors supplement (default ignorable)
+)
+
+
+def _droppable(c: str) -> bool:
+    if unicodedata.category(c) in ("Cc", "Cf"):
+        return True
+    cp = ord(c)
+    return any(lo <= cp <= hi for lo, hi in _INVISIBLE_RANGES)
+
+
 def normalize(text: str) -> str:
-    """NFKC, then drop Cc and Cf characters except tab and newline."""
+    """NFKC, then drop Cc, Cf and invisible filler characters except tab and newline."""
     return "".join(
-        c
-        for c in unicodedata.normalize("NFKC", text)
-        if c in _KEEP or unicodedata.category(c) not in ("Cc", "Cf")
+        c for c in unicodedata.normalize("NFKC", text) if c in _KEEP or not _droppable(c)
     )
 
 
@@ -223,7 +245,7 @@ def _url_rule(url: str, marked: bool) -> str | None:
     except ValueError:
         return None
     userinfo = parts.netloc.rpartition("@")[0]
-    if ":" in userinfo:
+    if ":" in userinfo or (_PATH_TOKEN.match(userinfo) and _tokenish(userinfo)):
         return "url_userinfo"
     for name, _ in params:
         if {s.lower() for s in _PARAM_SPLIT.split(name)} & _SECRET_PARAMS:
@@ -322,11 +344,7 @@ def find_canary(result: Any, canaries: tuple[str, ...]) -> bool:
     while stack:
         node = stack.pop()
         if isinstance(node, str):
-            folded = "".join(
-                c
-                for c in unicodedata.normalize("NFKC", node)
-                if unicodedata.category(c) not in ("Cc", "Cf")
-            )
+            folded = "".join(c for c in unicodedata.normalize("NFKC", node) if not _droppable(c))
             if any(c in node or c in folded for c in canaries):
                 return True
         elif isinstance(node, dict):
