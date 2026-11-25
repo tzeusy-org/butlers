@@ -30,7 +30,7 @@ async def test_all_six_public_writers_refuse_transport_actor_without_factor():
     from butlers.modules.approvals.module import ApprovalsModule
 
     class Connection:
-        fetchrow = AsyncMock(return_value={"suggestion_type": "promotion"})
+        fetchrow = AsyncMock(return_value={"suggestion_type": "promotion", "tool_name": "send"})
         execute = AsyncMock()
 
     connection = Connection()

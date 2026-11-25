@@ -81,6 +81,7 @@ from butlers.modules.approvals.goal_fence import (
     is_goal_effect,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
+from butlers.modules.approvals.per_event import per_event_action_refusal, per_event_rule_refusal
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.approvals.stepup import (
@@ -795,6 +796,9 @@ class ApprovalsModule(Module):
         max_uses: int | None = None,
         actor: ActorContext | None = None,
     ) -> dict:
+        refusal = per_event_rule_refusal(tool_name, self._tool_metadata)
+        if refusal is not None:
+            return refusal  # a per-event tool never gets a rule; before any step-up
         return await self._rule_write(
             "create",
             dict(
@@ -815,6 +819,8 @@ class ApprovalsModule(Module):
         actor: ActorContext | None = None,
     ) -> dict:
         refusal = await self._external_rule_refusal(action_id)
+        if refusal is None:
+            refusal = await per_event_action_refusal(self._db, action_id, self._tool_metadata)
         if refusal is not None:
             return refusal
         return await self._rule_write(
@@ -844,6 +850,8 @@ class ApprovalsModule(Module):
             return await self._approve_action_write(action_id, False, actor)
         # Refused before any step-up or status change (REQ-module-approvals-010).
         refusal = await self._external_rule_refusal(action_id)
+        if refusal is None:
+            refusal = await per_event_action_refusal(self._db, action_id, self._tool_metadata)
         if refusal is not None:
             return refusal
         result = await self._rule_write(
@@ -918,6 +926,10 @@ class ApprovalsModule(Module):
                 EXTERNAL_PROPOSAL_RULE_REFUSAL if create_rule else EXTERNAL_PROPOSAL_REVIEW_ONLY
             )
             return {"error": refusal}
+        if create_rule:
+            per_event = per_event_rule_refusal(action.tool_name, self._tool_metadata)
+            if per_event is not None:
+                return per_event
 
         transition = await transition_pending_action(
             self._db,
@@ -975,7 +987,9 @@ class ApprovalsModule(Module):
                 updated_action = (
                     PendingAction.from_row(updated_action_row) if updated_action_row else None
                 )
-                if updated_action is not None and _counts_toward_promotion(updated_action):
+                if updated_action is not None and _counts_toward_promotion(
+                    updated_action, self._tool_metadata
+                ):
                     tool_meta = self._tool_metadata.get(action.tool_name)
                     fingerprint = _compute_fingerprint(
                         action.tool_name, action.tool_args, tool_meta=tool_meta
@@ -1203,6 +1217,9 @@ class ApprovalsModule(Module):
         actor_result = _require_authenticated_human_actor("create_approval_rule", actor)
         if isinstance(actor_result, dict):
             return actor_result
+        refusal = per_event_rule_refusal(tool_name, self._tool_metadata)
+        if refusal is not None:
+            return refusal
 
         rule_id = uuid.uuid4()
         now = datetime.now(UTC)
@@ -1312,6 +1329,9 @@ class ApprovalsModule(Module):
         action = PendingAction.from_row(row)
         if is_external_proposal_key(action.deduplication_key):
             return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        per_event = per_event_rule_refusal(action.tool_name, self._tool_metadata)
+        if per_event is not None:
+            return per_event
 
         # Generate suggested constraints
         suggested = suggest_constraints(action.tool_name, action.tool_args)
@@ -1527,6 +1547,9 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         action = PendingAction.from_row(row)
+        per_event = per_event_rule_refusal(action.tool_name, self._tool_metadata)
+        if per_event is not None:
+            return per_event
 
         suggested = suggest_constraints(action.tool_name, action.tool_args)
 

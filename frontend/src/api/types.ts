@@ -3961,6 +3961,8 @@ export interface EntityMergeReview {
 
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  /** False for an always_per_event tool: no standing rule may approve it, so no "always allow". */
+  rule_eligible?: boolean;
   /** Present only for an external MCP proposal; its proposed_action has no tool_args. */
   external_proposal_review?: ExternalProposalReview | null;
   /** Present only for a pending, showable Relationship entity merge; call_preview is then null. */
