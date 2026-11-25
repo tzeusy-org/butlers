@@ -46,4 +46,35 @@ describe("useLocalDayStart", () => {
     });
     expect(result.current.getDate()).toBe(27);
   });
+
+  it("re-reads the day on window focus when the timer never fired (OS sleep)", () => {
+    vi.setSystemTime(new Date(2026, 10, 26, 23, 0, 0));
+    const { result } = renderHook(() => useLocalDayStart());
+    // The clock jumps past midnight without any timer advancing, as after sleep.
+    vi.setSystemTime(new Date(2026, 10, 27, 7, 0, 0));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(result.current.getDate()).toBe(27);
+  });
+
+  it("re-reads the day on pageshow", () => {
+    vi.setSystemTime(new Date(2026, 10, 26, 23, 0, 0));
+    const { result } = renderHook(() => useLocalDayStart());
+    vi.setSystemTime(new Date(2026, 10, 27, 7, 0, 0));
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    expect(result.current.getDate()).toBe(27);
+  });
+
+  it("never waits longer than a minute between re-reads", () => {
+    vi.setSystemTime(new Date(2026, 10, 26, 8, 0, 0));
+    const { result } = renderHook(() => useLocalDayStart());
+    vi.setSystemTime(new Date(2026, 10, 27, 7, 0, 0));
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(result.current.getDate()).toBe(27);
+  });
 });
