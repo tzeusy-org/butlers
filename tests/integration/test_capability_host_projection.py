@@ -276,19 +276,39 @@ async def test_deploy_skew_refuses_every_tool_but_describe(projected, reader, tm
     assert _code(await harness.call("describe")) is None
 
 
-async def test_a_cancelled_statement_is_unavailable(projected, tmp_path):
-    topology, _ = projected
-    slow = await _pool(topology, statement_timeout="1")
+async def test_a_cancelled_statement_is_unavailable(projected, reader, tmp_path):
+    """A statement the role's timeout cancels is ``unavailable`` and retryable (D17).
+
+    Exactly one statement is cancelled, deterministically: the reader's own query waits on a lock
+    the test holds and the server cancels the wait at ``statement_timeout``. A timeout short
+    enough to expire by itself would race every statement of the connection (BEGIN, type
+    introspection, the pool's reset on release) and left the run hanging on a lost response
+    (bu-8tncsb).
+    """
+    topology, projection = projected
+    harness = Harness(tmp_path, reader)
+    # Probe once on the healthy pool, so the locked view is not scanned by the probe's own
+    # (30 s) timeout and the call below reaches its single locked read.
+    await harness.host.warm()
+    assert harness.host._probed is not None and not harness.host.latched
+    slow = await _pool(topology, statement_timeout="1000")
+    lock = projection.connect()
     try:
-        harness = Harness(tmp_path, slow)
+        harness.host.pool = slow
+        # Holding the lock waits on nothing but a transient apply-worker write, and the worker
+        # waits on this lock only until the finally below: no cycle is possible.
+        lock.exec_driver_sql("SET lock_timeout = '10s'")
+        lock.exec_driver_sql("LOCK TABLE public.entities IN ACCESS EXCLUSIVE MODE")
         result = await harness.call("entity_lookup", {"name": "x"})
         assert _code(result) == "unavailable"
         assert result["structuredContent"]["error"]["retryable"] is True
-        # The probe scanned every view under its own 30 s timeout and was recorded, even
-        # though the role's statement timeout cancels the call's own snapshot.
-        assert harness.host._probed is not None and not harness.host.latched
     finally:
-        await slow.close()
+        lock.rollback()
+        lock.close()
+        slow.terminate()
+    # With the lock gone the same host serves again: the refusal was the cancelled read.
+    harness.host.pool = reader
+    assert _code(await harness.call("entity_lookup", {"name": "x"})) is None
 
 
 async def test_an_unreachable_projection_is_unavailable(tmp_path):
