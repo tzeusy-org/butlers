@@ -5,7 +5,8 @@
 The calendar module SHALL record, in `calendar_owner_agreements`, what the owner accepted when their
 response becomes `accepted` or `tentative` for a provider event they did not organise: the provider
 identity, the occurrence's original start, its start and end, a digest of the location, a digest of
-the join details, a digest of the other attendees, and when it was observed. A row SHALL be unique
+the join details when the provider mapping carries them, a digest of the other attendees, and
+when it was observed. A row SHALL be unique
 on (provider identity, original start). A later sync that changes nothing SHALL write nothing, and
 the owner changing their answer to `declined` or `needsAction` SHALL end the agreement. No row SHALL
 hold a location, a join link or an address, only digests.
