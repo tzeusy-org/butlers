@@ -37,7 +37,10 @@ function renderGrid(entries: UnifiedCalendarEntry[]) {
     <TimeGrid
       range="week"
       weekDays={weekDays}
-      entriesByDay={bucketEntriesByDay(entries, TZ)}
+      entriesByDay={bucketEntriesByDay(entries, TZ, {
+        startKey: "2026-11-23",
+        endKey: "2026-11-25",
+      })}
       overlaysEnabled={false}
       overlaysByDayMap={new Map()}
       overlapEntryIds={new Set()}
@@ -94,5 +97,13 @@ describe("TimeGrid multi-day spans", () => {
     expect(screen.getByTitle(/· B$/).getAttribute("style")).toContain(
       "left: calc(50% + 2px)",
     );
+  });
+
+  it("still draws a timed event that began far before the visible days", () => {
+    renderGrid([entry("Long", "2026-08-01T10:00:00Z", "2026-12-31T10:00:00Z")]);
+    const blocks = document.querySelectorAll('[data-calendar-entry-id="Long"]');
+    expect(blocks).toHaveLength(3);
+    expect(blocks[1].getAttribute("data-continues-from-prev")).toBe("true");
+    expect(blocks[1].getAttribute("data-continues-to-next")).toBe("true");
   });
 });

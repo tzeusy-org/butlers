@@ -56,7 +56,9 @@ function timedSegmentsFor(
   const slices = entries
     .filter((e) => !e.all_day)
     .flatMap((e) =>
-      entryDaySegments(e, tz).filter((seg) => seg.dayKey === key),
+      // Clip to the one day drawn: an unwindowed span is capped from its start and would
+      // drop a long event from a day far past it.
+      entryDaySegments(e, tz, { startKey: key, endKey: key }),
     );
   return packSegments(slices);
 }
