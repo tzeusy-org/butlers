@@ -98,21 +98,6 @@ async def test_ledger_constraints(rel) -> None:
 @pytest.mark.integration
 @_docker
 @_session_loop
-async def test_the_role_can_use_the_ledger(rel) -> None:
-    if not await rel.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)", "butler_relationship_rw"
-    ):
-        pytest.skip("role absent in this database")
-    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-        assert await rel.fetchval(
-            "SELECT has_table_privilege('butler_relationship_rw', 'relationship.encounters', $1)",
-            privilege,
-        )
-
-
-@pytest.mark.integration
-@_docker
-@_session_loop
 async def test_upgrade_is_idempotent(rel) -> None:
     mod = _migration()
     await _run(rel, mod.upgrade_statements())

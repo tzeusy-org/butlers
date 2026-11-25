@@ -396,3 +396,157 @@ def test_reduce_state_precedence_is_total():
         "happened_attested",
         "owner_debrief",
     )
+
+
+async def test_the_relationship_role_holds_the_ledger_grant(interaction_sync_pool):
+    """The harness pool runs ``SET ROLE butler_relationship_rw``, so this proves the migration grant."""
+    async with interaction_sync_pool() as pool:
+        assert await pool.fetchval("SELECT current_user") == "butler_relationship_rw"
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert await pool.fetchval(
+                "SELECT has_table_privilege(current_user, 'relationship.encounters', $1)", privilege
+            )
+
+
+async def _occurrence_rows(pool) -> set:
+    return {
+        (r["event_id"], r["occurrence_start"])
+        for r in await pool.fetch("SELECT event_id, occurrence_start FROM relationship.encounters")
+    }
+
+
+async def test_a_rescheduled_event_leaves_no_ghost_occurrence(interaction_sync_pool):
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        await _person(pool, "Alice", "alice@example.com")
+        event_id = await _event(
+            pool, [{"email": "alice@example.com", "responseStatus": "accepted"}]
+        )
+        await _reducer().run_encounter_reducer(pool)
+        [(_, tuesday)] = await _occurrence_rows(pool)
+
+        thursday = tuesday + timedelta(days=2)
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = $2, ends_at = $2::timestamptz + interval '1 hour' "
+            "WHERE id = $1",
+            event_id,
+            thursday,
+        )
+        await _reducer().run_encounter_reducer(pool)
+
+        assert await _occurrence_rows(pool) == {(event_id, thursday)}
+
+
+async def test_a_deleted_event_leaves_no_ledger_rows(interaction_sync_pool):
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        await _person(pool, "Alice", "alice@example.com")
+        event_id = await _event(
+            pool, [{"email": "alice@example.com", "responseStatus": "accepted"}]
+        )
+        await _reducer().run_encounter_reducer(pool)
+        assert await _occurrence_rows(pool)
+
+        await pool.execute("DELETE FROM calendar_events WHERE id = $1", event_id)
+        result = await _reducer().run_encounter_reducer(pool)
+
+        assert result["complete"] is True and result["removed"] == 1
+        assert await _occurrence_rows(pool) == set()
+
+
+async def test_a_dropped_recurring_instance_leaves_no_ledger_row(interaction_sync_pool):
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        await _person(pool, "Alice", "alice@example.com")
+        event_id = await _event(
+            pool, [{"email": "alice@example.com", "responseStatus": "accepted"}]
+        )
+        starts = await pool.fetchval(
+            "SELECT starts_at FROM calendar_events WHERE id = $1", event_id
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET recurrence_rule = 'FREQ=DAILY' WHERE id = $1", event_id
+        )
+        await pool.execute("DELETE FROM calendar_event_instances WHERE event_id = $1", event_id)
+        later = starts + timedelta(days=1)
+        for at in (starts, later):
+            await pool.execute(
+                "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref,"
+                " starts_at, ends_at, timezone, status, metadata) "
+                "SELECT id, source_id, 'inst-' || $2::timestamptz::text, $2::timestamptz, $2::timestamptz + interval '1 hour', 'UTC', 'confirmed', '{}'::jsonb"
+                " FROM calendar_events WHERE id = $1",
+                event_id,
+                at,
+            )
+        await _reducer().run_encounter_reducer(pool)
+        assert await _occurrence_rows(pool) == {(event_id, starts), (event_id, later)}
+
+        await pool.execute(
+            "DELETE FROM calendar_event_instances WHERE event_id = $1 AND starts_at = $2",
+            event_id,
+            later,
+        )
+        await _reducer().run_encounter_reducer(pool)
+
+        assert await _occurrence_rows(pool) == {(event_id, starts)}
+
+
+async def test_the_read_cap_never_purges_valid_history(interaction_sync_pool, monkeypatch):
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        await _person(pool, "Alice", "alice@example.com")
+        guest = [{"email": "alice@example.com", "responseStatus": "accepted"}]
+        near = await _event(pool, guest, hours_ago=2)
+        far = await _event(pool, guest, hours_ago=24 * 30)
+        reducer = _reducer()
+        await reducer.run_encounter_reducer(pool)
+        assert {e for e, _ in await _occurrence_rows(pool)} == {near, far}
+
+        monkeypatch.setattr(reducer, "MAX_OCCURRENCES", 1)
+        await reducer.run_encounter_reducer(pool)
+
+        assert {e for e, _ in await _occurrence_rows(pool)} == {near, far}
+
+
+async def test_the_capped_read_prefers_the_nearest_occurrences(interaction_sync_pool, monkeypatch):
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        await _person(pool, "Alice", "alice@example.com")
+        guest = [{"email": "alice@example.com", "responseStatus": "accepted"}]
+        await _event(pool, guest, hours_ago=24 * 60)
+        near = await _event(pool, guest, hours_ago=3)
+        reducer = _reducer()
+        monkeypatch.setattr(reducer, "MAX_OCCURRENCES", 1)
+
+        await reducer.run_encounter_reducer(pool)
+
+        assert {e for e, _ in await _occurrence_rows(pool)} == {near}
+
+
+async def test_an_entity_merge_repoints_the_ledger(interaction_sync_pool):
+    from butlers.entity_rebind import _repoint_encounters
+
+    async with interaction_sync_pool() as pool:
+        await _owner(pool)
+        alice = await _person(pool, "Alice", "alice@example.com")
+        real = await _person(pool, "Alice Real", "alice.real@example.com")
+        event_id = await _event(
+            pool,
+            [
+                {"email": "alice@example.com", "responseStatus": "accepted"},
+                {"email": "alice.real@example.com", "responseStatus": "accepted"},
+            ],
+        )
+        other = await _event(pool, [{"email": "alice@example.com", "responseStatus": "accepted"}])
+        await _reducer().run_encounter_reducer(pool)
+
+        async with pool.acquire() as conn:
+            changed = await _repoint_encounters(conn, alice, real)
+
+        rows = await pool.fetch("SELECT entity_id, event_id FROM relationship.encounters")
+        assert alice not in {r["entity_id"] for r in rows}
+        # Both survivors' rows exist once: the collision on the shared event dropped the source's.
+        assert sorted((str(r["entity_id"]), str(r["event_id"])) for r in rows) == sorted(
+            [(str(real), str(event_id)), (str(real), str(other))]
+        )
+        assert changed == 2

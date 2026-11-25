@@ -57,25 +57,37 @@ _ANSWERED_HAPPENED: Final = frozenset({"none_agreed", "captured"})
 
 _OCCURRENCES_SQL: Final = """
     -- quarantine-exempt: participants of a quarantined invitation do not exist, so it records none
-    SELECT ce.id AS event_id, ce.starts_at AS starts_at,
-           (ce.status = 'cancelled') AS cancelled
-    FROM calendar_events ce
-    WHERE ce.recurrence_rule IS NULL
-      AND ce.metadata ->> 'source_type' = 'provider_event'
-      AND ce.all_day = false
-      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
-      AND ce.starts_at >= $1 AND ce.starts_at <= $2
-    UNION ALL
-    SELECT ce.id, ci.starts_at, (ce.status = 'cancelled' OR ci.status = 'cancelled')
-    FROM calendar_event_instances ci
-    JOIN calendar_events ce ON ce.id = ci.event_id
-    WHERE ce.recurrence_rule IS NOT NULL
-      AND ce.metadata ->> 'source_type' = 'provider_event'
-      AND ce.all_day = false
-      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
-      AND ci.starts_at >= $1 AND ci.starts_at <= $2
-    ORDER BY starts_at DESC
+    SELECT o.event_id, o.starts_at, o.cancelled
+    FROM (
+        SELECT ce.id AS event_id, ce.starts_at AS starts_at,
+               (ce.status = 'cancelled') AS cancelled
+        FROM calendar_events ce
+        WHERE ce.recurrence_rule IS NULL
+          AND ce.metadata ->> 'source_type' = 'provider_event'
+          AND ce.all_day = false
+          AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+          AND ce.starts_at >= $1 AND ce.starts_at <= $2
+          AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
+        UNION ALL
+        SELECT ce.id, ci.starts_at, (ce.status = 'cancelled' OR ci.status = 'cancelled')
+        FROM calendar_event_instances ci
+        JOIN calendar_events ce ON ce.id = ci.event_id
+        WHERE ce.recurrence_rule IS NOT NULL
+          AND ce.metadata ->> 'source_type' = 'provider_event'
+          AND ce.all_day = false
+          AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+          AND ci.starts_at >= $1 AND ci.starts_at <= $2
+          AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
+    ) o
+    ORDER BY abs(extract(epoch FROM (o.starts_at - $5::timestamptz))), o.starts_at, o.event_id
     LIMIT $3
+"""
+
+#: The ledger's own occurrences inside the window, to find the ones the calendar no longer has.
+_LEDGER_KEYS_SQL: Final = """
+    SELECT DISTINCT event_id, occurrence_start
+    FROM encounters
+    WHERE occurrence_start >= $1 AND occurrence_start <= $2
 """
 
 _PARTICIPANTS_SQL: Final = """
@@ -100,6 +112,15 @@ class Occurrence:
     cancelled: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _Inputs:
+    occurrences: list[Occurrence]
+    not_ready: set[uuid.UUID]
+    participants: dict[uuid.UUID, list[Any]]
+    debriefs: dict[Any, Any]
+    ghosts: list[tuple[uuid.UUID, datetime]]
+
+
 @dataclass(slots=True)
 class _Plan:
     rows: dict[tuple[uuid.UUID, uuid.UUID, datetime], tuple[str, str, str, dict[str, str]]] = field(
@@ -107,6 +128,9 @@ class _Plan:
     )
     #: occurrences whose people were fully computed, so rows outside ``rows`` are stale
     settled: list[Occurrence] = field(default_factory=list)
+    #: ledger occurrences the calendar no longer has (a reschedule, a deleted event, a dropped
+    #: instance), whose participants were readable
+    ghosts: list[tuple[uuid.UUID, datetime]] = field(default_factory=list)
 
 
 def reduce_state(
@@ -183,14 +207,29 @@ def _plan(
     return plan
 
 
-async def _read_inputs(
-    pool: asyncpg.Pool, now: datetime
-) -> tuple[list[Occurrence], set[uuid.UUID], dict[uuid.UUID, list[Any]], dict[Any, Any]]:
-    found = await pool.fetch(_OCCURRENCES_SQL, now - LOOKBACK, now + LOOKAHEAD, MAX_OCCURRENCES)
+async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
+    lo, hi = now - LOOKBACK, now + LOOKAHEAD
+    found = await pool.fetch(_OCCURRENCES_SQL, lo, hi, MAX_OCCURRENCES, None, now)
     occurrences = [Occurrence(r["event_id"], r["starts_at"], bool(r["cancelled"])) for r in found]
-    event_ids = sorted({o.event_id for o in occurrences}, key=str)
+    seen = {(o.event_id, o.starts_at) for o in occurrences}
+    # A ledger row the capped read did not return is checked against the calendar itself, per
+    # event and uncapped, so the cap can never make valid history look like a ghost.
+    missing = [
+        (r["event_id"], r["occurrence_start"])
+        for r in await pool.fetch(_LEDGER_KEYS_SQL, lo, hi)
+        if (r["event_id"], r["occurrence_start"]) not in seen
+    ]
+    ghosts: list[tuple[uuid.UUID, datetime]] = []
+    if missing:
+        ledger_events = sorted({e for e, _ in missing}, key=str)
+        current = {
+            (r["event_id"], r["starts_at"])
+            for r in await pool.fetch(_OCCURRENCES_SQL, lo, hi, None, ledger_events, now)
+        }
+        ghosts = [key for key in missing if key not in current]
+    event_ids = sorted({o.event_id for o in occurrences} | {e for e, _ in ghosts}, key=str)
     if not event_ids:
-        return occurrences, set(), {}, {}
+        return _Inputs(occurrences, set(), {}, {}, [])
     not_ready = await unavailable_event_ids(pool, event_ids)
     by_event: dict[uuid.UUID, list[Any]] = {}
     for r in await pool.fetch(_PARTICIPANTS_SQL, event_ids, RESOLVER_VERSION):
@@ -199,7 +238,13 @@ async def _read_inputs(
         (r["event_id"], r["occurrence_start"]): (r["id"], r["state"])
         for r in await pool.fetch(_DEBRIEFS_SQL, event_ids)
     }
-    return occurrences, not_ready, by_event, debriefs
+    return _Inputs(
+        occurrences,
+        not_ready,
+        by_event,
+        debriefs,
+        [key for key in ghosts if key[0] not in not_ready],
+    )
 
 
 async def run_encounter_reducer(
@@ -212,12 +257,14 @@ async def run_encounter_reducer(
     """
     now_utc: datetime = now or await pool.fetchval("SELECT now()")
     try:
-        occurrences, not_ready, participants, debriefs = await _read_inputs(pool, now_utc)
+        inputs = await _read_inputs(pool, now_utc)
     except Exception as exc:  # noqa: BLE001 - a failed read must leave prior states unchanged
         logger.warning("encounter_ledger_read_failed error=%s", type(exc).__name__)
         return {"complete": False, "occurrences": 0, "upserted": 0, "removed": 0, "skipped": 0}
 
-    plan = _plan(occurrences, not_ready, participants, debriefs, now_utc)
+    occurrences = inputs.occurrences
+    plan = _plan(occurrences, inputs.not_ready, inputs.participants, inputs.debriefs, now_utc)
+    plan.ghosts = inputs.ghosts
     removed = 0
     async with pool.acquire() as conn, conn.transaction():
         for (entity_id, event_id, starts_at), (series, state, basis, refs) in plan.rows.items():
@@ -254,6 +301,13 @@ async def run_encounter_reducer(
                 occ.event_id,
                 occ.starts_at,
                 keep,
+            )
+            removed += int(result.rsplit(" ", 1)[-1])
+        for event_id, starts_at in plan.ghosts:
+            result = await conn.execute(
+                "DELETE FROM encounters WHERE event_id = $1 AND occurrence_start = $2",
+                event_id,
+                starts_at,
             )
             removed += int(result.rsplit(" ", 1)[-1])
     return {

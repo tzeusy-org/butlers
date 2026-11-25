@@ -33,7 +33,12 @@ guest's decline (`declined_by_them`); an answered debrief (`none_agreed` or `cap
 `happened_attested`; a cancelled event; the owner's decline (`declined_by_owner`); an occurrence
 that has not started (`scheduled`); otherwise `unknown`. A `pending` or `expired` debrief SHALL NOT
 count as testimony. Re-running the reducer over unchanged inputs SHALL change nothing, including
-`updated_at`, and a guest removed from the event SHALL lose the row.
+`updated_at`, and a guest removed from the event SHALL lose the row. A ledger row whose occurrence
+the calendar no longer has (a reschedule, a deleted event, a dropped recurring instance) SHALL be
+removed when its event's participants are readable; the check SHALL query the calendar per event
+without the read cap, so the cap never purges valid history. The capped read SHALL prefer the
+occurrences nearest to now. An entity merge SHALL repoint the ledger's rows to the survivor, a
+collision on the same occurrence keeping the survivor's row.
 
 ID: REQ-relationship-encounter-ledger-002
 Source: bu-5ii4gj.3 slice E2a; design behavior matrix (precedence, idempotence)
@@ -43,6 +48,11 @@ Scope: v1-mandatory
 
 - **WHEN** the owner answered a debrief `captured` and one guest declined
 - **THEN** the guest SHALL be `declined_by_them` and every other recordable guest `happened_attested`
+
+#### Scenario: A rescheduled event leaves no ghost
+
+- **WHEN** an event moves from Tuesday to Thursday
+- **THEN** the ledger SHALL hold only the Thursday occurrence
 
 #### Scenario: Replay converges
 
