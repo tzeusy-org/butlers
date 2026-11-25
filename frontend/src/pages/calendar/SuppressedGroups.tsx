@@ -8,13 +8,14 @@ import { Time } from "@/components/ui/time";
 import type { CalendarSuppressedGroup, UnifiedCalendarEntry } from "@/api/types.ts";
 
 interface SuppressedGroupsProps {
-  groups: CalendarSuppressedGroup[];
+  /** undefined when the workspace fetch failed: unknown is not "none held back". */
+  groups: CalendarSuppressedGroup[] | undefined;
   truncated: boolean;
   onOpenDetail: (entry: UnifiedCalendarEntry) => void;
 }
 
 export function SuppressedGroups({ groups, truncated, onOpenDetail }: SuppressedGroupsProps) {
-  if (groups.length === 0 && !truncated) return null;
+  if (!groups?.length && !truncated) return null;
   return (
     <div className="mb-2 flex flex-col gap-1 text-sm" data-testid="calendar-suppression">
       {truncated ? (
@@ -22,7 +23,7 @@ export function SuppressedGroups({ groups, truncated, onOpenDetail }: Suppressed
           This window is too large to load in full: later events are not shown. Narrow the range.
         </p>
       ) : null}
-      {groups.map((group) => (
+      {(groups ?? []).map((group) => (
         <details key={`${group.day}|${group.title}`} data-testid="calendar-suppressed-group">
           <summary className="cursor-pointer text-fg">
             {group.count} hidden: {group.title} on{" "}

@@ -148,7 +148,7 @@ export function useCalendarWorkspaceData({
   const entriesSourceAvailable =
     workspaceQuery.data?.data.entries_source_available !== false;
 
-  const suppressedGroups = workspaceQuery.data?.data.suppressed_groups ?? [];
+  const suppressedGroups = workspaceQuery.data?.data.suppressed_groups;
   // The page cap ended the walk with rows still behind it: the window is not complete.
   const truncated = workspaceQuery.data?.data.has_more === true;
 
