@@ -109,6 +109,7 @@ from butlers.modules.approvals.delivery_lifecycle import (
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.entity_merge_review import (
+    ENTITY_MERGE_RULE_REFUSAL,
     entity_merge_binding,
     is_entity_merge_action,
     is_entity_merge_tool,
@@ -3711,7 +3712,6 @@ ENTITY_MERGE_UNSHOWABLE = (
     "This stored merge cannot be reviewed completely, so it cannot be approved; "
     "nothing was executed."
 )
-ENTITY_MERGE_RULE_REFUSAL = "An entity merge cannot become a standing rule; nothing was executed."
 
 
 def _check_entity_merge_decision(

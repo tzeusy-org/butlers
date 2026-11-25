@@ -159,6 +159,9 @@ describe("parked entity merge dossier", () => {
       { path: "/api/approvals/action-1/approve", body: { displayed_call: shown } },
     ]);
     expect(posts.some((post) => post.path.includes("/entities/merge"))).toBe(false);
+    // No "Always allow this shape" prompt: a merge never becomes a standing rule.
+    expect(screen.queryByRole("region", { name: "Teach this approval" })).toBeNull();
+    expect(screen.queryByText(/always allow/i)).toBeNull();
   });
 
   // Scenarios: comparison failure offers recovery without approval; Deny works

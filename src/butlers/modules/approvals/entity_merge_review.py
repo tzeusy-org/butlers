@@ -26,6 +26,7 @@ from butlers.modules.approvals.previews import args_digest
 #: Both names dispatch to Relationship's single merge authority (``daemon.py`` aliases
 #: the legacy name). Notification callbacks never decide either one.
 ENTITY_MERGE_TOOLS = frozenset({"memory_entity_merge", "entity_merge"})
+ENTITY_MERGE_RULE_REFUSAL = "An entity merge cannot become a standing rule; nothing was executed."
 _MERGE_ARG_KEYS = frozenset({"source_entity_id", "target_entity_id"})
 
 
@@ -88,6 +89,7 @@ def entity_merge_binding(tool_name: Any, tool_args: Any) -> EntityMergeBinding |
 
 
 __all__ = [
+    "ENTITY_MERGE_RULE_REFUSAL",
     "ENTITY_MERGE_TOOLS",
     "EntityMergeBinding",
     "entity_merge_binding",

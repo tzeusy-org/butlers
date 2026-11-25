@@ -651,6 +651,8 @@ function Dossier({
     displayedCall: DisplayedApprovalCall,
     ownerDelivery: OwnerDeliveryCard | null | undefined,
     externalProposal: boolean,
+    /** A parked entity merge: never offered as a standing rule afterwards. */
+    entityMerge?: boolean,
   ) => void;
   onCallShown: (view: ViewedApproval | null) => void;
   onDeny: (reason?: string, ownerDelivery?: OwnerDeliveryCard | null) => void;
@@ -798,7 +800,7 @@ function Dossier({
               if (approvePending || !mergeReady || detail.id !== actionId) return;
               // Closing first means a second activation has nothing to click.
               onMergeConfirmOpenChange(false);
-              onApprove({ ...mergeReview.displayed_call }, detail.owner_delivery, false);
+              onApprove({ ...mergeReview.displayed_call }, detail.owner_delivery, false, true);
             }}
           />
         </>
@@ -2132,7 +2134,10 @@ export default function ApprovalsPage() {
       approveMut.mutate(view, {
         // An external MCP proposal never becomes a standing rule, so it gets no
         // "always allow" prompt (REQ-dashboard-approvals-904, REQ-module-approvals-010).
-        onSuccess: () => { if (!view.external_proposal) setTeachingActionId(actionId); },
+        // Neither an outside proposal nor a merge may become a standing rule.
+        onSuccess: () => {
+          if (!view.external_proposal && !view.entity_merge) setTeachingActionId(actionId);
+        },
       });
     },
     [approveMut],
@@ -2544,7 +2549,7 @@ export default function ApprovalsPage() {
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={(displayed_call, owner_delivery, external_proposal) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal })}
+            onApprove={(displayed_call, owner_delivery, external_proposal, entity_merge) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal, entity_merge })}
             onCallShown={setShownCall}
             onDeny={(reason, owner_delivery) => denyMut.mutate({ id: dossierSelected, reason, owner_delivery })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
