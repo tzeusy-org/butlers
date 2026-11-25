@@ -28,12 +28,16 @@ def _ago(days: int) -> datetime:
 
 
 async def _row(pool, entity_id, state, basis, when, *, event=None) -> None:
+    # The reader joins the row to its event, so the row points at a real one by default.
+    event = event or await pool.fetchval(
+        "SELECT id FROM calendar_events ORDER BY created_at LIMIT 1"
+    )
     await pool.execute(
         "INSERT INTO relationship.encounters "
         "(entity_id, event_id, occurrence_start, series_key, state, basis) "
         "VALUES ($1, $2, $3, 'series', $4, $5)",
         entity_id,
-        event or uuid.uuid4(),
+        event,
         when,
         state,
         basis,
@@ -183,7 +187,6 @@ async def test_a_vouched_for_meeting_in_the_window_beats_older_history(db):
 @pytest.mark.asyncio(loop_scope="session")
 @_DOCKER
 async def test_one_covered_and_one_uncovered_attendee_in_one_envelope(db):
-    from butlers.core.identity.attendees import RESOLVER_VERSION  # noqa: F401
     from tests.modules.test_calendar_participants import _person
 
     pool, alice, _event_id = await _seed(db)
@@ -241,6 +244,42 @@ async def test_an_unrecognised_basis_shows_a_neutral_chip_and_logs(caplog):
 
     assert result[entity].last_met_basis == "recorded"
     assert "unrecognised basis" in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_DOCKER
+async def test_a_manual_link_on_a_quarantined_invitation_leaves_no_trace(db):
+    """The invite's third-party title and time never reach relationship state or a reader."""
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+    from butlers.modules.calendar.models import AttendeeInfo
+    from butlers.modules.calendar.participants import sync_manual_participants
+
+    pool, alice, _event_id = await _seed(db)
+    await pool.execute("DELETE FROM calendar_events")
+    invite = _event(
+        organizer="who@nowhere.test",
+        attendees=[
+            AttendeeInfo(email="me@example.com", self=True),
+            AttendeeInfo(email="who@nowhere.test", organizer=True),
+        ],
+    ).model_copy(update={"title": "Third-party secret"})
+    await _project(_module(pool), await pool.fetchval("SELECT id FROM calendar_sources"), invite)
+    quarantined = await pool.fetchval("SELECT id FROM calendar_events")
+    await sync_manual_participants(pool, quarantined, [alice])
+    # A row an earlier reducer run could have written before the predicate existed.
+    await _row(pool, alice, "unknown", "schedule", _ago(3), event=quarantined)
+
+    seen = (await read_person_time(pool, [alice], datetime.now(UTC)))[alice]
+    assert seen.last_scheduled is None and seen.last_scheduled_event is None
+
+    result = await run_encounter_reducer(pool)
+
+    assert result["complete"] is True
+    assert await pool.fetchval("SELECT count(*) FROM relationship.encounters") == 0
+    assert "Third-party secret" not in repr(
+        await read_person_time(pool, [alice], datetime.now(UTC))
+    )
 
 
 @pytest.mark.integration

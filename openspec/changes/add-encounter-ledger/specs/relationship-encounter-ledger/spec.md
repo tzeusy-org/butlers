@@ -106,7 +106,10 @@ or any person when the ledger read fails, SHALL keep the interim rule and SHALL 
 not caught up never hides a meeting. A person the ledger covers but with no happened row SHALL
 also get the interim rule over history older than the ledger window (before now minus the reducer's
 lookback), labelled `interim`, so a rollout never erases an older meeting. A happened row with an
-unrecognised basis SHALL log a warning and show the neutral basis `recorded`. A person whose posture is not `active` SHALL never be reported
+unrecognised basis SHALL log a warning and show the neutral basis `recorded`. When a person has both,
+`last_met` SHALL be shown and `last_scheduled` only when there is no `last_met`. A quarantined
+invitation SHALL never produce a ledger row, and its title and time SHALL never be reported, even
+for a manually linked person. A person whose posture is not `active` SHALL never be reported
 from the ledger. The reducer SHALL run on an hourly schedule. The meeting card and the prep rail
 SHALL render "last met" only from a vouched-for meeting (with its basis), "last met, unconfirmed"
 for the interim basis, and "last scheduled" otherwise.

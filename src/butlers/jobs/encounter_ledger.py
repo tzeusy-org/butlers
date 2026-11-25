@@ -41,6 +41,7 @@ from typing import Any, Final
 import asyncpg
 
 from butlers.core.identity.attendees import RESOLVER_VERSION
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.modules.calendar.participants import unavailable_event_ids
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,7 @@ MAX_OCCURRENCES: Final = 2000
 
 _ANSWERED_HAPPENED: Final = frozenset({"none_agreed", "captured"})
 
-_OCCURRENCES_SQL: Final = """
-    -- quarantine-exempt: participants of a quarantined invitation do not exist, so it records none
+_OCCURRENCES_SQL: Final = f"""
     SELECT o.event_id, o.starts_at, o.cancelled
     FROM (
         SELECT ce.id AS event_id, ce.starts_at AS starts_at,
@@ -66,6 +66,7 @@ _OCCURRENCES_SQL: Final = """
           AND ce.metadata ->> 'source_type' = 'provider_event'
           AND ce.all_day = false
           AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+          AND NOT {quarantined_invitation_sql("ce")}
           AND ce.starts_at >= $1 AND ce.starts_at <= $2
           AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
         UNION ALL
@@ -76,6 +77,7 @@ _OCCURRENCES_SQL: Final = """
           AND ce.metadata ->> 'source_type' = 'provider_event'
           AND ce.all_day = false
           AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+          AND NOT {quarantined_invitation_sql("ce")}
           AND ci.starts_at >= $1 AND ci.starts_at <= $2
           AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
     ) o

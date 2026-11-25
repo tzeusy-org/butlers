@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["PersonTime", "read_person_time"]
@@ -42,14 +44,14 @@ _COVERED_SQL: Final = """
     WHERE en.entity_id = ANY($1::uuid[]) AND COALESCE(pe.posture, 'active') = 'active'
 """
 
-_LAST_SQL: Final = """
-    -- quarantine-exempt: title only; the reducer already excluded quarantined events
+_LAST_SQL: Final = f"""
     SELECT DISTINCT ON (en.entity_id)
            en.entity_id, en.occurrence_start, en.basis, ce.title AS title
     FROM encounters en
     JOIN public.entities pe ON pe.id = en.entity_id
-    LEFT JOIN calendar_events ce ON ce.id = en.event_id
-    WHERE en.entity_id = ANY($1::uuid[])
+    JOIN calendar_events ce ON ce.id = en.event_id
+    WHERE NOT {quarantined_invitation_sql("ce")}
+      AND en.entity_id = ANY($1::uuid[])
       AND COALESCE(pe.posture, 'active') = 'active'
       AND en.state = ANY($2::text[])
       AND en.occurrence_start < $3
