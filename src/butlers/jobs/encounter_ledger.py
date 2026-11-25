@@ -210,14 +210,14 @@ async def run_encounter_reducer(
     Returns ``{"complete": bool, "occurrences": n, "upserted": n, "removed": n, "skipped": n}``.
     ``complete`` is False when a read failed; nothing was written then.
     """
-    now = now or await pool.fetchval("SELECT now()")
+    now_utc: datetime = now or await pool.fetchval("SELECT now()")
     try:
-        occurrences, not_ready, participants, debriefs = await _read_inputs(pool, now)
+        occurrences, not_ready, participants, debriefs = await _read_inputs(pool, now_utc)
     except Exception as exc:  # noqa: BLE001 - a failed read must leave prior states unchanged
         logger.warning("encounter_ledger_read_failed error=%s", type(exc).__name__)
         return {"complete": False, "occurrences": 0, "upserted": 0, "removed": 0, "skipped": 0}
 
-    plan = _plan(occurrences, not_ready, participants, debriefs, now)
+    plan = _plan(occurrences, not_ready, participants, debriefs, now_utc)
     removed = 0
     async with pool.acquire() as conn, conn.transaction():
         for (entity_id, event_id, starts_at), (series, state, basis, refs) in plan.rows.items():

@@ -376,23 +376,23 @@ async def test_a_failed_write_rolls_the_whole_run_back(
 
 def test_reduce_state_precedence_is_total():
     reduce_state = _reducer().reduce_state
-    base = dict(
-        debrief_state=None,
-        cancelled=False,
-        owner_declined=False,
-        guest_declined=False,
-        started=True,
-    )
-    assert reduce_state(**base) == ("unknown", "schedule")
-    assert reduce_state(**{**base, "started": False}) == ("scheduled", "schedule")
-    everything = {**base, "cancelled": True, "owner_declined": True, "guest_declined": True}
-    assert reduce_state(**everything) == ("declined_by_them", "rsvp")
-    assert reduce_state(**{**everything, "debrief_state": "none_agreed"}) == (
-        "declined_by_them",
-        "rsvp",
-    )
-    assert reduce_state(**{**everything, "debrief_state": "moved"}) == ("moved", "owner_debrief")
-    assert reduce_state(**{**everything, "guest_declined": False, "debrief_state": "captured"}) == (
+
+    def state(debrief=None, cancelled=False, owner=False, guest=False, started=True):
+        return reduce_state(
+            debrief_state=debrief,
+            cancelled=cancelled,
+            owner_declined=owner,
+            guest_declined=guest,
+            started=started,
+        )
+
+    assert state() == ("unknown", "schedule")
+    assert state(started=False) == ("scheduled", "schedule")
+    everything = dict(cancelled=True, owner=True, guest=True)
+    assert state(**everything) == ("declined_by_them", "rsvp")
+    assert state(debrief="none_agreed", **everything) == ("declined_by_them", "rsvp")
+    assert state(debrief="moved", **everything) == ("moved", "owner_debrief")
+    assert state(debrief="captured", cancelled=True, owner=True) == (
         "happened_attested",
         "owner_debrief",
     )
