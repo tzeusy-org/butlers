@@ -58,6 +58,7 @@ def _instance_row(
     event_location: str | None = None,
     event_metadata: dict | str | None = None,
     account_email: str | None = None,
+    source_time_role: str | None = "owner",
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
     event_id: UUID | None = None,
@@ -82,6 +83,7 @@ def _instance_row(
             "event_location": event_location,
             "event_metadata": event_metadata,
             "account_email": account_email,
+            "source_time_role": source_time_role,
         }
     )
 
@@ -1138,3 +1140,24 @@ def test_day_close_prompt_prohibits_attendance_assertions() -> None:
     assert "Calendar had X scheduled" in prompt, (
         "Day-close prompt must specify the correct 'Calendar had X scheduled' phrasing"
     )
+
+
+@pytest.mark.unit
+async def test_a_non_owner_calendar_row_makes_no_episode_but_the_watermark_passes_it() -> None:
+    """bu-5ii4gj.16: a partner calendar's event is skipped, and the next run does not re-read it."""
+    partner = _instance_row(event_title="Partner dinner", source_time_role="other_person")
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+    captured: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        captured.append(episode)
+        return episode
+
+    with (
+        patch.object(adapter, "_fetch_instances", new=AsyncMock(return_value=[partner])),
+        patch("butlers.chronicler.adapters.calendar.upsert_episode", side_effect=_fake_upsert),
+    ):
+        result = await adapter.project(MagicMock(), chronicler_pool=_chronicler_pool(), since=None)
+
+    assert captured == [] and result.rows_projected == 0
+    assert result.watermark == partner["ends_at"]

@@ -37,6 +37,12 @@ Butler-managed calendar exclusion (defence-in-depth):
   The exclusion is applied via an inner join against ``calendar_sources``
   in ``_fetch_instances``.
 
+Owner-time gate (bu-5ii4gj.16): an instance becomes an episode only when
+``counts_as_owner_time(source time_role, event metadata)`` says it is the owner's own busy time,
+the same predicate the dashboard and the meeting jobs use. A partner, household or shared
+calendar's event, a holiday feed, or a block the owner declined or marked free is skipped (the
+watermark still passes it).
+
 Entity-id resolution (bu-f4755):
 - Each calendar episode is tagged with the ``entity_id`` of the Google
   account whose calendar produced the event.  The lookup path is:
@@ -92,6 +98,7 @@ from prometheus_client import Counter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
+from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
 from butlers.core.temporal.invitation_quarantine import QUARANTINED_INVITATION_SQL
 
 logger = logging.getLogger(__name__)
@@ -204,6 +211,15 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             readable_schemas += 1
 
             for row in rows:
+                if not counts_as_owner_time(row["source_time_role"], row["event_metadata"]):
+                    # Not the owner's own time (a partner or shared calendar, a holiday feed, a
+                    # declined or free block): no episode, but the watermark still moves past it.
+                    candidate = row["ends_at"]
+                    if candidate is not None and (
+                        latest_watermark is None or candidate > latest_watermark
+                    ):
+                        latest_watermark = candidate
+                    continue
                 dedup_key = row["origin_instance_ref"]
                 if dedup_key in seen_origin:
                     # Earlier schema already projected this origin instance.
@@ -453,7 +469,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.description AS event_description,
                                e.location AS event_location,
                                e.metadata AS event_metadata,
-                               cs.metadata ->> 'account_email' AS account_email
+                               cs.metadata ->> 'account_email' AS account_email,
+                               cs.time_role AS source_time_role
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -477,7 +494,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.description AS event_description,
                                e.location AS event_location,
                                e.metadata AS event_metadata,
-                               cs.metadata ->> 'account_email' AS account_email
+                               cs.metadata ->> 'account_email' AS account_email,
+                               cs.time_role AS source_time_role
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id

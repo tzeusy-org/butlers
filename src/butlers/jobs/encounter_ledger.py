@@ -41,6 +41,7 @@ from typing import Any, Final
 import asyncpg
 
 from butlers.core.identity.attendees import RESOLVER_VERSION
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.modules.calendar.participants import unavailable_event_ids
 
@@ -57,11 +58,13 @@ MAX_OCCURRENCES: Final = 2000
 _ANSWERED_HAPPENED: Final = frozenset({"none_agreed", "captured"})
 
 _OCCURRENCES_SQL: Final = f"""
-    SELECT o.event_id, o.starts_at, o.cancelled
+    SELECT o.event_id, o.starts_at, o.cancelled, o.time_role, o.metadata
     FROM (
         SELECT ce.id AS event_id, ce.starts_at AS starts_at,
-               (ce.status = 'cancelled') AS cancelled
+               (ce.status = 'cancelled') AS cancelled,
+               cs.time_role AS time_role, ce.metadata AS metadata
         FROM calendar_events ce
+        LEFT JOIN calendar_sources cs ON cs.id = ce.source_id
         WHERE ce.recurrence_rule IS NULL
           AND ce.metadata ->> 'source_type' = 'provider_event'
           AND ce.all_day = false
@@ -70,9 +73,11 @@ _OCCURRENCES_SQL: Final = f"""
           AND ce.starts_at >= $1 AND ce.starts_at <= $2
           AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
         UNION ALL
-        SELECT ce.id, ci.starts_at, (ce.status = 'cancelled' OR ci.status = 'cancelled')
+        SELECT ce.id, ci.starts_at, (ce.status = 'cancelled' OR ci.status = 'cancelled'),
+               cs.time_role, ce.metadata
         FROM calendar_event_instances ci
         JOIN calendar_events ce ON ce.id = ci.event_id
+        LEFT JOIN calendar_sources cs ON cs.id = ce.source_id
         WHERE ce.recurrence_rule IS NOT NULL
           AND ce.metadata ->> 'source_type' = 'provider_event'
           AND ce.all_day = false
@@ -212,6 +217,10 @@ def _plan(
 async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
     lo, hi = now - LOOKBACK, now + LOOKAHEAD
     found = await pool.fetch(_OCCURRENCES_SQL, lo, hi, MAX_OCCURRENCES, None, now)
+    # Only the owner's own time is an encounter: an event on a partner or shared calendar is not,
+    # even when the owner's row there reads "accepted". The role gate only: the owner's decline is
+    # a state of its own here (declined_by_owner), not a reason to drop the occurrence.
+    found = [r for r in found if asserts_owner_time(r["time_role"], r["metadata"])]
     occurrences = [Occurrence(r["event_id"], r["starts_at"], bool(r["cancelled"])) for r in found]
     seen = {(o.event_id, o.starts_at) for o in occurrences}
     # A ledger row the capped read did not return is checked against the calendar itself, per
@@ -227,6 +236,7 @@ async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
         current = {
             (r["event_id"], r["starts_at"])
             for r in await pool.fetch(_OCCURRENCES_SQL, lo, hi, None, ledger_events, now)
+            if asserts_owner_time(r["time_role"], r["metadata"])
         }
         ghosts = [key for key in missing if key not in current]
     event_ids = sorted({o.event_id for o in occurrences} | {e for e, _ in ghosts}, key=str)
