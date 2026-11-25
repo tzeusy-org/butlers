@@ -522,3 +522,74 @@ async def backfill_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BAT
 def other_people(read: dict[str, Any]) -> list[dict[str, Any]]:
     """The named people of a :func:`read_participants` result, without the owner's own seat."""
     return [p for p in read["participants"] if p["resolution"] != "owner"]
+
+
+@dataclass(frozen=True, slots=True)
+class EncounterCandidates:
+    """Who may count as met at one occurrence, read from its participant records.
+
+    INTERIM (bu-5ii4gj.3 E1): "the owner accepted and the occurrence has started" stands in for
+    "it happened" until the encounter ledger exists. ``entity_ids`` is empty, and ``counted`` is
+    False, when the owner did not accept or the participants are not resolved yet.
+    """
+
+    counted: bool
+    entity_ids: tuple[uuid.UUID, ...] = ()
+    unresolved: int = 0
+    owner_rows: int = 0
+
+
+def encounter_candidates(rows: Sequence[Mapping[str, Any]]) -> EncounterCandidates:
+    """Pure: the people who may count as met, from one event's current-version provider rows.
+
+    The owner's own row must say ``accepted``. A guest counts when the row is an exact or manual
+    resolution, is not a resource and did not decline. An ambiguous or unresolved address is only
+    counted, never named: a participant row is an invited claim, not evidence of attendance.
+    """
+    owner = [r for r in rows if r["resolution"] == "owner"]
+    if not any(r["response_status"] == "accepted" for r in owner):
+        return EncounterCandidates(False, owner_rows=len(owner))
+    people: dict[uuid.UUID, None] = {}
+    unresolved = 0
+    for r in rows:
+        if r["resolution"] in ("ambiguous", "unresolved"):
+            unresolved += 1
+        elif (
+            r["resolution"] in ("exact", "manual")
+            and r["role"] != "resource"
+            and r["response_status"] != "declined"
+            and r["entity_id"] is not None
+        ):
+            people[r["entity_id"]] = None
+    return EncounterCandidates(True, tuple(people), unresolved, len(owner))
+
+
+async def read_encounter_candidates(
+    executor: Any, event_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, EncounterCandidates]:
+    """Per event, who may count as met. An event whose participants are not ready maps to nothing.
+
+    A missing or stale participant set is "not counted", never a fallback to the invitation's
+    addresses. A failed read propagates so the caller can count an error instead of a quiet gap.
+    """
+    if not event_ids:
+        return {}
+    ids = list(event_ids)
+    not_ready = await unavailable_event_ids(executor, ids)
+    rows = await executor.fetch(
+        """
+        SELECT p.event_id, p.resolution, p.role, p.response_status, p.entity_id
+        FROM calendar_event_participants p
+        WHERE p.event_id = ANY($1::uuid[]) AND p.resolver_version = $2
+        """,
+        ids,
+        RESOLVER_VERSION,
+    )
+    by_event: dict[uuid.UUID, list[Mapping[str, Any]]] = {}
+    for r in rows:
+        by_event.setdefault(r["event_id"], []).append(r)
+    return {
+        event_id: encounter_candidates(by_event.get(event_id, []))
+        for event_id in ids
+        if event_id not in not_ready and event_id in by_event
+    }

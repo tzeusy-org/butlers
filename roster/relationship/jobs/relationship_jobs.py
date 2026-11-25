@@ -27,6 +27,10 @@ from butlers.core.tool_call_capture import (
 from butlers.identity import resolve_contacts_by_channel_bulk
 from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
 from butlers.modules.approvals.park import park_prepared_action
+from butlers.modules.calendar.participants import (
+    EncounterCandidates,
+    read_encounter_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -960,12 +964,14 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     store so the next run continues from where this one left off.
 
     **Calendar-based sync:** Queries ``relationship.calendar_events`` for confirmed
-    events within the scan window.  For each event, extracts the
-    ``metadata->'attendees'`` JSONB array, resolves attendee emails to
-    entity IDs via active ``relationship.entity_facts`` ``has-email`` facts, and calls
-    ``interaction_log()`` with ``type='calendar_event'``.  Events where the
-    owner's RSVP is ``declined`` are skipped entirely.  The owner's own
-    attendee entry (``self=true``) is excluded from attendee resolution.
+    events within the scan window that carry attendees, and reads each event's
+    ``calendar_event_participants`` rows (never the invitation's addresses). INTERIM
+    (bu-5ii4gj.3 E1, until the encounter ledger exists): an occurrence counts when the owner's
+    own row says ``accepted``; its guests count when resolved ``exact`` or ``manual``, not a
+    resource and not ``declined``. Each counted guest gets ``interaction_log()`` with
+    ``type='calendar_event'``. Events the owner declined, a quarantined invitation, an occurrence
+    the owner did not accept (``calendar_events_not_encounters``) and one whose participants are
+    not resolved yet log nothing; the last also holds the checkpoint, as does a failed read.
 
     Args:
         db_pool: Database connection pool (relationship butler pool).
@@ -974,7 +980,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         Dictionary with keys: scan_window_start (ISO8601), scan_window_end
         (ISO8601), processed, logged, skipped_unresolved, skipped_owner,
         skipped_ineligible, skipped_group_too_large,
-        calendar_events_scanned, errors.
+        calendar_events_scanned, calendar_events_not_encounters, errors.
     """
     from butlers.tools.relationship.interactions import interaction_log
     from butlers.tools.relationship.stale_contacts import interaction_sync_attestation
@@ -1047,6 +1053,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "logged": 0,
         "skipped_unresolved": 0,
         "skipped_owner": 0,
+        "calendar_events_not_encounters": 0,
         "skipped_ineligible": 0,
         "skipped_group_too_large": 0,
         "calendar_events_scanned": 0,
@@ -1453,10 +1460,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # events, collect attendee emails, and batch-resolve all emails at once.
     # -----------------------------------------------------------------------
 
-    # event_tasks: list of (event_id, event_title, event_starts_at, attendee_emails)
+    # event_tasks: list of (event_id, event_title, event_starts_at, is_provider_event)
     # for events that pass the owner-declined and attendee checks.
-    event_tasks: list[tuple[str, str, datetime, list[str]]] = []
-    all_attendee_emails: set[str] = set()
+    event_tasks: list[tuple[str, str, datetime, bool]] = []
+    participants_pending = False
 
     for cal_row in cal_rows:
         event_id = str(cal_row["id"])
@@ -1495,96 +1502,42 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         # Count all confirmed, non-declined events as scanned.
         stats["calendar_events_scanned"] += 1
 
-        # Collect attendee emails (exclude self/owner's own entry).
-        # Use a dict keyed by normalised email to deduplicate within the event.
-        seen_emails: dict[str, None] = {}
-        for att in attendees_raw:
-            if not isinstance(att, dict):
-                continue
-            if att.get("self") is True:
-                continue  # owner's own entry
-            email = att.get("email")
-            if isinstance(email, str):
-                email = email.strip().lower()
-                if email:
-                    seen_emails[email] = None
+        # The people are read from the occurrence's participant records, not from the invitation's
+        # addresses: an invitation lists who was asked, not who came.
+        event_tasks.append(
+            (event_id, event_title, event_starts_at, meta.get("source_type") == "provider_event")
+        )
 
-        attendee_emails = list(seen_emails)
-        if not attendee_emails:
-            continue
-
-        # Stage for batch resolution.
-        event_tasks.append((event_id, event_title, event_starts_at, attendee_emails))
-        all_attendee_emails.update(attendee_emails)
-
-    # Batch-resolve all attendee emails across all events in a single query.
-    # interaction_log() now accepts entity_id directly, so we resolve to entity_id
-    # (= ef.subject) without joining to public.contacts.
-    email_to_entity: dict[str, uuid.UUID] = {}
-    calendar_owner_entity_ids: set[uuid.UUID] = set()
-
-    if all_attendee_emails:
+    # INTERIM (bu-5ii4gj.3 E1, REQ-relationship-interaction-sync-encounters): an occurrence counts
+    # when the owner accepted it and it has started, until the encounter ledger records what
+    # happened. An occurrence whose participants are not resolved yet counts for nothing and is
+    # retried by the next run; the invitation's addresses are never a fallback.
+    candidates: dict[uuid.UUID, EncounterCandidates] = {}
+    if event_tasks:
         try:
-            resolved_rows = await db_pool.fetch(
-                """
-                SELECT
-                    ef.subject                  AS entity_id,
-                    LOWER(ef.object)            AS email,
-                    COALESCE(e.roles, '{}')     AS roles
-                FROM relationship.entity_facts ef
-                JOIN public.entities e ON e.id = ef.subject
-                WHERE ef.predicate   = 'has-email'
-                  AND ef.object_kind = 'literal'
-                  AND ef.validity    = 'active'
-                  AND LOWER(ef.object) = ANY($1::text[])
-                """,
-                list(all_attendee_emails),
+            candidates = await read_encounter_candidates(
+                db_pool, [uuid.UUID(task[0]) for task in event_tasks]
             )
         except Exception:
-            logger.exception("interaction_sync: failed to resolve calendar attendee emails")
+            logger.exception("interaction_sync: failed to read calendar participants")
             stats["errors"] += 1
-            resolved_rows = []
-
-        for rr in resolved_rows:
-            eid = rr["entity_id"]
-            if eid is None:
-                continue
-            if not isinstance(eid, uuid.UUID):
-                try:
-                    eid = uuid.UUID(str(eid))
-                except (ValueError, AttributeError):
-                    continue
-            email_key = rr["email"]
-            email_to_entity[email_key] = eid
-            roles: list[str] = list(rr["roles"] or [])
-            if "owner" in roles:
-                calendar_owner_entity_ids.add(eid)
+            participants_pending = True
 
     # Collects resolved non-owner entity IDs per event for co-attended edge derivation.
     event_to_entities: dict[str, list[uuid.UUID]] = {}
 
-    for event_id, event_title, event_starts_at, attendee_emails in event_tasks:
+    for event_id, event_title, event_starts_at, is_provider_event in event_tasks:
         resolved_for_event: list[uuid.UUID] = []
-        for email in attendee_emails:
-            entity_id = email_to_entity.get(email)
-            if entity_id is None:
-                stats["skipped_unresolved"] += 1
-                logger.debug(
-                    "interaction_sync: unresolved calendar attendee email=%s event=%s",
-                    email,
-                    event_id,
-                )
-                continue
-
-            if entity_id in calendar_owner_entity_ids:
-                stats["skipped_owner"] += 1
-                logger.debug(
-                    "interaction_sync: skipping owner attendee entity=%s event=%s",
-                    entity_id,
-                    event_id,
-                )
-                continue
-
+        found = candidates.get(uuid.UUID(event_id))
+        if found is None and is_provider_event:
+            # Not resolved yet: hold the checkpoint so the next run sees it again.
+            participants_pending = True
+        if found is None or not found.counted:
+            stats["calendar_events_not_encounters"] += 1
+            continue
+        stats["skipped_unresolved"] += found.unresolved
+        stats["skipped_owner"] += found.owner_rows
+        for entity_id in found.entity_ids:
             resolved_for_event.append(entity_id)
 
             try:
@@ -1764,7 +1717,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     # A failed calendar read is not an empty successful scan. Preserve the
     # bounded interval; committed message work deduplicates on the next run.
-    if calendar_query_succeeded:
+    if calendar_query_succeeded and not participants_pending:
         next_checkpoint = scan_window_end.isoformat()
         try:
             await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
@@ -1777,7 +1730,9 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             )
             stats["errors"] += 1
     else:
-        logger.warning("interaction_sync: calendar scan incomplete; checkpoint not advanced")
+        logger.warning(
+            "interaction_sync: calendar scan or participants incomplete; checkpoint not advanced"
+        )
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "

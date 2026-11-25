@@ -276,6 +276,48 @@ async def prune_old_prep_contributions(pool: asyncpg.Pool, *, live_event_ids: se
 # ---------------------------------------------------------------------------
 
 
+# INTERIM (bu-5ii4gj.3 E1): "Last met" is the latest past occurrence that could have been held,
+# until the encounter ledger records what happened. A reminder (filtered beside this) or a meeting
+# the owner declined or never accepted is a plan, not a meeting; neither is one this person
+# declined. An owner-made link with no provider participants (a butler-created event) stays.
+# ``cee`` and ``ce`` are the aliases of the surrounding query.
+_HELD_CANDIDATE_SQL = """(
+    NOT EXISTS (
+        SELECT 1 FROM calendar_event_participants p
+        WHERE p.event_id = ce.id AND p.resolution = 'owner' AND p.response_status = 'declined')
+    AND NOT EXISTS (
+        SELECT 1 FROM calendar_event_participants p
+        WHERE p.event_id = ce.id AND p.entity_id = cee.entity_id
+          AND p.response_status = 'declined')
+    AND (
+        NOT EXISTS (
+            SELECT 1 FROM calendar_event_participants p
+            WHERE p.event_id = ce.id AND p.resolution <> 'manual')
+        OR EXISTS (
+            SELECT 1 FROM calendar_event_participants p
+            WHERE p.event_id = ce.id AND p.resolution = 'owner'
+              AND p.response_status = 'accepted')
+    )
+)"""
+
+
+LAST_MET_SQL = f"""
+    SELECT DISTINCT ON (cee.entity_id)
+           cee.entity_id AS entity_id,
+           ce.starts_at AS starts_at,
+           ce.title AS title
+    FROM calendar_event_entities cee
+    JOIN calendar_events ce ON ce.id = cee.event_id
+    WHERE cee.entity_id = ANY($1::uuid[])
+      AND ce.starts_at < $2
+      AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
+      AND NOT {quarantined_invitation_sql("ce")}
+      AND COALESCE(ce.metadata ->> 'native', 'false') <> 'true'
+      AND {_HELD_CANDIDATE_SQL}
+    ORDER BY cee.entity_id, ce.starts_at DESC
+"""
+
+
 async def run_relationship_calendar_prep_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -376,24 +418,8 @@ async def run_relationship_calendar_prep_contribution(
                 continue
             bucket.append({"kind": row["predicate"], "text": row["content"]})
 
-        # Last-met: the most recent PAST event each attendee co-attended.
-        last_met_rows = await pool.fetch(
-            f"""
-            SELECT DISTINCT ON (cee.entity_id)
-                   cee.entity_id AS entity_id,
-                   ce.starts_at AS starts_at,
-                   ce.title AS title
-            FROM calendar_event_entities cee
-            JOIN calendar_events ce ON ce.id = cee.event_id
-            WHERE cee.entity_id = ANY($1::uuid[])
-              AND ce.starts_at < $2
-              AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-              AND NOT {quarantined_invitation_sql("ce")}
-            ORDER BY cee.entity_id, ce.starts_at DESC
-            """,
-            entity_id_list,
-            now_utc,
-        )
+        # Last-met: the most recent PAST event each attendee could have attended (LAST_MET_SQL).
+        last_met_rows = await pool.fetch(LAST_MET_SQL, entity_id_list, now_utc)
         for row in last_met_rows:
             last_met_by_id[row["entity_id"]] = (row["starts_at"], row["title"])
 
