@@ -62,7 +62,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import asyncpg
 
@@ -146,9 +146,9 @@ class PrepContribution(TypedDict):
     has_context: bool
     attendees: list[PrepAttendee]
     #: The event's participants could not be read or are not resolved yet: not "no one".
-    attendees_unavailable: bool
+    attendees_unavailable: NotRequired[bool]
     #: Attendees that resolved to no one (or to more than one), as a count, never named.
-    unresolved_attendees: int
+    unresolved_attendees: NotRequired[int]
 
 
 # Upcoming events with people on them, from the job's own calendar projection: an owner-made link
