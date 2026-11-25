@@ -19111,6 +19111,8 @@ export interface components {
             delivery?: components["schemas"]["ApprovalDeliveryTruth"] | null;
             /** Denial Reason */
             denial_reason?: string | null;
+            /** @description Typed review of a pending memory_entity_merge or legacy Relationship entity_merge with a showable call; null otherwise. Approval requires its displayed_call after the dashboard renders the structural comparison. */
+            entity_merge_review?: components["schemas"]["EntityMergeReview"] | null;
             /** Evidence */
             evidence?: components["schemas"]["ApprovalEvidence"][];
             /** @description Content-free reason an approved outbound send failed or was rejected by the provider; null when the send did not fail. */
@@ -27775,6 +27777,24 @@ export interface components {
             verified?: boolean;
             /** Weight */
             weight?: number | null;
+        };
+        /**
+         * EntityMergeReview
+         * @description Typed review context of a pending entity merge (REQ-dashboard-approvals-902).
+         *
+         *     Returned in place of a generic ``call_preview``, which stays null so an older
+         *     dashboard or a summary surface without merge review keeps approval disabled. The
+         *     direction is fixed: ``source_entity_id`` is absorbed (tombstoned) into the surviving
+         *     ``target_entity_id``, which keeps its own type. The dashboard loads the structural
+         *     comparison for exactly this pair and echoes ``displayed_call`` (the stored tool name
+         *     and argument digest, never rewritten) to approve.
+         */
+        EntityMergeReview: {
+            displayed_call: components["schemas"]["DisplayedApprovalCall"];
+            /** Source Entity Id */
+            source_entity_id: string;
+            /** Target Entity Id */
+            target_entity_id: string;
         };
         /**
          * EntityNote
