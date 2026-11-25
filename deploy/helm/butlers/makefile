@@ -13,9 +13,11 @@ PUBLIC_MCP_OWNER_STEP_dev := on
 PUBLIC_MCP_OWNER_STEP_prod := off
 
 # The public MCP chart (deploy/helm/butlers-public-mcp), upgraded at the same TAG after the owner
-# step exits 0 (RFC 0039 D3, task 2.4). OFF until go-live: the server image (butlers-public-mcp
-# entrypoint) must be in the deployed TAG, or the pod crash-loops. Flip it in a reviewed change.
-PUBLIC_MCP_CHART_dev := off
+# step exits 0 (RFC 0039 D3, task 2.4). On for dev (the public server is live there), so one
+# make deploy-dev converges shipped, replicated and applied digests. It needs the site env
+# (BUTLERS_PUBLIC_MCP_AUDIENCE, _ALLOWED_SUBS, _KEYRING_FILE) wherever make deploy-dev runs. The
+# TAG must contain the butlers-public-mcp entrypoint, or the pod crash-loops. Prod stays off.
+PUBLIC_MCP_CHART_dev := on
 PUBLIC_MCP_CHART_prod := off
 
 helm_args = -n $(NAMESPACE_$(1)) -f values.yaml -f values.$(1).yaml $(if $(LOCAL_VALUES),-f values.local.yaml) \

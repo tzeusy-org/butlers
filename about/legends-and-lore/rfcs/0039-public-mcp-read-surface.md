@@ -2213,8 +2213,16 @@ because they must survive a Butlers outage and must never start a model.
   inactive over 10 minutes; inbox undrained above 500; any `apply_failed`.
 - **Owner-step pending.** The server exports a gauge,
   `butlers_public_mcp_owner_step_pending`, labelled `change="narrowing"` or
-  `change="widening"`, that is 1 while it refuses with
-  `projection_apply_pending` (D17). The warning rule fires on either label.
+  `change="widening"`, that is 1 while the owner step is pending: no applied
+  record exists, the applied digest is not among the replicated digests, or
+  the copy is incomplete (D17). It does not depend on the pod's shipped
+  manifest, so it stays right while the pod is skewed and refusing with
+  `projection_version_mismatch`. The label compares the applied manifest
+  with the shipped one only when the pod can classify it (its shipped digest
+  is a replicated digest); otherwise, and when the applied record will not
+  decode, it is `narrowing`, failing toward alerting. A failed narrowing
+  owner step therefore pages critical after 24 hours even while the pod is
+  skewed. The warning rule fires on either label.
   The critical rule fires on `change="narrowing"` held for 24 hours. The bound
   is a choice: the surface already refuses, so what remains is rows sitting
   in `butlers_public` that the manifest no longer allows, which a stolen
@@ -2276,14 +2284,18 @@ complete. The copy counts as complete only when the subscription
 `butlers_public_sub` exists and is enabled and the set of its relations in
 state `r` (`pg_subscription_rel.srsubstate`) equals the applied manifest's
 table set, so a missing, disabled or empty subscription is never complete.
-The owner step is pending when no applied record exists, when the applied
-digest differs from the shipped one in either direction (widening or
-narrowing), or when the copy is not complete. While it is pending, every tool except
-`describe` refuses with `projection_apply_pending`, and the
-`butlers_public_mcp_owner_step_pending` gauge is 1 (D16). The server labels
-the change by comparing the applied manifest with its own, using the same
-deterministic function that the owner step uses for its rebuild decision: it
-is `narrowing` when any applied table, column or row-filter value is absent
+The pod refuses with `projection_apply_pending` when no applied record
+exists, when the applied digest differs from the shipped one in either
+direction (widening or narrowing), or when the copy is not complete; every
+tool except `describe` refuses, behind `projection_version_mismatch` in
+precedence. The `butlers_public_mcp_owner_step_pending` gauge (D16) is a
+separate judgement of the owner step: it is 1 when no applied record exists,
+the applied digest is not among the replicated digests, or the copy is not
+complete, whatever the pod ships. When the shipped digest is a replicated one,
+the server labels the change by comparing the applied manifest with its own,
+using the same deterministic function that the owner step uses for its
+rebuild decision; when it is not, or the applied record will not decode, the
+label is `narrowing`. The comparison is `narrowing` when any applied table, column or row-filter value is absent
 from the shipped manifest, or the shipped manifest filters a column the
 applied one did not, and `widening` otherwise. When the digests match again
 and the copy is complete, the server runs the projection canary probe (D15)

@@ -393,9 +393,9 @@ def _chart_calls(calls: list[str]) -> list[str]:
     return [c for c in calls if c.startswith("public-mcp-chart-deploy.sh ")]
 
 
-def test_committed_chart_switches_are_off_until_go_live() -> None:
+def test_committed_chart_switch_is_on_for_dev_and_off_for_prod() -> None:
     makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
-    assert "\nPUBLIC_MCP_CHART_dev := off\n" in makefile
+    assert "\nPUBLIC_MCP_CHART_dev := on\n" in makefile
     assert "\nPUBLIC_MCP_CHART_prod := off\n" in makefile
 
 
@@ -405,10 +405,12 @@ def test_chart_upgrade_runs_after_the_owner_step_at_the_same_tag_with_its_switch
     code, calls = _deploy(chart, "PUBLIC_MCP_CHART_dev=on")
     assert code == 0
     assert calls.index("public-mcp-chart-deploy.sh") > calls.index("public-mcp-owner-step.sh")
-    # The committed default is off, and the switch is passed through, not decided here.
+    # The switch is passed through, not decided here; the committed default for dev is on.
     assert _chart_calls(calls) == [f"public-mcp-chart-deploy.sh dev {_TAG} on"]
-    _code, calls = _deploy(chart)
+    _code, calls = _deploy(chart, "PUBLIC_MCP_CHART_dev=off")
     assert _chart_calls(calls) == [f"public-mcp-chart-deploy.sh dev {_TAG} off"]
+    _code, calls = _deploy(chart)
+    assert _chart_calls(calls) == [f"public-mcp-chart-deploy.sh dev {_TAG} on"]
 
 
 @pytest.mark.parametrize(

@@ -6,8 +6,8 @@
 #
 # `make deploy-dev` runs this only after the owner step exited 0 (so the shipped manifest
 # digest converges with the replicated one in the same deploy). The third argument is the
-# committed PUBLIC_MCP_CHART_<env> switch: `off` (the default until go-live, because the server
-# image must exist first) skips with a notice and exits 0. Any environment but dev also skips:
+# committed PUBLIC_MCP_CHART_<env> switch: `off` (prod, and any env whose TAG lacks the
+# server image) skips with a notice and exits 0. Any environment but dev also skips:
 # prod is deferred (OD18).
 #
 # The release record lives in the butlers namespace, never in butlers-public-<env>: the chart

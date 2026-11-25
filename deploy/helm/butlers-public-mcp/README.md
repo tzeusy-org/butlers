@@ -3,8 +3,8 @@
 The public MCP read surface (RFC 0039, task 2.4): one deterministic server, no LLM, in its own
 namespace `butlers-public-<env>`, reading the projection database `butlers_public` as
 `mcp_public_ro`. Setup order and checks: [Public MCP Read
-Surface](../../../docs/operations/public-mcp-read-surface.md) (section 3d). The chart is **shipped
-dark**: `PUBLIC_MCP_CHART_dev` in `../butlers/makefile` is `off` until the server image exists.
+Surface](../../../docs/operations/public-mcp-read-surface.md) (section 3d). `make deploy-dev`
+upgrades it: `PUBLIC_MCP_CHART_dev` in `../butlers/makefile` is `on`.
 
 ```bash
 scripts/k8s/public-mcp-chart-deploy.sh dev <tag> on   # what `make deploy-dev` runs when switched on

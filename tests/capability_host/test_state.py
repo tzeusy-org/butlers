@@ -245,7 +245,9 @@ async def test_deploy_skew_wins_over_a_pending_owner_step(env: Env):
     env.projection.replicated = ["1" * 64]
     env.projection.applied = {**env.projection.applied, "digest": "2" * 64}
     assert error_code(await env.tool("trips")) == "projection_version_mismatch"
-    assert env.host.metrics.get("owner_step_pending", change="widening") == 1
+    # The applied digest is not replicated and the pod cannot classify it: fail toward alerting.
+    assert env.host.metrics.get("owner_step_pending", change="narrowing") == 1
+    assert env.host.metrics.get("owner_step_pending", change="widening") == 0
 
 
 async def test_projection_outage_is_retryable(env: Env):
@@ -394,6 +396,77 @@ def test_judge_labels_narrowing_and_widening():
     assert judge(_status(), MANIFEST).code is None
     corrupt = judge(_status(applied_digest="f" * 64, applied_canonical="{"), MANIFEST)
     assert corrupt.change == "narrowing"
+
+
+# -- bu-y66o00.73 (RFC 0039 D16): the gauge tracks the owner step, not the pod's shipped manifest --
+
+
+def _other_digest() -> str:
+    return "a" * 64
+
+
+def test_skew_before_the_owner_step_is_pending_and_labelled_narrowing():
+    # The pod ships the old manifest; reconcile replicated the new digest; nothing applied it.
+    verdict = judge(_status(replicated_digests=frozenset({_other_digest()})), MANIFEST)
+    assert verdict.code == "projection_version_mismatch"
+    assert verdict.change == "narrowing"
+
+
+def test_skew_after_the_owner_step_is_not_pending():
+    # The owner step applied the replicated digest (widening or narrowing alike: the old pod
+    # cannot tell, and the answer no longer depends on direction); the old pod still ships
+    # another manifest.
+    replicated = _other_digest()
+    verdict = judge(
+        _status(replicated_digests=frozenset({replicated}), applied_digest=replicated),
+        MANIFEST,
+    )
+    assert verdict.code == "projection_version_mismatch"
+    assert verdict.change is None
+
+
+def test_a_failed_narrowing_owner_step_stays_pending_and_narrowing():
+    narrowed = _narrowed()
+    # Applied still holds the wider manifest while the narrowed digest replicated and shipped.
+    verdict = judge(_status(replicated_digests=frozenset({narrowed.digest})), narrowed)
+    assert verdict.code == "projection_apply_pending" and verdict.change == "narrowing"
+    # The same failure seen by a pod that cannot classify the replicated digest.
+    skewed = judge(_status(replicated_digests=frozenset({narrowed.digest})), MANIFEST)
+    assert skewed.code == "projection_version_mismatch"
+    assert skewed.change == "narrowing"
+
+
+def test_no_applied_record_is_pending_even_under_skew():
+    verdict = judge(
+        _status(
+            replicated_digests=frozenset({_other_digest()}),
+            applied_digest=None,
+            applied_canonical=None,
+        ),
+        MANIFEST,
+    )
+    assert verdict.code == "projection_version_mismatch" and verdict.change == "narrowing"
+
+
+def test_an_incomplete_copy_is_pending_even_when_digests_agree_under_skew():
+    replicated = _other_digest()
+    verdict = judge(
+        _status(
+            replicated_digests=frozenset({replicated}),
+            applied_digest=replicated,
+            copy_complete=False,
+        ),
+        MANIFEST,
+    )
+    assert verdict.code == "projection_version_mismatch" and verdict.change == "narrowing"
+
+
+async def test_skew_after_the_owner_step_reads_zero_on_both_labels(env: Env):
+    env.projection.replicated = ["2" * 64]
+    env.projection.applied = {**env.projection.applied, "digest": "2" * 64}
+    assert error_code(await env.tool("trips")) == "projection_version_mismatch"
+    for change in ("narrowing", "widening"):
+        assert env.host.metrics.get("owner_step_pending", change=change) == 0
 
 
 async def test_a_narrowing_pending_sets_its_gauge(env: Env):
