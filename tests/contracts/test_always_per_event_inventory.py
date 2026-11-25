@@ -69,15 +69,16 @@ _PER_EVENT_DECLARATION = re.compile(r"""["']?mode["']?\s*[:=]\s*["']always_per_e
 
 def test_every_module_source_declaring_per_event_has_an_enabling_entry() -> None:
     """A module whose source declares the mode must be swept with its flags on."""
-    modules_dir = Path(__file__).resolve().parents[2] / "src" / "butlers" / "modules"
+    root = Path(__file__).resolve().parents[2]
+    scanned = [root / "src" / "butlers" / "modules", *sorted((root / "roster").glob("*/modules"))]
     declaring: set[str] = set()
-    for path in modules_dir.rglob("*.py"):
-        relative = path.relative_to(modules_dir)
-        if relative.parts[0] == "approvals":
-            continue  # the refusal machinery names the mode; it declares no tool
-        if _PER_EVENT_DECLARATION.search(path.read_text(encoding="utf-8")):
-            declaring.add(relative.parts[0].removesuffix(".py"))
-
+    for modules_dir in scanned:
+        for path in modules_dir.rglob("*.py"):
+            relative = path.relative_to(modules_dir)
+            if relative.parts[0] == "approvals" and modules_dir == scanned[0]:
+                continue  # the refusal machinery names the mode; it declares no tool
+            if _PER_EVENT_DECLARATION.search(path.read_text(encoding="utf-8")):
+                declaring.add(relative.parts[0].removesuffix(".py"))
     assert declaring, "the guard must find the calendar declaration"
     assert declaring <= set(_ENABLED_MODULE_STATE), (
         f"modules declaring always_per_event need an _ENABLED_MODULE_STATE entry: "

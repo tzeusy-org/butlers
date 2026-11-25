@@ -2144,6 +2144,7 @@ export default function ApprovalsPage() {
       approveMut.mutate(view, {
         // An external MCP proposal never becomes a standing rule, so it gets no
         // "always allow" prompt (REQ-dashboard-approvals-904, REQ-module-approvals-010).
+        // Neither an outside proposal nor a merge may become a standing rule.
         // A per-event tool (calendar_respond) is its own decision every time, so it gets none
         // either (RFC 0038 D13).
         onSuccess: () => {

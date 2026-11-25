@@ -20,6 +20,7 @@ from butlers.api.routers import approvals as routes
 from butlers.modules.approvals import operations
 from butlers.modules.approvals.per_event import RULE_REFUSED_ALWAYS_PER_EVENT
 from butlers.modules.approvals.stepup import dashboard_stepup_proof
+from butlers.testing.db_manager import db_manager
 from tests.integration.test_dashboard_stepup import (  # noqa: F401  (fixtures)
     authority,
     authority_db_url,
@@ -169,16 +170,6 @@ async def test_module_suggestions_are_refused_for_a_per_event_action(authority):
     }
 
 
-class _Db:
-    butler_names = ["general"]
-
-    def __init__(self, pool):
-        self._pool = pool
-
-    def pool(self, _name):
-        return self._pool
-
-
 @pytest.fixture
 def routed(authority, monkeypatch):
     pool = authority[0]
@@ -191,7 +182,7 @@ def routed(authority, monkeypatch):
 
     monkeypatch.setattr(routes, "_find_action_pool", find_action_pool)
     monkeypatch.setattr(routes, "_find_named_approvals_pools", find_named)
-    return pool, _Db(pool)
+    return pool, db_manager({"general": pool})
 
 
 async def test_dashboard_routes_answer_409_with_the_typed_reason(routed):
