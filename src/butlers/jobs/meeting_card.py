@@ -69,8 +69,8 @@ from butlers.jobs.calendar_prep import prep_key
 from butlers.jobs.meeting_debrief import (
     _decode_metadata,
     _other_attendees,
-    _resolve_people,
 )
+from butlers.modules.calendar.participants import other_people, read_participants
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +256,8 @@ def render_card(
     now: datetime,
     link: str | None,
     household: Sequence[str] = (),
+    unresolved: int = 0,
+    unavailable: bool = False,
 ) -> str:
     """The card text. *attendees* are the people to name (``entity_id`` may be ``None``).
 
@@ -297,9 +299,12 @@ def render_card(
     if len(attendees) > len(shown):
         lines.append(f"+{len(attendees) - len(shown)} more")
     lines.extend(household)
-    if not prep_by_entity or not any(
-        str(p.get("entity_id")) in prep_by_entity for p in shown if p.get("entity_id")
-    ):
+    if unavailable:
+        lines.append("Attendees unavailable.")
+    elif unresolved:
+        lines.append(f"+{unresolved} not identified")
+    covered = any(str(p.get("entity_id")) in prep_by_entity for p in shown if p.get("entity_id"))
+    if not unavailable and not covered:
         lines.append("No prep context yet.")
     if link:
         lines.append(f"Calendar: {link}")
@@ -371,8 +376,9 @@ async def run_meeting_card(
     except asyncpg.exceptions.UndefinedTableError:
         return {"status": "ok", "considered": 0, "proposed": 0, "skipped": "no_calendar"}
 
-    staged: list[tuple[Any, list[dict[str, str]]]] = []
-    emails: set[str] = set()
+    # Who is named comes from the event's participant records (entity names only); the invite's
+    # own address list only decides whether the meeting has anyone else on it at all.
+    carded: list[tuple[Any, list[dict[str, Any]], int, bool]] = []
     for row in rows:
         meta = _decode_metadata(row["metadata"])
         # Only the owner's own time gets a card: not another person's calendar, not a declined or
@@ -381,33 +387,23 @@ async def run_meeting_card(
             row.get("time_role"), meta
         ):
             continue
-        others = _other_attendees(meta)
-        if others:
-            staged.append((row, others))
-            emails.update(a["email"] for a in others)
-    people = await _resolve_people(pool, emails)
-    # Anyone who resolves to the owner is the owner for eligibility: a meeting whose only other
-    # address is the owner's own is a solo block and gets no card. A non-active person is still
-    # a real attendee (the meeting is carded) but is never named.
-    carded: list[tuple[Any, list[dict[str, Any]]]] = []
-    for row, others in staged:
-        named: list[dict[str, Any]] = []
-        real = 0
-        for att in others:
-            person = people.get(att["email"])
-            if person is None:
-                real += 1
-                named.append(
-                    {"entity_id": None, "name": att["display_name"], "email": att["email"]}
-                )
-            elif person["is_owner"]:
-                continue
-            else:
-                real += 1
-                if person["posture"] == "active":
-                    named.append({**person, "email": att["email"]})
-        if real:
-            carded.append((row, named))
+        if not _other_attendees(meta):
+            continue
+        try:
+            read = await read_participants(pool, row["event_id"])
+        except Exception:
+            logger.warning("meeting_card: participants read failed", exc_info=True)
+            read = {"available": False, "participants": [], "unresolved": 0, "withheld": 0}
+        if read.get("quarantined"):
+            continue
+        named = [
+            {"entity_id": p["entity_id"], "name": p["display_name"]} for p in other_people(read)
+        ]
+        # A solo block (only the owner's own address) has no one else and gets no card; an
+        # unavailable read cannot say, so it is carded and says so.
+        if read["available"] and not (named or read["unresolved"] or read["withheld"]):
+            continue
+        carded.append((row, named, int(read["unresolved"]), not read["available"]))
 
     counts = {
         "considered": len(carded),
@@ -417,8 +413,8 @@ async def run_meeting_card(
         "withdrawn": withdrawn,
     }
     link = dashboard_link("/calendar")
-    context = await _household_context(pool, [row for row, _named in carded])
-    for row, named in carded:
+    context = await _household_context(pool, [row for row, *_rest in carded])
+    for row, named, unresolved, unavailable in carded:
         try:
             envelope = await state_get(pool, prep_key(str(row["event_id"])))
         except asyncpg.PostgresError:
@@ -428,6 +424,8 @@ async def run_meeting_card(
             starts_at=row["starts_at"],
             location=row["location"],
             attendees=named,
+            unresolved=unresolved,
+            unavailable=unavailable,
             envelope=envelope,
             now=now,
             link=link,

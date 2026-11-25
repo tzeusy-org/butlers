@@ -1167,6 +1167,18 @@ def _project_prep_contributions(
     return attendees, sorted(source_butlers)
 
 
+def _prep_participant_state(prep_rows: list[CalendarPrepRow]) -> tuple[bool, int]:
+    """(attendees unavailable, unresolved count) carried by the prep envelopes."""
+    unavailable, unresolved = False, 0
+    for row in prep_rows:
+        value = _normalize_json_object(row.value)
+        unavailable = unavailable or value.get("attendees_unavailable") is True
+        count = value.get("unresolved_attendees")
+        if isinstance(count, int) and not isinstance(count, bool):
+            unresolved = max(unresolved, count)
+    return unavailable, unresolved
+
+
 @router.get("/prep/{event_id}", response_model=ApiResponse[CalendarPrepResponse])
 async def get_meeting_prep(
     event_id: UUID,
@@ -1193,6 +1205,7 @@ async def get_meeting_prep(
     prep_rows = await query_calendar_prep(db, event_id=event_id)
 
     attendees, source_butlers = _project_prep_contributions(prep_rows)
+    attendees_unavailable, unresolved_attendees = _prep_participant_state(prep_rows)
     data = CalendarPrepResponse(
         event_id=str(event_id),
         # A contribution exists for this event when any (valid) envelope was read,
@@ -1200,6 +1213,8 @@ async def get_meeting_prep(
         has_prep_context=bool(source_butlers),
         attendees=attendees,
         source_butlers=source_butlers,
+        attendees_unavailable=attendees_unavailable,
+        unresolved_attendees=unresolved_attendees,
     )
     return ApiResponse[CalendarPrepResponse](data=data)
 
@@ -1487,6 +1502,8 @@ async def get_workspace(
         for _row, entry in page:
             if not isinstance(entry.event_id, UUID):
                 continue
+            entry.attendees_unavailable = entry.event_id in people_result.attendees_unavailable
+            entry.unresolved_attendees = people_result.unresolved.get(entry.event_id, 0)
             resolved = people_result.by_event.get(entry.event_id)
             if resolved:
                 entry.linked_people = [

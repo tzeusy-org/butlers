@@ -80,6 +80,11 @@ class UnifiedCalendarEntry(BaseModel):
     #: just at creation time. Additive and defaults to ``[]`` (clients that ignore
     #: it observe the prior shape); populated only on the user/butler views.
     linked_people: list[CalendarLinkedPerson] = Field(default_factory=list)
+    #: The event's attendees could not be read or are not resolved yet. Render "attendees
+    #: unavailable", never an empty people list that reads as "no one".
+    attendees_unavailable: bool = False
+    #: Attendees that resolved to no one (or to more than one): a count, never named.
+    unresolved_attendees: int = 0
 
 
 class CalendarProposalAcceptRequest(BaseModel):
@@ -371,6 +376,10 @@ class CalendarPrepResponse(BaseModel):
     has_prep_context: bool = False
     attendees: list[CalendarPrepAttendee] = Field(default_factory=list)
     source_butlers: list[str] = Field(default_factory=list)
+    #: The event's attendees could not be read or are not resolved yet (never "no one").
+    attendees_unavailable: bool = False
+    #: Attendees that resolved to no one (or to more than one): a count, never named.
+    unresolved_attendees: int = 0
 
 
 class CalendarWorkspaceSearchResponse(BaseModel):

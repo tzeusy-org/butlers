@@ -136,6 +136,7 @@ class _Pool:
         self.events, self.people, self.envelope = events, people, envelope
         self.pending_keys, self.live = pending_keys, live
         self.household: list[dict[str, Any]] = []
+        self.participants_down = False
         self.queries: list[str] = []
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -151,6 +152,45 @@ class _Pool:
         if "calendar_event_instances" in sql:
             return self.live
         return json.dumps(self.envelope) if self.envelope is not None else None
+
+
+@pytest.fixture(autouse=True)
+def _participants(monkeypatch):
+    """Answer ``read_participants`` from the scripted pool's people (no database here).
+
+    The real read and its resolution are proven on Postgres in tests/jobs/test_prep_participants.py.
+    """
+
+    async def read(pool: _Pool, event_id: Any) -> dict[str, Any]:
+        if pool.participants_down:
+            raise RuntimeError("participants down")
+        event = next(e for e in pool.events if e["event_id"] == event_id)
+        by_email = {p["email"]: p for p in pool.people}
+        out: dict[str, Any] = {"available": True, "participants": [], "unresolved": 0}
+        out["withheld"] = 0
+        for att in event["metadata"]["attendees"]:
+            status = str(att.get("response_status") or "").lower()
+            if att.get("self") or att.get("resource") or status == "declined":
+                continue
+            person = by_email.get(att["email"])
+            if person is None:
+                out["unresolved"] += 1
+                continue
+            if person["posture"] != "active" and "owner" not in person["roles"]:
+                out["withheld"] += 1
+                continue
+            out["participants"].append(
+                {
+                    "entity_id": str(person["entity_id"]),
+                    "display_name": person["name"],
+                    "role": "required",
+                    "response_status": None,
+                    "resolution": "owner" if "owner" in person["roles"] else "exact",
+                }
+            )
+        return out
+
+    monkeypatch.setattr(card, "read_participants", read)
 
 
 def _event(*, attendees: list[dict[str, Any]], **meta: Any) -> dict[str, Any]:
@@ -294,6 +334,24 @@ class TestRun:
         await _run(pool, proposer)
         assert "Me Myself" not in proposer.calls[0]["message"]
         assert "With: Sam Lee" in proposer.calls[0]["message"]
+
+    async def test_an_unreadable_participant_set_is_carded_as_unavailable_not_empty(self) -> None:
+        pool = _Pool([_event(attendees=[ME, SAM_ATT])], [_person()], None)
+        pool.participants_down = True
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        message = proposer.calls[0]["message"]
+        assert "Attendees unavailable." in message and "With:" not in message
+        assert "No prep context yet." not in message
+
+    async def test_unresolved_guests_are_a_count_never_a_name_or_address(self) -> None:
+        stranger = {"email": "who@nowhere.test", "displayName": "Mallory Invite"}
+        pool = _Pool([_event(attendees=[ME, SAM_ATT, stranger])], [_person()], None)
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        message = proposer.calls[0]["message"]
+        assert "+1 not identified" in message and "With: Sam Lee" in message
+        assert "Mallory" not in message and "nowhere" not in message
 
     async def test_a_broker_error_is_counted_and_never_raises(self) -> None:
         class Boom(_Proposer):

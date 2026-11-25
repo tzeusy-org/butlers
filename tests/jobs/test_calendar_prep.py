@@ -43,6 +43,42 @@ pytestmark = pytest.mark.unit
 _MODULE = "butlers.jobs.calendar_prep"
 
 
+@pytest.fixture(autouse=True)
+def _participants_ready(request):
+    """Fake-pool tests queue a fixed read order; participants are read through the seam below."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+    ready = {"available": True, "participants": [], "unresolved": 0, "withheld": 0}
+    with patch(f"{_MODULE}.read_participants", side_effect=lambda *_a: ready):
+        yield
+
+
+async def test_an_unreadable_participant_set_is_unavailable_not_empty():
+    """A failed participants read is carried as "attendees unavailable", never as no one."""
+    event_id = uuid4()
+    pool = _prep_reads(
+        events=[
+            {
+                "event_id": event_id,
+                "title": "Sync",
+                "starts_at": datetime(2026, 6, 25, 12, 0, tzinfo=UTC),
+                "entity_ids": [],
+            }
+        ]
+    )
+    state = ContributionStateStore()
+    with (
+        patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 25)),
+        patch(f"{_MODULE}.read_participants", side_effect=RuntimeError("down")),
+        patch_state(_MODULE, state),
+    ):
+        await run_relationship_calendar_prep_contribution(pool, None)
+    envelope = state.store[prep_key(str(event_id))]
+    assert envelope["attendees_unavailable"] is True
+    assert envelope["has_context"] is False
+
+
 def _prep_reads(
     *,
     events: list[dict[str, Any]],

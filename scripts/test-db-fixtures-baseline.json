@@ -23,10 +23,6 @@
     "create_table": 2,
     "fixtures": 0
   },
-  "tests/api/test_calendar_workspace_linked_people_integration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
   "tests/api/test_data_ops_permissions_export_order.py": {
     "create_table": 3,
     "fixtures": 0

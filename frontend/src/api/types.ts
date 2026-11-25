@@ -1341,6 +1341,10 @@ export interface UnifiedCalendarEntry {
    * event pills/detail panel can render linked-people avatars.
    */
   linked_people?: CalendarLinkedPerson[];
+  /** Attendees could not be read or are not resolved yet: show "attendees unavailable". */
+  attendees_unavailable?: boolean;
+  /** Attendees that resolved to no one (or to more than one): a count, never named. */
+  unresolved_attendees?: number;
 }
 
 /**
@@ -1856,6 +1860,10 @@ export interface CalendarPrepResponse {
   attendees: CalendarPrepAttendee[];
   /** Butlers that contributed prep context for this event. */
   source_butlers: string[];
+  /** Attendees could not be read or are not resolved yet: not "no one". */
+  attendees_unavailable?: boolean;
+  /** Attendees that resolved to no one (or to more than one), as a count. */
+  unresolved_attendees?: number;
 }
 
 /** Sync capability flags in workspace metadata. */

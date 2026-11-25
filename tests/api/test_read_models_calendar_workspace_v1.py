@@ -934,3 +934,37 @@ async def test_scan_calendar_overlays_distinguishes_failed_from_empty():
     db.butlers_with_module = MagicMock(return_value=None)
     db.butler_names = []
     assert await scan_calendar_overlays(db) == ([], False)
+
+
+async def test_a_failed_people_fan_out_marks_every_event_attendees_unavailable():
+    from butlers.api.read_models.calendar_workspace import query_calendar_entry_people
+
+    first, second = UUID(int=1), UUID(int=2)
+    db = MagicMock()
+    db.butlers_with_module = MagicMock(return_value=["relationship"])
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("pool down"))
+
+    people = await query_calendar_entry_people(db, event_ids=[first, second])
+
+    assert people.available is False
+    assert people.attendees_unavailable == {first, second}
+
+
+async def test_a_partial_people_fan_out_failure_marks_every_event_unavailable():
+    from butlers.api.read_models.calendar_workspace import query_calendar_entry_people
+
+    first, second = UUID(int=1), UUID(int=2)
+    db = MagicMock()
+    db.butlers_with_module = MagicMock(return_value=["relationship", "general"])
+
+    async def fan_out(sql, args, *, butler_names=None):
+        if "canonical_name" in sql:
+            return {"relationship": []}, ["general"]
+        return {"relationship": []}, []
+
+    db.fan_out_with_status = fan_out
+
+    people = await query_calendar_entry_people(db, event_ids=[first, second])
+
+    assert people.available is False
+    assert people.attendees_unavailable == {first, second}

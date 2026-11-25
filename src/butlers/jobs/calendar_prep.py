@@ -62,7 +62,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import asyncpg
 
@@ -70,6 +70,7 @@ from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.briefing import SGT, today_sgt
+from butlers.modules.calendar.participants import NAMEABLE_PARTICIPANTS_SQL, read_participants
 
 logger = logging.getLogger(__name__)
 
@@ -144,25 +145,46 @@ class PrepContribution(TypedDict):
     event_starts_at: str
     has_context: bool
     attendees: list[PrepAttendee]
+    #: The event's participants could not be read or are not resolved yet: not "no one".
+    attendees_unavailable: NotRequired[bool]
+    #: Attendees that resolved to no one (or to more than one), as a count, never named.
+    unresolved_attendees: NotRequired[int]
 
 
-# Upcoming entity-linked events in a window, from the job's own calendar projection. A
-# declared status (out of office, working location) is not a meeting and gets no prep.
-_UPCOMING_LINKED_EVENTS_SQL = """
+# Upcoming events with people on them, from the job's own calendar projection: an owner-made link
+# or a resolved participant (S2 of bu-5ii4gj.3), plus events whose attendees are not resolved at
+# all, so the rail can say "attendees unavailable" or count them instead of showing nothing. A
+# declared status (out of office, working location) is not a meeting and a native reminder is not
+# an encounter: neither gets prep.
+_UPCOMING_LINKED_EVENTS_SQL = f"""
     -- quarantine-exempt: filtered in Python by asserts_owner_time
+    WITH nameable AS ({NAMEABLE_PARTICIPANTS_SQL})
     SELECT ce.id AS event_id,
            ce.title AS title,
            ce.starts_at AS starts_at,
            ce.metadata AS metadata,
            cs.time_role AS time_role,
-           array_agg(DISTINCT cee.entity_id) AS entity_ids
-    FROM calendar_event_entities cee
-    JOIN calendar_events ce ON ce.id = cee.event_id
+           COALESCE(array_agg(DISTINCT link.entity_id)
+                    FILTER (WHERE link.entity_id IS NOT NULL), '{{}}') AS entity_ids
+    FROM calendar_events ce
     JOIN calendar_sources cs ON cs.id = ce.source_id
+    LEFT JOIN LATERAL (
+        SELECT cee.entity_id FROM calendar_event_entities cee WHERE cee.event_id = ce.id
+        UNION
+        SELECT n.entity_id FROM nameable n WHERE n.event_id = ce.id
+    ) link ON true
     WHERE ce.starts_at >= $1
       AND ce.starts_at < $2
       AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
       AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
+      AND COALESCE(ce.metadata ->> 'native', 'false') <> 'true'
+      AND (
+          link.entity_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM calendar_event_participants p WHERE p.event_id = ce.id)
+          OR (ce.metadata ->> 'source_type' = 'provider_event'
+              AND jsonb_typeof(ce.metadata -> 'attendees') = 'array'
+              AND jsonb_array_length(ce.metadata -> 'attendees') > 0)
+      )
     GROUP BY ce.id, ce.title, ce.starts_at, ce.metadata, cs.time_role
     ORDER BY ce.starts_at ASC
 """
@@ -180,6 +202,16 @@ async def _fetch_owner_events(pool: Any, window_start: datetime, window_end: dat
     """
     rows = await pool.fetch(_UPCOMING_LINKED_EVENTS_SQL, window_start, window_end)
     return [row for row in rows if asserts_owner_time(row.get("time_role"), row.get("metadata"))]
+
+
+async def _participant_state(pool: Any, event_id: Any) -> tuple[bool, int]:
+    """(unavailable, unresolved count) for one event; a failed read is "unavailable"."""
+    try:
+        read = await read_participants(pool, event_id)
+    except Exception:
+        logger.warning("calendar prep participants read failed", exc_info=True)
+        return True, 0
+    return (not read["available"]), int(read["unresolved"])
 
 
 def prep_key(event_id: str) -> str:
@@ -441,6 +473,7 @@ async def run_relationship_calendar_prep_contribution(
 
         attendees.sort(key=lambda a: a["name"].lower())
         attendees_total += len(attendees)
+        unavailable, unresolved = await _participant_state(pool, row["event_id"])
 
         envelope: PrepContribution = {
             "butler": "relationship",
@@ -449,6 +482,8 @@ async def run_relationship_calendar_prep_contribution(
             "event_starts_at": row["starts_at"].isoformat(),
             "has_context": len(attendees) > 0,
             "attendees": attendees,
+            "attendees_unavailable": unavailable,
+            "unresolved_attendees": unresolved,
         }
         await state_set(pool, prep_key(event_id), envelope)
         events_written += 1
