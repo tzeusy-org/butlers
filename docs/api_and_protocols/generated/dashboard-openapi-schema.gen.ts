@@ -2557,6 +2557,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/workspace/day-verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Day Verdict
+         * @description The next commitment, committed hours and longest free window (REQ-module-calendar-051).
+         *
+         *     Derived from the same projection as ``/day-sheet``. An unreadable calendar returns
+         *     ``available=false`` rather than an empty or clear day. Read-only, no model.
+         */
+        get: operations["get_day_verdict_api_calendar_workspace_day_verdict_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/workspace/entries/{entry_id}": {
         parameters: {
             query?: never;
@@ -17854,6 +17877,11 @@ export interface components {
             data: components["schemas"]["DaySheetResponse"];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[DayVerdictResponse] */
+        ApiResponse_DayVerdictResponse_: {
+            data: components["schemas"]["DayVerdictResponse"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[DeadlineRecord] */
         ApiResponse_DeadlineRecord_: {
             data: components["schemas"]["DeadlineRecord"];
@@ -26232,6 +26260,93 @@ export interface components {
             text: string;
             /** Zone */
             zone: string;
+        };
+        /**
+         * DayVerdictEntry
+         * @description The meeting a verdict clause points at; ``door`` opens it in the calendar.
+         */
+        DayVerdictEntry: {
+            /** Door */
+            door: string;
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** People Count */
+            people_count: number;
+            /** Ref */
+            ref: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * DayVerdictResponse
+         * @description GET /api/calendar/workspace/day-verdict: a few deterministic facts about one local day.
+         *
+         *     ``available`` is ``False`` when the calendar could not be read, and then no other fact may be
+         *     shown as true. ``empty`` is the one case "nothing on" is earned: readable, current, no items.
+         *     ``free_window`` is withheld when the read is stale. No model composes any field.
+         */
+        DayVerdictResponse: {
+            /** Available */
+            available: boolean;
+            /**
+             * Committed Count
+             * @default 0
+             */
+            committed_count?: number;
+            /**
+             * Committed Minutes
+             * @default 0
+             */
+            committed_minutes?: number;
+            current?: components["schemas"]["DayVerdictEntry"] | null;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Empty
+             * @default false
+             */
+            empty?: boolean;
+            free_window?: components["schemas"]["DayVerdictWindow"] | null;
+            freshness: components["schemas"]["DaySheetFreshness"];
+            next?: components["schemas"]["DayVerdictEntry"] | null;
+            /**
+             * Relative
+             * @enum {string}
+             */
+            relative: "today" | "tomorrow" | "other";
+            /**
+             * Tentative Count
+             * @default 0
+             */
+            tentative_count?: number;
+            /** Zone */
+            zone: string;
+        };
+        /** DayVerdictWindow */
+        DayVerdictWindow: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Minutes */
+            minutes: number;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
         };
         /**
          * DeadlineRecord
@@ -45681,6 +45796,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_DaySheetResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_day_verdict_api_calendar_workspace_day_verdict_get: {
+        parameters: {
+            query?: {
+                /** @description Owner-local day (YYYY-MM-DD); defaults to today, or tomorrow from 18:00 local */
+                date?: string | null;
+                /** @description IANA zone to read the day in; defaults to the owner's zone */
+                timezone?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_DayVerdictResponse_"];
                 };
             };
             /** @description Validation Error */

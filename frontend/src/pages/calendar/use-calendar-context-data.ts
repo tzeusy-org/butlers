@@ -4,15 +4,17 @@
  */
 
 import { useMemo } from "react";
-import { addDays, format, startOfDay } from "date-fns";
+import { addDays, format } from "date-fns";
 
 import {
   useCalendarConflicts,
   useCalendarDayBriefing,
   useCalendarInvitations,
   useCalendarOverlays,
+  useDayVerdict,
 } from "@/hooks/use-calendar-workspace";
 import { overlaysByDay } from "@/lib/calendar-overlays";
+import { useLocalDayStart } from "@/pages/calendar/use-local-day";
 import type { CalendarRange } from "@/pages/calendar/workspace-model";
 
 interface CalendarContextDataArgs {
@@ -111,12 +113,17 @@ export function useCalendarContextData({
   // contributions for tomorrow, grouped by butler/kind. Reads the same cached
   // view as the overlays lane (no per-open LLM); only fetched while overlays are
   // toggled on, so it shares that opt-in surface.
-  const briefingDate = useMemo(() => addDays(startOfDay(new Date()), 1), []);
+  const localDayStart = useLocalDayStart();
+  const briefingDate = useMemo(() => addDays(localDayStart, 1), [localDayStart]);
   const briefingDateParam = useMemo(() => format(briefingDate, "yyyy-MM-dd"), [briefingDate]);
   const dayBriefingQuery = useCalendarDayBriefing(
     { date: briefingDateParam, timezone },
     { enabled: overlaysEnabled },
   );
+
+  // Next commitment, committed hours and free window for the owner's day (today, or tomorrow from
+  // 18:00 owner-local). Read in the owner's zone by the server, not the browser's.
+  const dayVerdictQuery = useDayVerdict();
 
   const surfaceFetching =
     workspaceFetching ||
@@ -146,6 +153,7 @@ export function useCalendarContextData({
     overlaysByDayMap,
     briefingDate,
     dayBriefingQuery,
+    dayVerdictQuery,
     surfaceFetching,
   };
 }

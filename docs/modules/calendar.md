@@ -102,6 +102,21 @@ the dashboard share one projection and one digest. A delivered ledger row for th
 day; a failed or suppressed send retries. It records `day_sheet/pushed/<date>` and
 `day_sheet/pushed/latest` in the general butler's state, which the `eod-tomorrow-prep` prompt reads.
 
+### Day verdict
+
+`GET /api/calendar/workspace/day-verdict` (`build_day_verdict` in
+`src/butlers/core/temporal/day_verdict.py`, REQ-module-calendar-051) projects the same day sheet
+into a few facts: the meeting in progress, the next attended meeting, committed minutes, tentative
+count and the longest free window still ahead. It opens the `/calendar` page, replacing the old
+event tally. Without a date it reads the owner's today, or tomorrow from 18:00 local. An unreadable
+calendar returns `available=false` and the opener says the day is unknown; a stale read drops the
+free window; only a current read with no items is `empty`. The opener's committed-hours and free-window
+clauses open the day view (`/calendar?view=user&range=day&anchor=<date>`); the free window adds
+`&time=HH:mm`. That time is formatted in the browser's zone, because the grid scrolls in browser
+hours, so it can differ from the owner-zone clause text when the two zones differ. The page re-reads
+the verdict when the current meeting ends, the next one starts, at 18:00 owner-local and at
+midnight.
+
 ### Overcommitment owner conditions
 
 The dashboard-api process runs a supervised `calendar_overcommitment` loop

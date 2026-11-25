@@ -1057,6 +1057,46 @@ class DaySheetFreshness(BaseModel):
     sources_total: int = 0
 
 
+class DayVerdictEntry(BaseModel):
+    """The meeting a verdict clause points at; ``door`` opens it in the calendar."""
+
+    ref: str
+    start: datetime
+    end: datetime
+    title: str
+    people_count: int
+    door: str
+
+
+class DayVerdictWindow(BaseModel):
+    start: datetime
+    end: datetime
+    minutes: int
+
+
+class DayVerdictResponse(BaseModel):
+    """GET /api/calendar/workspace/day-verdict: a few deterministic facts about one local day.
+
+    ``available`` is ``False`` when the calendar could not be read, and then no other fact may be
+    shown as true. ``empty`` is the one case "nothing on" is earned: readable, current, no items.
+    ``free_window`` is withheld when the read is stale. No model composes any field.
+    """
+
+    available: bool
+    date: LocalDate
+    zone: str
+    #: ``today`` or ``tomorrow`` in the owner's zone, else ``other``; the page labels by ``date``.
+    relative: Literal["today", "tomorrow", "other"]
+    freshness: DaySheetFreshness
+    current: DayVerdictEntry | None = None
+    next: DayVerdictEntry | None = None
+    committed_minutes: int = 0
+    committed_count: int = 0
+    tentative_count: int = 0
+    free_window: DayVerdictWindow | None = None
+    empty: bool = False
+
+
 class DaySheetResponse(BaseModel):
     """GET /api/calendar/workspace/day-sheet: the one projection of an owner-local day.
 

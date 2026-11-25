@@ -28,6 +28,7 @@ from butlers.core.temporal.day_sheet import (
     SourceRead,
     build_day_sheet,
 )
+from butlers.core.temporal.day_verdict import DayVerdict, build_day_verdict
 from butlers.modules.calendar.constants import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
     PROJECTION_STALENESS_MULTIPLIER,
@@ -142,3 +143,20 @@ async def query_calendar_day_sheet(
             "day sheet rows unreadable; reporting every source unreadable", exc_info=True
         )
         return sheet([SourceRead(name=name, readable=False) for name in butlers])
+
+
+async def query_calendar_day_verdict(
+    db: DatabaseManager,
+    *,
+    local_date: date,
+    zone: ZoneInfo,
+    now: datetime | None = None,
+) -> DayVerdict:
+    """The owner's ``local_date`` as a ``DayVerdict``, derived from the same sheet.
+
+    Never raises for a read failure: the day sheet reports every source unreadable and the
+    verdict is then ``available=False`` with no facts (REQ-module-calendar-051).
+    """
+    now = now or datetime.now(UTC)
+    sheet = await query_calendar_day_sheet(db, local_date=local_date, zone=zone, now=now)
+    return build_day_verdict(sheet, now=now)

@@ -78,6 +78,9 @@ from butlers.api.models.calendar_workspace import (
     DaySheetGap,
     DaySheetItem,
     DaySheetResponse,
+    DayVerdictEntry,
+    DayVerdictResponse,
+    DayVerdictWindow,
     HouseholdEventRef,
     HouseholdSubjectGroup,
     HouseholdTimeResponse,
@@ -90,7 +93,10 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
-from butlers.api.read_models.calendar_day_sheet import query_calendar_day_sheet
+from butlers.api.read_models.calendar_day_sheet import (
+    query_calendar_day_sheet,
+    query_calendar_day_verdict,
+)
 from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
@@ -1896,6 +1902,102 @@ async def get_day_sheet(
             ),
             digest=sheet.digest,
             text=render_day_sheet_text(sheet),
+        )
+    )
+
+
+def _now() -> datetime:
+    """The clock the verdict route reads; a seam so tests can pin the 18:00 rollover."""
+    return datetime.now(UTC)
+
+
+#: Local hour from which an unspecified verdict day is tomorrow: tonight's meetings are behind you.
+_VERDICT_ROLLOVER_HOUR = 18
+
+
+def _verdict_entry(item) -> DayVerdictEntry | None:
+    if item is None:
+        return None
+    return DayVerdictEntry(
+        ref=item.ref,
+        start=item.start,
+        end=item.end,
+        title=item.title,
+        people_count=item.people_count,
+        door=item.door,
+    )
+
+
+@router.get("/day-verdict", response_model=ApiResponse[DayVerdictResponse])
+async def get_day_verdict(
+    date: date_type | None = Query(
+        None,
+        description="Owner-local day (YYYY-MM-DD); defaults to today, or tomorrow from 18:00 local",
+    ),
+    timezone: str | None = Query(
+        None, description="IANA zone to read the day in; defaults to the owner's zone"
+    ),
+    *,
+    db: Db,
+) -> ApiResponse[DayVerdictResponse]:
+    """The next commitment, committed hours and longest free window (REQ-module-calendar-051).
+
+    Derived from the same projection as ``/day-sheet``. An unreadable calendar returns
+    ``available=false`` rather than an empty or clear day. Read-only, no model.
+    """
+    if timezone is not None:
+        try:
+            zone = ZoneInfo(timezone.strip())
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+    else:
+        zone = await owner_zoneinfo(_calendar_accounts_shared_pool(db))
+    now = _now().astimezone(zone)
+    today = now.date()
+    local_date = date or (
+        today + timedelta(days=1) if now.hour >= _VERDICT_ROLLOVER_HOUR else today
+    )
+    if not _DAY_SHEET_MIN_YEAR <= local_date.year <= _DAY_SHEET_MAX_YEAR:
+        raise HTTPException(
+            status_code=400,
+            detail=f"date must be within {_DAY_SHEET_MIN_YEAR}-{_DAY_SHEET_MAX_YEAR}",
+        )
+
+    verdict = await query_calendar_day_verdict(db, local_date=local_date, zone=zone, now=now)
+    free = verdict.free_window
+    return ApiResponse[DayVerdictResponse](
+        data=DayVerdictResponse(
+            available=verdict.available,
+            date=local_date,
+            zone=verdict.zone,
+            relative=(
+                "today"
+                if local_date == today
+                else "tomorrow"
+                if local_date == today + timedelta(days=1)
+                else "other"
+            ),
+            freshness=DaySheetFreshness(
+                state=verdict.freshness.state,
+                as_of=verdict.freshness.as_of,
+                sources_unreadable=verdict.freshness.sources_unreadable,
+                sources_total=verdict.freshness.sources_total,
+            ),
+            current=_verdict_entry(verdict.current),
+            next=_verdict_entry(verdict.next),
+            committed_minutes=verdict.committed_minutes,
+            committed_count=verdict.committed_count,
+            tentative_count=verdict.tentative_count,
+            free_window=(
+                DayVerdictWindow(
+                    start=free.start,
+                    end=free.end,
+                    minutes=int((free.end.timestamp() - free.start.timestamp()) // 60),
+                )
+                if free is not None
+                else None
+            ),
+            empty=verdict.empty,
         )
     )
 

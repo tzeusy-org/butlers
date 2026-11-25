@@ -39,6 +39,7 @@ export {
   getCalendarAccounts,
   getCalendarDayBriefing,
   getCalendarDaySheet,
+  getCalendarDayVerdict,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,

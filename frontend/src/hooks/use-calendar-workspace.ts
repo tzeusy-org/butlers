@@ -4,6 +4,9 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useEffect } from "react";
+
+import { msUntilVerdictBoundary } from "@/lib/day-verdict-boundary";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 import {
@@ -11,6 +14,7 @@ import {
   dismissCalendarProposal,
   getCalendarDayBriefing,
   getCalendarDaySheet,
+  getCalendarDayVerdict,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
@@ -203,6 +207,37 @@ export function useDaySheet(
     refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
+}
+
+/**
+ * Fetch the day verdict for the opener. Read-only, no model: `available: false` and an error are
+ * both surfaced as unknown, never as a clear day.
+ */
+export function useDayVerdict(
+  params: { date?: string; timezone?: string } = {},
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  const busAwareInterval = useBusAwarePollInterval();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ["calendar-day-verdict", params],
+    queryFn: () => getCalendarDayVerdict(params),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
+    placeholderData: (previousData) => previousData,
+  });
+  // The read can be minutes old at a boundary (a meeting ends, 18:00 flips the day), so re-read
+  // exactly then instead of waiting for the next poll.
+  const verdict = query.data?.data;
+  useEffect(() => {
+    if (!verdict) return;
+    const timer = setTimeout(
+      () => void queryClient.invalidateQueries({ queryKey: ["calendar-day-verdict"] }),
+      msUntilVerdictBoundary(verdict, new Date()),
+    );
+    return () => clearTimeout(timer);
+  }, [verdict, query.dataUpdatedAt, queryClient]);
+  return query;
 }
 
 /**

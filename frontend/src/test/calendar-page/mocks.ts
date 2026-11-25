@@ -41,6 +41,26 @@ export function calendarWorkspaceHookMock() {
         },
       },
     })),
+    useDayVerdict: vi.fn(() => ({
+      ...idleQuery,
+      isFetched: false,
+      data: {
+        data: {
+          available: true,
+          date: "2026-02-23",
+          zone: "Asia/Singapore",
+          relative: "tomorrow",
+          freshness: { state: "current", as_of: null, sources_unreadable: [], sources_total: 1 },
+          current: null,
+          next: null,
+          committed_minutes: 0,
+          committed_count: 0,
+          tentative_count: 0,
+          free_window: null,
+          empty: true,
+        },
+      },
+    })),
     useCalendarMeetingPrep: vi.fn(() => ({
       ...idleQuery,
       isFetched: false,
