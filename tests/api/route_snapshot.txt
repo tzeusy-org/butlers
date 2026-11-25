@@ -1848,7 +1848,7 @@ SCHEMA CalendarInvitationsResponse 4e56ff95948f
 SCHEMA CalendarLinkedPerson 096b8fb48e79
 SCHEMA CalendarOrganizerDecisionRequest b417335bd253
 SCHEMA CalendarOrganizerDecisionResponse 60d13a424a38
-SCHEMA CalendarPrepAttendee b8c409a021f9
+SCHEMA CalendarPrepAttendee 5be94be97ec5
 SCHEMA CalendarPrepCommitment 556e64e17f20
 SCHEMA CalendarPrepNote 250dc7baa977
 SCHEMA CalendarPrepResponse 7709f7caac14

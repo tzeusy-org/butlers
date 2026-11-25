@@ -114,7 +114,7 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   out a merge still lands on the tombstoned source; whether those writers refuse or follow
   `merged_into` is open (bu-gm93xc).
 
-## Encounter ledger (dark)
+## Encounter ledger
 
 `relationship.encounters` holds one derived state per person and calendar occurrence:
 `scheduled`, `moved`, `cancelled`, `declined_by_owner`, `declined_by_them`, `happened_attested`,
@@ -122,9 +122,12 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
 it from the occurrence's participant records, the event's status and start, and the owner's debrief
 answer (owner testimony beats RSVP, which beats the clock; an ended meeting nobody vouches for is
 `unknown`, never met). A replay converges, and a read that fails leaves the prior rows alone and
-reports `complete: false`. Nothing schedules the reducer and no reader consults the table yet
-(slice E2a of bu-5ii4gj.3); `interaction_sync` and "last met" still use the interim rule until the
-readers slice switches them. The debrief keeps its own people resolver on purpose: it withholds
+reports `complete: false`. The reducer runs hourly (`encounter_ledger`). Prep, the meeting card and the prep rail read it
+(slice E2b of bu-5ii4gj.3): "last met" comes only from a meeting the owner or evidence vouches for,
+with a basis chip (`you_confirmed`, `evidence`); a meeting nobody vouches for is "last scheduled".
+A person the ledger has no row for yet, or any person while the ledger is unreadable, keeps the
+interim rule, shown as `interim` (accepted, not confirmed). `interaction_sync` and the Dunbar and
+stale-contact weights still use the interim rule until the owner decides retraction and weighting. The debrief keeps its own people resolver on purpose: it withholds
 tombstoned (`no_contact`, `memorial`) people whose `has-email` facts stay active, which the
 participant records do not.
 

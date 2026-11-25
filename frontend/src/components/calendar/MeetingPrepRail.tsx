@@ -90,6 +90,12 @@ function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
   );
 }
 
+const LAST_MET_BASIS_LABEL: Record<string, string> = {
+  you_confirmed: "you confirmed",
+  evidence: "evidence",
+  interim: "accepted, not confirmed",
+};
+
 const COMMITMENT_KIND_META: Record<
   CalendarPrepCommitmentKind,
   { label: string; Icon: LucideIcon }
@@ -269,6 +275,24 @@ function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
           <span className="text-[var(--dim)]">Last met</span> {attendee.last_met}
           {attendee.last_met_event ? (
             <span className="text-[var(--dim)]"> · {attendee.last_met_event}</span>
+          ) : null}
+          {attendee.last_met_basis ? (
+            <span
+              data-testid="prep-last-met-basis"
+              className="ml-1 rounded border border-[var(--border)] px-1 text-[var(--dim)]"
+            >
+              {LAST_MET_BASIS_LABEL[attendee.last_met_basis] ?? attendee.last_met_basis}
+            </span>
+          ) : null}
+        </div>
+      ) : attendee.last_scheduled ? (
+        <div
+          data-testid="prep-last-scheduled"
+          className="font-mono text-[10px] text-[var(--mfg)]"
+        >
+          <span className="text-[var(--dim)]">Last scheduled</span> {attendee.last_scheduled}
+          {attendee.last_scheduled_event ? (
+            <span className="text-[var(--dim)]"> · {attendee.last_scheduled_event}</span>
           ) : null}
         </div>
       ) : null}

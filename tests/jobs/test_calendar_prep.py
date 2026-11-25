@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -51,8 +51,11 @@ def _participants_ready(request):
         yield
         return
     ready = {"available": True, "participants": [], "unresolved": 0, "withheld": 0}
+    # The ledger read is stubbed to "covers no one" so the queued reads keep the interim order;
+    # the ledger-backed behaviour is covered against real Postgres in test_prep_person_time.py.
     with (
         patch(f"{_MODULE}.read_participants", side_effect=lambda *_a: ready),
+        patch(f"{_MODULE}.read_person_time", new=AsyncMock(return_value={})),
         # The scripted pool has no settings read; the zone seam is exercised in TestOwnerZone.
         patch(f"{_MODULE}.owner_briefing_zone", return_value=ZoneInfo("Asia/Singapore")),
     ):

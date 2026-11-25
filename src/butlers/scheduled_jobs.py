@@ -1302,6 +1302,18 @@ async def _run_relationship_calendar_prep_contribution_job(
     return await run_relationship_calendar_prep_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_relationship_encounter_ledger_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Recompute the encounter ledger (bu-5ii4gj.3); a failed read reports ``complete: False``."""
+    del job_args
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    result = await run_encounter_reducer(pool)
+    return {"butler": "relationship", **result}
+
+
 async def _run_relationship_meeting_debrief_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2476,6 +2488,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_scan": _run_relationship_insight_scan_job,
             "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
             "relationship_maintenance": _run_relationship_maintenance_job,
+            "encounter_ledger": _run_relationship_encounter_ledger_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
             "meeting_card_push": _run_relationship_meeting_card_push_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
