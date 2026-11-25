@@ -125,6 +125,7 @@ _INDEXED = {
         "OR search_title OPERATOR(mcp_ext.%) $1",
     ),
 }
+_FACT_HEAD_SQL = "concat_ws(' ', f->>'content', f->>'predicate', f->>'subject')"
 _FACT_TEXT = ("predicate", "subject", "valid_at", "validity")
 # Dashboard deep links by item kind: fixed paths, never an argument or a query (D10).
 _LINKS = {
@@ -150,6 +151,7 @@ class Source:
     at_sql: str
     columns: str = ""
     prefilter: str = ""
+    head_sql: str = ""
 
     @property
     def is_fact(self) -> bool:
@@ -203,7 +205,10 @@ def index_sources() -> tuple[Source, ...]:
             # Indexed: the view's search columns, behind an index-answerable prefilter.
             shape = (*_INDEXED_SQL[table.source], shape[2])
             columns, prefilter = _INDEXED[table.source]
-        result.append(Source(table, view, kind, prefix, *shape, columns, prefilter))
+        # The text whose match earns the title bonus: the title, and a fact's predicate and
+        # subject; never kind, category or status metadata (bu-y66o00.75).
+        head = _FACT_HEAD_SQL if table.source.endswith(".facts") else shape[0]
+        result.append(Source(table, view, kind, prefix, *shape, columns, prefilter, head))
     return tuple(result)
 
 
@@ -219,15 +224,18 @@ def _ranked_sql(sources: list[Source]) -> str:
     """Matching items as ``(source, item_id, source_id, f, at, score)``; ``$1`` is the query."""
     selects = " UNION ALL ".join(
         f"""SELECT {i} AS source, '{s.prefix}' || source_id AS item_id, source_id, f, at,
-               vector, mcp_ext.similarity(left(title, {TITLE_MAX}), $1) AS similarity
+               vector, head,
+               mcp_ext.similarity(left(title, {TITLE_MAX}), $1) AS similarity
         FROM (SELECT source_id, f, {s.title_sql} AS title, {s.vector_sql} AS vector,
-                     {s.at_sql} AS at
+                     {s.head_sql} AS head, {s.at_sql} AS at
               FROM (SELECT source_id, fields AS f{s.columns} FROM {s.view}
                     {"WHERE " + s.prefilter if s.prefilter else ""}) AS v) AS s"""
         for i, s in enumerate(sources)
     )
     return f"""SELECT source, item_id, source_id, f, at,
-               (COALESCE(ts_rank(vector, q.q), 0) + COALESCE(similarity, 0))::float8 AS score
+               (COALESCE(ts_rank(vector, q.q), 0) + COALESCE(similarity, 0)
+                + CASE WHEN to_tsvector('{_TS_CONFIG}', head) @@ q.q THEN 1 ELSE 0 END
+               )::float8 AS score
         FROM ({selects}) AS items,
              (SELECT websearch_to_tsquery('{_TS_CONFIG}', $1) AS q) AS q
         WHERE vector @@ q.q OR similarity >= {TRIGRAM_THRESHOLD}"""

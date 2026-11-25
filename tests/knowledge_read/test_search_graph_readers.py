@@ -304,3 +304,25 @@ def test_deep_links_are_the_base_plus_a_fixed_path():
     context = _context()
     assert context.link("/entities/abc") == "https://dash.example.test/entities/abc"
     assert _context(dashboard_base="").link("/chronicles") == "/chronicles"
+
+
+def test_ranking_rewards_a_title_match_over_a_metadata_only_match():
+    """bu-y66o00.75: a category-only lexeme must not tie with a title hit."""
+    from butlers.knowledge_read.search import _ranked_sql
+
+    sources = list(index_sources())
+    sql = _ranked_sql(sources)
+    # The bonus is a query-side match on each source's head text, outside the stored vector.
+    assert "CASE WHEN to_tsvector('english', head) @@ q.q THEN 1 ELSE 0 END" in sql
+    by_table = {s.table.source: s for s in sources}
+    episodes = by_table["chronicler.episodes_public"]
+    assert "category" not in episodes.head_sql
+    assert episodes.head_sql in sql
+    for source in sources:
+        if source.is_fact:
+            assert "predicate" in source.head_sql and "subject" in source.head_sql
+    # The prefilter, and so the GIN-admitted set, is unchanged.
+    assert episodes.prefilter == (
+        "search_vector @@ websearch_to_tsquery('english', $1) "
+        "OR search_title OPERATOR(mcp_ext.%) $1"
+    )
