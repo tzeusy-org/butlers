@@ -64,26 +64,41 @@ async def read_status(conn: asyncpg.Connection) -> ProjectionStatus:
 
 
 def judge(status: ProjectionStatus, shipped: Manifest) -> Verdict:
-    """D17 precedence between deploy skew and a pending owner step, plus the gauge label."""
-    pending = (
+    """D17 precedence between deploy skew and a pending owner step, plus the gauge label.
+
+    The gauge (``change``) tracks the owner step itself (D16): pending while the applied digest
+    is not a replicated one, there is no applied record, or the copy is incomplete. It is
+    independent of this pod's shipped manifest, so it stays right while the pod is skewed. The
+    direction label compares applied against shipped only when the pod can classify it (shipped
+    is a replicated digest); otherwise, and when the applied record will not decode, it reads
+    ``narrowing``, failing toward alerting. The refusal code follows its own precedence.
+    """
+    owner_step_pending = (
+        status.applied_digest is None
+        or status.applied_digest not in status.replicated_digests
+        or not status.copy_complete
+    )
+    change = None
+    if owner_step_pending:
+        change = "narrowing"
+        if shipped.digest in status.replicated_digests:
+            try:
+                applied = (
+                    None
+                    if status.applied_canonical is None
+                    else decode_applied_manifest(status.applied_canonical)
+                )
+                change = manifest_transition(applied, shipped).direction
+            except ManifestError:
+                pass
+    if status.replicated_digests != {shipped.digest}:
+        return Verdict("projection_version_mismatch", change)
+    apply_pending = (
         status.applied_digest is None
         or status.applied_digest != shipped.digest
         or not status.copy_complete
     )
-    change = None
-    if pending:
-        try:
-            applied = (
-                None
-                if status.applied_canonical is None
-                else decode_applied_manifest(status.applied_canonical)
-            )
-            change = manifest_transition(applied, shipped).direction
-        except ManifestError:
-            change = "narrowing"
-    if status.replicated_digests != {shipped.digest}:
-        return Verdict("projection_version_mismatch", change)
-    return Verdict("projection_apply_pending" if pending else None, change)
+    return Verdict("projection_apply_pending" if apply_pending else None, change)
 
 
 async def canary_probe(

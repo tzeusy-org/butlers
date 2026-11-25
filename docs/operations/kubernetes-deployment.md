@@ -326,8 +326,8 @@ then pipes it to `psql` as the same CNPG local superuser. It runs on every deplo
 The public chart `deploy/helm/butlers-public-mcp` (`bu-y66o00.6`, task 2.4) is upgraded by the
 same target at the same tag after the step succeeds, through `scripts/k8s/public-mcp-chart-deploy.sh`
 (release `butlers-public-mcp`, recorded in `butlers-dev`; the chart creates `butlers-public-dev`).
-It is guarded by `PUBLIC_MCP_CHART_dev := off` until go-live, because the TAG must contain the
-server entrypoint, and it never runs when the step was switched off or failed. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+It is switched on by `PUBLIC_MCP_CHART_dev := on` (the TAG must contain the server entrypoint),
+and it never runs when the step was switched off or failed. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
 nothing rolls back, and the release and its deployments row stand. After a manifest change the
 public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
 manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
