@@ -249,6 +249,15 @@ unresolved or ambiguous address (untrusted, never shown), a role, the RSVP statu
   attendees (none, stale, changed list); an event attempted in the last hour is skipped so a failing
   one cannot hold the window; it re-checks quarantine per event and never reads quarantined text.
 
+**What counts as met (interim).** Participant rows are invited claims, so the readers that talk
+about people met filter them (bu-5ii4gj.3 E1). `interaction_sync` logs a calendar interaction, and
+mints a co-attended edge, only for an occurrence the owner accepted and that has started, for
+guests resolved `exact` or `manual` that did not decline; an occurrence whose participants are not
+resolved yet logs nothing and holds the checkpoint (there is no fallback to the invitation's
+addresses). The prep job's "last met" skips native reminders, events the owner declined or did
+not accept, and events that guest declined. The encounter ledger replaces "accepted and started"
+with "it happened".
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync

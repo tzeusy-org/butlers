@@ -1245,6 +1245,11 @@ async def _insert_message_inbox(
     )
 
 
+#: The owner's own seat. Since bu-5ii4gj.3 E1 an occurrence counts as an encounter candidate only
+#: when the owner accepted it, so every event that is meant to count carries this seat.
+_OWNER_ACCEPTED = {"email": "me@owner.com", "responseStatus": "accepted", "self": True}
+
+
 async def _insert_calendar_event(
     pool,
     *,
@@ -1859,7 +1864,11 @@ async def test_interaction_sync_calendar_query_failure_preserves_checkpoint(
         await _insert_calendar_event(
             pool,
             starts_at=event_at,
-            attendees=[{"email": "alice@example.com"}, {"email": "bob@example.com"}],
+            attendees=[
+                {"email": "alice@example.com"},
+                {"email": "bob@example.com"},
+                _OWNER_ACCEPTED,
+            ],
         )
         faults = {
             "table": (
@@ -1981,7 +1990,11 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(interaction_s
             pool,
             title="Own projected event",
             starts_at=event_at,
-            attendees=[{"email": "own-a@example.com"}, {"email": "own-b@example.com"}],
+            attendees=[
+                {"email": "own-a@example.com"},
+                {"email": "own-b@example.com"},
+                _OWNER_ACCEPTED,
+            ],
         )
         database = database_for(pool)
         await database.migrate_controls()
@@ -2066,11 +2079,14 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(interaction_s
         legacy_query.__kwdefaults__ = run_interaction_sync.__kwdefaults__
         assert legacy_query.__globals__ is run_interaction_sync.__globals__
         legacy = await legacy_query(pool)
+        # Since bu-5ii4gj.3 E1 the attendees come from the schema-local participant records, so the
+        # historical wrong-table list finds no participants and mints nothing for anyone (it used
+        # to mint the public-schema people from the invitation's addresses).
         assert legacy["errors"] == 0
-        assert legacy["logged"] == legacy["co_attended_edges_minted"] == 2
+        assert legacy["logged"] == legacy["co_attended_edges_minted"] == 0
         assert await fact_ids(own) == await edge_ids(own) == set()
         wrong_facts, wrong_edges = await fact_ids(wrong), await edge_ids(wrong)
-        assert len(wrong_facts) == len(wrong_edges) == 2
+        assert wrong_facts == wrong_edges == set()
         assert not await fact_ids(foreign) and not await edge_ids(foreign)
 
         # Only synthetic checkpoint state is reset between these two phases.
@@ -2211,7 +2227,9 @@ async def test_interaction_sync_calendar_owner_attendee_excluded(interaction_syn
 
         assert result["calendar_events_scanned"] == 1
         assert result["logged"] == 0
-        assert result["skipped_owner"] == 0  # excluded before owner check (self=True filter)
+        assert (
+            result["skipped_owner"] == 1
+        )  # the owner's own participant row is counted, not logged
 
 
 @pytest.mark.pg_clock
@@ -2265,6 +2283,7 @@ async def test_interaction_sync_calendar_case_insensitive_email_match(
             title="Strategy Session",
             attendees=[
                 {"email": "Dave@Example.COM", "responseStatus": "accepted"},
+                _OWNER_ACCEPTED,
             ],
         )
 
@@ -2295,10 +2314,9 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
             pool,
             title="Team Lunch",
             attendees=[
-                {"email": "eve@example.com", "responseStatus": "declined"},
                 {"email": " EVE@EXAMPLE.COM ", "responseStatus": "accepted"},
                 {"email": "frank@example.com", "responseStatus": "tentative"},
-                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
+                _OWNER_ACCEPTED,
             ],
         )
 
@@ -2365,6 +2383,7 @@ async def test_interaction_sync_calendar_idempotent_second_run(interaction_sync_
             title="Recurring Sync",
             attendees=[
                 {"email": "henry@example.com", "responseStatus": "accepted"},
+                _OWNER_ACCEPTED,
             ],
         )
 
@@ -2443,6 +2462,7 @@ async def test_interaction_sync_combined_messages_and_calendar(interaction_sync_
             starts_at=datetime.now(UTC) - timedelta(hours=3),
             attendees=[
                 {"email": "iris@example.com", "responseStatus": "accepted"},
+                _OWNER_ACCEPTED,
             ],
         )
 
@@ -2452,3 +2472,369 @@ async def test_interaction_sync_combined_messages_and_calendar(interaction_sync_
         assert result["logged"] == 2
         assert result["calendar_events_scanned"] == 1
         assert result["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# bu-5ii4gj.3 E1: only an occurrence the owner accepted counts, read from participant records
+# ---------------------------------------------------------------------------
+
+
+def _relationship_jobs():
+    from butlers.roster_imports import roster_module
+
+    return roster_module("relationship", "jobs/relationship_jobs")
+
+
+async def _contact_with_email(pool, name: str, email: str):
+    contact_id = await _insert_contact_anchor(pool, first_name=name)
+    await _insert_contact_info(pool, contact_id=contact_id, ci_type="email", value=email)
+    return await pool.fetchval(
+        "SELECT entity_id FROM relationship.contact_entity_map WHERE contact_id = $1::uuid",
+        contact_id,
+    )
+
+
+async def _calendar_fact_entities(pool) -> set:
+    return {
+        r["entity_id"]
+        for r in await pool.fetch(
+            "SELECT entity_id FROM relationship.facts WHERE predicate = 'interaction_calendar_event'"
+        )
+    }
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_declined_guest_is_not_met(interaction_sync_pool):
+    """A guest who declined an accepted meeting is invited, not met: no interaction, no edge."""
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        came = await _contact_with_email(pool, "Came", "came@example.com")
+        await _contact_with_email(pool, "Declined", "declined@example.com")
+        await _insert_calendar_event(
+            pool,
+            attendees=[
+                {"email": "came@example.com", "responseStatus": "accepted"},
+                {"email": "declined@example.com", "responseStatus": "declined"},
+                _OWNER_ACCEPTED,
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1 and result["errors"] == 0
+        assert await _calendar_fact_entities(pool) == {came}
+
+
+@pytest.mark.pg_clock
+@pytest.mark.parametrize("owner_status", ["tentative", "needsAction"])
+async def test_interaction_sync_calendar_unaccepted_owner_seat_counts_nothing(
+    interaction_sync_pool, owner_status
+):
+    """A meeting the owner never accepted is a plan: no interaction, counted as not an encounter."""
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Plan", "plan@example.com")
+        await _insert_calendar_event(
+            pool,
+            attendees=[
+                {"email": "plan@example.com", "responseStatus": "accepted"},
+                {"email": "me@owner.com", "responseStatus": owner_status, "self": True},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 0 and result["co_attended_edges_minted"] == 0
+        # An unanswered invitation from an untrusted organizer is quarantined before the count.
+        assert result["calendar_events_not_encounters"] == result["calendar_events_scanned"]
+        assert await _calendar_fact_entities(pool) == set()
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_missing_participants_log_nothing_and_hold_checkpoint(
+    interaction_sync_pool,
+):
+    """No participant rows is "not resolved", never the invitation's addresses; the next run counts."""
+    from butlers.core.state import state_get, state_set
+
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+    from butlers.modules.calendar.participants import sync_event_participants
+
+    async with interaction_sync_pool() as pool:
+        eid = await _contact_with_email(pool, "Later", "later@example.com")
+        event_at = await pool.fetchval("SELECT now() - interval '3 hours'")
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
+        event_id = await _insert_calendar_event(
+            pool,
+            starts_at=event_at,
+            attendees=[
+                {"email": "later@example.com", "responseStatus": "accepted"},
+                _OWNER_ACCEPTED,
+            ],
+        )
+        await pool.execute("DELETE FROM calendar_event_participants")
+
+        held = await run_interaction_sync(pool)
+
+        assert held["logged"] == 0 and held["errors"] == 0
+        assert held["calendar_events_not_encounters"] == 1
+        assert held["calendar_participants_pending"] == 1
+        # The checkpoint stops just before the pending event instead of staying put.
+        assert (
+            await state_get(pool, "interaction_sync.last_scan_at")
+            == (event_at - timedelta(microseconds=1)).isoformat()
+        )
+
+        await sync_event_participants(pool, uuid.UUID(event_id))
+        counted = await run_interaction_sync(pool)
+
+        assert counted["logged"] == 1
+        assert await _calendar_fact_entities(pool) == {eid}
+        assert await state_get(pool, "interaction_sync.last_scan_at") == counted["scan_window_end"]
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_participant_read_failure_is_an_error_not_a_gap(
+    interaction_sync_pool, monkeypatch
+):
+    """A failed participant read counts an error and holds the checkpoint; nothing is logged."""
+    from butlers.core.state import state_get, state_set
+
+    relationship_jobs = _relationship_jobs()
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async def unreadable(*_args, **_kwargs):
+        raise RuntimeError("participants unreadable")
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Gap", "gap@example.com")
+        event_at = await pool.fetchval("SELECT now() - interval '3 hours'")
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (event_at - timedelta(days=1)).isoformat()
+        )
+        await _insert_calendar_event(
+            pool,
+            starts_at=event_at,
+            attendees=[{"email": "gap@example.com"}, _OWNER_ACCEPTED],
+        )
+        monkeypatch.setattr(relationship_jobs, "read_encounter_candidates", unreadable)
+
+        result = await run_interaction_sync(pool)
+
+        assert result["errors"] == 1 and result["logged"] == 0
+        assert result["calendar_participants_pending"] == 1
+        assert (
+            await state_get(pool, "interaction_sync.last_scan_at")
+            == (event_at - timedelta(microseconds=1)).isoformat()
+        )
+
+
+@pytest.mark.pg_clock
+async def test_prep_last_met_skips_plans_that_were_not_meetings(interaction_sync_pool):
+    """REQ-calendar-overlay-aggregation-005: "last met" is the latest occurrence that could have
+    been held, never a declined or unaccepted meeting, a reminder or one the guest declined."""
+    from butlers.jobs.calendar_prep import LAST_MET_SQL
+
+    async with interaction_sync_pool() as pool:
+        guest = await _contact_with_email(pool, "Guest", "guest@example.com")
+        now = await pool.fetchval("SELECT now()")
+
+        async def meeting(
+            days: int, title: str, *, guest_status="accepted", owner_status="accepted"
+        ):
+            event_id = await _insert_calendar_event(
+                pool,
+                title=title,
+                starts_at=now - timedelta(days=days),
+                attendees=[
+                    {"email": "guest@example.com", "responseStatus": guest_status},
+                    {"email": "me@owner.com", "responseStatus": owner_status, "self": True},
+                ],
+            )
+            await pool.execute(
+                "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+                uuid.UUID(event_id),
+                guest,
+            )
+            return event_id
+
+        await meeting(1, "Owner declined", owner_status="declined")
+        reminder = await meeting(2, "Native reminder")
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = metadata || '{\"native\": true}' WHERE id = $1",
+            uuid.UUID(reminder),
+        )
+        await meeting(3, "Guest declined", guest_status="declined")
+        await meeting(4, "Owner tentative", owner_status="tentative")
+        await meeting(5, "Held")
+
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+
+        assert [(r["entity_id"], r["title"]) for r in rows] == [(guest, "Held")]
+
+
+@pytest.mark.pg_clock
+async def test_prep_last_met_keeps_an_owner_made_link_without_participants(interaction_sync_pool):
+    """A butler-created event the owner linked has no provider participants and still counts."""
+    from butlers.jobs.calendar_prep import LAST_MET_SQL
+
+    async with interaction_sync_pool() as pool:
+        guest = await _contact_with_email(pool, "Linked", "linked@example.com")
+        now = await pool.fetchval("SELECT now()")
+        event_id = await _insert_calendar_event(
+            pool, title="Coffee", starts_at=now - timedelta(days=2), attendees=[]
+        )
+        await pool.execute(
+            "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+            uuid.UUID(event_id),
+            guest,
+        )
+
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+
+        assert [r["title"] for r in rows] == ["Coffee"]
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_calendar_checkpoint_advances_to_just_before_the_pending_event(
+    interaction_sync_pool,
+):
+    """A resolved earlier event is passed; the pending later one is seen again next run."""
+    from butlers.core.state import state_get, state_set
+
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Done", "done@example.com")
+        await _contact_with_email(pool, "Soon", "soon@example.com")
+        anchor = await pool.fetchval("SELECT now()")
+        early, late = anchor - timedelta(hours=10), anchor - timedelta(hours=3)
+        await state_set(
+            pool, "interaction_sync.last_scan_at", (anchor - timedelta(days=1)).isoformat()
+        )
+        await _insert_calendar_event(
+            pool,
+            title="Done",
+            starts_at=early,
+            attendees=[{"email": "done@example.com"}, _OWNER_ACCEPTED],
+        )
+        pending = await _insert_calendar_event(
+            pool,
+            title="Pending",
+            starts_at=late,
+            attendees=[{"email": "soon@example.com"}, _OWNER_ACCEPTED],
+        )
+        await pool.execute(
+            "DELETE FROM calendar_event_participants WHERE event_id = $1", uuid.UUID(pending)
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1 and result["calendar_participants_pending"] == 1
+        stored = datetime.fromisoformat(str(await state_get(pool, "interaction_sync.last_scan_at")))
+        assert stored == late - timedelta(microseconds=1) and stored > early
+
+
+async def _owner_with_email(pool, email: str) -> None:
+    entity_id = await _insert_public_entity(pool, roles=["owner"])
+    contact_id = await _insert_contact_anchor(pool, first_name="Owner", entity_id=entity_id)
+    await _insert_contact_info(pool, contact_id=contact_id, ci_type="email", value=email)
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_counts_an_event_the_owner_organised_without_a_seat(
+    interaction_sync_pool,
+):
+    """No owner row, organizer in metadata.organizer only (an API or butler made invite)."""
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _owner_with_email(pool, "owner@mine.example")
+        guest = await _contact_with_email(pool, "Seatless", "seatless@example.com")
+        event_id = await _insert_calendar_event(
+            pool, attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}]
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+            uuid.UUID(event_id),
+            {"organizer": " Owner@Mine.Example "},
+        )
+        from butlers.modules.calendar.participants import sync_event_participants
+
+        await sync_event_participants(pool, uuid.UUID(event_id))
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1 and result["calendar_events_not_encounters"] == 0
+        assert await _calendar_fact_entities(pool) == {guest}
+
+
+@pytest.mark.pg_clock
+async def test_interaction_sync_an_unknown_organizer_without_a_seat_counts_nothing(
+    interaction_sync_pool,
+):
+    run_interaction_sync = _relationship_jobs().run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        await _contact_with_email(pool, "Stranger", "stranger@example.com")
+        event_id = await _insert_calendar_event(
+            pool, attendees=[{"email": "stranger@example.com", "responseStatus": "accepted"}]
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+            uuid.UUID(event_id),
+            {"organizer": "someone@elsewhere.example"},
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 0 and result["calendar_events_not_encounters"] == 1
+
+
+@pytest.mark.pg_clock
+async def test_prep_last_met_counts_an_event_the_owner_organised_without_a_seat(
+    interaction_sync_pool,
+):
+    from butlers.jobs.calendar_prep import LAST_MET_SQL
+
+    async with interaction_sync_pool() as pool:
+        await _owner_with_email(pool, "owner@mine.example")
+        guest = await _contact_with_email(pool, "Seatless", "seatless@example.com")
+        now = await pool.fetchval("SELECT now()")
+        mine = await _insert_calendar_event(
+            pool,
+            title="Mine",
+            starts_at=now - timedelta(days=1),
+            attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}],
+        )
+        theirs = await _insert_calendar_event(
+            pool,
+            title="Theirs",
+            starts_at=now - timedelta(days=3),
+            attendees=[{"email": "seatless@example.com", "responseStatus": "accepted"}],
+        )
+        for event_id, organizer in (
+            (mine, "owner@mine.example"),
+            (theirs, "other@elsewhere.example"),
+        ):
+            await pool.execute(
+                "UPDATE calendar_events SET metadata = metadata || $2::jsonb WHERE id = $1",
+                uuid.UUID(event_id),
+                {"organizer": organizer},
+            )
+            await pool.execute(
+                "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+                uuid.UUID(event_id),
+                guest,
+            )
+
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+        assert [r["title"] for r in rows] == ["Mine"]
+
+        await pool.execute("DELETE FROM calendar_events WHERE id = $1", uuid.UUID(mine))
+        rows = await pool.fetch(LAST_MET_SQL, [guest], now)
+        assert rows == []
