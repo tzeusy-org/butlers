@@ -6,6 +6,7 @@ import type { UnifiedCalendarEntry } from "@/api/types.ts";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Tip } from "@/components/ui/tip";
 import { formatEventTime } from "@/lib/calendar-grid";
+import { entryContinuation } from "@/lib/calendar-span";
 import { cn } from "@/lib/utils";
 import { OverlayPill } from "@/pages/calendar/atoms";
 import type { UpdateCalendarQuery } from "@/pages/calendar/use-calendar-url-state";
@@ -87,7 +88,7 @@ export function MonthGrid({
                         onClick={() => onOpenDetail(entry)}
                         className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                       >
-                      {!entry.all_day ? (
+                      {!entry.all_day && !entryContinuation(entry, key, defaultTimezone).fromPrev ? (
                         <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
                           {formatEventTime(
                             entry.start_at,
@@ -96,7 +97,11 @@ export function MonthGrid({
                           )}
                         </span>
                       ) : null}
-                      <span className="truncate">{entry.title}</span>
+                      <span className="truncate">
+                        {entryContinuation(entry, key, defaultTimezone).fromPrev ? "← " : ""}
+                        {entry.title}
+                        {entryContinuation(entry, key, defaultTimezone).toNext ? " →" : ""}
+                      </span>
                       </button>
                     </Tip>
                   ))}

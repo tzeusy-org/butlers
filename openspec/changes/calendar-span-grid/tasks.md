@@ -6,4 +6,4 @@
 
 ## 2. Slice D2
 
-- [ ] 2.1 Every-covered-day bucketing, column packing, continuation markers
+- [x] 2.1 Every-covered-day bucketing, column packing, continuation markers

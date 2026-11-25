@@ -14,7 +14,8 @@ import type {
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
 import { useCalendarWorkspace, useCalendarWorkspaceMeta } from "@/hooks/use-calendar-workspace";
-import { tzCalendarWindow, tzDayKey } from "@/lib/calendar-grid";
+import { tzCalendarWindow } from "@/lib/calendar-grid";
+import { bucketEntriesByDay } from "@/lib/calendar-span";
 import { computeFreshnessPlaque } from "@/pages/calendar/freshness";
 import { useSourceControls } from "@/pages/calendar/use-source-controls";
 import {
@@ -160,16 +161,11 @@ export function useCalendarWorkspaceData({
     [workspaceQuery.data, metaQuery.data?.data],
   );
 
-  const entriesByDay = useMemo(() => {
-    const buckets = new Map<string, UnifiedCalendarEntry[]>();
-    entries.forEach((entry) => {
-      const key = tzDayKey(entry.start_at, defaultTimezone);
-      const bucket = buckets.get(key) ?? [];
-      bucket.push(entry);
-      buckets.set(key, bucket);
-    });
-    return buckets;
-  }, [entries, defaultTimezone]);
+  // Every covered day gets the event (a multi-day event is not only on its start day).
+  const entriesByDay = useMemo(
+    () => bucketEntriesByDay(entries, defaultTimezone),
+    [entries, defaultTimezone],
+  );
 
   const monthDays = useMemo(() => {
     if (range !== "month") return [] as Date[];
