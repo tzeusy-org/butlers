@@ -241,3 +241,8 @@ async def test_an_oversized_result_is_too_large(tmp_path):
     big = {"items": [item("travel", i, "y " * 1000) for i in range(200)]}
     env = _env_with(tmp_path, "trips", "travel", big)
     assert error_code(await env.tool("trips")) == "too_large"
+
+
+def test_canaries_are_found_through_non_cf_invisible_fillers():
+    for filler in ("ㅤ", "ﾠ", "ᅟ", "ᅠ", "͏", "⠀"):
+        assert find_canary({"a": CANARY[:5] + filler + CANARY[5:]}, (CANARY,))
