@@ -24,6 +24,7 @@ import {
 } from "@/lib/calendar-span";
 import { cn } from "@/lib/utils";
 import { OverlayPill } from "@/pages/calendar/atoms";
+import { ContinuationMark } from "@/pages/calendar/ContinuationMark";
 import {
   isPausedEntry,
   type CalendarRange,
@@ -130,14 +131,10 @@ export function TimeGrid({
                         className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06]"
                       >
                         {fromPrev ? (
-                          <span aria-label="continues from an earlier day">
-                            ←{" "}
-                          </span>
+                          <ContinuationMark direction="from" />
                         ) : null}
                         {entry.title}
-                        {toNext ? (
-                          <span aria-label="continues to a later day"> →</span>
-                        ) : null}
+                        {toNext ? <ContinuationMark direction="to" /> : null}
                       </button>
                     </Tip>
                   );
@@ -216,9 +213,13 @@ export function TimeGrid({
                     onClick={() => onOpenDetail(entry)}
                   >
                     <span className="block truncate text-[11px] font-medium leading-tight text-fg">
-                      {seg.continuesFromPrev ? "← " : ""}
+                      {seg.continuesFromPrev ? (
+                        <ContinuationMark direction="from" />
+                      ) : null}
                       {entry.title}
-                      {seg.continuesToNext ? " →" : ""}
+                      {seg.continuesToNext ? (
+                        <ContinuationMark direction="to" />
+                      ) : null}
                     </span>
                     {heightPx >= 32 ? (
                       <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">

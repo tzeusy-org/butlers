@@ -9,6 +9,7 @@ import { formatEventTime } from "@/lib/calendar-grid";
 import { entryContinuation } from "@/lib/calendar-span";
 import { cn } from "@/lib/utils";
 import { OverlayPill } from "@/pages/calendar/atoms";
+import { ContinuationMark } from "@/pages/calendar/ContinuationMark";
 import type { UpdateCalendarQuery } from "@/pages/calendar/use-calendar-url-state";
 
 interface MonthGridProps {
@@ -35,13 +36,11 @@ export function MonthGrid({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mb-2 grid grid-cols-7">
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(
-          (label) => (
-            <Eyebrow key={label} as="div" className="px-2">
-              {label}
-            </Eyebrow>
-          ),
-        )}
+        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
+          <Eyebrow key={label} as="div" className="px-2">
+            {label}
+          </Eyebrow>
+        ))}
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 overflow-y-auto border-l border-t border-[var(--border)]">
         {monthDays.map((day) => {
@@ -70,9 +69,7 @@ export function MonthGrid({
                     <span
                       className={cn(
                         "font-mono text-[11px] tabular-nums",
-                        inMonth
-                          ? "text-fg"
-                          : "text-[var(--dim)]",
+                        inMonth ? "text-fg" : "text-[var(--dim)]",
                       )}
                     >
                       {format(day, "d")}
@@ -80,38 +77,47 @@ export function MonthGrid({
                   )}
                 </div>
                 <div className="space-y-0.5">
-                  {dayEntries.slice(0, 3).map((entry) => (
-                    <Tip key={entry.entry_id} content={entry.title}>
-                      <button
-                        type="button"
-                        data-calendar-entry-id={entry.entry_id}
-                        onClick={() => onOpenDetail(entry)}
-                        className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                      >
-                      {!entry.all_day && !entryContinuation(entry, key, defaultTimezone).fromPrev ? (
-                        <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
-                          {formatEventTime(
-                            entry.start_at,
-                            defaultTimezone,
-                            "HH:mm",
-                          )}
-                        </span>
-                      ) : null}
-                      <span className="truncate">
-                        {entryContinuation(entry, key, defaultTimezone).fromPrev ? "← " : ""}
-                        {entry.title}
-                        {entryContinuation(entry, key, defaultTimezone).toNext ? " →" : ""}
-                      </span>
-                      </button>
-                    </Tip>
-                  ))}
+                  {dayEntries.slice(0, 3).map((entry) => {
+                    const { fromPrev, toNext } = entryContinuation(
+                      entry,
+                      key,
+                      defaultTimezone,
+                    );
+                    return (
+                      <Tip key={entry.entry_id} content={entry.title}>
+                        <button
+                          type="button"
+                          data-calendar-entry-id={entry.entry_id}
+                          onClick={() => onOpenDetail(entry)}
+                          className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                        >
+                          {!entry.all_day && !fromPrev ? (
+                            <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
+                              {formatEventTime(
+                                entry.start_at,
+                                defaultTimezone,
+                                "HH:mm",
+                              )}
+                            </span>
+                          ) : null}
+                          <span className="truncate">
+                            {fromPrev ? (
+                              <ContinuationMark direction="from" />
+                            ) : null}
+                            {entry.title}
+                            {toNext ? (
+                              <ContinuationMark direction="to" />
+                            ) : null}
+                          </span>
+                        </button>
+                      </Tip>
+                    );
+                  })}
                   {dayEntries.length > 3 ? (
                     <button
                       type="button"
                       aria-label={`${dayEntries.length - 3} more on ${format(day, "MMM d")}: open day view`}
-                      onClick={() =>
-                        updateQuery({ range: "day", anchor: day })
-                      }
+                      onClick={() => updateQuery({ range: "day", anchor: day })}
                       className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                     >
                       +{dayEntries.length - 3} more
@@ -120,10 +126,7 @@ export function MonthGrid({
                   {dayOverlays.length > 0 ? (
                     <div className="mt-1 space-y-0.5 border-t border-dashed border-[var(--border)] pt-1">
                       {dayOverlays.slice(0, 3).map((overlay) => (
-                        <OverlayPill
-                          key={overlay.entry_id}
-                          entry={overlay}
-                        />
+                        <OverlayPill key={overlay.entry_id} entry={overlay} />
                       ))}
                       {dayOverlays.length > 3 ? (
                         <span className="block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)]">

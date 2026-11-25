@@ -6,6 +6,8 @@
  * Pure functions over ISO strings and an IANA zone; the grids only render what these return.
  */
 
+import { formatInTimeZone } from "date-fns-tz";
+
 import {
   MINUTES_PER_DAY,
   minuteOfDayInTz,
@@ -15,10 +17,19 @@ import {
 /** Longest span rendered per event; a runaway end date must not fan out into hundreds of days. */
 export const MAX_SPAN_DAYS = 62;
 
-interface SpanEntry {
+export interface SpanEntry {
   entry_id: string;
   start_at: string;
   end_at: string;
+  /** All-day events are stored as midnight in this zone, so their dates are read in it. */
+  all_day?: boolean;
+  timezone?: string | null;
+}
+
+/** An inclusive run of day keys (`yyyy-MM-dd`) a grid shows. */
+export interface DayWindow {
+  startKey: string;
+  endKey: string;
 }
 
 /** An event's slice on one day. */
@@ -38,72 +49,122 @@ function addDaysToKey(key: string, days: number): string {
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-/**
- * Day keys an event covers in `tz`, first to last. The end instant is exclusive, so an event that
- * ends exactly at midnight does not claim the next day. An event with a missing or reversed end
- * covers its start day only.
- */
-export function entryDayKeys(entry: SpanEntry, tz: string): string[] {
-  const first = tzDayKey(entry.start_at, tz);
-  if (!first) return [];
+function validZone(zone: string | null | undefined): string | null {
+  if (!zone) return null;
+  try {
+    formatInTimeZone(new Date(0), zone, "yyyy");
+    return zone;
+  } catch {
+    return null;
+  }
+}
+
+/** The zone an entry's dates are read in: its own for all-day events, else the workspace's. */
+function spanZone(entry: SpanEntry, tz: string): string {
+  return (entry.all_day && validZone(entry.timezone)) || tz;
+}
+
+interface Span {
+  firstKey: string;
+  lastKey: string;
+  zone: string;
+  /** The end is usable: present, parseable and after the start. */
+  hasEnd: boolean;
+  endMs: number;
+}
+
+/** First and last day an event touches (end instant exclusive), uncapped and unclipped. */
+function entrySpan(entry: SpanEntry, tz: string): Span | null {
+  const zone = spanZone(entry, tz);
+  const firstKey = tzDayKey(entry.start_at, zone);
+  if (!firstKey) return null;
   const startMs = new Date(entry.start_at).getTime();
   const endMs = new Date(entry.end_at).getTime();
-  const last =
-    Number.isNaN(endMs) || endMs <= startMs
-      ? first
-      : tzDayKey(endMs - 1, tz) || first;
+  const hasEnd = !Number.isNaN(endMs) && endMs > startMs;
+  const lastKey = hasEnd ? tzDayKey(endMs - 1, zone) || firstKey : firstKey;
+  return { firstKey, lastKey, zone, hasEnd, endMs };
+}
+
+/**
+ * Day keys an event covers, first to last. The end instant is exclusive, so an event that ends
+ * exactly at midnight does not claim the next day; a missing or reversed end covers the start day
+ * only. All-day events read their dates in their own zone. `window` clips the keys to what a grid
+ * shows (so a long event stays on later months); without it a span is capped at MAX_SPAN_DAYS.
+ */
+export function entryDayKeys(
+  entry: SpanEntry,
+  tz: string,
+  window?: DayWindow,
+): string[] {
+  const span = entrySpan(entry, tz);
+  if (!span) return [];
+  let key =
+    window && window.startKey > span.firstKey ? window.startKey : span.firstKey;
+  const stop =
+    window && window.endKey < span.lastKey ? window.endKey : span.lastKey;
   const keys: string[] = [];
-  let key = first;
-  while (keys.length < MAX_SPAN_DAYS) {
+  while (key <= stop && keys.length < MAX_SPAN_DAYS) {
     keys.push(key);
-    if (key >= last) break;
     key = addDaysToKey(key, 1);
   }
   return keys;
 }
 
-/** Slice an event onto each day it covers. */
+/** Slice an event onto each day it covers (clipped to `window` when given). */
 export function entryDaySegments<T extends SpanEntry>(
   entry: T,
   tz: string,
+  window?: DayWindow,
 ): DaySegment<T>[] {
-  const keys = entryDayKeys(entry, tz);
-  const endMs = new Date(entry.end_at).getTime();
-  const startMin = minuteOfDayInTz(entry.start_at, tz);
-  // The end is exclusive: a 24:00 end reads as minute 1440 of its last covered day.
-  const lastEnd = Number.isNaN(endMs)
-    ? startMin
-    : minuteOfDayInTz(endMs - 1, tz) + 1;
-  return keys.map((dayKey, i) => {
-    const isFirst = i === 0;
-    const isLast = i === keys.length - 1;
+  const span = entrySpan(entry, tz);
+  if (!span) return [];
+  const startMin = minuteOfDayInTz(entry.start_at, span.zone);
+  // The end is exclusive: a 24:00 end reads as minute 1440 of its last covered day. A missing or
+  // reversed end is a point event.
+  const lastEnd = span.hasEnd
+    ? minuteOfDayInTz(span.endMs - 1, span.zone) + 1
+    : startMin;
+  return entryDayKeys(entry, tz, window).map((dayKey) => {
+    const isFirst = dayKey === span.firstKey;
+    const isLast = dayKey === span.lastKey;
     return {
       entry,
       dayKey,
       startMin: isFirst ? startMin : 0,
-      endMin: isLast
-        ? keys.length === 1
-          ? Math.max(lastEnd, startMin)
-          : lastEnd
-        : MINUTES_PER_DAY,
+      endMin: isLast ? lastEnd : MINUTES_PER_DAY,
       continuesFromPrev: !isFirst,
       continuesToNext: !isLast,
     };
   });
 }
 
-/** Bucket entries onto every day they cover, each day's list ordered by start. */
+/** Whether an event began before, or runs past, the day `key` (for the continuation markers). */
+export function entryContinuation(
+  entry: SpanEntry,
+  key: string,
+  tz: string,
+): { fromPrev: boolean; toNext: boolean } {
+  const span = entrySpan(entry, tz);
+  if (!span) return { fromPrev: false, toNext: false };
+  return { fromPrev: key > span.firstKey, toNext: key < span.lastKey };
+}
+
+/** Bucket entries onto every day they cover; each day's list is ordered by start. */
 export function bucketEntriesByDay<T extends SpanEntry>(
   entries: readonly T[],
   tz: string,
+  window?: DayWindow,
 ): Map<string, T[]> {
   const buckets = new Map<string, T[]>();
   for (const entry of entries) {
-    for (const key of entryDayKeys(entry, tz)) {
+    for (const key of entryDayKeys(entry, tz, window)) {
       const bucket = buckets.get(key);
       if (bucket) bucket.push(entry);
       else buckets.set(key, [entry]);
     }
+  }
+  for (const bucket of buckets.values()) {
+    bucket.sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at));
   }
   return buckets;
 }
@@ -160,17 +221,4 @@ export function packSegments<T extends SpanEntry>(
   }
   if (cluster.length > 0) closeCluster();
   return packed;
-}
-
-/** Whether an event began before, or runs past, the day `key` (for the arrow markers). */
-export function entryContinuation(
-  entry: SpanEntry,
-  key: string,
-  tz: string,
-): { fromPrev: boolean; toNext: boolean } {
-  const keys = entryDayKeys(entry, tz);
-  return {
-    fromPrev: keys.length > 0 && keys[0] !== key,
-    toNext: keys.length > 0 && keys[keys.length - 1] !== key,
-  };
 }

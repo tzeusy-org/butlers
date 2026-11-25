@@ -57,8 +57,18 @@ describe("TimeGrid multi-day spans", () => {
       '[data-calendar-entry-id="Retreat"]',
     );
     expect(chips).toHaveLength(2);
-    expect(chips[0].textContent).toBe("Retreat →");
-    expect(chips[1].textContent).toBe("← Retreat");
+    expect(chips[0].textContent).toBe("Retreat → (continues next day)");
+    expect(chips[1].textContent).toBe(
+      "← (continued from previous day) Retreat",
+    );
+    // The arrow is decorative; the phrase is what assistive tech reads.
+    expect(
+      chips[0].querySelector('[aria-hidden="true"]')?.textContent,
+    ).toContain("→");
+    expect(chips[0].querySelector(".sr-only")?.textContent).toContain(
+      "continues next day",
+    );
+    expect(chips[0].querySelector("[aria-label]")).toBeNull();
   });
 
   it("clips a timed span per day and marks the continuation", () => {
