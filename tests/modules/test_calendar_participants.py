@@ -503,6 +503,134 @@ class TestProjectionSeam:
         assert len(set(attempted)) == 3  # each pass moved on to a different event
         participants._attempted_at.clear()
 
+    async def _near_now(self, pool, *, days=0):
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() + $1 * interval '1 day'", days
+        )
+        participants._reresolved_at.clear()
+
+    async def _resolutions(self, pool):
+        return {r["email_norm"]: r["resolution"] for r in await _rows(pool)}
+
+    async def test_the_sweep_resolves_a_person_whose_has_email_arrived_after_the_sync(self, db):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        await self._near_now(pool)
+        assert (await self._resolutions(pool))["stranger@nowhere.test"] == "unresolved"
+        late = await _person(pool, "Late", "stranger@nowhere.test")
+
+        assert await participants.reresolve_participants(pool) == 1
+
+        rows = {r["email_norm"]: r for r in await _rows(pool)}
+        assert rows["stranger@nowhere.test"]["resolution"] == "exact"
+        assert rows["stranger@nowhere.test"]["entity_id"] == late
+
+    async def test_the_sweep_makes_an_address_ambiguous_when_a_second_person_claims_it(self, db):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        await self._near_now(pool)
+        await _person(pool, "Other", "alice@known.test")
+
+        await participants.reresolve_participants(pool)
+
+        rows = {r["email_norm"]: r for r in await _rows(pool)}
+        assert rows["alice@known.test"]["resolution"] == "ambiguous"
+        assert rows["alice@known.test"]["entity_id"] is None
+
+    async def test_the_sweep_unresolves_an_address_whose_claim_is_gone(self, db):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        await self._near_now(pool)
+        await pool.execute(
+            "UPDATE relationship.entity_facts SET validity = 'retracted' "
+            "WHERE predicate = 'has-email' AND object = 'alice@known.test'"
+        )
+
+        await participants.reresolve_participants(pool)
+
+        assert (await self._resolutions(pool))["alice@known.test"] == "unresolved"
+
+    async def test_an_unchanged_event_is_checked_but_not_rewritten(self, db):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        await self._near_now(pool)
+        before = {r["email_norm"]: r["resolved_at"] for r in await _rows(pool)}
+
+        assert await participants.reresolve_participants(pool) == 1
+
+        assert {r["email_norm"]: r["resolved_at"] for r in await _rows(pool)} == before
+
+    async def test_the_sweep_keeps_manual_rows_and_skips_quarantined_and_far_events(self, db):
+        pool, _, alice, source = await self._seed(db)
+        module = _module(pool)
+        await _project(module, source, _event("near"))
+        near = await pool.fetchval("SELECT id FROM calendar_events")
+        await _project(module, source, _event("far"))
+        far = await pool.fetchval("SELECT id FROM calendar_events WHERE id <> $1", near)
+        await participants.sync_manual_participants(pool, near, [alice])
+        await pool.execute("UPDATE calendar_events SET starts_at = now() WHERE id = $1", near)
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() - interval '90 days' WHERE id = $1", far
+        )
+        participants._reresolved_at.clear()
+        await _person(pool, "Late", "stranger@nowhere.test")
+
+        assert await participants.reresolve_participants(pool) == 1
+
+        rows = await pool.fetch(
+            "SELECT event_id, email_norm, resolution FROM calendar_event_participants"
+        )
+        by_event = {(r["event_id"], r["email_norm"]): r["resolution"] for r in rows}
+        assert by_event[(near, "stranger@nowhere.test")] == "exact"
+        assert by_event[(far, "stranger@nowhere.test")] == "unresolved"  # outside the window
+        assert (near, None) in by_event and by_event[(near, None)] == "manual"
+
+    async def test_the_sweep_is_bounded_and_does_not_recheck_within_the_hour(self, db):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, *[_event(f"e{i}") for i in range(3)])
+        await self._near_now(pool)
+
+        assert await participants.reresolve_participants(pool, limit=2) == 2
+        assert await participants.reresolve_participants(pool, limit=2) == 1
+        assert await participants.reresolve_participants(pool, limit=2) == 0
+
+    async def test_attendee_less_events_do_not_spend_the_sweep_budget(self, db):
+        pool, _, _, source = await self._seed(db)
+        module = _module(pool)
+        await _project(module, source, *[_event(f"empty{i}", attendees=[]) for i in range(3)])
+        await _project(module, source, _event("with-people"))
+        with_people = await pool.fetchval(
+            "SELECT e.id FROM calendar_events e JOIN calendar_event_participants p "
+            "ON p.event_id = e.id LIMIT 1"
+        )
+        await pool.execute("UPDATE calendar_events SET starts_at = now() + interval '1 hour'")
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() + interval '5 days' WHERE id = $1",
+            with_people,
+        )
+        participants._reresolved_at.clear()
+        late = await _person(pool, "Late", "stranger@nowhere.test")
+
+        assert await participants.reresolve_participants(pool, limit=1) == 1
+
+        rows = {r["email_norm"]: r for r in await _rows(pool)}
+        assert rows["stranger@nowhere.test"]["entity_id"] == late
+
+    async def test_a_failing_claimant_read_in_the_sweep_keeps_the_prior_rows(self, db, monkeypatch):
+        pool, _, _, source = await self._seed(db)
+        await _project(_module(pool), source, _event())
+        await self._near_now(pool)
+        before = await self._resolutions(pool)
+        await _person(pool, "Late", "stranger@nowhere.test")
+
+        async def unreadable(_executor, _emails):
+            raise RuntimeError("claims unreadable")
+
+        monkeypatch.setattr(participants, "fetch_claims", unreadable)
+        await participants.reresolve_participants(pool)
+
+        assert await self._resolutions(pool) == before
+
     @pytest.mark.parametrize(
         "address",
         [

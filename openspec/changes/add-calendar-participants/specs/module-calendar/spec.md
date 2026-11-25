@@ -89,3 +89,39 @@ Scope: v1-mandatory
 
 - **WHEN** entity A is merged into entity B and an event has participant rows for A
 - **THEN** those rows carry B's entity id afterwards
+
+### Requirement: Participants Are Re-resolved When Claimants Change
+
+A change to who holds an address (a `has-email` fact that appears, is retracted, or gains a second
+holder) SHALL reach the participant rows of events whose attendee list did not change. A bounded
+sweep run after each successful provider sync SHALL re-derive the provider rows of non-quarantined
+provider events starting within 30 days before and 14 days after now that already have current
+provider rows (an event with no attendees is skipped, so it cannot spend the batch), nearest to
+now first, at most a fixed batch per run, skipping an event checked within the last hour. An unchanged event SHALL be left untouched, `manual` rows SHALL be kept, a failed
+claimant read SHALL leave the prior rows in place (never an empty list), and a sweep failure SHALL
+NOT fail the sync. Re-resolution SHALL NOT rewrite any interaction or encounter already written
+from earlier rows.
+
+ID: REQ-module-calendar-050
+Source: bu-5ii4gj.3 (run 26 move 3), slice S4
+Scope: v1-mandatory
+
+#### Scenario: A late has-email resolves an unresolved attendee
+
+- **WHEN** an event was synced with an address no entity held, then an entity gains that address as an active `has-email` fact, and the sweep runs
+- **THEN** the participant row for that address has resolution `exact` and that entity's id
+
+#### Scenario: A second holder makes the address ambiguous
+
+- **WHEN** a second entity gains an address an event's participant row resolved `exact`, and the sweep runs
+- **THEN** the row is `ambiguous` and carries no entity id
+
+#### Scenario: A lost claim unresolves the address
+
+- **WHEN** the only active `has-email` fact for an address is retracted and the sweep runs
+- **THEN** the participant row for that address is `unresolved`
+
+#### Scenario: The sweep is bounded and leaves the rest alone
+
+- **WHEN** the sweep runs
+- **THEN** it checks at most the batch size, skips events checked within the hour, ignores events outside the window and quarantined events, keeps `manual` rows, and writes nothing for an event whose rows are unchanged

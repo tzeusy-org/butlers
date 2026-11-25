@@ -248,6 +248,12 @@ unresolved or ambiguous address (untrusted, never shown), a role, the RSVP statu
 - **Backfill.** A bounded sweep derives rows for events whose stored rows do not match their
   attendees (none, stale, changed list); an event attempted in the last hour is skipped so a failing
   one cannot hold the window; it re-checks quarantine per event and never reads quarantined text.
+- **Re-resolution.** A has-email fact that appears, goes away or gains a second holder changes what
+  an address resolves to without touching the event, so after each successful provider sync a
+  bounded sweep re-derives the rows of events within 30 days back and 14 days ahead that already
+  have current rows (nearest first, one batch, none checked within the hour). Unchanged events are
+  not rewritten, `manual` rows stay, a failed claimant read keeps the prior rows, and nothing
+  already written from earlier rows (an interaction, an encounter) is rewritten.
 
 **What counts as met (interim).** Participant rows are invited claims, so the readers that talk
 about people met filter them (bu-5ii4gj.3 E1). `interaction_sync` logs a calendar interaction, and
