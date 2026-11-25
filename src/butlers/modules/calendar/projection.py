@@ -17,6 +17,7 @@ from butlers.modules.calendar.organizer_trust import (
 )
 from butlers.modules.calendar.participants import (
     backfill_participants,
+    reresolve_participants,
     sync_event_participants,
     sync_manual_participants,
 )
@@ -450,6 +451,10 @@ class ProjectionMixin:
                 await backfill_participants(pool)
             except Exception as exc:  # likewise: a participant backfill failure never fails a sync
                 logger.warning("Participant backfill failed: %s", type(exc).__name__)
+            try:
+                await reresolve_participants(pool)
+            except Exception as exc:  # likewise for the has-email re-resolution sweep
+                logger.warning("Participant re-resolution failed: %s", type(exc).__name__)
 
     async def _record_projection_action(
         self,

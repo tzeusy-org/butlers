@@ -480,6 +480,10 @@ async def unavailable_event_ids(executor: Any, event_ids: Sequence[uuid.UUID]) -
 #: best effort: a restart retries them, which is the only cost of losing it.
 _RETRY_AFTER: Final = 3600.0
 _MAX_ATTEMPTS_TRACKED: Final = 1000
+#: Events the re-resolution sweep checked recently (process-local, like ``_attempted_at``).
+_RERESOLVE_EVERY: Final = 3600.0
+_RERESOLVE_PAST: Final = "30 days"
+_RERESOLVE_AHEAD: Final = "14 days"
 _attempted_at: dict[uuid.UUID, float] = {}
 
 
@@ -627,3 +631,49 @@ async def read_encounter_candidates(
         for event_id in ids
         if event_id not in not_ready and event_id in by_event
     }
+
+
+_reresolved_at: dict[uuid.UUID, float] = {}
+
+
+async def reresolve_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BATCH) -> int:
+    """Re-derive the rows of events whose attendee list did not change but whose claimants may have.
+
+    A has-email fact that appears, goes away or gains a second holder changes what an address
+    resolves to, and nothing else wakes an event whose attendees are the same. This sweep covers
+    non-quarantined provider events within 30 days back and 14 days ahead (the span the readers
+    use), nearest to now first, that already have ready rows; ``backfill_participants`` owns the
+    rest. An event checked in the last hour is skipped and at most ``limit`` are checked per call,
+    so the work is bounded and a backlog drains over several syncs. Each check is the ordinary
+    :func:`sync_event_participants`: an unchanged event writes nothing, a failed claimant read
+    keeps the prior rows (never an empty list). Returns the number of events checked.
+    """
+    now = time.monotonic()
+    for event_id in [k for k, at in _reresolved_at.items() if now - at >= _RERESOLVE_EVERY]:
+        del _reresolved_at[event_id]
+    rows = await pool.fetch(
+        f"""
+        SELECT e.id
+        FROM calendar_events e
+        WHERE e.metadata ->> 'source_type' = '{_PROVIDER_SOURCE}'
+          AND e.starts_at >= now() - interval '{_RERESOLVE_PAST}'
+          AND e.starts_at <= now() + interval '{_RERESOLVE_AHEAD}'
+          AND NOT {QUARANTINED_INVITATION_SQL}
+          AND NOT (e.id = ANY($3::uuid[]))
+          AND NOT {_not_ready_predicate("e", "$1")}
+          AND EXISTS (
+              SELECT 1 FROM calendar_event_participants p
+              WHERE p.event_id = e.id AND p.resolution <> 'manual')
+        ORDER BY abs(extract(epoch FROM (e.starts_at - now()))), e.id
+        LIMIT $2
+        """,
+        RESOLVER_VERSION,
+        limit,
+        list(_reresolved_at),
+    )
+    for row in rows:
+        if len(_reresolved_at) >= _MAX_ATTEMPTS_TRACKED:
+            del _reresolved_at[min(_reresolved_at, key=_reresolved_at.__getitem__)]
+        _reresolved_at[row["id"]] = now
+        await sync_event_participants(pool, row["id"])
+    return len(rows)

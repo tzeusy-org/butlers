@@ -18,7 +18,7 @@
 
 ## 4. Re-resolution (slice S4)
 
-- [ ] 4.1 Sweep on `entity.rebound.v1` and on a `has-email` change, bumping `resolver_version`.
+- [x] 4.1 Periodic re-resolution sweep after a successful provider sync (REQ-module-calendar-050); rebind already repoints (REQ-module-calendar-045), so no event hook and no resolver_version bump.
 
 ## 5. Chronicler (slice S5)
 
