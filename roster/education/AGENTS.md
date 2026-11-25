@@ -161,7 +161,7 @@ consult the `interactive-response` skill
   an error.
 - `metadata.concept_type` is written only when `classify_concept_type()` (in `tools/concept_types.py`) picks a single winning category; absence is the designed "fall back to Socratic" signal, so never default it to a type. A valid pre-existing value in node metadata is preserved.
 - `curriculum_generate(source_refs=...)` raises on malformed refs but silently drops refs naming an unregistered source or an unknown node label (counted in `source_refs_skipped`): the butler never fetches source contents, so a dropped ref is preferable to a fabricated location.
-- Scheduler cron evaluation is UTC-only (task `timezone` does not affect `next_run_at`); when a user specifies a local time (e.g. 20:00 SGT), convert it to the equivalent UTC cron (12:00 UTC), and expect a deterministic per-task stagger (up to ~15 minutes) that can shift actual fire time slightly later.
+- A schedule's cron is read in its `timezone`; the literal `'UTC'` (or none) means "follow the owner's general timezone", not UTC. Write a cron in the zone you store with it: spaced-repetition reviews are written on the owner's clock and stored with that zone (`Etc/UTC` for a UTC owner). Expect a deterministic per-task stagger (up to ~15 minutes) that can shift the fire time slightly later.
 - If `uv run` is unavailable (or blocked by cache permissions), quick config sanity checks can be done with `PYTHONPATH=src python3 -c "from butlers.config import load_config; load_config(Path('roster/education'))"`.
 
 ## Memory Classification
