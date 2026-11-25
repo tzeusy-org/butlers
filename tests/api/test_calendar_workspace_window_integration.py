@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 import pytest
 
 from butlers.api.read_models.calendar_workspace import query_calendar_workspace
+from butlers.testing.db_manager import db_manager
 
 pytestmark = [
     pytest.mark.integration,
@@ -26,19 +27,6 @@ SAT_02 = datetime(2026, 3, 7, 2, tzinfo=UTC)
 SAT = datetime(2026, 3, 7, tzinfo=UTC)
 SUN = datetime(2026, 3, 8, tzinfo=UTC)
 FRI = datetime(2026, 3, 6, tzinfo=UTC)
-
-
-class _Db:
-    """The dashboard's fan-out, answered by the one test pool."""
-
-    def __init__(self, pool) -> None:
-        self.pool = pool
-
-    def butlers_with_module(self, name: str) -> list[str]:
-        return ["general"]
-
-    async def fan_out_with_status(self, sql: str, args: tuple, *, butler_names=None):
-        return {"general": await self.pool.fetch(sql, *args)}, []
 
 
 async def _seed(pool, events: dict[str, tuple[datetime, datetime]]) -> None:
@@ -70,7 +58,7 @@ async def _seed(pool, events: dict[str, tuple[datetime, datetime]]) -> None:
 
 async def _titles(pool, start: datetime, end: datetime) -> set[str]:
     rows, failed = await query_calendar_workspace(
-        _Db(pool),  # type: ignore[arg-type]
+        db_manager({"general": pool}, modules={"general": ["calendar"]}),
         view="user",
         start=start,
         end=end,

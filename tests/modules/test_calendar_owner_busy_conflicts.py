@@ -6,6 +6,7 @@ calendar, so a check of the target calendar alone reports "no conflict" over a r
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -459,14 +460,11 @@ _ = Any
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_the_create_tool_path_over_a_stored_primary_meeting_conflicts_with_no_provider_create(
     db,
 ):
     """The real projection, role ledger and freshness reads feed the tool, not stubs of them."""
-    import shutil
-
-    if not shutil.which("docker"):
-        pytest.skip("Docker not available")
     pool = await db("core", "relationship", schemas={"relationship": "relationship"})
     sources = {}
     for key, cal, role in (("a", BUTLERS, "butler"), ("b", PRIMARY, "owner")):
