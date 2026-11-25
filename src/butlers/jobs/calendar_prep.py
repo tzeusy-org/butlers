@@ -69,7 +69,7 @@ import asyncpg
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
-from butlers.jobs.briefing import SGT, today_sgt
+from butlers.jobs.briefing import owner_briefing_zone
 from butlers.modules.calendar.participants import (
     NAMEABLE_PARTICIPANTS_SQL,
     owner_organized_sql,
@@ -115,6 +115,11 @@ MAX_COMMITMENTS_PER_ATTENDEE = 10
 # ---------------------------------------------------------------------------
 # Envelope schema
 # ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    """The run's clock, one seam so a test can fix the instant."""
+    return datetime.now(tz=UTC)
 
 
 class PrepNote(TypedDict):
@@ -352,14 +357,16 @@ async def run_relationship_calendar_prep_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    now_utc = _now()
+    # The owner's zone, read once per run: the window opens at the owner's local midnight.
+    zone = await owner_briefing_zone(pool)
+    today = now_utc.astimezone(zone).date()
     today_str = today.isoformat()
-    now_utc = datetime.now(tz=UTC)
 
-    # SGT-midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
-    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
-    window_start = sgt_midnight.astimezone(UTC)
-    window_end = (sgt_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+    # Owner-local midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_start = local_midnight.astimezone(UTC)
+    window_end = (local_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
 
     # --- Upcoming entity-linked events in the window ---
     event_rows = await _fetch_owner_events(pool, window_start, window_end)
@@ -676,13 +683,14 @@ async def run_email_calendar_prep_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    now_utc = _now()
+    zone = await owner_briefing_zone(pool)
+    today = now_utc.astimezone(zone).date()
     today_str = today.isoformat()
-    now_utc = datetime.now(tz=UTC)
 
-    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
-    window_start = sgt_midnight.astimezone(UTC)
-    window_end = (sgt_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_start = local_midnight.astimezone(UTC)
+    window_end = (local_midnight + timedelta(days=PREP_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
     message_since = now_utc - timedelta(days=MESSAGE_CONTEXT_LOOKBACK_DAYS)
 
     # --- Upcoming entity-linked events in the window (own calendar projection) ---

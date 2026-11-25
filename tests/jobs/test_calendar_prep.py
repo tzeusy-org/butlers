@@ -15,10 +15,11 @@ order; the commitment filter/ordering/cap test runs on real Postgres.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -50,7 +51,11 @@ def _participants_ready(request):
         yield
         return
     ready = {"available": True, "participants": [], "unresolved": 0, "withheld": 0}
-    with patch(f"{_MODULE}.read_participants", side_effect=lambda *_a: ready):
+    with (
+        patch(f"{_MODULE}.read_participants", side_effect=lambda *_a: ready),
+        # The scripted pool has no settings read; the zone seam is exercised in TestOwnerZone.
+        patch(f"{_MODULE}.owner_briefing_zone", return_value=ZoneInfo("Asia/Singapore")),
+    ):
         yield
 
 
@@ -69,7 +74,7 @@ async def test_an_unreadable_participant_set_is_unavailable_not_empty():
     )
     state = ContributionStateStore()
     with (
-        patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 25)),
+        patch(f"{_MODULE}._now", return_value=datetime(2026, 6, 25, 4, 0, tzinfo=UTC)),
         patch(f"{_MODULE}.read_participants", side_effect=RuntimeError("down")),
         patch_state(_MODULE, state),
     ):
@@ -324,7 +329,7 @@ async def test_commitments_are_escalation_sorted_and_capped_per_attendee(db):
     )
     await state_set(pool, prep_key(str(ooo_id)), {"butler": "relationship"})
 
-    with patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 21)):
+    with patch(f"{_MODULE}._now", return_value=datetime(2026, 6, 21, 4, 0, tzinfo=UTC)):
         result = await run_relationship_calendar_prep_contribution(pool, None)
 
     assert result["events_written"] == 1 and result["pruned"] == 1
@@ -478,3 +483,39 @@ async def test_handler_signature_is_zero_llm():
 
     sig = inspect.signature(run_relationship_calendar_prep_contribution)
     assert list(sig.parameters) == ["pool", "job_args"]
+
+
+@pytest.mark.parametrize(
+    ("job", "zone", "expected_start"),
+    [
+        ("relationship", "Europe/London", datetime(2026, 6, 24, 23, 0, tzinfo=UTC)),
+        ("relationship", "Pacific/Auckland", datetime(2026, 6, 24, 12, 0, tzinfo=UTC)),
+        ("email", "Europe/London", datetime(2026, 6, 24, 23, 0, tzinfo=UTC)),
+    ],
+)
+async def test_the_prep_window_opens_at_the_owner_local_midnight(job, zone, expected_start):
+    """At 2026-06-25 04:00Z the owner-local day differs per zone; no UTC+8 day is assumed."""
+    import butlers.jobs.calendar_prep as prep
+
+    seen: list[tuple[datetime, datetime]] = []
+
+    async def fetch(_pool, start, end):
+        seen.append((start, end))
+        return []
+
+    def run(pool, args):
+        if job == "relationship":
+            return prep.run_relationship_calendar_prep_contribution(pool, args)
+        return prep.run_email_calendar_prep_contribution(pool, args, butler_name="relationship")
+
+    now = datetime(2026, 6, 25, 4, 0, tzinfo=UTC)
+    # 04:00Z is 05:00 in London (BST), so the local day starts at 2026-06-24 23:00Z.
+    with (
+        patch(f"{_MODULE}._now", return_value=now),
+        patch(f"{_MODULE}.owner_briefing_zone", return_value=ZoneInfo(zone)),
+        patch(f"{_MODULE}._fetch_owner_events", side_effect=fetch),
+        patch_state(_MODULE, ContributionStateStore()),
+    ):
+        await run(FakePool(), None)
+    assert seen and seen[0][0] == expected_start
+    assert seen[0][1] - seen[0][0] == timedelta(days=prep.PREP_LOOKAHEAD_DAYS + 1)

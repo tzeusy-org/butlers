@@ -8,7 +8,7 @@ projection stored. Synthetic people and addresses only.
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -74,7 +74,9 @@ async def _seed(db, *, attendees=None):
 
 
 async def _prep(pool, event_id):
-    with patch("butlers.jobs.calendar_prep.today_sgt", return_value=date(2026, 12, 1)):
+    with patch(
+        "butlers.jobs.calendar_prep._now", return_value=datetime(2026, 12, 1, 4, 0, tzinfo=UTC)
+    ):
         await run_relationship_calendar_prep_contribution(pool, None)
     return await state_get(pool, prep_key(str(event_id)))
 

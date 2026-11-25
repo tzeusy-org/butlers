@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -64,7 +64,7 @@ from butlers.core.temporal.household_context import (
     context_lines,
     events_from_overlap_rows,
 )
-from butlers.jobs.briefing import SGT
+from butlers.jobs.briefing import owner_briefing_zone
 from butlers.jobs.calendar_prep import prep_key
 from butlers.jobs.meeting_debrief import (
     _decode_metadata,
@@ -215,8 +215,8 @@ def inert_location(value: Any) -> str | None:
     return text or None
 
 
-def _day_label(moment: datetime, now: datetime) -> str:
-    local, today = moment.astimezone(SGT), now.astimezone(SGT).date()
+def _day_label(moment: datetime, now: datetime, zone: tzinfo) -> str:
+    local, today = moment.astimezone(zone), now.astimezone(zone).date()
     days = (today - local.date()).days
     if days == 0:
         return "today"
@@ -258,17 +258,19 @@ def render_card(
     household: Sequence[str] = (),
     unresolved: int = 0,
     unavailable: bool = False,
+    zone: tzinfo,
 ) -> str:
     """The card text. *attendees* are the people to name (``entity_id`` may be ``None``).
 
     *household* are ready context lines about other people's overlapping events (time and whose
     calendar only); they are never counted as the owner's time (REQ-module-calendar-038).
 
-    Pure: the same inputs always give the same text, and nothing here reads a database.
+    *zone* is the owner's zone: every time and day on the card is read in it, never in a built-in
+    one. Pure: the same inputs always give the same text, and nothing here reads a database.
     """
-    local = starts_at.astimezone(SGT)
+    local = starts_at.astimezone(zone)
     heading = inert_text(title, _MAX_TITLE) or "Meeting"
-    lines = [f"{heading} at {local:%H:%M} ({_day_label(starts_at, now)})"]
+    lines = [f"{heading} at {local:%H:%M} ({_day_label(starts_at, now, zone)})"]
     place = inert_location(location)
     if place:
         lines.append(f"Where: {place}")
@@ -287,7 +289,7 @@ def render_card(
         if prep and isinstance(prep.get("last_met"), str):
             try:
                 met = datetime.fromisoformat(prep["last_met"])
-                entry += f" (last met {met.astimezone(SGT).day} {met.astimezone(SGT):%b})"
+                entry += f" (last met {met.astimezone(zone).day} {met.astimezone(zone):%b})"
             except ValueError:
                 pass
         lines.append(f"With: {entry}")
@@ -371,6 +373,7 @@ async def run_meeting_card(
         return {"status": "dark"}
     now = now or datetime.now(UTC)
     withdrawn = await _withdraw_superseded(pool, insight_withdrawer, now)
+    zone = await owner_briefing_zone(pool)
     try:
         rows = await pool.fetch(_OCCURRENCE_SQL, now + MIN_LEAD, now + CARD_LEAD)
     except asyncpg.exceptions.UndefinedTableError:
@@ -429,13 +432,14 @@ async def run_meeting_card(
             envelope=envelope,
             now=now,
             link=link,
+            zone=zone,
             household=context_lines(
                 [
                     e
                     for e in context
                     if e.overlaps(row["starts_at"], row.get("ends_at") or row["starts_at"])
                 ],
-                timezone=SGT,
+                timezone=zone,
                 limit=2,
             ),
         )
