@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from butlers.core.temporal.calendar_source_roles import normalize_role
+from butlers.modules.calendar.agreements import record_owner_agreement
 from butlers.modules.calendar.organizer_trust import (
     stamp_provider_metadata,
     sweep_organizer_verdicts,
@@ -1003,6 +1004,7 @@ class ProjectionMixin:
             participant_pool = getattr(getattr(self, "_db", None), "pool", None)
             if participant_pool is not None:
                 await sync_event_participants(participant_pool, event_db_id)
+                await record_owner_agreement(participant_pool, event_db_id)
             # Sync cycles preserve links on empty entity sets. A workspace update
             # must opt in with the explicit clear signal before a zero-length set
             # can delete the existing links.

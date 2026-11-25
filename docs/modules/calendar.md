@@ -289,6 +289,17 @@ addresses). The prep job's "last met" skips native reminders, events the owner d
 not accept, and events that guest declined. The encounter ledger replaces "accepted and started"
 with "it happened".
 
+## Owner agreements
+
+When the owner's own response to a provider event they did not organise becomes `accepted` or
+`tentative`, the projection records the agreed terms in `calendar_owner_agreements` (core_378, slice
+A-S1 of bu-5ii4gj.10): the start and end, and digests of the location and of the other attendees,
+never the location, a join link or an address. One row per event: a later move or edit leaves the
+row as agreed, so a later drift job can compare the event with what the owner said yes to. The
+owner declining or clearing their answer, the event being cancelled, or the event going away ends
+the agreement. Recurring events are not recorded yet, and `join_digest` stays empty until the
+provider mapping carries conference data.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync
