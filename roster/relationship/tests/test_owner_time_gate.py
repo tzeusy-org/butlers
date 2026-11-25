@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.roster_imports import roster_module
+
 pytestmark = pytest.mark.pg_clock
 
 _OWNER = "owner@mine.example"
@@ -84,7 +86,9 @@ async def test_a_partner_event_already_in_the_ledger_is_pruned(interaction_sync_
 
 
 async def test_interaction_sync_logs_a_primary_event_and_not_a_partner_one(interaction_sync_pool):
-    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+    run_interaction_sync = roster_module(
+        "relationship", "jobs/relationship_jobs"
+    ).run_interaction_sync
 
     async with interaction_sync_pool() as pool:
         alice, ids = await _world(pool)
