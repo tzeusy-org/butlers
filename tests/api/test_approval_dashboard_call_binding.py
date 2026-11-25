@@ -167,8 +167,11 @@ async def binding_http(app, monkeypatch):
                 # (REQ-module-approvals-010); this ordinary action is not one.
                 return {"deduplication_key": None}
             if sql.startswith("SELECT tool_name FROM pending_actions"):
-                # The create_rule refusal probe for a per-event tool (REQ-module-approvals-011).
-                return {"tool_name": "synthetic_send"}
+                # The create_rule refusal probes (entity merge; per-event tool, REQ-module-approvals-011).
+                # This test exercises audit ordering with a combined rule on the calendar row, so the
+                # per-event refusal is answered as for an ordinary tool; it is tested at its own seam.
+                name = state["row"]["tool_name"]
+                return {"tool_name": "synthetic_send" if name == "calendar_respond" else name}
             assert "FOR UPDATE" in sql
             state["events"].append("lock")
             return deepcopy(state["row"])
