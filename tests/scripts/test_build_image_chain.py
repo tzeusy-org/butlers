@@ -540,7 +540,10 @@ def test_cleanup_defers_cancellation_until_owned_remove_child_settles(tmp_path, 
         f"#!{sys.executable}\nimport json,os,pathlib,sys,time\n"
         "if sys.argv[1]=='ps': print('d'*64)\n"
         "elif sys.argv[1]=='inspect': print(pathlib.Path('container.json').read_text())\n"
-        f"elif sys.argv[1]=='rm':\n pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
+        # Publish the pid atomically: write_text creates the file empty before it writes, and the
+        # test polls for the file's existence, so a plain write lets it read an empty pid.
+        f"elif sys.argv[1]=='rm':\n pending=pathlib.Path({str(started) + '.pending'!r})\n"
+        f" pending.write_text(str(os.getpid()))\n os.replace(pending, {str(started)!r})\n"
         f" time.sleep(.3)\n pathlib.Path({str(removed)!r}).write_text('removed')\n"
         "else: raise SystemExit(4)\n"
     )
