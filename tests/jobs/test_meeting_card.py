@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -55,8 +56,39 @@ def _render(**overrides: Any) -> str:
         "envelope": _envelope(),
         "now": NOW,
         "link": LINK,
+        "zone": ZoneInfo("Asia/Singapore"),
     }
     return card.render_card(**{**args, **overrides})
+
+
+class TestRenderZone:
+    """Every time and day on the card is read in the owner's zone, never a built-in one."""
+
+    def test_the_start_is_in_the_owner_zone_not_utc_plus_8(self) -> None:
+        # START is 04:28Z. London in November is UTC: 04:28, not the 12:28 SGT reading.
+        text = _render(zone=ZoneInfo("Europe/London"))
+        assert text.splitlines()[0] == "Lunch at 04:28 (today)"
+
+    def test_a_zone_ahead_of_utc_plus_8_reads_its_own_clock(self) -> None:
+        text = _render(zone=ZoneInfo("Pacific/Auckland"))  # UTC+13 in November
+        assert text.splitlines()[0] == "Lunch at 17:28 (today)"
+
+    def test_today_follows_the_owner_day_not_the_utc_plus_8_day(self) -> None:
+        now = datetime(
+            2026, 11, 14, 17, 0, tzinfo=UTC
+        )  # Sat 17:00Z: Sun 01:00 SGT, Sat 17:00 London
+        starts = datetime(2026, 11, 14, 18, 30, tzinfo=UTC)
+        london = _render(zone=ZoneInfo("Europe/London"), now=now, starts_at=starts, envelope=None)
+        assert london.splitlines()[0] == "Lunch at 18:30 (today)"
+        sgt = _render(zone=ZoneInfo("Asia/Singapore"), now=now, starts_at=starts, envelope=None)
+        assert sgt.splitlines()[0] == "Lunch at 02:30 (today)"
+
+    def test_last_met_day_is_the_owner_local_day(self) -> None:
+        envelope = _envelope()
+        envelope["attendees"][0]["last_met"] = "2026-08-02T20:00:00+00:00"
+        sgt = _render(envelope=envelope, zone=ZoneInfo("Asia/Singapore"))
+        london = _render(envelope=envelope, zone=ZoneInfo("Europe/London"))
+        assert "last met 3 Aug" in sgt and "last met 2 Aug" in london
 
 
 class TestRender:

@@ -38,14 +38,14 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Any
 
 import asyncpg
 
 from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
 from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
-from butlers.jobs.briefing import SGT
+from butlers.jobs.briefing import owner_briefing_zone
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,7 @@ async def active_entity_ids(
 
 
 async def _propose_batch(
-    pool: asyncpg.Pool, insight_proposer: InsightProposer, now: datetime
+    pool: asyncpg.Pool, insight_proposer: InsightProposer, now: datetime, zone: tzinfo
 ) -> dict[str, Any]:
     unanswered, last_prompted = await _backoff_state(pool)
     if (
@@ -385,7 +385,7 @@ async def _propose_batch(
             origin_butler="relationship",
             priority=_INSIGHT_PRIORITY,
             category=DEBRIEF_CATEGORY,
-            dedup_key=f"relationship:meeting-debrief:{now.astimezone(SGT).date().isoformat()}",
+            dedup_key=f"relationship:meeting-debrief:{now.astimezone(zone).date().isoformat()}",
             message=message,
             expires_at=now + _INSIGHT_TTL,
             cooldown_days=1,
@@ -449,7 +449,7 @@ async def run_meeting_debrief(
         """,
         now - EXPIRY_AFTER,
     )
-    prompt = await _propose_batch(pool, insight_proposer, now)
+    prompt = await _propose_batch(pool, insight_proposer, now, await owner_briefing_zone(pool))
     result = {
         "butler": "relationship",
         "considered": considered,

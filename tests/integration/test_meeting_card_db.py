@@ -13,6 +13,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -176,6 +177,24 @@ async def test_a_meeting_inside_the_window_gets_one_card_with_its_prep(card_pool
     assert call["dedup_key"] == f"relationship:meeting-card:{event}:{int(start.timestamp())}"
     assert "With: Sam Lee (last met 3 Aug)" in call["message"]
     assert "You owe: send the deck" in call["message"]
+
+
+@pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])
+async def test_the_card_time_is_read_in_the_saved_owner_zone(card_pool, zone) -> None:
+    """UTC+14 and UTC-11 never agree, so a built-in UTC+8 clock fails one of them."""
+    await card_pool.execute(
+        "INSERT INTO public.state (key, value) VALUES ('settings.general', $1::jsonb)",
+        {"timezone": zone},
+    )
+    await _person(card_pool, "Sam Lee", "sam@example.test")
+    start = NOW + timedelta(minutes=15)
+    await _event(card_pool, start, attendees=_guests("sam@example.test"))
+    proposer = _Proposer()
+
+    await _run(card_pool, proposer, NOW)
+
+    local = start.astimezone(ZoneInfo(zone))
+    assert proposer.calls[0]["message"].splitlines()[0].startswith(f"Lunch at {local:%H:%M}")
 
 
 async def test_a_stale_envelope_gives_the_minimal_card(card_pool) -> None:

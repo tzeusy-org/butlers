@@ -22,6 +22,7 @@ import uuid
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -401,6 +402,27 @@ async def _assert_winning_effects(pool, debrief_id, answers, results, before) ->
     assert retry["status"] == "already_answered"
     assert await _effects(pool) == after
     assert await _debrief_state(pool, debrief_id) == state
+
+
+class TestOwnerZone:
+    @pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])
+    async def test_the_batch_dedup_date_is_the_owner_local_date(self, debrief_pool, zone) -> None:
+        """UTC+14 and UTC-11 never share a date, so a built-in UTC+8 day fails one of them."""
+        await debrief_pool.execute(
+            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1::jsonb)",
+            {"timezone": zone},
+        )
+        src = await _source(debrief_pool)
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        await _event(debrief_pool, src, "With Sam", attendees=_attendees("sam@example.test"))
+        proposer = _Proposer()
+
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
+
+        now = await debrief_pool.fetchval("SELECT now()")
+        expected = now.astimezone(ZoneInfo(zone)).date().isoformat()
+        assert proposer.calls[0]["dedup_key"] == f"relationship:meeting-debrief:{expected}"
 
 
 class TestSelection:
@@ -811,7 +833,9 @@ class TestAnswer:
 
             monkeypatch.setattr(debrief_job, "active_entity_ids", held_active)
             job = asyncio.create_task(
-                debrief_job._propose_batch(debrief_pool, _Proposer(), datetime.now(UTC))
+                debrief_job._propose_batch(
+                    debrief_pool, _Proposer(), datetime.now(UTC), ZoneInfo("Asia/Singapore")
+                )
             )
             try:
                 async with asyncio.timeout(15):
