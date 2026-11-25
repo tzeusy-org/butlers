@@ -127,6 +127,33 @@ async def _repoint_participants(conn: Any, source: UUID, target: UUID) -> int:
     return _rowcount(deleted) + _rowcount(updated)
 
 
+async def _repoint_encounters(conn: Any, source: UUID, target: UUID) -> int:
+    """Repoint encounter-ledger rows; an occurrence the survivor already holds keeps its row.
+
+    The ledger is derived, so the next reducer run recomputes the surviving row either way.
+    """
+    deleted = await conn.execute(
+        """
+        DELETE FROM encounters src
+        WHERE src.entity_id = $1
+          AND EXISTS (
+              SELECT 1 FROM encounters tgt
+              WHERE tgt.event_id = src.event_id
+                AND tgt.occurrence_start = src.occurrence_start
+                AND tgt.entity_id = $2
+          )
+        """,
+        source,
+        target,
+    )
+    updated = await conn.execute(
+        "UPDATE encounters SET entity_id = $2 WHERE entity_id = $1",
+        source,
+        target,
+    )
+    return _rowcount(deleted) + _rowcount(updated)
+
+
 async def _repoint_episodes(conn: Any, source: UUID, target: UUID) -> int:
     await conn.execute(
         """
@@ -344,6 +371,7 @@ async def _rebind_entity_references_on_conn(
                 _repoint_facts,
                 _repoint_calendar,
                 _repoint_participants,
+                _repoint_encounters,
                 _repoint_episodes,
             ):
                 step = operation.__name__
