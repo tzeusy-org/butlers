@@ -6,6 +6,7 @@ calendar, so a check of the target calendar alone reports "no conflict" over a r
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -455,3 +456,59 @@ async def test_stored_busy_excludes_quarantined_invitations_and_the_updated_even
 
 
 _ = Any
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_the_create_tool_path_over_a_stored_primary_meeting_conflicts_with_no_provider_create(
+    db,
+):
+    """The real projection, role ledger and freshness reads feed the tool, not stubs of them."""
+    pool = await db("core", "relationship", schemas={"relationship": "relationship"})
+    sources = {}
+    for key, cal, role in (("a", BUTLERS, "butler"), ("b", PRIMARY, "owner")):
+        sources[cal] = await pool.fetchval(
+            "INSERT INTO calendar_sources (source_key, source_kind, lane, provider, calendar_id, "
+            "display_name, writable, metadata, time_role) VALUES ($1, 'provider_event', 'user', "
+            "'double', $2, $2, true, '{}', $3) RETURNING id",
+            key,
+            cal,
+            role,
+        )
+    await pool.execute(
+        "INSERT INTO calendar_sync_cursors (source_id, cursor_name, last_synced_at, "
+        "last_success_at) VALUES ($1, 'provider_sync', now(), now())",
+        sources[PRIMARY],
+    )
+    event_id = await pool.fetchval(
+        "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, "
+        "ends_at, status, metadata, source_butler) VALUES ($1, 'real-meeting', 'Dentist', 'UTC', "
+        "$2, $3, 'confirmed', $4, 'general') RETURNING id",
+        sources[PRIMARY],
+        START,
+        END,
+        {"organizer": "me@example.com"},
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref, "
+        "timezone, starts_at, ends_at, status) VALUES ($1, $2, 'real-meeting', 'UTC', $3, $4, "
+        "'confirmed')",
+        event_id,
+        sources[PRIMARY],
+        START,
+        END,
+    )
+    provider = _ByCalendarProvider({}, event=_block())
+
+    result = await _create(provider, pool)
+
+    assert result["status"] == "conflict"
+    assert result["conflicts"], "the primary-calendar meeting must be named"
+    assert provider.create_calls == []
+    # A free slot on the same pool still creates: the refusal is the meeting, not the harness.
+    free = await _create(
+        provider, pool, start_at=START + timedelta(hours=5), end_at=END + timedelta(hours=5)
+    )
+    assert free.get("status") != "conflict"
+    assert len(provider.create_calls) == 1
