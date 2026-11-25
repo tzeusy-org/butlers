@@ -68,7 +68,7 @@ async def _tick_deadline_pass(
                target_date, lead_time_days, alert_thresholds,
                deadline_status, fired_thresholds, depends_on, complexity
         FROM scheduled_tasks
-        WHERE enabled = true AND task_type = 'deadline'
+        WHERE enabled = true AND task_type = 'deadline' AND delete_requested_at IS NULL
         ORDER BY target_date
         """,
     )

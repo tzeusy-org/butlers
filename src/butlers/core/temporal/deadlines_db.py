@@ -334,7 +334,10 @@ async def deadline_update(
         return  # nothing to update
 
     set_clauses.append("updated_at = now()")
-    sql = f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1"
+    sql = (
+        f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} "
+        "WHERE id = $1 AND delete_requested_at IS NULL"
+    )
     await pool.execute(sql, *params)
     logger.info("Updated deadline task: %s", task_id)
 
@@ -445,7 +448,7 @@ async def get_deadline_by_id(
                alert_thresholds, deadline_status, fired_thresholds, depends_on,
                next_run_at, last_run_at, created_at, updated_at
         FROM scheduled_tasks
-        WHERE id = $1 AND task_type = 'deadline'
+        WHERE id = $1 AND task_type = 'deadline' AND delete_requested_at IS NULL
         """,
         task_id,
     )

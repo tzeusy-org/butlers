@@ -99,9 +99,12 @@ class InternalProjectionMixin:
         if (
             state == "failed"
             and attempts >= _MIRROR_PARK_AFTER_ATTEMPTS
-            and (fingerprint is None or fingerprint == record.get("mirror_attempt_fingerprint"))
+            and fingerprint is not None
+            and fingerprint == record.get("mirror_attempt_fingerprint")
         ):
-            return False  # parked: it stays counted as failed until what is sent changes
+            # Parked: it stays counted as failed until what is sent changes. Only a push passes
+            # a fingerprint; a delete (disabled or retiring row) is never parked.
+            return False
         return now >= attempted_at + cls._mirror_backoff_wait(attempts)
 
     @staticmethod
@@ -313,13 +316,18 @@ class InternalProjectionMixin:
         fingerprint = _mirror_fingerprint(
             title, occ_start, occ_end, timezone, event_description, task_location
         )
+        # What the owner edited, without the derived next occurrence: a cron task's occurrence
+        # moves every run, which must not unpark a push that keeps failing.
+        attempt_fingerprint = _mirror_fingerprint(
+            title, cron_expr, start_at, end_at, timezone, task_description, task_location
+        )
         if (
             google_event_id is not None
             and record.get("mirror_state") == "mirrored"
             and record.get("mirror_fingerprint") == fingerprint
         ):
             return None  # the provider copy already matches; nothing to send
-        if not self._mirror_attempt_allowed(record, now, fingerprint):
+        if not self._mirror_attempt_allowed(record, now, attempt_fingerprint):
             return None
 
         patch = CalendarEventUpdate(
@@ -339,13 +347,18 @@ class InternalProjectionMixin:
             except CalendarRequestError as exc:
                 if exc.status_code not in (404, 410):
                     await self._mirror_failed(
-                        pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                        pool,
+                        task_id,
+                        "failed",
+                        exc,
+                        previous=record,
+                        fingerprint=attempt_fingerprint,
                     )
                     return None
                 google_event_id = None  # the provider copy is gone: create it again
             except Exception as exc:
                 await self._mirror_failed(
-                    pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                    pool, task_id, "failed", exc, previous=record, fingerprint=attempt_fingerprint
                 )
                 return None
 
@@ -379,7 +392,12 @@ class InternalProjectionMixin:
             except CalendarRequestError as exc:
                 if exc.status_code != 409:
                     await self._mirror_failed(
-                        pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                        pool,
+                        task_id,
+                        "failed",
+                        exc,
+                        previous=record,
+                        fingerprint=attempt_fingerprint,
                     )
                     return None
                 # The event already exists (an earlier create whose record was lost, or another
@@ -398,14 +416,14 @@ class InternalProjectionMixin:
                         "failed",
                         update_exc,
                         previous=record,
-                        fingerprint=fingerprint,
+                        fingerprint=attempt_fingerprint,
                     )
                     return None
                 google_event_id = derived
                 outcome = "updated"
             except Exception as exc:
                 await self._mirror_failed(
-                    pool, task_id, "failed", exc, previous=record, fingerprint=fingerprint
+                    pool, task_id, "failed", exc, previous=record, fingerprint=attempt_fingerprint
                 )
                 return None
 

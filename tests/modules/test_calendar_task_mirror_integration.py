@@ -626,3 +626,53 @@ async def test_deleting_a_mirrored_event_through_the_tool_retires_then_purges(db
     await mod._push_internal_events_to_provider()
     assert provider_id not in provider.events
     assert not await _exists(db_pool, task_id)
+
+
+async def test_a_parked_row_that_is_then_disabled_still_gets_its_provider_copy_deleted(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    provider_id = (await _row(db_pool, task_id))["calendar_event_id"]
+    assert provider_id in provider.events
+    await db_pool.execute(
+        "UPDATE scheduled_tasks SET mirror_state = 'failed', mirror_attempts = 8, "
+        "mirror_error = 'boom', mirror_attempt_fingerprint = 'stale', "
+        "mirror_attempted_at = now() - interval '1 day' WHERE id = $1",
+        task_id,
+    )
+
+    await db_pool.execute("UPDATE scheduled_tasks SET enabled = false WHERE id = $1", task_id)
+    await mod._push_internal_events_to_provider()
+
+    assert provider_id not in provider.events, "a parked row must not strand its ghost event"
+    assert (await _row(db_pool, task_id))["calendar_event_id"] is None
+
+
+async def test_a_cron_task_stays_parked_as_its_next_occurrence_moves(db_pool, monkeypatch):
+    task_id = await schedule_create(
+        db_pool, f"cron-{uuid.uuid4().hex[:8]}", "0 9 * * *", "Do the thing", timezone="UTC"
+    )
+    provider = _Provider()
+    provider.fail_create = RuntimeError("boom")
+    mod = _module(db_pool, provider)
+    occurrence = [datetime.now(UTC).replace(microsecond=0) + timedelta(days=1)]
+    monkeypatch.setattr(
+        "butlers.modules.calendar.internal_projection._cron_next_occurrence",
+        lambda *_a, **_kw: occurrence[0],
+    )
+    for _ in range(8):
+        await mod._push_internal_events_to_provider()
+        await _age(db_pool, task_id)
+
+    provider.fail_create = None
+    for _ in range(3):
+        occurrence[0] += timedelta(days=1)  # each run derives a later next occurrence
+        await mod._push_internal_events_to_provider()
+        await _age(db_pool, task_id)
+    assert provider.creates == 0, "a moving occurrence is not an edit"
+    assert (await read_mirror_health(db_pool))["failed"] == 1
+
+    await db_pool.execute("UPDATE scheduled_tasks SET cron = '0 10 * * *' WHERE id = $1", task_id)
+    await mod._push_internal_events_to_provider()
+    assert provider.creates == 1
