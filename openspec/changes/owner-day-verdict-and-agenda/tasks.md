@@ -6,9 +6,9 @@
 
 ## 2. P2: day verdict
 
-- [ ] 2.1 `query_calendar_day_verdict` and `GET /api/calendar/workspace/day-verdict` with `available`
-- [ ] 2.2 Opener clauses: next commitment, committed hours, longest free window, each a door; the 'Tomorrow · date' label derives from the verdict date so the 18:00 flip is labelled truly
-- [ ] 2.3 Tests: seeded schema with tentative, declined and all-day rows; forced query failure
+- [x] 2.1 `build_day_verdict` over the day sheet, `query_calendar_day_verdict` and `GET /api/calendar/workspace/day-verdict` with `available`
+- [x] 2.2 Opener clauses: next commitment, committed hours, longest free window, each a door; the 'Tomorrow · date' label derives from the verdict date so the 18:00 flip is labelled truly
+- [x] 2.3 Tests: seeded schema with tentative, declined and all-day rows; forced query failure
 
 ## 3. P3: owner.agenda on /now
 

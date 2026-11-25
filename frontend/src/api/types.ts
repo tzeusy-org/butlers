@@ -1756,6 +1756,42 @@ export interface DaySheetResponse {
   text: string;
 }
 
+/** The meeting a day-verdict clause points at; `door` opens it in the calendar. */
+export interface DayVerdictEntry {
+  ref: string;
+  start: string;
+  end: string;
+  title: string;
+  people_count: number;
+  door: string;
+}
+
+export interface DayVerdictWindow {
+  start: string;
+  end: string;
+  minutes: number;
+}
+
+/**
+ * A few deterministic facts about one owner-local day (GET /api/calendar/workspace/day-verdict).
+ * `available: false` means the calendar could not be read and no other field is to be shown as
+ * true. `empty` is the only case "nothing on" is earned. `free_window` is withheld when stale.
+ */
+export interface DayVerdictResponse {
+  available: boolean;
+  date: string;
+  zone: string;
+  relative: "today" | "tomorrow" | "other";
+  freshness: DaySheetFreshness;
+  current: DayVerdictEntry | null;
+  next: DayVerdictEntry | null;
+  committed_minutes: number;
+  committed_count: number;
+  tentative_count: number;
+  free_window: DayVerdictWindow | null;
+  empty: boolean;
+}
+
 /** A single durable relationship note surfaced on the meeting-prep rail. */
 export interface CalendarPrepNote {
   /** Note category (e.g. `preference`, `context`). */

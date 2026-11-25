@@ -11,6 +11,7 @@ import {
   useCalendarDayBriefing,
   useCalendarInvitations,
   useCalendarOverlays,
+  useDayVerdict,
 } from "@/hooks/use-calendar-workspace";
 import { overlaysByDay } from "@/lib/calendar-overlays";
 import { useLocalDayStart } from "@/pages/calendar/use-local-day";
@@ -120,6 +121,10 @@ export function useCalendarContextData({
     { enabled: overlaysEnabled },
   );
 
+  // Next commitment, committed hours and free window for the owner's day (today, or tomorrow from
+  // 18:00 owner-local). Read in the owner's zone by the server, not the browser's.
+  const dayVerdictQuery = useDayVerdict();
+
   const surfaceFetching =
     workspaceFetching ||
     (overlaysEnabled &&
@@ -148,6 +153,7 @@ export function useCalendarContextData({
     overlaysByDayMap,
     briefingDate,
     dayBriefingQuery,
+    dayVerdictQuery,
     surfaceFetching,
   };
 }

@@ -52,6 +52,7 @@ import type {
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
   DaySheetResponse,
+  DayVerdictResponse,
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
@@ -1687,6 +1688,22 @@ export function getCalendarDaySheet(
   const query = sp.toString();
   return apiFetch<ApiResponse<DaySheetResponse>>(
     `/calendar/workspace/day-sheet${query ? `?${query}` : ""}`,
+  );
+}
+
+/**
+ * Fetch the day verdict (next commitment, committed hours, longest free window). Without a date the
+ * server picks today, or tomorrow from 18:00 owner-local. `available: false` is never a clear day.
+ */
+export function getCalendarDayVerdict(
+  params: { date?: string; timezone?: string } = {},
+): Promise<ApiResponse<DayVerdictResponse>> {
+  const sp = new URLSearchParams();
+  if (params.date) sp.set("date", params.date);
+  if (params.timezone) sp.set("timezone", params.timezone);
+  const query = sp.toString();
+  return apiFetch<ApiResponse<DayVerdictResponse>>(
+    `/calendar/workspace/day-verdict${query ? `?${query}` : ""}`,
   );
 }
 

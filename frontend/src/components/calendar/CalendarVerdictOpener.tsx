@@ -2,15 +2,22 @@
 // CalendarVerdictOpener — JARVIS pursuit move 9, slice 4 (bu-vyjoi)
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
-import type { CalendarInvitationEntry, ConflictIssue } from "@/api/types";
+import { useEffect, useState } from "react";
+import { formatInTimeZone } from "date-fns-tz";
+import type { CalendarInvitationEntry, ConflictIssue, DayVerdictResponse } from "@/api/types";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 
+/** The day verdict read, as the page's query reports it. */
+export interface DayVerdictState {
+  data?: DayVerdictResponse | null;
+  isLoading: boolean;
+  isError: boolean;
+}
+
 export interface CalendarVerdictOpenerProps {
-  entriesCount: number;
-  sourceCount: number;
-  rangeLabel: string;
+  /** The deterministic day verdict; an error or `available: false` reads as unknown, never clear. */
+  dayVerdict: DayVerdictState;
   workspaceLoading: boolean;
   workspaceError: boolean;
   sourceFreshnessLoading: boolean;
@@ -39,6 +46,70 @@ function plural(count: number, singular: string, pluralWord = `${singular}s`): s
   return `${count} ${count === 1 ? singular : pluralWord}`;
 }
 
+function clock(iso: string, zone: string): string {
+  return formatInTimeZone(new Date(iso), zone, "HH:mm");
+}
+
+function duration(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return [hours ? `${hours}h` : "", rest ? `${rest}m` : ""].filter(Boolean).join(" ");
+}
+
+/** "today", "tomorrow", or the weekday and date; always names the real date for a rolled day. */
+function dayLabel(verdict: DayVerdictResponse): string {
+  const date = formatInTimeZone(new Date(`${verdict.date}T12:00:00Z`), "UTC", "EEE d MMM");
+  if (verdict.relative === "other") return date;
+  return verdict.relative === "tomorrow" ? `tomorrow (${date})` : "today";
+}
+
+/** Clauses in urgency order: what is on now or next, how much is committed, where the air is. */
+function verdictClauses(
+  verdict: DayVerdictResponse,
+  nowMs: number,
+): { lead: VerdictClause[]; tail: VerdictClause[] } {
+  const clauses: VerdictClause[] = [];
+  const { zone } = verdict;
+  if (verdict.freshness.state === "stale") {
+    clauses.push({
+      key: "day-stale",
+      text: verdict.freshness.as_of
+        ? `calendar read as of ${clock(verdict.freshness.as_of, zone)}, may be out of date`
+        : "calendar read may be out of date",
+    });
+  }
+  if (verdict.current) {
+    clauses.push({
+      key: "day-current",
+      text: `In ${verdict.current.title} until ${clock(verdict.current.end, zone)}`,
+      href: verdict.current.door,
+    });
+  }
+  if (verdict.next) {
+    const minutes = Math.round((new Date(verdict.next.start).getTime() - nowMs) / 60000);
+    const countdown = verdict.relative === "today" && minutes > 0 ? ` (in ${duration(minutes)})` : "";
+    clauses.push({
+      key: "day-next",
+      text: `Next ${verdict.next.title} at ${clock(verdict.next.start, zone)}${countdown}`,
+      href: verdict.next.door,
+    });
+  }
+  const lead = clauses.splice(0);
+  if (verdict.committed_minutes > 0) {
+    clauses.push({
+      key: "day-committed",
+      text: `${duration(verdict.committed_minutes)} committed across ${plural(verdict.committed_count, "meeting")}`,
+    });
+  }
+  if (verdict.free_window) {
+    clauses.push({
+      key: "day-free",
+      text: `Longest free window ${clock(verdict.free_window.start, zone)}-${clock(verdict.free_window.end, zone)}`,
+    });
+  }
+  return { lead, tail: clauses };
+}
+
 function buildClauses({ freshnessDetail, conflicts }: Pick<CalendarVerdictOpenerProps, "freshnessDetail" | "conflicts">): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
@@ -56,9 +127,7 @@ function buildClauses({ freshnessDetail, conflicts }: Pick<CalendarVerdictOpener
 }
 
 export function CalendarVerdictOpener({
-  entriesCount,
-  sourceCount,
-  rangeLabel,
+  dayVerdict,
   workspaceLoading,
   workspaceError,
   sourceFreshnessLoading,
@@ -86,7 +155,19 @@ export function CalendarVerdictOpener({
   const evidence = selectedEvidence
     ? invitations.find((entry) => entry.entry_id === selectedEvidence.entryId)?.conflict_issues[selectedEvidence.index] ?? null
     : null;
+  const verdict = dayVerdict.data ?? null;
+  // The countdown to the next meeting moves with the clock, not with a refetch.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   const sources = [
+    {
+      label: "calendar day verdict",
+      isLoading: dayVerdict.isLoading,
+      isError: dayVerdict.isError || (verdict !== null && !verdict.available),
+    },
     { label: "calendar workspace", isLoading: workspaceLoading, isError: workspaceError },
     { label: "calendar invitations", isLoading: invitationsLoading || invitationsRefreshing,
       isError: invitationsError || !invitationsAvailable },
@@ -106,11 +187,45 @@ export function CalendarVerdictOpener({
       : []),
   ];
 
-  const calmConflictText = conflictScanEnabled ? ", no scheduling conflicts" : "";
-  const clauses = buildClauses({ freshnessDetail, conflicts });
-  if (invitations.length > 0) clauses.push({
-    key: "unanswered-invitations", text: `${plural(invitations.length, "unanswered invitation")}${invitationsHasMore ? " shown" : ""}`,
-  });
+  const calmConflictText = conflictScanEnabled ? ", no scheduling conflicts in view" : "";
+  const dayClauses = verdict?.available ? verdictClauses(verdict, nowMs) : { lead: [], tail: [] };
+  // Urgency order: next commitment, what needs the owner, committed hours, free window.
+  const invitationsText = `${plural(invitations.length, "unanswered invitation")}${invitationsHasMore ? " shown" : ""}`;
+  const needsYou: VerdictClause[] =
+    invitations.length > 0
+      ? [
+          {
+            key: "unanswered-invitations",
+            text: invitationsText,
+            content: (
+              <button
+                type="button"
+                className="underline decoration-border underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                onClick={() => {
+                  const target = document.getElementById("unanswered-invitations");
+                  target?.scrollIntoView?.({ block: "start" });
+                  target?.focus();
+                }}
+              >
+                {invitationsText}
+              </button>
+            ),
+          },
+        ]
+      : [];
+  const clauses = [
+    ...dayClauses.lead,
+    ...needsYou,
+    ...dayClauses.tail,
+    ...buildClauses({ freshnessDetail, conflicts }),
+  ];
+  // Only a readable, current, empty day is "nothing on"; a day that merely has no committed
+  // meeting (tentative or butler holds only) says so instead of claiming it is empty.
+  const calmDay = verdict?.available
+    ? verdict.empty
+      ? `Nothing on ${dayLabel(verdict)}`
+      : `No committed meetings ${dayLabel(verdict)}`
+    : "Calendar day unknown";
   const buttonClass = "text-left text-sm text-foreground underline decoration-border underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
   return (
     <div className="border-b border-border/60 pb-3">
@@ -119,9 +234,9 @@ export function CalendarVerdictOpener({
       landmarkLabel="Calendar verdict"
       sources={sources}
       clauses={clauses}
-      allClear={`Quiet ${rangeLabel}: ${plural(entriesCount, "event")} across ${plural(sourceCount, "source")}${calmConflictText}`}
+      allClear={`${calmDay}${calmConflictText}`}
     />
-    <section aria-label="Unanswered invitations" className="mt-2 space-y-2">
+    <section id="unanswered-invitations" tabIndex={-1} aria-label="Unanswered invitations" className="mt-2 space-y-2">
       {invitationsLoading ? <p role="status" className="text-sm text-muted-foreground">Loading invitations…</p> : null}
       {invitationsRefreshing && !invitationsLoading ? <p role="status" className="text-sm text-muted-foreground">Refreshing invitations…</p> : null}
       {invitationsError || !invitationsAvailable ? <SourceDegradedNote

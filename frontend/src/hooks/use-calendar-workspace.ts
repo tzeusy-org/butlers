@@ -11,6 +11,7 @@ import {
   dismissCalendarProposal,
   getCalendarDayBriefing,
   getCalendarDaySheet,
+  getCalendarDayVerdict,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
@@ -199,6 +200,24 @@ export function useDaySheet(
   return useQuery({
     queryKey: ["calendar-day-sheet", params],
     queryFn: () => getCalendarDaySheet(params),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+/**
+ * Fetch the day verdict for the opener. Read-only, no model: `available: false` and an error are
+ * both surfaced as unknown, never as a clear day.
+ */
+export function useDayVerdict(
+  params: { date?: string; timezone?: string } = {},
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  const busAwareInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["calendar-day-verdict", params],
+    queryFn: () => getCalendarDayVerdict(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,

@@ -164,9 +164,11 @@ export default function CalendarWorkspacePage() {
       />
 
       <CalendarVerdictOpener
-        entriesCount={entries.length}
-        sourceCount={connectedSources.length}
-        rangeLabel={range}
+        dayVerdict={{
+          data: context.dayVerdictQuery.data?.data,
+          isLoading: context.dayVerdictQuery.isLoading,
+          isError: context.dayVerdictQuery.isError,
+        }}
         workspaceLoading={workspaceQuery.isLoading}
         workspaceError={workspaceQuery.isError || !data.entriesSourceAvailable}
         sourceFreshnessLoading={metaQuery.isPending}
