@@ -2,7 +2,7 @@
 
 ### Requirement: Owner day verdict
 
-ID: REQ-module-calendar-050
+ID: REQ-module-calendar-051
 Source: bu-5ii4gj.2 (run 26 move 2), slice P2
 Scope: v1-mandatory
 
@@ -25,7 +25,7 @@ clear day.
 
 ### Requirement: Owner agenda situation
 
-ID: REQ-module-calendar-051
+ID: REQ-module-calendar-052
 Source: bu-5ii4gj.2 (run 26 move 2), slice P3
 Scope: v1-mandatory
 
