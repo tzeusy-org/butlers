@@ -18,6 +18,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from butlers.modules.approvals.per_event import per_event_rule_refusal
+
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 
@@ -407,6 +409,11 @@ async def _confirm_suggestion_write(
     event_type: ApprovalEventType
 
     if suggestion_type == "promotion":
+        # A per-event tool never becomes a rule, even from a suggestion recorded before the
+        # refusal existed (RFC 0038 D13); nothing is written or consumed.
+        per_event = per_event_rule_refusal(tool_name)
+        if per_event is not None:
+            return per_event
         # Create a standing rule with exact constraints for ALL args
         new_rule_id = uuid.uuid4()
         arg_constraints = {

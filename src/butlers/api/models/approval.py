@@ -234,6 +234,13 @@ class ApprovalDetail(BaseModel):
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
     call_preview: ApprovalCallPreview | None = None
+    rule_eligible: bool = Field(
+        default=True,
+        description=(
+            "False when the tool is always_per_event: every call is its own owner decision, "
+            "so no standing rule may approve it and the dashboard offers no 'always allow'."
+        ),
+    )
     external_proposal_review: ExternalProposalReview | None = Field(
         default=None,
         description=(

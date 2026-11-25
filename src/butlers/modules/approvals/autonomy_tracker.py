@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from butlers.core.state import state_get, state_set
 from butlers.modules.approvals.external_proposals import is_external_proposal_key
+from butlers.modules.approvals.per_event import is_always_per_event
 from butlers.modules.base import ToolMeta
 
 if TYPE_CHECKING:
@@ -110,15 +111,19 @@ def compute_fingerprint(
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def counts_toward_promotion(action: Any) -> bool:
+def counts_toward_promotion(action: Any, tool_metadata: Any = None) -> bool:
     """Whether a manual approval may become autonomy evidence.
 
     Approvals of effects requested by an exposed invocation never count (RFC 0038
     D13). Neither do approvals of external MCP proposals: outside clients must not
     steer approval policy for internal writes, so such an approval records no
     history and feeds no promotion suggestion (RFC 0039 D13, REQ-module-approvals-010).
+    Approvals of an ``always_per_event`` tool never count either: every call is its own decision,
+    so there is no pattern to promote (RFC 0038 D13).
     """
     if is_external_proposal_key(getattr(action, "deduplication_key", None)):
+        return False
+    if is_always_per_event(getattr(action, "tool_name", None), tool_metadata):
         return False
     return getattr(action, "goal_exposed", None) is not True
 

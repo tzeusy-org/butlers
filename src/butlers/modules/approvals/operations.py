@@ -50,6 +50,10 @@ from butlers.modules.approvals.external_proposals import (
 )
 from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
+from butlers.modules.approvals.per_event import (
+    per_event_action_refusal,
+    per_event_rule_refusal,
+)
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
 
@@ -76,6 +80,9 @@ async def create_approval_rule(
     decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Create only with a current action-bound independent dashboard factor."""
+    refusal = per_event_rule_refusal(tool_name)
+    if refusal is not None:
+        return refusal  # before any step-up is consumed or anything is written
     parameters = dict(
         tool_name=tool_name,
         arg_constraints=arg_constraints,
@@ -102,6 +109,8 @@ async def create_rule_from_action(
 ) -> dict[str, Any]:
     """Create from the locked current action with one consumed confirmation."""
     refusal = await _external_rule_refusal(pool, action_id)
+    if refusal is None:
+        refusal = await per_event_action_refusal(pool, action_id)
     if refusal is not None:
         return refusal
     parameters = dict(action_id=action_id, constraint_overrides=constraint_overrides)
@@ -134,6 +143,8 @@ async def approve_action(
         # Refused before any step-up is consumed or status changes: an outside
         # proposal never becomes a standing rule (REQ-module-approvals-010).
         refusal = await _external_rule_refusal(pool, action_id)
+        if refusal is None:
+            refusal = await per_event_action_refusal(pool, action_id)
         if refusal is not None:
             return refusal
     if not create_rule:
@@ -326,6 +337,12 @@ async def _approve_action_write(
         refusal = external_approval_refusal(parsed_id, action.tool_args, external_review)
         if refusal is not None:
             return {"error": refusal}
+
+    if create_rule:
+        # A per-event tool never becomes a rule: refused before the status changes.
+        per_event = per_event_rule_refusal(action.tool_name)
+        if per_event is not None:
+            return per_event
 
     decided_by = f"human:{actor_id}"
     transition = await transition_pending_action(
@@ -704,6 +721,9 @@ async def _create_approval_rule_write(
     dict
         New rule dict or ``{"error": "<message>"}``.
     """
+    refusal = per_event_rule_refusal(tool_name)
+    if refusal is not None:
+        return refusal
     if max_uses is not None and max_uses <= 0:
         return {"error": "max_uses must be greater than 0"}
 
@@ -821,6 +841,9 @@ async def _create_rule_from_action_write(
         return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
     if is_entity_merge_tool(action.tool_name):
         return {"error": ENTITY_MERGE_RULE_REFUSAL}
+    per_event = per_event_rule_refusal(action.tool_name)
+    if per_event is not None:
+        return per_event
 
     # Generate suggested constraints via sensitivity analysis
     suggested = suggest_constraints(action.tool_name, action.tool_args)

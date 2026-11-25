@@ -19159,6 +19159,12 @@ export interface components {
             /** Reversibility */
             reversibility?: ("reversible" | "compensable" | "irreversible") | null;
             /**
+             * Rule Eligible
+             * @description False when the tool is always_per_event: every call is its own owner decision, so no standing rule may approve it and the dashboard offers no 'always allow'.
+             * @default true
+             */
+            rule_eligible?: boolean;
+            /**
              * Session Id
              * @description Originating session UUID that produced this action, when known. Lets the dossier link back to the session/trace that proposed the action so the owner can scrutinize the evidence before deciding.
              */

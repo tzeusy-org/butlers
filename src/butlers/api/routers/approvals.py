@@ -130,6 +130,11 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
+from butlers.modules.approvals.per_event import (
+    RULE_REFUSED_ALWAYS_PER_EVENT,
+    per_event_action_refusal,
+    per_event_rule_refusal,
+)
 from butlers.modules.approvals.previews import args_digest, dashboard_call_preview
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
@@ -828,6 +833,7 @@ def _pending_action_to_detail(
             if external_review is not None or is_entity_merge_tool(action.tool_name)
             else dashboard_call_preview(action.tool_name, action.tool_args)
         ),
+        rule_eligible=per_event_rule_refusal(action.tool_name) is None,
         external_proposal_review=external_review,
         entity_merge_review=_entity_merge_review(action),
         goal=_goal_lineage(action),
@@ -1845,6 +1851,11 @@ async def create_rule(
         )
     action_butler, target_pool = target
 
+    # A per-event tool never gets a standing rule: refused before step-up and policy lookup.
+    per_event = per_event_rule_refusal(request.tool_name)
+    if per_event is not None:
+        raise HTTPException(status_code=409, detail=per_event["error"])
+
     try:
         risk_tier = _risk_tier_for_butler_tool(request.butler, request.tool_name)
     except Exception as exc:
@@ -1914,6 +1925,8 @@ async def create_rule_from_action(
         if result["error"] == "dashboard_step_up_required":
             raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
+        if error_msg == RULE_REFUSED_ALWAYS_PER_EVENT:
+            raise HTTPException(status_code=409, detail=error_msg)
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
@@ -2201,6 +2214,8 @@ async def get_rule_suggestions(
         raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
 
     action = PendingAction.from_row(row)
+    if per_event_rule_refusal(action.tool_name) is not None:
+        raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
 
     from butlers.modules.approvals.sensitivity import suggest_constraints
 
@@ -3274,6 +3289,11 @@ async def confirm_suggestion(
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"
 
+    # A suggestion recorded before the per-event refusal existed still cannot become a rule,
+    # and the owner is told so before any step-up is asked for.
+    if row.get("suggestion_type") != "demotion" and per_event_rule_refusal(row["tool_name"]):
+        raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
+
     async def write(conn):
         row = await conn.fetchrow(
             "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
@@ -3334,6 +3354,8 @@ async def confirm_suggestion(
                 actor_id=actor,
                 decision_memory_writer=None,
             )
+            if create_result.get("error") == RULE_REFUSED_ALWAYS_PER_EVENT:
+                raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
             if "error" in create_result:
                 raise HTTPException(
                     status_code=500,
@@ -4046,6 +4068,9 @@ async def approve_owning_action(
         if create_rule and await is_entity_merge_action(conn, parsed_id):
             # A standing rule would merge future pairs without their structural review.
             raise HTTPException(status_code=409, detail=ENTITY_MERGE_RULE_REFUSAL)
+        if create_rule and await per_event_action_refusal(conn, action_id) is not None:
+            # Same boundary for a per-event tool: nothing is consumed, nothing is approved.
+            raise HTTPException(status_code=409, detail=RULE_REFUSED_ALWAYS_PER_EVENT)
         if create_rule:
             parameters = dict(
                 action_id=action_id,

@@ -325,6 +325,10 @@ dashboard's plain Approve, neither of which shows the comparison a merge needs.
 
 Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `critical`. Higher tiers (`high`, `critical`) require narrower constraints (at least one `exact` or `pattern`) and bounded scope (`expires_at` or `max_uses`) for standing rules.
 
+## Per-Event Tools
+
+A tool whose approval mode is `always_per_event` (`calendar_respond`) is a decision of its own on every call. The gate never matches a standing rule for it, so the rule writes refuse it too: direct create, create from an action, approve with a rule, the suggestion preview and the confirmation of a promotion suggestion (even one recorded earlier) answer `rule_refused_always_per_event` (HTTP 409), before a step-up factor is consumed and before anything is written. Approving such an action records no promotion history, and its dossier carries `rule_eligible: false` so the dashboard shows no "always allow" prompt. The mode is read from `ALWAYS_PER_EVENT_TOOLS` in `core/tool_presentation_inventory.py` (the dashboard has no module instance); `tests/contracts/test_always_per_event_inventory.py` keeps it equal to every module's declaration.
+
 ## Database Tables
 
 The module owns tables in the hosting butler's schema (Alembic branch: `approvals`):

@@ -70,6 +70,8 @@ export interface ViewedApproval {
   external_proposal?: boolean;
   /** A parked entity merge: approved only through its final confirmation. Not sent to the API. */
   entity_merge?: boolean;
+  /** False for an always_per_event tool (every call is its own decision): no "always allow". */
+  rule_eligible?: boolean;
 }
 
 type ApprovalReview = {

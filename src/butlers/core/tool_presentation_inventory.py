@@ -13087,3 +13087,11 @@ STORE_WRITERS = MappingProxyType(
         ),
     }
 )
+
+
+#: Tools whose approval policy is ``always_per_event``: each call is an owner decision of its own
+#: (RFC 0038 D13), so no standing rule may approve one and its approvals never feed promotion.
+#: A configuration-specific tool (``calendar_respond`` registers only when responses are enabled)
+#: declares its metadata through its module, not this inventory, so the mode is kept here too and
+#: tests/contracts/test_always_per_event_inventory.py pins it equal to what every module declares.
+ALWAYS_PER_EVENT_TOOLS: frozenset[str] = frozenset({"calendar_respond"})

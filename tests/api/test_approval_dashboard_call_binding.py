@@ -167,7 +167,7 @@ async def binding_http(app, monkeypatch):
                 # (REQ-module-approvals-010); this ordinary action is not one.
                 return {"deduplication_key": None}
             if sql.startswith("SELECT tool_name FROM pending_actions"):
-                # The create_rule refusal probe for entity merges.
+                # The create_rule refusal probes (entity merge; per-event tool, REQ-module-approvals-011).
                 return {"tool_name": state["row"]["tool_name"]}
             assert "FOR UPDATE" in sql
             state["events"].append("lock")

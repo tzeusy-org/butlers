@@ -653,6 +653,8 @@ function Dossier({
     externalProposal: boolean,
     /** A parked entity merge: never offered as a standing rule afterwards. */
     entityMerge?: boolean,
+    /** False for an always_per_event tool: no standing rule, so no "always allow". */
+    ruleEligible?: boolean,
   ) => void;
   onCallShown: (view: ViewedApproval | null) => void;
   onDeny: (reason?: string, ownerDelivery?: OwnerDeliveryCard | null) => void;
@@ -721,6 +723,7 @@ function Dossier({
           owner_delivery: shownDetail.owner_delivery,
           external_proposal: !!shownDetail.external_proposal_review,
           entity_merge: !!mergeReview,
+          rule_eligible: shownDetail.rule_eligible,
         }
       : null);
     return () => onCallShown(null);
@@ -859,7 +862,14 @@ function Dossier({
                     onClick={() => {
                       if (detail.id !== actionId || !approvable) return;
                       if (mergeReview) onMergeConfirmOpenChange(true);
-                      else onApprove({ ...approvable }, detail.owner_delivery, !!externalReview);
+                      else
+                        onApprove(
+                          { ...approvable },
+                          detail.owner_delivery,
+                          !!externalReview,
+                          false,
+                          detail.rule_eligible,
+                        );
                     }}
                     disabled={approvePending || detail.id !== actionId || !approvable}
                     aria-describedby={approveUnavailableReason ? EXTERNAL_REVIEW_REASON_ID : undefined}
@@ -2135,8 +2145,12 @@ export default function ApprovalsPage() {
         // An external MCP proposal never becomes a standing rule, so it gets no
         // "always allow" prompt (REQ-dashboard-approvals-904, REQ-module-approvals-010).
         // Neither an outside proposal nor a merge may become a standing rule.
+        // A per-event tool (calendar_respond) is its own decision every time, so it gets none
+        // either (RFC 0038 D13).
         onSuccess: () => {
-          if (!view.external_proposal && !view.entity_merge) setTeachingActionId(actionId);
+          if (!view.external_proposal && !view.entity_merge && view.rule_eligible !== false) {
+            setTeachingActionId(actionId);
+          }
         },
       });
     },
@@ -2279,6 +2293,7 @@ export default function ApprovalsPage() {
             displayed_call: { ...shownCall.displayed_call },
             owner_delivery: shownCall.owner_delivery,
             external_proposal: shownCall.external_proposal,
+            rule_eligible: shownCall.rule_eligible,
           };
           scheduleDecision(id, "approve", () => approve(view));
         },
@@ -2549,7 +2564,7 @@ export default function ApprovalsPage() {
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}
             allowPendingDecisionControls={activeLane !== "stalled"}
-            onApprove={(displayed_call, owner_delivery, external_proposal, entity_merge) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal, entity_merge })}
+            onApprove={(displayed_call, owner_delivery, external_proposal, entity_merge, rule_eligible) => approve({ id: dossierSelected, displayed_call, owner_delivery, external_proposal, entity_merge, rule_eligible })}
             onCallShown={setShownCall}
             onDeny={(reason, owner_delivery) => denyMut.mutate({ id: dossierSelected, reason, owner_delivery })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
