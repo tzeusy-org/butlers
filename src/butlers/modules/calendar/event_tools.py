@@ -628,6 +628,8 @@ def register_event_tools(
                 tool_args=overlap_args,
                 request_id=normalized_request_id,
                 event=existing_event,
+                provider=provider,
+                calendar_id=resolved_calendar_id,
             )
         resolution = resolution_check.bound
 

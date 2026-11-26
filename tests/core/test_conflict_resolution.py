@@ -122,15 +122,23 @@ def test_nothing_is_proposed_in_the_past():
             assert datetime.fromisoformat(o.exact_call["args"]["start_at"]) >= _NOW
 
 
-def test_a_recurring_event_is_only_ever_moved_per_occurrence():
+def test_a_recurring_event_is_only_ever_moved_as_its_own_instance():
     original = _T + timedelta(days=7)
     res = _run(
-        _ev("a", "owner_organized", instance_start_at=original),
+        _ev(
+            "a",
+            "owner_organized",
+            recurring=True,
+            instance_start_at=original,
+            instance_event_id="prov-a_20260408T090000Z",
+        ),
         _ev("b", "invited", owner_response="accepted"),
     )
     move = next(o for o in res.options if o.kind == "move_own").exact_call["args"]
-    assert move["recurrence_scope"] == "this" and move["instance_start_at"] == original.isoformat()
-    assert all(o.exact_call["args"].get("recurrence_scope") != "series" for o in res.options)
+    # The occurrence is written as Google's instance, so its own etag guards the write: no
+    # recurrence_scope (that path edits the series master) and never the series id.
+    assert move["event_id"] == "prov-a_20260408T090000Z"
+    assert "recurrence_scope" not in move and "instance_start_at" not in move
 
 
 def test_options_hold_no_event_text():
@@ -184,7 +192,7 @@ def test_a_movable_event_with_no_free_slot_says_no_free_slot():
 
 def test_a_recurring_event_without_its_occurrence_is_never_moved():
     res = _run(
-        _ev("a", "owner_organized", recurring=True),  # no instance_start_at
+        _ev("a", "owner_organized", recurring=True),  # no instance_event_id
         _ev("b", "invited", owner_response="accepted"),
     )
     assert not [o for o in res.options if o.kind.startswith("move")]

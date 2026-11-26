@@ -16,6 +16,7 @@ card text names no event title: the event may be a third party's.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.calendar_approval import calendar_approval_args
 
 from .models import CalendarEvent
+
+logger = logging.getLogger(__name__)
 
 #: The ``calendar_action_log.action_type`` that binds a card to the etag the owner saw.
 RESOLUTION_ACTION_TYPE = "resolution_move"
@@ -119,6 +122,7 @@ async def park_resolution_move(
     etag: str,
     authority: str,
     zone: tzinfo | None = None,
+    series_event_id: str | None = None,
 ) -> tuple[uuid.UUID, bool]:
     """Park the move's card and bind it to ``etag``; returns ``(action_id, created)``.
 
@@ -150,7 +154,12 @@ async def park_resolution_move(
             f"{RESOLUTION_ACTION_TYPE}:{request_id}",
             str(call_args["event_id"]),
             {"pair_id": pair_id, "option_id": option_id, "issue_digest": issue_digest},
-            {"action_id": str(admission.action_id), "etag": etag},
+            {
+                "action_id": str(admission.action_id),
+                "etag": etag,
+                # Set for one occurrence of a series: ``etag`` is then the series' etag.
+                **({"series_event_id": series_event_id} if series_event_id else {}),
+            },
         )
         return admission.action_id, not admission.duplicate
 
@@ -205,13 +214,17 @@ async def check_resolution_binding(
     tool_args: Mapping[str, Any],
     request_id: str | None,
     event: CalendarEvent,
+    provider: Any = None,
+    calendar_id: str | None = None,
 ) -> ResolutionCheck:
     """Decide an approved call against its recorded binding. Fails closed.
 
     Not an approval, or an approval that is not a ``resolve:`` request: no binding applies and the
     call is the ordinary update. An approved ``resolve:`` request with no recorded binding (no
     database, no row) declines ``unbound``: it must never run as a plain update. A bound request
-    declines ``changed_since_check`` unless the event's etag is the one the owner saw.
+    declines ``changed_since_check`` unless the event's etag is the one the owner saw. For one
+    occurrence of a series the owner saw the series' etag, so that is the one read and compared;
+    the write itself still carries the occurrence's own etag.
     """
     approval = get_approval_execution_context(tool_name=tool_name, tool_args=dict(tool_args))
     if approval is None:
@@ -221,6 +234,17 @@ async def check_resolution_binding(
     if offer is None:
         marked = isinstance(request_id, str) and request_id.startswith(RESOLUTION_REQUEST_PREFIX)
         return ResolutionCheck(refusal="unbound" if marked else None)
+    series_id = offer.get("series_event_id")
+    if isinstance(series_id, str) and series_id:
+        series: CalendarEvent | None
+        try:
+            series = await provider.get_event(calendar_id=calendar_id, event_id=series_id)
+        except Exception:
+            logger.warning("resolution move: series could not be re-read", exc_info=True)
+            series = None
+        if series is None:
+            return ResolutionCheck(bound=True, refusal="changed_since_check")
+        return ResolutionCheck(bound=True, refusal=resolution_refusal(offer, series))
     return ResolutionCheck(bound=True, refusal=resolution_refusal(offer, event))
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -53,10 +53,12 @@ def _card(request_id: str = "resolve:abc", event_id: str = "evt-1") -> dict:
 
 
 async def _approve(provider, *, offer, request_id="resolve:abc", event_id="evt-1"):
+    return await _approve_card(provider, _card(request_id, event_id), offer=offer)
+
+
+async def _approve_card(provider, card, *, offer):
     """Run the parked card's call exactly as the approvals executor does."""
-    args = retire_legacy_calendar_approval_args(
-        "calendar_update_event", _card(request_id, event_id)
-    )
+    args = retire_legacy_calendar_approval_args("calendar_update_event", card)
     mod, mcp = await _module(provider)
     mod._db.pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
     context = ApprovalExecutionContext(
@@ -213,3 +215,87 @@ def test_only_a_move_that_notifies_attendees_reaches_beyond_the_owner():
     assert blast_radius_for("parked_per_event") == "contact"
     assert blast_radius_for("no_park_undo") == "self"
     assert blast_radius_for("owner_submit") == "self"
+
+
+class _SeriesProvider(_MovingProvider):
+    """A calendar holding a series master and one occurrence, each with its own etag."""
+
+    def __init__(self, *, series_id: str, instance_id: str):
+        super().__init__(event=_block(event_id=instance_id, etag='"instance-v0"'))
+        self.series = _block(event_id=series_id, etag='"series-v0"')
+        self.gets: list[str] = []
+
+    async def get_event(self, *, calendar_id, event_id):
+        self.gets.append(event_id)
+        return self.series if event_id == self.series.event_id else self._event
+
+
+def _radar_option_for_a_series_occurrence():
+    """What the radar compiles for an owner-organised series' occurrence, through the real adapter."""
+    from butlers.api.read_models.calendar_resolution import resolution_event
+    from butlers.core.temporal import conflict_resolution as cr
+
+    start = datetime(2026, 2, 20, 9, 0, tzinfo=UTC)
+    row = {
+        "instance_id": "inst-1",
+        "origin_ref": "series-1",
+        "calendar_id": "primary",
+        "instance_starts_at": start,
+        "instance_ends_at": start.replace(hour=10),
+        "event_etag": '"series-v0"',
+        "recurrence_rule": "FREQ=WEEKLY",
+        "all_day": False,
+        "source_time_role": "owner",
+        "event_metadata": {},
+    }
+    series = resolution_event(row, entry_id="inst-1")
+    other = cr.ResolutionEvent(
+        entry_id="z",
+        provider_event_id="prov-z",
+        calendar_id="primary",
+        start_at=start,
+        end_at=start.replace(hour=10),
+        etag='"z"',
+        event_class="invited",
+        owner_response="accepted",
+    )
+    free = [(NEW_START, NEW_END)]
+    result = cr.options_for("pair", series, other, free, not_before=start - timedelta(days=1))
+    return next(o for o in result.options if o.kind == "move_own")
+
+
+async def test_a_series_occurrence_moves_as_its_instance_with_the_instances_own_etag():
+    option = _radar_option_for_a_series_occurrence()
+    args = option.exact_call["args"]
+    assert args["event_id"] == "series-1_20260220T090000Z" and "recurrence_scope" not in args
+    provider = _SeriesProvider(series_id="series-1", instance_id=args["event_id"])
+    card = resolution_card_args(args, request_id="resolve:abc")
+
+    result = await _approve_card(
+        provider,
+        card,
+        offer={"action_id": "x", "etag": '"series-v0"', "series_event_id": "series-1"},
+    )
+
+    assert result["status"] == "updated"
+    (call,) = provider.update_calls
+    assert call["event_id"] == "series-1_20260220T090000Z"
+    # The write is conditional on the occurrence's own etag, never the master's.
+    assert call["patch"].etag == '"instance-v0"' and call["patch"].single_attempt is True
+
+
+async def test_a_series_that_changed_since_the_check_declines_the_occurrence_move():
+    option = _radar_option_for_a_series_occurrence()
+    args = option.exact_call["args"]
+    provider = _SeriesProvider(series_id="series-1", instance_id=args["event_id"])
+    provider.series = provider.series.model_copy(update={"etag": '"series-v1"'})
+    card = resolution_card_args(args, request_id="resolve:abc")
+
+    result = await _approve_card(
+        provider,
+        card,
+        offer={"action_id": "x", "etag": '"series-v0"', "series_event_id": "series-1"},
+    )
+
+    assert result["status"] == RESOLUTION_DECLINED and result["reason"] == "changed_since_check"
+    assert provider.update_calls == []

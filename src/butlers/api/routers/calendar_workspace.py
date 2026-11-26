@@ -1941,6 +1941,7 @@ async def _park_resolution_move(
             etag=etag,
             authority=option.authority,
             zone=await owner_zone(db),
+            series_event_id=context.get("series_event_id"),
         )
         status = await pool.fetchval("SELECT status FROM pending_actions WHERE id = $1", action_id)
     except Exception as exc:
