@@ -1315,6 +1315,47 @@ Scope: v1-mandatory
 - **THEN** that pull request changes or removes the pinning test itself and states the delta and the changed behavior
 - **AND** no authorization manifest, separate authorization bead or replacement guard is required
 
+### Requirement: Retired surfaces use one declarative source guard
+
+The repository SHALL declare retired and deprecated source patterns and paths in
+`scripts/retired_surfaces.toml` and check them through the stdlib-only
+`scripts/check_retired_surfaces.py` in local lint and the CI guards fan-in.
+Every entry SHALL identify its owning bead and live survivor. Pattern scans SHALL
+read whole tracked files within the declared scope, preserving explicit exclusions
+and path-plus-starting-line exceptions. Path checks SHALL detect matching files
+and directories, including untracked reappearances. An empty tracked scope,
+invalid registry or unreadable pattern source SHALL fail closed.
+
+ID: REQ-testing-054
+Source: bu-ly3lv5.13; scripts/README.md Retired and deprecated surfaces
+Scope: v1-mandatory
+
+#### Scenario: A retired surface reappears
+
+- **WHEN** a retired path exists or a retired pattern has an unallowed match
+- **THEN** the guard exits 1 and reports file:line, owning bead and survivor
+- **AND** multiline SQL, the Contacts briefing exception and the three Messenger paths retain their original coverage
+
+#### Scenario: Deprecations cannot grow or silently expire
+
+- **WHEN** a deprecated entry exceeds its nonnegative ceiling or the current date is after its explicit expiry date
+- **THEN** the guard exits 1 with the entry's location, bead and survivor
+- **AND** an entry remains valid on its expiry date when its count fits
+
+#### Scenario: Tightening only reduces ceilings after a healthy scan
+
+- **WHEN** `--tighten` runs and every entry passes
+- **THEN** it lowers deprecated ceilings to observed counts without raising them or changing other registry content
+- **AND** a failing check leaves the registry untouched
+- **AND** combined reductions remain valid when their source count fits the smaller ceiling
+
+#### Scenario: Scanner migration retains executing checks
+
+- **WHEN** bespoke Contacts and Messenger absence scans move into the registry
+- **THEN** synthetic positive and negative checks execute the new CLI in owned Git fixtures
+- **AND** the existing Contacts resolution and Messenger runtime checks remain unchanged
+- **AND** test deletion follows REQ-testing-053 review rather than an authorization manifest
+
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be
   testable, debuggable, and predictable) — `about/heart-and-soul/vision.md`. Smoke

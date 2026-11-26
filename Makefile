@@ -12,6 +12,7 @@ lint: export UV_NO_SYNC = 1
 lint:
 	uv run ruff check src/ tests/ roster/ scripts/
 	uv run --no-sync lint-imports
+	python3 scripts/check_retired_surfaces.py
 	$(MAKE) --no-print-directory secrets-scan lint-workflows lint-tools-self-test
 	python3 scripts/check_doc_phrase_pins.py
 	$(MAKE) --no-print-directory typecheck
