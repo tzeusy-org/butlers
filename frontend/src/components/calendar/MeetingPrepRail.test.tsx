@@ -179,6 +179,42 @@ describe("MeetingPrepRail", () => {
     expect(within(card).getByTestId("prep-tier-mark")).toBeTruthy();
   });
 
+  it("shows a basis chip beside a vouched-for last met", () => {
+    renderRail(
+      <MeetingPrepRail
+        hasPrepContext
+        attendees={[attendee({ last_met_basis: "you_confirmed" })]}
+      />,
+    );
+
+    const card = screen.getByTestId("prep-attendee");
+    expect(within(card).getByTestId("prep-last-met")).toBeTruthy();
+    expect(within(card).getByTestId("prep-last-met-basis").textContent).toBe("you confirmed");
+    expect(within(card).queryByTestId("prep-last-scheduled")).toBeNull();
+  });
+
+  it("shows last scheduled, never last met, for a meeting nobody vouches for", () => {
+    renderRail(
+      <MeetingPrepRail
+        hasPrepContext
+        attendees={[
+          attendee({
+            last_met: null,
+            last_met_event: null,
+            last_scheduled: "2026-05-01",
+            last_scheduled_event: "Quarterly sync",
+          }),
+        ]}
+      />,
+    );
+
+    const card = screen.getByTestId("prep-attendee");
+    expect(within(card).queryByTestId("prep-last-met")).toBeNull();
+    expect(within(card).getByTestId("prep-last-scheduled").textContent).toContain(
+      "Last scheduled",
+    );
+  });
+
   // REQ-dashboard-api-054: render every commitment field from the cached API payload.
   it("renders commitment rows with kind, direction, summary, deadline, and escalation", () => {
     renderRail(

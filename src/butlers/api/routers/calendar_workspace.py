@@ -1101,6 +1101,11 @@ def _parse_prep_attendee(raw: Mapping[str, Any]) -> CalendarPrepAttendee | None:
         notes=notes,
         last_met=str(raw["last_met"]) if raw.get("last_met") else None,
         last_met_event=str(raw["last_met_event"]) if raw.get("last_met_event") else None,
+        last_met_basis=str(raw["last_met_basis"]) if raw.get("last_met_basis") else None,
+        last_scheduled=str(raw["last_scheduled"]) if raw.get("last_scheduled") else None,
+        last_scheduled_event=(
+            str(raw["last_scheduled_event"]) if raw.get("last_scheduled_event") else None
+        ),
         message_context=[dict(m) for m in message_context],
         commitments=commitments,
     )
@@ -1118,6 +1123,10 @@ def _merge_prep_attendee(into: CalendarPrepAttendee, extra: CalendarPrepAttendee
     if not into.last_met and extra.last_met:
         into.last_met = extra.last_met
         into.last_met_event = extra.last_met_event
+        into.last_met_basis = extra.last_met_basis
+    if not into.last_scheduled and extra.last_scheduled:
+        into.last_scheduled = extra.last_scheduled
+        into.last_scheduled_event = extra.last_scheduled_event
     into.notes.extend(extra.notes)
     into.message_context.extend(extra.message_context)
     into.commitments.extend(extra.commitments)

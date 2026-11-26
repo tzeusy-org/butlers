@@ -80,9 +80,10 @@ Scope: v1-mandatory
 `relationship.meeting_debriefs.state` SHALL admit `did_not_happen` and `moved` beside `pending`,
 `none_agreed`, `captured` and `expired`. The migration SHALL replace the CHECK by name so a re-run is
 a no-op. Its downgrade SHALL map the two new states to `expired` before restoring the four-state
-CHECK. Nothing writes the two states until the answer tool changes in the readers slice, and no
-reader SHALL consult the ledger in this slice: `calendar_prep`, the meeting card, `interaction_sync`
-and the Dunbar and stale-contact weights switch to it in slice E2b.
+CHECK. Nothing writes the two states until the answer tool changes in a later slice. In slice E2a
+no reader consulted the ledger; slice E2b (REQ-relationship-encounter-ledger-005) switches prep and
+the meeting card. `interaction_sync`, the Dunbar weights and the stale-contact weights keep the
+interim rule until the owner decides retraction and weighting.
 
 ID: REQ-relationship-encounter-ledger-004
 Source: bu-5ii4gj.3 slice E2a; design (migration widens meeting_debriefs state CHECK)
@@ -93,3 +94,42 @@ Scope: v1-mandatory
 - **WHEN** the migration is upgraded twice, downgraded with a `moved` row present, then upgraded again
 - **THEN** every step SHALL succeed, the row SHALL be `expired` after the downgrade, and the ledger
   table SHALL exist only while upgraded
+
+### Requirement: Prep and the meeting card read last met from the ledger
+
+The relationship prep job SHALL derive each attendee's `last_met` only from a ledger row whose state
+is `happened_attested` or `happened_corroborated`, and SHALL report the row's basis as
+`you_confirmed` (owner debrief) or `evidence` (Chronicler). The latest `scheduled` or `unknown` row
+SHALL be reported as `last_scheduled`, never as `last_met`. A person the ledger has no row for yet,
+or any person when the ledger read fails, SHALL keep the interim rule and SHALL be labelled
+`interim` (accepted, not confirmed), so a failed read is never an empty ledger and a ledger that has
+not caught up never hides a meeting. A person the ledger covers but with no happened row SHALL
+also get the interim rule over history older than the ledger window (before now minus the reducer's
+lookback), labelled `interim`, so a rollout never erases an older meeting. A happened row with an
+unrecognised basis SHALL log a warning and show the neutral basis `recorded`. When a person has both,
+`last_met` SHALL be shown and `last_scheduled` only when there is no `last_met`. A quarantined
+invitation SHALL never produce a ledger row, and its title and time SHALL never be reported, even
+for a manually linked person. A person whose posture is not `active` SHALL never be reported
+from the ledger. The reducer SHALL run on an hourly schedule. The meeting card and the prep rail
+SHALL render "last met" only from a vouched-for meeting (with its basis), "last met, unconfirmed"
+for the interim basis, and "last scheduled" otherwise.
+
+ID: REQ-relationship-encounter-ledger-005
+Source: bu-5ii4gj.3 slice E2b; design "Encounter ledger" (relationship_person_time, last-met reads only happened_*)
+Scope: v1-mandatory
+
+#### Scenario: A meeting nobody vouches for is last scheduled
+
+- **WHEN** a person's only past ledger row is `unknown`
+- **THEN** the envelope SHALL carry `last_met: null` and the row's start as `last_scheduled`
+- **AND** the card SHALL say "last scheduled", never "last met"
+
+#### Scenario: The basis is shown
+
+- **WHEN** the latest happened row is basis `owner_debrief`
+- **THEN** the envelope SHALL carry `last_met_basis: "you_confirmed"` and the rail SHALL show that chip
+
+#### Scenario: The ledger has not caught up
+
+- **WHEN** a person has no ledger row, or the ledger read fails
+- **THEN** the interim rule SHALL supply `last_met` with basis `interim`

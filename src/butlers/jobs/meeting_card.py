@@ -236,6 +236,30 @@ def _stale(envelope: Any, starts_at: datetime) -> bool:
     return stamped.tzinfo is None or stamped != starts_at
 
 
+def _day_month(iso: str, zone: tzinfo) -> str | None:
+    try:
+        moment = datetime.fromisoformat(iso).astimezone(zone)
+    except ValueError:
+        return None
+    return f"{moment.day} {moment:%b}"
+
+
+def _time_note(prep: Mapping[str, Any], zone: tzinfo) -> str:
+    """ "last met" only for a meeting somebody vouches for; otherwise "last scheduled".
+
+    An ``interim`` basis (accepted, not yet confirmed by the owner or evidence) says so, and a
+    legacy envelope without a basis keeps its plain "last met". Days are read in the owner's *zone*.
+    """
+    met = prep.get("last_met")
+    if isinstance(met, str) and (day := _day_month(met, zone)):
+        unconfirmed = ", unconfirmed" if prep.get("last_met_basis") == "interim" else ""
+        return f" (last met {day}{unconfirmed})"
+    planned = prep.get("last_scheduled")
+    if isinstance(planned, str) and (day := _day_month(planned, zone)):
+        return f" (last scheduled {day})"
+    return ""
+
+
 def _commitment_lines(entries: Sequence[Mapping[str, Any]], direction: str, label: str) -> str:
     lines = [
         inert_text(c.get("summary"), _MAX_LINE)
@@ -286,12 +310,8 @@ def render_card(
         name = inert_text(person.get("name"), _MAX_NAME) or inert_text(person.get("email"), 40)
         prep = prep_by_entity.get(str(person.get("entity_id")))
         entry = name or "Someone"
-        if prep and isinstance(prep.get("last_met"), str):
-            try:
-                met = datetime.fromisoformat(prep["last_met"])
-                entry += f" (last met {met.astimezone(zone).day} {met.astimezone(zone):%b})"
-            except ValueError:
-                pass
+        if prep:
+            entry += _time_note(prep, zone)
         lines.append(f"With: {entry}")
         if prep:
             commitments = [c for c in prep.get("commitments", []) if isinstance(c, Mapping)]

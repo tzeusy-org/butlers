@@ -21937,8 +21937,14 @@ export interface components {
             entity_id: string;
             /** Last Met */
             last_met?: string | null;
+            /** Last Met Basis */
+            last_met_basis?: string | null;
             /** Last Met Event */
             last_met_event?: string | null;
+            /** Last Scheduled */
+            last_scheduled?: string | null;
+            /** Last Scheduled Event */
+            last_scheduled_event?: string | null;
             /** Message Context */
             message_context?: {
                 [key: string]: unknown;

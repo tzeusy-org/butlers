@@ -31,8 +31,11 @@ entity-linked upcoming event under the key ``calendar/prep/<event_id>``:
                 "name":           "...",
                 "dunbar_tier":    <int|null>,   # letter-mark source (FE maps int->letter)
                 "notes":          [{"kind": "...", "text": "..."}, ...],
-                "last_met":       "ISO-8601|null",   # most recent prior co-attended event
+                "last_met":       "ISO-8601|null",   # latest meeting somebody vouches for
                 "last_met_event": "...|null",
+                "last_met_basis": "you_confirmed|evidence|recorded|interim|null",
+                "last_scheduled": "ISO-8601|null",   # latest planned meeting nobody vouches for
+                "last_scheduled_event": "...|null",
                 "message_context": [],          # populated by email-owning butlers (future)
                 "commitments": [                # active owner commitments with this attendee
                     {
@@ -70,6 +73,8 @@ from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.briefing import owner_briefing_zone
+from butlers.jobs.encounter_ledger import LOOKBACK
+from butlers.jobs.person_time import PersonTime, read_person_time
 from butlers.modules.calendar.participants import (
     NAMEABLE_PARTICIPANTS_SQL,
     owner_organized_sql,
@@ -143,6 +148,9 @@ class PrepAttendee(TypedDict):
     notes: list[PrepNote]
     last_met: str | None
     last_met_event: str | None
+    last_met_basis: NotRequired[str | None]
+    last_scheduled: NotRequired[str | None]
+    last_scheduled_event: NotRequired[str | None]
     message_context: list[dict[str, Any]]
     commitments: list[PrepCommitment]
 
@@ -336,6 +344,47 @@ LAST_MET_SQL = f"""
 """
 
 
+class _LastMetFields(TypedDict):
+    last_met: str | None
+    last_met_event: str | None
+    last_met_basis: str | None
+    last_scheduled: str | None
+    last_scheduled_event: str | None
+
+
+def _last_met_fields(
+    interim: tuple[datetime, str | None] | None, ledger: PersonTime | None
+) -> _LastMetFields:
+    """The envelope's last-met and last-scheduled fields for one attendee.
+
+    A person the ledger covers reads from it. When it holds no happened row for them, the interim
+    rule over the history the ledger does not reach (older than its window) fills ``last_met``,
+    labelled ``interim`` so a reader never shows it as confirmed; so does a person it does not
+    cover at all.
+    """
+    if ledger is not None:
+        met = ledger.last_met is not None
+        use_interim = not met and interim is not None
+        return {
+            "last_met": (
+                ledger.last_met.isoformat()
+                if ledger.last_met
+                else (interim[0].isoformat() if interim else None)
+            ),
+            "last_met_event": ledger.last_met_event if met else (interim[1] if interim else None),
+            "last_met_basis": "interim" if use_interim else ledger.last_met_basis,
+            "last_scheduled": ledger.last_scheduled.isoformat() if ledger.last_scheduled else None,
+            "last_scheduled_event": ledger.last_scheduled_event,
+        }
+    return {
+        "last_met": interim[0].isoformat() if interim else None,
+        "last_met_event": interim[1] if interim else None,
+        "last_met_basis": "interim" if interim else None,
+        "last_scheduled": None,
+        "last_scheduled_event": None,
+    }
+
+
 async def run_relationship_calendar_prep_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -383,6 +432,7 @@ async def run_relationship_calendar_prep_contribution(
     tier_by_id: dict[Any, int | None] = {}
     notes_by_id: dict[Any, list[PrepNote]] = {}
     last_met_by_id: dict[Any, tuple[datetime, str | None]] = {}
+    person_time: dict[Any, PersonTime] = {}
 
     if all_entity_ids:
         entity_id_list = list(all_entity_ids)
@@ -438,10 +488,24 @@ async def run_relationship_calendar_prep_contribution(
                 continue
             bucket.append({"kind": row["predicate"], "text": row["content"]})
 
-        # Last-met: the most recent PAST event each attendee could have attended (LAST_MET_SQL).
-        last_met_rows = await pool.fetch(LAST_MET_SQL, entity_id_list, now_utc)
-        for row in last_met_rows:
-            last_met_by_id[row["entity_id"]] = (row["starts_at"], row["title"])
+        # Last-met comes from the encounter ledger: only a meeting somebody vouches for. A person
+        # the ledger has no row for yet (the reducer has not seen them, or it failed to read) keeps
+        # the interim rule (LAST_MET_SQL) until it has, and an unreadable ledger is never an empty
+        # one.
+        try:
+            person_time = await read_person_time(pool, entity_id_list, now_utc)
+        except Exception:
+            logger.warning("calendar prep: encounter ledger unreadable", exc_info=True)
+        uncovered = [eid for eid in entity_id_list if eid not in person_time]
+        if uncovered:
+            for row in await pool.fetch(LAST_MET_SQL, uncovered, now_utc):
+                last_met_by_id[row["entity_id"]] = (row["starts_at"], row["title"])
+        # A covered person with no happened row in the ledger's window may still have older
+        # history, which the ledger does not reach: the interim rule answers for that stretch.
+        beyond_ledger = [eid for eid, pt in person_time.items() if pt.last_met is None]
+        if beyond_ledger:
+            for row in await pool.fetch(LAST_MET_SQL, beyond_ledger, now_utc - LOOKBACK):
+                last_met_by_id[row["entity_id"]] = (row["starts_at"], row["title"])
 
     live_event_ids: set[str] = set()
     events_written = 0
@@ -461,6 +525,7 @@ async def run_relationship_calendar_prep_contribution(
                 # a nameless attendee.
                 continue
             last_met = last_met_by_id.get(eid)
+            ledger = person_time.get(eid)
             attendee_entity_id = str(eid)
             commitments: list[PrepCommitment] = []
             try:
@@ -510,8 +575,7 @@ async def run_relationship_calendar_prep_contribution(
                     "name": name,
                     "dunbar_tier": tier_by_id.get(eid),
                     "notes": notes_by_id.get(eid, []),
-                    "last_met": last_met[0].isoformat() if last_met else None,
-                    "last_met_event": last_met[1] if last_met else None,
+                    **_last_met_fields(last_met, ledger),
                     "message_context": [],
                     "commitments": commitments,
                 }

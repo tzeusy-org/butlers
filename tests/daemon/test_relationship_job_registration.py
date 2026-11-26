@@ -104,6 +104,20 @@ async def test_relationship_episodic_predicate_curation_handler_dispatches_roste
     }
 
 
+def test_encounter_ledger_is_scheduled_hourly_ahead_of_prep() -> None:
+    """The reducer is an hourly job-mode schedule; prep reads what it wrote (bu-5ii4gj.3 E2b)."""
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    (schedule,) = [s for s in _load_relationship_schedules() if s["name"] == "encounter-ledger"]
+
+    assert (schedule["dispatch_mode"], schedule["job_name"], schedule["cron"]) == (
+        "job",
+        "encounter_ledger",
+        "5 * * * *",
+    )
+    assert "encounter_ledger" in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"]
+
+
 def test_meeting_debrief_is_scheduled_for_the_evening() -> None:
     """The debrief job is a daily 18:00 job-mode schedule on the Relationship butler."""
     (schedule,) = [s for s in _load_relationship_schedules() if s["name"] == "meeting-debrief"]

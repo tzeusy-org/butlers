@@ -1869,6 +1869,11 @@ export interface CalendarPrepAttendee {
   notes: CalendarPrepNote[];
   last_met: string | null;
   last_met_event: string | null;
+  /** Why "last met" stands: you_confirmed, evidence, or interim (accepted, not confirmed). */
+  last_met_basis?: string | null;
+  /** The latest meeting nobody vouches for; shown only when there is no "last met". */
+  last_scheduled?: string | null;
+  last_scheduled_event?: string | null;
   /** Recent message/email threads each attendee wrote, contributed by the
    * email-owning butlers' deterministic prep job (gracefully empty if absent). */
   message_context: CalendarPrepMessageContext[];

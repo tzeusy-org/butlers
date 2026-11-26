@@ -350,6 +350,12 @@ class CalendarPrepAttendee(BaseModel):
     notes: list[CalendarPrepNote] = Field(default_factory=list)
     last_met: str | None = None
     last_met_event: str | None = None
+    # ``last_met`` derives only from a meeting somebody vouches for; the basis is
+    # ``you_confirmed``, ``evidence`` or ``interim`` (accepted, not yet confirmed). A meeting
+    # nobody vouches for is ``last_scheduled``, never ``last_met``.
+    last_met_basis: str | None = None
+    last_scheduled: str | None = None
+    last_scheduled_event: str | None = None
     message_context: list[dict[str, Any]] = Field(default_factory=list)
     commitments: list[CalendarPrepCommitment] = Field(default_factory=list)
 
