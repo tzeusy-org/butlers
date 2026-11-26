@@ -17,8 +17,12 @@ Authority classes
                       organised, or a response to an invitation): parked for approval, per event,
                       never in a batch.
 
-A recurring event is only ever acted on per occurrence (``recurrence_scope='this'``); a series edit
-is never an option. A stale calendar source offers nothing: ``reason='stale_source'``.
+Slots sit on a 15-minute grid (``SLOT_GRID``), so two reads a few seconds apart give the same
+options and the same digest. A recurring event is only ever acted on per occurrence
+(``recurrence_scope='this'``); a series edit is never an option; a recurring event whose
+occurrence is unknown gets no move at all. A stale
+calendar source offers nothing, ``keep_both`` included: ``reason='stale_source'``. A movable
+event with no free slot sets ``reason='no_free_slot'`` while the other options stay.
 """
 
 from __future__ import annotations
@@ -38,6 +42,8 @@ EventClass = Literal["butlers_block", "owner_organized", "invited"]
 MAX_OPTIONS = 5
 #: How many free slots ``ask_organizer`` offers the organizer (typed datetime slots only).
 ASK_ORGANIZER_SLOTS = 2
+#: Proposed slots start on this grid, never at an odd second.
+SLOT_GRID = timedelta(minutes=15)
 #: The tool that records an acknowledgement. It has no provider effect.
 ACKNOWLEDGE_TOOL = "calendar_conflict_acknowledge"
 
@@ -57,6 +63,9 @@ class ResolutionEvent:
     has_other_attendees: bool = False
     #: The owner's own response (``accepted``, ``tentative``, ``needsAction``) for an invitation.
     owner_response: str | None = None
+    #: True when the event recurs. Without ``instance_start_at`` no move is offered: the compiler
+    #: never edits a series by omission.
+    recurring: bool = False
     #: Set when the event recurs: the occurrence's original start. Options then act on it alone.
     instance_start_at: datetime | None = None
 
@@ -79,7 +88,7 @@ class Option:
 @dataclass(frozen=True)
 class Resolution:
     options: list[Option]
-    #: Why ``options`` is empty (``stale_source``), else ``None``.
+    #: Why options are missing: ``stale_source`` (all) or ``no_free_slot`` (a move), else None.
     reason: str | None = None
 
 
@@ -91,12 +100,19 @@ def _request_id(pair_id: str, option_id: str) -> str:
     return f"resolve:{pair_id}:{option_id}"
 
 
+def _grid_up(moment: datetime) -> datetime:
+    """``moment`` rounded up to the next ``SLOT_GRID`` boundary (itself when already on one)."""
+    step = SLOT_GRID.total_seconds()
+    seconds = moment.timestamp()
+    return moment + timedelta(seconds=(-seconds) % step) if (seconds % step) else moment
+
+
 def earliest_slot(
     free_slots: Sequence[tuple[datetime, datetime]], duration: timedelta, *, not_before: datetime
 ) -> tuple[datetime, datetime] | None:
     """The earliest ``duration``-long slot in a free window, at or after ``not_before``."""
     for start, end in sorted(free_slots):
-        begin = max(start, not_before)
+        begin = _grid_up(max(start, not_before))
         if begin + duration <= end:
             return begin, begin + duration
     return None
@@ -112,7 +128,7 @@ def _slots(
     """Up to ``count`` distinct fitting slots, earliest first, each in a different free window."""
     found: list[tuple[datetime, datetime]] = []
     for start, end in sorted(free_slots):
-        begin = max(start, not_before)
+        begin = _grid_up(max(start, not_before))
         if begin + duration <= end:
             found.append((begin, begin + duration))
         if len(found) == count:
@@ -156,10 +172,14 @@ def options_for(
     declines: list[Option] = []
     tentatives: list[Option] = []
     asks: list[Option] = []
+    reason: str | None = None
     for event in sorted((first, second), key=lambda e: e.entry_id):
         if event.event_class in ("butlers_block", "owner_organized"):
+            if event.recurring and event.instance_start_at is None:
+                continue  # an occurrence we cannot name is never edited, and never the series
             slot = earliest_slot(free_slots, event.duration, not_before=not_before)
             if slot is None:
+                reason = "no_free_slot"
                 continue
             kind: OptionKind = "move_block" if event.event_class == "butlers_block" else "move_own"
             option_id = f"{kind}:{event.entry_id}"
@@ -198,6 +218,9 @@ def options_for(
                             "args": {
                                 "entry_id": event.entry_id,
                                 "response_status": status,
+                                # A radar response is shown on the owner's own calendar only:
+                                # no email reaches the organizer.
+                                "send_updates": "none",
                                 "request_id": _request_id(pair_id, option_id),
                             },
                         },
@@ -243,7 +266,7 @@ def options_for(
         bucket[i] for i in range(2) for bucket in (declines, tentatives, asks) if i < len(bucket)
     ]
     ordered = [*moves, *responses]
-    return Resolution([*ordered[: MAX_OPTIONS - 1], keep])
+    return Resolution([*ordered[: MAX_OPTIONS - 1], keep], reason=reason)
 
 
 def issue_digest(events: Sequence[ResolutionEvent], options: Sequence[Option]) -> str:

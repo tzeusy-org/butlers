@@ -152,3 +152,46 @@ def test_the_digest_changes_with_an_etag_or_a_time():
     assert cr.issue_digest([_ev("a", "butlers_block", etag="new"), b], options) != base
     moved = _ev("b", "invited", start_at=_T + timedelta(minutes=5), owner_response="accepted")
     assert cr.issue_digest([a, moved], options) != base
+
+
+def test_equal_inputs_within_one_grid_step_give_equal_digests():
+    first = _run_at(_NOW + timedelta(seconds=1))
+    again = _run_at(_NOW + timedelta(seconds=9))  # eight seconds later, same quarter-hour
+    assert first == again
+
+
+def _run_at(now):
+    a, b = _ev("a", "butlers_block"), _ev("b", "invited", owner_response="accepted")
+    free = [(now - timedelta(hours=1), now + timedelta(hours=6))]
+    res = options_for("pair-1", a, b, free, not_before=now)
+    return cr.issue_digest([a, b], res.options)
+
+
+def test_slots_sit_on_the_grid_even_when_a_busy_interval_ends_at_an_odd_minute():
+    odd = [(_T + timedelta(hours=3, minutes=7, seconds=13), _T + timedelta(hours=9))]
+    res = _run(_ev("a", "butlers_block"), _ev("b", "owner_organized"), free=odd)
+    start = datetime.fromisoformat(
+        next(o for o in res.options if o.kind.startswith("move")).exact_call["args"]["start_at"]
+    )
+    assert start == _T + timedelta(hours=3, minutes=15)
+
+
+def test_a_movable_event_with_no_free_slot_says_no_free_slot():
+    res = _run(_ev("a", "butlers_block"), _ev("b", "invited", owner_response="accepted"), free=[])
+    assert res.reason == "no_free_slot"
+    assert {o.kind for o in res.options} >= {"decline", "keep_both"}
+
+
+def test_a_recurring_event_without_its_occurrence_is_never_moved():
+    res = _run(
+        _ev("a", "owner_organized", recurring=True),  # no instance_start_at
+        _ev("b", "invited", owner_response="accepted"),
+    )
+    assert not [o for o in res.options if o.kind.startswith("move")]
+    assert res.reason is None  # not a lack of slots: the occurrence is simply unknown
+
+
+def test_a_radar_decline_sends_no_updates():
+    res = _run(_ev("a", "invited", owner_response="accepted"), _ev("b", "invited"))
+    declines = [o for o in res.options if o.kind in ("decline", "tentative")]
+    assert declines and all(o.exact_call["args"]["send_updates"] == "none" for o in declines)
