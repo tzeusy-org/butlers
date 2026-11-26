@@ -225,6 +225,7 @@ describe("DayBriefingCard freshness", () => {
         groups={[]}
         hasDomainContext
         hasEntries={false}
+        timezone="Asia/Singapore"
         freshness={[
           { butler: "finance", state: "stale", stale_since: "2026-02-24T10:00:00+00:00" },
           { butler: "travel", state: "ok", generated_at: "2026-02-24T09:00:00+00:00" },
@@ -232,7 +233,7 @@ describe("DayBriefingCard freshness", () => {
       />,
     );
     const plaque = screen.getByTestId("day-briefing-stale");
-    expect(plaque.textContent).toContain("Finance context stale since 2026-02-24 10:00 UTC");
+    expect(plaque.textContent).toContain("Finance context stale since Feb 24, 6:00 PM");
     expect(plaque.textContent).not.toContain("Travel");
   });
 

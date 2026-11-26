@@ -21777,6 +21777,8 @@ export interface components {
              * @default false
              */
             has_entries?: boolean;
+            /** Overlay Freshness */
+            overlay_freshness?: components["schemas"]["OverlayFreshness"][];
             /**
              * Overlays Available
              * @default true
@@ -22415,6 +22417,8 @@ export interface components {
             lanes?: components["schemas"]["CalendarWorkspaceLaneDefinition"][];
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Overlay Freshness */
+            overlay_freshness?: components["schemas"]["OverlayFreshness"][];
             /**
              * Overlays Available
              * @default true
@@ -33204,6 +33208,23 @@ export interface components {
             contacts: components["schemas"]["OverdueContact"][];
             /** Unmeasurable Count */
             unmeasurable_count: number;
+        };
+        /**
+         * OverlayFreshness
+         * @description How current one butler's overlay contribution is.
+         */
+        OverlayFreshness: {
+            /** Butler */
+            butler: string;
+            /** Generated At */
+            generated_at?: string | null;
+            /** Stale Since */
+            stale_since?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ok" | "stale" | "partial" | "missing" | "failed";
         };
         /** OwnerDeliveryActionRequest */
         OwnerDeliveryActionRequest: {

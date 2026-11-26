@@ -1967,7 +1967,8 @@ async def update_calendar_proposal_status(
     return None
 
 
-#: The butlers that contribute overlay envelopes (the existing contributing set).
+#: The butlers that contribute overlay envelopes. Mirrors ``_SPECIALIST_SCHEMAS`` in migration
+#: core_140 (the view's UNION terms): a new contributor must change both.
 OVERLAY_CONTRIBUTORS: tuple[str, ...] = ("finance", "health", "relationship", "travel")
 #: Cadence assumed for an envelope that does not state one.
 _DEFAULT_OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
@@ -1978,7 +1979,7 @@ _STALE_AFTER_CADENCES = 2
 def compute_overlay_freshness(
     overlays: Sequence[CalendarOverlayRow], *, available: bool, now: datetime
 ) -> list[dict[str, Any]]:
-    """Per contributing butler: ``ok``, ``stale``, ``missing`` or ``failed``. Pure.
+    """Per contributing butler: ``ok``, ``stale``, ``partial``, ``missing`` or ``failed``. Pure.
 
     ``failed`` for every contributor when the view could not be read (nothing is known, so nothing
     is current). Otherwise the newest ``generated_at`` of a butler's envelopes decides: older than
@@ -1987,7 +1988,7 @@ def compute_overlay_freshness(
     """
     if not available:
         return [{"butler": b, "state": "failed"} for b in OVERLAY_CONTRIBUTORS]
-    newest: dict[str, tuple[datetime | None, int]] = {}
+    newest: dict[str, tuple[datetime | None, int, bool]] = {}
     for row in overlays:
         if row.butler is None:
             continue
@@ -2007,15 +2008,16 @@ def compute_overlay_freshness(
             if isinstance(cadence, int) and cadence > 0
             else _DEFAULT_OVERLAY_CADENCE_SECONDS
         )
+        partial = value.get("complete") is False
         seen = newest.get(row.butler)
         if seen is None or (parsed is not None and (seen[0] is None or parsed > seen[0])):
-            newest[row.butler] = (parsed, seconds)
+            newest[row.butler] = (parsed, seconds, partial)
     out: list[dict[str, Any]] = []
     for butler in sorted(set(OVERLAY_CONTRIBUTORS) | set(newest)):
         if butler not in newest:
             out.append({"butler": butler, "state": "missing"})
             continue
-        generated_at, seconds = newest[butler]
+        generated_at, seconds, partial = newest[butler]
         if generated_at is None:
             out.append({"butler": butler, "state": "stale"})
             continue
@@ -2030,7 +2032,13 @@ def compute_overlay_freshness(
                 }
             )
         else:
-            out.append({"butler": butler, "state": "ok", "generated_at": generated_at})
+            out.append(
+                {
+                    "butler": butler,
+                    "state": "partial" if partial else "ok",
+                    "generated_at": generated_at,
+                }
+            )
     return out
 
 

@@ -13,7 +13,8 @@
  * `meta`); this module never synthesizes narrative text.
  */
 
-import type { UnifiedCalendarEntry } from "@/api/types.ts";
+import { formatOwnerDateTime } from "@/components/ui/time";
+import type { OverlayFreshness, UnifiedCalendarEntry } from "@/api/types.ts";
 
 /** Overlay priority as written by the contribution jobs. */
 export type OverlayPriority = "high" | "medium" | "low";
@@ -29,6 +30,8 @@ export interface OverlayMetadata {
   priority: OverlayPriority | null;
   source_butler: string | null;
   meta: Record<string, unknown>;
+  /** Set when the producing butler's context is out of date or incomplete. */
+  notCurrent: "stale" | "partial" | null;
 }
 
 /** True when an entry is a projected overlay contribution (vs a real event). */
@@ -53,7 +56,8 @@ export function overlayMetadata(entry: UnifiedCalendarEntry): OverlayMetadata {
         : null;
   const meta =
     md.meta && typeof md.meta === "object" ? (md.meta as Record<string, unknown>) : {};
-  return { kind, priority, source_butler, meta };
+  const notCurrent = md.stale === true ? "stale" : md.partial === true ? "partial" : null;
+  return { kind, priority, source_butler, meta, notCurrent };
 }
 
 /** Sort rank so high-priority overlays render first (lower = earlier). */
@@ -116,6 +120,36 @@ export function overlayButlerAccent(sourceButler: string | null): string {
     default:
       return "border-[var(--border)] text-[var(--mfg)]";
   }
+}
+
+function titleizeButler(value: string): string {
+  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()).trim();
+}
+
+/**
+ * One plaque line per butler whose overlay context is stale or partial, so it is never
+ * read as current. A stale-since instant renders in `timezone` (the owner's zone).
+ */
+export function overlayFreshnessNotes(
+  freshness: OverlayFreshness[] | undefined,
+  timezone: string,
+): string[] {
+  const notes: string[] = [];
+  for (const item of freshness ?? []) {
+    if (item.state !== "stale" && item.state !== "partial") continue;
+    const name = titleizeButler(item.butler);
+    if (item.state === "partial") {
+      notes.push(`${name} context is incomplete`);
+      continue;
+    }
+    if (!item.stale_since) {
+      notes.push(`${name} context has no freshness stamp`);
+      continue;
+    }
+    const when = formatOwnerDateTime(item.stale_since, timezone);
+    notes.push(`${name} context stale since ${when}`);
+  }
+  return notes;
 }
 
 /** Short glyph prefix per overlay kind (no prose — a compact category marker). */

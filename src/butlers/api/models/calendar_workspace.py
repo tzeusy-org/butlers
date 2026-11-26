@@ -192,7 +192,7 @@ class OverlayFreshness(BaseModel):
     """How current one butler's overlay contribution is."""
 
     butler: str
-    state: Literal["ok", "stale", "missing", "failed"]
+    state: Literal["ok", "stale", "partial", "missing", "failed"]
     #: When the butler's job last wrote an envelope; ``None`` when it never did or the envelope
     #: predates the stamp.
     generated_at: datetime | None = None
@@ -227,8 +227,8 @@ class CalendarWorkspaceReadResponse(BaseModel):
     #: Overlays lane degraded signal. ``False`` when the cached view could not be read, so the
     #: FE shows "overlays unavailable" instead of the "no domain context" empty state.
     overlays_available: bool = True
-    #: Per contributing butler: ``ok``, ``stale``, ``missing`` or ``failed``. Empty outside
-    #: the overlays lane.
+    #: Per contributing butler: ``ok``, ``stale``, ``partial``, ``missing`` or ``failed``.
+    #: Empty outside the overlays lane.
     overlay_freshness: list[OverlayFreshness] = Field(default_factory=list)
     #: Proposals lane degraded signal and count of rows dropped as malformed. ``False`` when
     #: any butler schema's proposals read failed; the FE renders "Proposals unavailable", never

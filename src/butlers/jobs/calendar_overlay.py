@@ -133,6 +133,8 @@ class OverlayContribution(TypedDict):
     #: written before these existed lack them and read as stale.
     generated_at: NotRequired[str]
     cadence_seconds: NotRequired[int]
+    #: ``False`` when the producer could not read all of its records; absent reads as complete.
+    complete: NotRequired[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -166,12 +168,15 @@ async def write_overlay_envelopes(
     today: date_cls,
     lookahead_days: int,
     entries_by_date: dict[str, list[OverlayEntry]],
+    complete: bool = True,
 ) -> tuple[int, int]:
     """Upsert one overlay envelope per date in ``[today, today+lookahead_days]``.
 
     Every date in the window gets an envelope written (via ``state_set`` upsert),
     so dates with no domain events carry ``has_entries=false`` and ``entries=[]``
     — the honest empty-state contract. Entries are ordered priority-descending.
+
+    ``complete=False`` marks every envelope partial (the producer could not read all its records).
 
     Returns ``(dates_written, total_entries)``.
     """
@@ -189,6 +194,8 @@ async def write_overlay_envelopes(
             "generated_at": generated_at,
             "cadence_seconds": OVERLAY_CADENCE_SECONDS,
         }
+        if not complete:
+            envelope["complete"] = False
         await state_set(pool, overlay_key(date_str), envelope)
         dates_written += 1
         total_entries += len(entries)

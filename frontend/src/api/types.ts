@@ -1713,7 +1713,7 @@ export interface DayBriefingButlerGroup {
 /** How current one butler's overlay contribution is. */
 export interface OverlayFreshness {
   butler: string;
-  state: "ok" | "stale" | "missing" | "failed";
+  state: "ok" | "stale" | "partial" | "missing" | "failed";
   /** When the butler's job last wrote an envelope; absent when it never did. */
   generated_at?: string | null;
   /** For `stale`: when it went stale (the stamp plus twice the cadence). */

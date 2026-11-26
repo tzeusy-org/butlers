@@ -1054,7 +1054,7 @@ async def _fetch_overlay_entries(
         OverlayFreshness(**item)
         for item in compute_overlay_freshness(overlays, available=available, now=_overlay_now())
     ]
-    stale_since = {f.butler: f.stale_since for f in freshness if f.state == "stale"}
+    not_current = {f.butler: f for f in freshness if f.state in ("stale", "partial")}
 
     entries: list[UnifiedCalendarEntry] = []
     has_domain_context = False
@@ -1071,14 +1071,15 @@ async def _fetch_overlay_entries(
             # when it projects zero entries (has_entries=false → honest empty-state).
             has_domain_context = True
             for entry in projected_entries:
-                since_key = entry.butler_name
-                if since_key is not None and since_key in stale_since:
-                    # Never wear current-data authority: the producer has not run in time.
-                    since = stale_since[since_key]
+                flagged = not_current.get(entry.butler_name or "")
+                if flagged is not None:
+                    # Never wear current-data authority: stale or incomplete producers are named.
                     entry.metadata = {
                         **(entry.metadata or {}),
-                        "stale": True,
-                        "stale_since": since.isoformat() if since else None,
+                        flagged.state: True,
+                        "stale_since": flagged.stale_since.isoformat()
+                        if flagged.stale_since
+                        else None,
                     }
             entries.extend(projected_entries)
     return entries, has_domain_context, available, freshness

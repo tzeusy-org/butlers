@@ -25,6 +25,7 @@ import type { OverlayFreshness, UnifiedCalendarEntry } from "@/api/types.ts";
 import {
   overlayAmountBadge,
   overlayButlerAccent,
+  overlayFreshnessNotes,
   overlayKindGlyph,
   overlayMetadata,
 } from "@/lib/calendar-overlays.ts";
@@ -121,6 +122,8 @@ export interface DayBriefingCardProps {
   unavailable?: boolean;
   /** Per butler freshness; a stale butler gets a plaque and is never shown as current. */
   freshness?: OverlayFreshness[];
+  /** The owner's zone, in which stale-since instants render. */
+  timezone?: string;
   /** Whether at least one specialist contributed for the date. */
   hasDomainContext: boolean;
   /** Whether any overlay entry exists for the date. */
@@ -143,11 +146,12 @@ export function DayBriefingCard({
   groups,
   unavailable = false,
   freshness = [],
+  timezone = "UTC",
   hasDomainContext,
   hasEntries,
   onSelectEntry,
 }: DayBriefingCardProps) {
-  const stale = freshness.filter((item) => item.state === "stale");
+  const notes = overlayFreshnessNotes(freshness, timezone);
   const content = (
     <section
       data-testid="day-briefing-card"
@@ -161,23 +165,13 @@ export function DayBriefingCard({
         <span className="truncate font-mono text-[11px] text-fg">{heading}</span>
       </header>
 
-      {!isLoading && !isError && stale.length > 0 ? (
+      {!isLoading && !isError && notes.length > 0 ? (
         <p
           data-testid="day-briefing-stale"
           role="status"
           className="mb-2 font-mono text-[11px] text-[var(--red-text)]"
         >
-          {stale
-            .map(
-              (item) =>
-                `${titleizeToken(item.butler)} context ${
-                  item.stale_since
-                    ? `stale since ${item.stale_since.slice(0, 16).replace("T", " ")} UTC`
-                    : "has no freshness stamp"
-                }`,
-            )
-            .join("; ")}
-          . It may not reflect recent changes.
+          {notes.join("; ")}. It may not reflect recent changes.
         </p>
       ) : null}
 
