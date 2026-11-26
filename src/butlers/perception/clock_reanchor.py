@@ -249,6 +249,7 @@ async def run_clock_transition(
     reason: str | None = None
     retry_after: datetime | None = None
     new_zone = target_zone(new_clock, settings_zone)
+    old_zone = target_zone(old_clock, settings_zone)  # same_zone compares like with like
     for butler in names:
         pool = pools.get(butler)
         if pool is None:
@@ -258,7 +259,7 @@ async def run_clock_transition(
             rows = [dict(r) for r in await pool.fetch(_ROWS_SQL)]
             plan = plan_reanchor(
                 rows,
-                old_zone=old_clock.zone,
+                old_zone=old_zone or old_clock.zone,
                 new_zone=new_zone,
                 transition_at=transition_at,
                 now=now,
@@ -280,6 +281,8 @@ async def run_clock_transition(
         "complete": not failed,
         "failed": failed,
         "reason": reason,
+        #: The zone owner-local schedules read in after this run (for the owner card).
+        "target_zone": new_zone,
         #: Set when the transition is still settling: re-run this at or after it.
         "retry_after": retry_after,
         "per_schema": per_schema,

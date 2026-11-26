@@ -246,3 +246,18 @@ async def test_a_hung_owner_zone_read_does_not_hold_the_tick(db, monkeypatch) ->
     after = await _fire_once(pool, "brief", owner_zone_resolver=hang)
 
     assert _hour(after, HOME.zone) == 9  # the default zone, not a hung or half-read answer
+
+
+async def test_a_home_clock_and_a_utc_fallback_clock_are_the_same_target_zone(
+    db, monkeypatch
+) -> None:
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    before = await _seed(pool, "stays")
+
+    summary = await _run(
+        pool, old_clock=HOME, new_clock=ClockValue("UTC", "utc_fallback"), settings_zone=HOME.zone
+    )
+
+    assert summary["reason"] == "same_zone" and summary["target_zone"] == HOME.zone
+    assert await _next(pool, "stays") == before
