@@ -570,7 +570,7 @@ class Snapshot:
     """
 
     entries: dict[str, EntryState] = field(default_factory=dict)
-    owner_rows: list[Mapping[str, Any]] = field(default_factory=list)
+    owner_rows: Sequence[Mapping[str, Any]] = field(default_factory=list)
     rows_available: bool = True
     #: Every copy with its metadata, unfiltered, for reading the owner's own response.
     response_rows: list[Mapping[str, Any]] = field(default_factory=list)
@@ -797,7 +797,7 @@ async def _run(
             if reason == "calendar":
                 summary["complete"] = False
             continue
-        if kind == "current":
+        if kind == "current" or reason is None:
             continue
         if await _reject(pool, card["id"], reason):
             summary["rejected"][reason] += 1
