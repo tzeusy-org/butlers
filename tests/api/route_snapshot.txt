@@ -1842,7 +1842,7 @@ SCHEMA CalendarAuditResponse bdd2cdba856d
 SCHEMA CalendarButlerEventPreviewRequest b5e1880e194c
 SCHEMA CalendarButlerEventPreviewResponse 70865507f5c1
 SCHEMA CalendarConflictEntry cc439ab2fa5a
-SCHEMA CalendarDayBriefingResponse fafb7e62fa7b
+SCHEMA CalendarDayBriefingResponse ea57a7a52c1e
 SCHEMA CalendarInvitationEntry 7154fadc8eb3
 SCHEMA CalendarInvitationsResponse 4e56ff95948f
 SCHEMA CalendarLinkedPerson 096b8fb48e79
@@ -1869,7 +1869,7 @@ SCHEMA CalendarWorkspaceCapabilitiesSync 084f91e7ac3b
 SCHEMA CalendarWorkspaceLaneDefinition 64372f676286
 SCHEMA CalendarWorkspaceMetaResponse 63ef63600192
 SCHEMA CalendarWorkspaceMutationResponse 40fbcc0e56de
-SCHEMA CalendarWorkspaceReadResponse a13985ff6e02
+SCHEMA CalendarWorkspaceReadResponse 4378955cdcf8
 SCHEMA CalendarWorkspaceSearchResponse eb81afe68de7
 SCHEMA CalendarWorkspaceSourceFreshness 4f1aead17260
 SCHEMA CalendarWorkspaceSyncRequest 4bd483f76465
@@ -2300,6 +2300,7 @@ SCHEMA OffsiteCopyFacts 634dae74eb67
 SCHEMA OpsSessionRow 6c8f8f05d5a4
 SCHEMA OverdueContact 04527ab74be0
 SCHEMA OverdueContactsResponse 93e9c56b0067
+SCHEMA OverlayFreshness 7ba92ed2c78c
 SCHEMA OwnTracksConfigResponse 40518b29b4df
 SCHEMA OwnTracksConnectionState 43585505910a
 SCHEMA OwnTracksSetupInstructions a8cbffa6fb9c

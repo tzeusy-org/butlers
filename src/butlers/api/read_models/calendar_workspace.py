@@ -34,9 +34,9 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -1965,6 +1965,81 @@ async def update_calendar_proposal_status(
         for row in raw_rows:
             return row_to_proposal(row, db_butler=schema)
     return None
+
+
+#: The butlers that contribute overlay envelopes. Mirrors ``_SPECIALIST_SCHEMAS`` in migration
+#: core_140 (the view's UNION terms): a new contributor must change both.
+OVERLAY_CONTRIBUTORS: tuple[str, ...] = ("finance", "health", "relationship", "travel")
+#: Cadence assumed for an envelope that does not state one.
+_DEFAULT_OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
+#: An envelope older than this many cadences is stale.
+_STALE_AFTER_CADENCES = 2
+
+
+def compute_overlay_freshness(
+    overlays: Sequence[CalendarOverlayRow], *, available: bool, now: datetime
+) -> list[dict[str, Any]]:
+    """Per contributing butler: ``ok``, ``stale``, ``partial``, ``missing`` or ``failed``. Pure.
+
+    ``failed`` for every contributor when the view could not be read (nothing is known, so nothing
+    is current). Otherwise the newest ``generated_at`` of a butler's envelopes decides: older than
+    twice its cadence is ``stale``, and an envelope that carries no ``generated_at`` (written before
+    the stamp) is ``stale`` with no time. A contributor with no envelope at all is ``missing``.
+    """
+    if not available:
+        return [{"butler": b, "state": "failed"} for b in OVERLAY_CONTRIBUTORS]
+    newest: dict[str, tuple[datetime | None, int, bool]] = {}
+    for row in overlays:
+        if row.butler is None:
+            continue
+        value = row.value if isinstance(row.value, Mapping) else {}
+        stamp = value.get("generated_at")
+        parsed: datetime | None = None
+        if isinstance(stamp, str):
+            try:
+                parsed = datetime.fromisoformat(stamp)
+            except ValueError:
+                parsed = None
+        if parsed is not None and parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        cadence = value.get("cadence_seconds")
+        seconds = (
+            cadence
+            if isinstance(cadence, int) and cadence > 0
+            else _DEFAULT_OVERLAY_CADENCE_SECONDS
+        )
+        partial = value.get("complete") is False
+        seen = newest.get(row.butler)
+        if seen is None or (parsed is not None and (seen[0] is None or parsed > seen[0])):
+            newest[row.butler] = (parsed, seconds, partial)
+    out: list[dict[str, Any]] = []
+    for butler in sorted(set(OVERLAY_CONTRIBUTORS) | set(newest)):
+        if butler not in newest:
+            out.append({"butler": butler, "state": "missing"})
+            continue
+        generated_at, seconds, partial = newest[butler]
+        if generated_at is None:
+            out.append({"butler": butler, "state": "stale"})
+            continue
+        stale_since = generated_at + timedelta(seconds=seconds * _STALE_AFTER_CADENCES)
+        if now > stale_since:
+            out.append(
+                {
+                    "butler": butler,
+                    "state": "stale",
+                    "generated_at": generated_at,
+                    "stale_since": stale_since,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "butler": butler,
+                    "state": "partial" if partial else "ok",
+                    "generated_at": generated_at,
+                }
+            )
+    return out
 
 
 async def query_calendar_overlays(

@@ -44,6 +44,7 @@ import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspac
 import { useEntrySelection } from "@/pages/calendar/use-entry-selection";
 import { useQuickAddCreate } from "@/pages/calendar/use-quick-add-create";
 import { headlineLabel } from "@/pages/calendar/workspace-model";
+import { overlayFreshnessNotes } from "@/lib/calendar-overlays";
 
 export default function CalendarWorkspacePage() {
   const {
@@ -143,6 +144,10 @@ export default function CalendarWorkspacePage() {
   }, [range, anchor, timeParam]);
 
   const { invitationsQuery, overlaysQuery, dayBriefingQuery } = context;
+  const overlayNotes = overlayFreshnessNotes(
+    overlaysQuery.data?.data.overlay_freshness,
+    defaultTimezone,
+  );
   const dayBriefing = dayBriefingQuery.data?.data;
   const canvasHidden = panels.activityOpen || panels.proposalsOpen;
 
@@ -264,6 +269,16 @@ export default function CalendarWorkspacePage() {
         calendarFilterOptions={data.calendarFilterOptions}
       />
 
+      {overlaysEnabled && overlayNotes.length > 0 ? (
+        <p
+          data-testid="overlay-lane-stale"
+          role="status"
+          className="border-b border-[var(--border)] py-2 font-mono text-[11px] text-[var(--red-text)]"
+        >
+          {overlayNotes.join("; ")}. Overlay items from these are shown as not current.
+        </p>
+      ) : null}
+
       {/* Natural-language quick-add (parse-then-confirm): the one provider-event
           write the dashboard still makes. User view only. */}
       {view === "user" ? (
@@ -288,6 +303,8 @@ export default function CalendarWorkspacePage() {
             error={dayBriefingQuery.error instanceof Error ? dayBriefingQuery.error : null}
             groups={dayBriefing?.groups ?? []}
             unavailable={dayBriefing?.overlays_available === false}
+            freshness={dayBriefing?.overlay_freshness ?? []}
+            timezone={dayBriefing?.timezone ?? defaultTimezone}
             hasDomainContext={dayBriefing?.has_domain_context ?? false}
             hasEntries={dayBriefing?.has_entries ?? false}
             onSelectEntry={selection.handleBriefingSelect}

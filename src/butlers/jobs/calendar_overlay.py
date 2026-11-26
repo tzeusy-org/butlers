@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta, tzinfo
 from datetime import date as date_cls
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import asyncpg
 
@@ -66,6 +66,9 @@ FINANCE_OVERLAY_LOOKAHEAD_DAYS = 14
 #: ``today - OVERLAY_RETENTION_DAYS`` are deleted. ``0`` means "prune everything
 #: strictly before today" (a forward-looking overlay has no use for past dates).
 OVERLAY_RETENTION_DAYS = 0
+#: How often every contribution job is scheduled (daily). An envelope older than twice this is
+#: stale.
+OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
 
 #: Priority-descending sort rank. Lower rank sorts first.
 _PRIORITY_RANK: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
@@ -126,6 +129,12 @@ class OverlayContribution(TypedDict):
     date: str  # ISO date YYYY-MM-DD
     has_entries: bool
     entries: list[OverlayEntry]
+    #: When the producing job wrote this envelope (UTC ISO-8601) and how often it runs; envelopes
+    #: written before these existed lack them and read as stale.
+    generated_at: NotRequired[str]
+    cadence_seconds: NotRequired[int]
+    #: ``False`` when the producer could not read all of its records; absent reads as complete.
+    complete: NotRequired[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +156,11 @@ def sort_entries_by_priority(entries: list[OverlayEntry]) -> list[OverlayEntry]:
     return sorted(entries, key=lambda e: _PRIORITY_RANK.get(e["priority"], len(_PRIORITY_RANK)))
 
 
+def _utcnow() -> datetime:
+    """The instant an envelope is stamped with (a seam: tests pin it)."""
+    return datetime.now(UTC)
+
+
 async def write_overlay_envelopes(
     pool: asyncpg.Pool,
     *,
@@ -154,6 +168,7 @@ async def write_overlay_envelopes(
     today: date_cls,
     lookahead_days: int,
     entries_by_date: dict[str, list[OverlayEntry]],
+    complete: bool = True,
 ) -> tuple[int, int]:
     """Upsert one overlay envelope per date in ``[today, today+lookahead_days]``.
 
@@ -161,10 +176,13 @@ async def write_overlay_envelopes(
     so dates with no domain events carry ``has_entries=false`` and ``entries=[]``
     — the honest empty-state contract. Entries are ordered priority-descending.
 
+    ``complete=False`` marks every envelope partial (the producer could not read all its records).
+
     Returns ``(dates_written, total_entries)``.
     """
     dates_written = 0
     total_entries = 0
+    generated_at = _utcnow().isoformat()
     for offset in range(lookahead_days + 1):
         date_str = (today + timedelta(days=offset)).isoformat()
         entries = sort_entries_by_priority(entries_by_date.get(date_str, []))
@@ -173,7 +191,11 @@ async def write_overlay_envelopes(
             "date": date_str,
             "has_entries": len(entries) > 0,
             "entries": entries,
+            "generated_at": generated_at,
+            "cadence_seconds": OVERLAY_CADENCE_SECONDS,
         }
+        if not complete:
+            envelope["complete"] = False
         await state_set(pool, overlay_key(date_str), envelope)
         dates_written += 1
         total_entries += len(entries)
