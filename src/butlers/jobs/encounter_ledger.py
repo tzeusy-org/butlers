@@ -4,9 +4,9 @@ Recomputes ``relationship.encounters`` from three inputs: the occurrence's parti
 the event's own status and start, and the owner's debrief answer. The result is a pure function of
 those inputs, so a replay converges and nothing here is a source of truth.
 
-DARK: nothing schedules this and no reader consults the table yet. A later slice switches
-``calendar_prep``, the meeting card, ``interaction_sync`` and the Dunbar and stale-contact weights
-to read the ledger, and registers the job.
+Scheduled hourly in ``roster/relationship/butler.toml``. ``calendar_prep`` and the meeting card
+read the ledger for "last met"; the other readers (``interaction_sync`` and the Dunbar and
+stale-contact weights) switch to it in later slices.
 
 Precedence is owner testimony, then the event's own RSVP and status, then the clock:
 
@@ -56,6 +56,9 @@ LOOKAHEAD: Final = timedelta(days=14)
 MAX_OCCURRENCES: Final = 2000
 
 _ANSWERED_HAPPENED: Final = frozenset({"none_agreed", "captured"})
+#: A debrief the owner has not answered (yet, or ever). Any other state is the owner's word, so a
+#: copy holding one is never dropped in a collapse (``did_not_happen`` and ``moved`` included).
+_UNANSWERED: Final = frozenset({"pending", "expired"})
 
 _OCCURRENCES_SQL: Final = f"""
     SELECT r.event_id, r.starts_at, r.cancelled, r.time_role, r.metadata, r.origin_ref
@@ -230,10 +233,10 @@ def _collapse_copies(
 
     A meeting on the owner's calendar and the same invite on a partner or shared calendar (the
     owner's seat accepted on both) are two ``calendar_events`` rows with the same provider event
-    id and start. Only one may become an encounter: the copy holding an answered debrief (never
-    drop a captured debrief), else the owner-role source's copy, else the smallest id. Returns the
-    kept rows and the ``(event_id, starts_at)`` keys of the copies dropped, so a ledger row
-    already written for a dropped copy is retired, not kept.
+    id and start. Only one may become an encounter: the copy holding an answered debrief (any
+    state but pending or expired; never drop the owner's word), else the owner-role source's copy,
+    else the smallest id. Returns the kept rows and the ``(event_id, starts_at)`` keys of the
+    copies dropped, so a ledger row already written for a dropped copy is retired, not kept.
     """
     groups: dict[tuple[str, datetime], list[Any]] = {}
     kept: list[Any] = []
@@ -266,7 +269,7 @@ async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
     answered = {
         (r["event_id"], r["occurrence_start"])
         for r in await pool.fetch(_DEBRIEFS_SQL, sorted({r["event_id"] for r in found}, key=str))
-        if r["state"] in _ANSWERED_HAPPENED
+        if r["state"] not in _UNANSWERED
     }
     found, dropped_copies = _collapse_copies(found, answered)
     occurrences = [Occurrence(r["event_id"], r["starts_at"], bool(r["cancelled"])) for r in found]
