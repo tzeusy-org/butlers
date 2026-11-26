@@ -16,7 +16,7 @@ function readStored(): string | null {
 export function clampSince(stored: string | null, now: number): string {
   const parsed = stored === null ? Number.NaN : Date.parse(stored);
   const floor = now - MAX_AGE_MS;
-  const since = Number.isNaN(parsed) ? now - DAY_MS : Math.min(Math.max(parsed, floor), now);
+  const since = Number.isNaN(parsed) ? now - 7 * DAY_MS : Math.min(Math.max(parsed, floor), now);
   return new Date(since).toISOString();
 }
 
