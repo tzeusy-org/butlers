@@ -132,32 +132,69 @@ async def test_an_absolute_reminder_is_unchanged_and_both_forms_together_are_ref
         await _create(mcp)
 
 
-async def test_a_moved_recurring_instance_is_anchored_by_its_original_start(db):
+def _google(item_id, start, *, recurrence=None):
+    """A Google API item in the shape the sync reads, mapped by the real mapping."""
+    from butlers.modules.calendar.google_mapping import _google_event_to_calendar_event
+
+    payload = {
+        "id": item_id,
+        "status": "confirmed",
+        "summary": "Standup",
+        "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
+        "end": {"dateTime": (start + timedelta(hours=1)).isoformat(), "timeZone": "UTC"},
+        "attendees": [{"email": "me@example.com", "self": True, "responseStatus": "accepted"}],
+    }
+    if recurrence is not None:
+        payload["recurrence"] = recurrence
+    return _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+
+
+async def test_a_moved_recurring_occurrence_is_anchored_by_its_original_start(db):
+    """Google sends a moved occurrence as its own row, ``<master>_<original start>``."""
     pool, _module_, mcp, event = await _world(db)
-    original = event.start_at + timedelta(days=7)
+    original = (event.start_at + timedelta(days=7)).replace(microsecond=0)
     moved = original + timedelta(hours=3)
-    await pool.execute(
-        "UPDATE calendar_events SET recurrence_rule = 'RRULE:FREQ=WEEKLY' "
-        "WHERE origin_ref = 'dentist'"
-    )
-    await pool.execute(
-        "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref, "
-        "timezone, starts_at, ends_at, status, is_exception) "
-        "SELECT id, source_id, 'dentist_' || to_char($1::timestamptz AT TIME ZONE 'UTC', "
-        "'YYYYMMDD\"T\"HH24MISS\"Z\"'), 'UTC', $2::timestamptz, $2::timestamptz + interval '1 hour', 'confirmed', true "
-        "FROM calendar_events WHERE origin_ref = 'dentist'",
-        original,
-        moved,
-    )
+    source = await pool.fetchval("SELECT id FROM calendar_sources LIMIT 1")
+    master = _google("standup", event.start_at, recurrence=["RRULE:FREQ=WEEKLY"])
+    exception_id = "standup_" + original.strftime("%Y%m%dT%H%M%SZ")
+    await _project(_module(pool), source, master)
+    await _project(_module(pool), source, _google(exception_id, moved))
 
     created = await _create(
-        mcp,
-        anchor_event_id="dentist",
-        anchor_original_start=original,
-        offset_minutes=-30,
+        mcp, anchor_event_id="standup", anchor_original_start=original, offset_minutes=-30
     )
 
     due = await pool.fetchval(
         "SELECT starts_at FROM calendar_events WHERE id = $1::uuid", created["event_id"]
     )
     assert due == moved - timedelta(minutes=30)
+    # The anchor names the exception row it follows, not the master.
+    stored = await pool.fetchval(
+        "SELECT metadata -> 'anchor' ->> 'event_origin_ref' FROM calendar_events "
+        "WHERE id = $1::uuid",
+        created["event_id"],
+    )
+    assert stored == exception_id
+    # The series itself is still anchorable at its own first start, unaffected by the move.
+    again = await _create(
+        mcp, anchor_event_id="standup", anchor_original_start=event.start_at, offset_minutes=-10
+    )
+    assert await pool.fetchval(
+        "SELECT starts_at FROM calendar_events WHERE id = $1::uuid", again["event_id"]
+    ) == event.start_at - timedelta(minutes=10)
+
+
+async def test_an_occurrence_that_never_moved_is_not_anchorable(db):
+    pool, _module_, mcp, event = await _world(db)
+    source = await pool.fetchval("SELECT id FROM calendar_sources LIMIT 1")
+    await _project(
+        _module(pool), source, _google("standup", event.start_at, recurrence=["RRULE:FREQ=WEEKLY"])
+    )
+
+    with pytest.raises(ValueError, match="does not name a live event occurrence"):
+        await _create(
+            mcp,
+            anchor_event_id="standup",
+            anchor_original_start=event.start_at + timedelta(days=7),
+            offset_minutes=-30,
+        )
