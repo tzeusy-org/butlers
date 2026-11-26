@@ -301,6 +301,16 @@ the agreement: the row is kept with `ended_at` stamped, so a reader can tell an 
 none, and accepting again starts a fresh one. Recurring events are not recorded yet, and `join_digest` stays empty until the
 provider mapping carries conference data.
 
+The row also carries `current_*` columns (start, end, location and attendee digests) that follow
+the event on every write, so the agreed and the current terms can be compared in SQL. The Switchboard
+reads that comparison through `public.resolve_calendar_occurrence(butler, event_id, original_start)`
+(core_379, slice A-S3), a SECURITY DEFINER function granted to the Switchboard role only. It answers
+one boolean: true while the occurrence differs from what the owner accepted, false when it matches
+again or the agreement ended (declined, cleared, cancelled), and unknown (NULL) when there is no
+agreement row or the butler schema has no such table. The
+insight engine reaches it through the premise probe `("calendar", "occurrence_still_changed")`
+whose args are `butler`, `event_id` and a timezone-aware `original_start`.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync
