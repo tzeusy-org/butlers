@@ -36,7 +36,7 @@ from typing import Any, Literal
 
 OptionKind = Literal["move_block", "move_own", "decline", "tentative", "ask_organizer", "keep_both"]
 Authority = Literal["no_park_undo", "owner_submit", "parked_per_event"]
-EventClass = Literal["butlers_block", "owner_organized", "invited"]
+EventClass = Literal["butlers_block", "owner_organized", "invited", "unproven"]
 
 #: The most options one issue shows; ``keep_both`` always holds the last place.
 MAX_OPTIONS = 5
@@ -207,7 +207,7 @@ def options_for(
                     },
                 )
             )
-        else:
+        elif event.event_class == "invited":
             for status, bucket in (("declined", declines), ("tentative", tentatives)):
                 if status == "tentative" and event.owner_response == "tentative":
                     continue
@@ -292,15 +292,17 @@ def free_windows(
     *,
     day_start_hour: int = DAY_START_HOUR,
     day_end_hour: int = DAY_END_HOUR,
+    gap: timedelta = timedelta(0),
 ) -> list[tuple[datetime, datetime]]:
     """Working-day windows inside ``[lo, hi)`` that no busy interval touches, earliest first.
 
     ``busy`` must hold every owner-busy interval across every calendar read, so a slot taken from
     here never trades one overlap for another. Only the scanned window is searched: a slot outside
-    it was never checked, so it is never offered.
+    it was never checked, so it is never offered. ``gap`` widens every busy interval on both sides
+    so a slot never lands back to back with another event.
     """
     merged: list[list[datetime]] = []
-    for start, end in sorted(busy):
+    for start, end in sorted((s - gap, e + gap) for s, e in busy):
         if merged and start <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:

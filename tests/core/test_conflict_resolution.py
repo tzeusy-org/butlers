@@ -195,6 +195,8 @@ def test_a_radar_decline_sends_no_updates():
     res = _run(_ev("a", "invited", owner_response="accepted"), _ev("b", "invited"))
     declines = [o for o in res.options if o.kind in ("decline", "tentative")]
     assert declines and all(o.exact_call["args"]["send_updates"] == "none" for o in declines)
+
+
 def test_free_windows_subtract_every_busy_interval_inside_the_working_day():
     day = datetime(2026, 12, 1, tzinfo=UTC)
     busy = [
@@ -225,3 +227,20 @@ def test_free_windows_follow_the_owner_zone_not_utc():
     lo = datetime(2026, 11, 30, 22, tzinfo=UTC)  # 07:00 on 1 Dec in Tokyo
     got = cr.free_windows([], lo, lo + timedelta(hours=24), tokyo)
     assert got[0][0] == datetime(2026, 12, 1, 8, tzinfo=tokyo)
+
+
+def test_an_unproven_event_is_offered_nothing_and_never_moved():
+    res = _run(_ev("a", "butlers_block"), _ev("b", "unproven"))
+    assert [o.kind for o in res.options] == ["move_block", "keep_both"]
+
+
+def test_free_windows_keep_a_gap_after_every_busy_interval():
+    day = datetime(2026, 12, 1, tzinfo=UTC)
+    busy = [(day + timedelta(hours=9), day + timedelta(hours=10))]
+
+    got = cr.free_windows(busy, day, day + timedelta(days=1), UTC, gap=timedelta(minutes=15))
+
+    assert got == [
+        (day + timedelta(hours=8), day + timedelta(hours=8, minutes=45)),
+        (day + timedelta(hours=10, minutes=15), day + timedelta(hours=19)),
+    ]

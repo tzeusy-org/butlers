@@ -1935,7 +1935,7 @@ SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
-SCHEMA ConflictIssue 437d3d1463d5
+SCHEMA ConflictIssue 8e9ee35ebc7e
 SCHEMA ConflictScanResponse 92f9148f7a01
 SCHEMA ConflictScanWindow 6af1a276ab4b
 SCHEMA ConnectionModel 89d5a5b90eaf
@@ -2496,6 +2496,7 @@ SCHEMA ResearchCreateRequest 59b023d22e62
 SCHEMA ResearchUpdateRequest 66ef6c4b3542
 SCHEMA ReservationModel fac9fcf0d8d9
 SCHEMA ResetUsageRequest 4800c2579c23
+SCHEMA ResolutionOption c17644662152
 SCHEMA ResolveGapInterviewRequest f0bd314277d0
 SCHEMA ResolveModelResponse a5a081288a48
 SCHEMA RestoreDrillFacts 0ade9fdf5ff5

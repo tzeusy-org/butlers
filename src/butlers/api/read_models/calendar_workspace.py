@@ -1815,14 +1815,18 @@ async def query_calendar_conflicts(
             )
 
     if resolution_options_live():
-        attach_resolution_options(
+        await attach_resolution_options(
+            db,
             issues,
             {str(row["instance_id"]): row for row in deduped},
-            candidates,
+            flattened,
+            {str(row["instance_id"]): _entry_identity_key(row) for row in flattened},
             now=now or datetime.now(UTC),
             start=start,
             end=end,
-            zone=display_tz or UTC,
+            gap_minutes=back_to_back_gap_minutes,
+            complete=not failed,
+            filtered=bool(butlers),
         )
 
     # Join pending proposals by the provider-identity pair id, or the legacy instance
