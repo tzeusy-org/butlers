@@ -124,10 +124,10 @@ def e2e(fn):
 
 
 async def _world(db, monkeypatch):
-    pool = await db("core", "finance", schema="finance")
+    pool = await db("core", "memory", "finance", schema="finance")
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
-    for table in ("bills", "subscriptions"):
+    for table in ("bills", "subscriptions", "facts"):
         await pool.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
     mod = _make_module(pool, butler_name="finance")
     mod._projection_tables_available_cache = True
@@ -216,3 +216,64 @@ async def test_a_failed_source_read_retracts_nothing_and_reads_partial(db, monke
         f["butler"]: f["state"] for f in compute_overlay_freshness([row], available=True, now=NOW)
     }
     assert states["finance"] == "partial"
+
+
+def test_the_owners_reminder_days_replace_the_default_and_the_version_follows():
+    bill = _bill(due=date(2030, 3, 20))
+    default = _flat(_claims(bills=[bill]))["finance:bill:b1"]
+    five = _flat(job.finance_claims([bill], [], today=TODAY, zone=SGT, now=NOW, bill_days=5))[
+        "finance:bill:b1"
+    ]
+
+    assert default["span"]["start"].startswith("2030-03-17T09:00")
+    assert five["span"]["start"].startswith("2030-03-15T09:00")
+    assert five["record_version"] != default["record_version"]
+
+
+@pytest.mark.parametrize(
+    ("text", "days"),
+    [
+        ("5 days before due date", 5),
+        ("prefers reminders 3 days before", 3),
+        ("on the due date, 0 days", 0),
+        ("remind me early", None),
+        ("400 days", None),
+        (None, None),
+    ],
+)
+def test_a_reminder_preference_is_read_from_the_owners_words(text, days):
+    assert job.parse_reminder_days(text) == days
+
+
+@e2e
+async def test_a_stored_reminder_preference_moves_the_bill_reminder(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    await pool.execute(
+        "INSERT INTO facts (subject, predicate, content, scope, validity) "
+        "VALUES ('user', 'bill_reminder_preference', '5 days before due date', 'global', 'active')"
+    )
+
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert (await _rows(pool))[0]["starts_at"] == datetime(2030, 3, 5, 9, tzinfo=SGT)
+
+
+@e2e
+async def test_a_bill_paid_before_the_window_keeps_its_row_as_history(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    bill = await _add_bill(pool, due=date(2030, 3, 10))
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+    await mod._push_internal_events_to_provider()
+
+    # Ten days on the bill was paid and the window starts after its reminder.
+    later = datetime(2030, 3, 12, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr("butlers.jobs.briefing._now", lambda: later)
+    monkeypatch.setattr(job, "_utcnow", lambda: later)
+    await pool.execute("UPDATE bills SET status = 'paid' WHERE id = $1", bill)
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+    await mod._push_internal_events_to_provider()
+
+    assert result["claims"]["retracted"] == 0
+    assert [r["status"] for r in await _rows(pool)] == ["confirmed"]
+    assert not mod._provider.delete_calls

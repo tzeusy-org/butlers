@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from datetime import date as date_cls
 from typing import Any, NotRequired, TypedDict
@@ -314,6 +315,22 @@ def _claim(
     }
 
 
+MAX_REMINDER_DAYS = 30
+
+
+def parse_reminder_days(content: Any) -> int | None:
+    """Days from a ``bill_reminder_preference`` fact ("5 days before due date"); None if none.
+
+    The preference is free text the owner's words were stored as, so the first number is read and
+    anything outside ``0..MAX_REMINDER_DAYS`` is ignored (the default applies).
+    """
+    match = re.search(r"\d+", str(content or ""))
+    if match is None:
+        return None
+    days = int(match.group())
+    return days if 0 <= days <= MAX_REMINDER_DAYS else None
+
+
 def finance_claims(
     bills: list[Any],
     subscriptions: list[Any],
@@ -321,10 +338,12 @@ def finance_claims(
     today: date_cls,
     zone: tzinfo,
     now: datetime,
+    bill_days: int = BILL_REMINDER_DAYS,
 ) -> dict[str, list[dict[str, Any]]]:
     """Claims for pending bills, subscription renewals and ``cancel_by`` dates, by date. Pure.
 
-    A bill gets a reminder ``BILL_REMINDER_DAYS`` before it is due, an auto-renewing subscription
+    A bill gets a reminder ``bill_days`` (the owner's ``bill_reminder_preference``, else
+    ``BILL_REMINDER_DAYS``) before it is due, an auto-renewing subscription
     ``RENEWAL_REMINDER_DAYS`` before it renews, and a ``cancel_by`` date a reminder
     ``CANCEL_BY_REMINDER_DAYS`` before it. A reminder whose moment has passed is an overlay-only
     claim, so a late run never fires a reminder for the past. Rows without an id carry no claim.
@@ -340,12 +359,14 @@ def finance_claims(
         out.setdefault(due.isoformat(), []).append(
             _claim(
                 key=f"finance:bill:{ref}",
-                version=_version(due, row["amount"], row["currency"], row["status"], row["payee"]),
+                version=_version(
+                    due, row["amount"], row["currency"], row["status"], row["payee"], bill_days
+                ),
                 kind="bill_due",
                 label=str(row["payee"]),
                 priority=priority,
                 day=due,
-                remind_days=BILL_REMINDER_DAYS,
+                remind_days=bill_days,
                 zone=zone,
                 now=now,
                 ref=ref,
@@ -409,14 +430,21 @@ async def mark_overlay_envelopes_incomplete(
 
 
 async def reconcile_claims_in_process(
-    pool: asyncpg.Pool, *, butler: str, claims: list[dict[str, Any]], complete: bool
+    pool: asyncpg.Pool,
+    *,
+    butler: str,
+    claims: list[dict[str, Any]],
+    complete: bool,
+    window_start: datetime,
 ) -> dict[str, int] | None:
     """Reconcile claims into the butler's own calendar rows; never raises (the job must finish)."""
     try:
         from butlers.modules.calendar import CalendarModule
 
         module = CalendarModule.for_pool(pool, butler_name=butler)
-        result = await module.reconcile_domain_claims(butler, claims, complete)
+        result = await module.reconcile_domain_claims(
+            butler, claims, complete, window_start=window_start
+        )
     except Exception:
         logger.warning("%s calendar claims not reconciled", butler, exc_info=True)
         return None
@@ -494,6 +522,28 @@ async def run_finance_calendar_overlay_contribution(
         logger.warning("finance overlay: subscriptions read failed; run is partial", exc_info=True)
         sub_rows, complete = [], False
 
+    # --- The owner's reminder preference (days before due); the default applies when unset ---
+    bill_days = BILL_REMINDER_DAYS
+    try:
+        pref = await pool.fetch(
+            """
+            SELECT content FROM facts
+            WHERE predicate = 'bill_reminder_preference' AND validity = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        preferred = parse_reminder_days(pref[0]["content"]) if pref else None
+        if preferred is not None:
+            bill_days = preferred
+    except asyncpg.UndefinedTableError:
+        pass  # a finance without the memory tables has no preference to honour
+    except Exception:
+        logger.warning(
+            "finance overlay: reminder preference read failed; run is partial", exc_info=True
+        )
+        complete = False
+
     entries_by_date: dict[str, list[OverlayEntry]] = {}
 
     for row in bills_rows:
@@ -538,7 +588,9 @@ async def run_finance_calendar_overlay_contribution(
         }
         entries_by_date.setdefault(date_str, []).append(entry)
 
-    claims_by_date = finance_claims(bills_rows, sub_rows, today=today, zone=zone, now=_utcnow())
+    claims_by_date = finance_claims(
+        bills_rows, sub_rows, today=today, zone=zone, now=_utcnow(), bill_days=bill_days
+    )
     for row in sub_rows:
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
         if cancel_by is not None and today <= cancel_by <= horizon:
@@ -570,6 +622,7 @@ async def run_finance_calendar_overlay_contribution(
         butler="finance",
         claims=[c for day in claims_by_date.values() for c in day],
         complete=complete,
+        window_start=day_start_utc(today, zone),
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)

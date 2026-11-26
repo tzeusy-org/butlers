@@ -75,10 +75,11 @@ async def run_overlay_job(
     second: list[Mapping[str, Any]] | None = None,
     seed: Mapping[str, Any] | None = None,
     today: date,
+    extra: tuple[list[Mapping[str, Any]], ...] = (),
 ) -> tuple[dict[str, Any], ContributionStateStore, FakePool]:
-    """Run an overlay *job* whose two source reads answer *first* then *second*."""
+    """Run an overlay *job* whose source reads answer *first*, *second*, then *extra* in order."""
     module = "butlers.jobs.calendar_overlay"
-    pool = source_reads(first or [], second or [])
+    pool = source_reads(first or [], second or [], *extra)
     state = ContributionStateStore(seed=seed)
     with (
         patch("butlers.jobs.briefing._now", return_value=sgt_noon(today)),
