@@ -28,6 +28,14 @@ _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_389:rsvp_jo
 _ROLE = "butler_relationship_rw"
 _POLICY = "calendar_rsvp_policies_job_read"
 
+_ASSUME_OWNER = """DO $$ DECLARE db_owner name; BEGIN
+    SELECT pg_get_userbyid(datdba) INTO STRICT db_owner FROM pg_database
+        WHERE datname = current_database();
+    IF db_owner <> current_user AND pg_has_role(current_user, db_owner, 'MEMBER') THEN
+        EXECUTE format('SET LOCAL ROLE %I', db_owner);
+    END IF;
+END $$"""
+
 
 def _installation_count() -> int:
     """Count schema-local core chains still at core_389 or later."""
@@ -62,6 +70,7 @@ def _installation_count() -> int:
 
 def upgrade() -> None:
     op.execute(_LOCK)
+    op.execute(_ASSUME_OWNER)
     op.execute(f"DROP POLICY IF EXISTS {_POLICY} ON public.calendar_rsvp_policies")
     op.execute(
         f"""CREATE POLICY {_POLICY} ON public.calendar_rsvp_policies
@@ -72,12 +81,14 @@ def upgrade() -> None:
             GRANT SELECT ON TABLE public.calendar_rsvp_policies TO {_ROLE};
         END IF;
     END $$""")
+    op.execute("RESET ROLE")
 
 
 def downgrade() -> None:
     op.execute(_LOCK)
     if _installation_count() > 1:
         return
+    op.execute(_ASSUME_OWNER)
     op.execute(f"""DO $$ BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_ROLE}')
            AND to_regclass('public.calendar_rsvp_policies') IS NOT NULL THEN
@@ -85,3 +96,4 @@ def downgrade() -> None:
         END IF;
     END $$""")
     op.execute(f"DROP POLICY IF EXISTS {_POLICY} ON public.calendar_rsvp_policies")
+    op.execute("RESET ROLE")

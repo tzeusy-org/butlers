@@ -467,3 +467,121 @@ async def test_a_park_that_times_out_is_counted_unprepared(monkeypatch) -> None:
     mgr = SimpleNamespace(get_client=AsyncMock(return_value=SimpleNamespace(call_tool=hang)))
     result = await job._park(mgr, {"entry_id": "e"}, {"_why": "w"})
     assert result == {"error": "response_transport_unavailable"}
+
+
+# --------------------------------------------------------------------------- degraded ticks
+
+
+async def _card(monkeypatch, row, policies=None):
+    first = _Env(monkeypatch, policies=policies or [_policy()], rows=[row])
+    await first.run()
+    return job.parse_marker(first.park.await_args.args[2]["_evidence"])
+
+
+async def test_an_unreadable_organizer_keeps_the_card_and_parks_nothing(monkeypatch) -> None:
+    row = _row()
+    marker = await _card(monkeypatch, row)
+    card_id = uuid4()
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[row],
+        open_cards=[{"id": card_id, "marker": marker}],
+    )
+    monkeypatch.setattr(job, "read_organizer_roles", AsyncMock(return_value=None))
+    summary = await env.run()
+    env.reject.assert_not_awaited()
+    env.park.assert_not_awaited()
+    assert summary["unprepared"]["organizer_unreadable"] == 1
+    assert summary["unprepared"]["card_kept_unreadable"] == 1 and summary["complete"] is False
+
+
+async def test_a_partial_calendar_read_keeps_the_card_and_parks_the_lower_policy_never(
+    monkeypatch,
+) -> None:
+    row = _row()
+    higher = _policy("a", position=1)
+    lower = _policy("b", position=2, predicates=[{"kind": "recurring", "value": True}])
+    row = row | {"recurrence_rule": "RRULE:FREQ=DAILY"}
+    marker = await _card(monkeypatch, row, [higher, lower])
+    card_id = uuid4()
+    env = _Env(
+        monkeypatch,
+        policies=[higher, lower],
+        rows=[row],
+        open_cards=[{"id": card_id, "marker": marker}],
+    )
+    monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+    summary = await env.run()
+    env.reject.assert_not_awaited()  # not policy_no_longer_matches, not policy_changed
+    env.park.assert_not_awaited()  # b would win on a partial read; it must not be prepared
+    assert summary["unprepared"]["card_kept_unreadable"] == 1
+
+
+async def test_an_invitation_beyond_the_page_limit_keeps_its_card(monkeypatch) -> None:
+    row = _row()
+    marker = await _card(monkeypatch, row)
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[_row(butler="general")],
+        open_cards=[{"id": uuid4(), "marker": marker}],
+    )
+    monkeypatch.setattr(job, "INVITATION_LIMIT", 1)
+    summary = await env.run()
+    env.reject.assert_not_awaited()
+    env.park.assert_not_awaited()
+    assert "invitations_truncated" in summary["degraded"]
+
+
+async def test_a_degraded_tick_still_rejects_for_fact_independent_reasons(monkeypatch) -> None:
+    row = _row(etag="e1")
+    marker = await _card(monkeypatch, row)
+    for policies, listed, reason in (
+        ([_policy()], row | {"event_etag": "e2"}, "stale_event"),
+        ([_policy(revoked=NOW)], row, "policy_revoked"),
+        ([_policy(version=2)], row, "policy_changed"),
+    ):
+        card_id = uuid4()
+        env = _Env(
+            monkeypatch,
+            policies=policies,
+            rows=[listed],
+            open_cards=[{"id": card_id, "marker": marker}],
+        )
+        monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+        await env.run()
+        assert env.reject.await_args.args[1:] == (card_id, reason), reason
+        env.park.assert_not_awaited()
+
+
+async def test_a_vanished_entry_is_kept_while_the_calendar_cannot_be_read(monkeypatch) -> None:
+    marker = await _card(monkeypatch, _row())
+    env = _Env(
+        monkeypatch, policies=[_policy()], rows=[], open_cards=[{"id": uuid4(), "marker": marker}]
+    )
+    monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+    summary = await env.run()
+    env.reject.assert_not_awaited()
+    assert summary["unprepared"]["card_kept_unreadable"] == 1
+
+
+async def test_an_exception_in_the_run_is_run_failed_not_lock_unavailable(monkeypatch) -> None:
+    env = _Env(monkeypatch, policies=[_policy()], rows=[_row()])
+    monkeypatch.setattr(job, "_run", AsyncMock(side_effect=RuntimeError("boom")))
+    assert (await env.run())["status"] == "run_failed"
+
+    @contextlib.asynccontextmanager
+    async def broken(pool):
+        raise RuntimeError("no lock")
+        yield
+
+    monkeypatch.setattr(job, "_single_flight", broken)
+    assert (await env.run())["status"] == "lock_unavailable"
+
+
+async def test_a_replay_of_a_settled_card_is_owner_decided_not_already_parked(monkeypatch) -> None:
+    env = _Env(monkeypatch, policies=[_policy()], rows=[_row()])
+    env.park.return_value = {"status": "approved"}
+    summary = await env.run()
+    assert (summary["owner_decided"], summary["already_parked"], summary["prepared"]) == (1, 0, 0)

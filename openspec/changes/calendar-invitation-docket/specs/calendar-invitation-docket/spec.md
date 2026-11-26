@@ -168,9 +168,20 @@ affected invitation and SHALL record a counted `unprepared` row with its reason;
 how many invitations were left unprepared and SHALL NOT present an empty or partial docket as
 complete.
 
+A tick in which any fact could not be read (organizer roles, the owner's calendar, declared hours, or
+invitations past the read limit) SHALL be degraded: it SHALL park nothing new, and it SHALL reject a
+card only for a reason that needs no unreadable fact (the event's etag changed, or the card's own
+policy was revoked or re-versioned). An entry whose facts were unreadable SHALL keep its card, never
+be rejected `policy_changed`, `policy_no_longer_matches` or `stale_event` on a guess, and SHALL be
+counted `unprepared`.
+
 #### Scenario: A provider outage is shown
 - **WHEN** the snapshot for an invitation cannot be read
 - **THEN** no card is parked, one `unprepared` row is counted, and the docket says so
+
+#### Scenario: A degraded tick keeps cards it cannot re-check
+- **WHEN** the owner's calendar or an organizer's roles cannot be read while a card is open
+- **THEN** the card stays pending, nothing new is parked, and the entry is counted `unprepared`
 
 ### Requirement: The Docket Runs For Exactly One Butler
 

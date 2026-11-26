@@ -82,6 +82,8 @@ DEFAULT_CHECK_INTERVAL_S = 900.0
 DEFAULT_LOOKAHEAD_DAYS = 14
 DOCKET_ACTOR = "system:rsvp_docket"
 PARK_TIMEOUT_S = 30.0
+INVITATION_LIMIT = 500
+_DECIDED_REPLAYS = frozenset({"approved", "rejected", "executed", "abandoned", "expired"})
 _LOCK_KEY = "butlers:calendar_rsvp_docket"
 MARKER_PREFIX = "rsvp-docket:"
 REJECT_REASONS = ("stale_event", "policy_changed", "policy_revoked", "policy_no_longer_matches")
@@ -325,6 +327,23 @@ def supersede_reason(
     return None
 
 
+def fact_independent_reason(
+    marker: Mapping[str, Any], *, etag: str | None, policy_revoked: bool, policy_version: int | None
+) -> str | None:
+    """Why a card is stale whatever the calendar facts say, or ``None``.
+
+    These need no fact that can be unreadable: the event's etag changed, or the card's own policy
+    was revoked or re-versioned. A degraded tick rejects only for these.
+    """
+    if etag != marker.get("etag"):
+        return "stale_event"
+    if policy_revoked:
+        return "policy_revoked"
+    if policy_version is not None and policy_version != marker.get("policy_version"):
+        return "policy_changed"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
@@ -459,14 +478,17 @@ async def run_calendar_rsvp_docket(
         pool = db.pool(DOCKET_BUTLER)
     except Exception:  # noqa: BLE001
         return await _run(db, mgr, now=now, lookahead_days=lookahead_days)
+    ran = False
     try:
         async with _single_flight(pool) as acquired:
             if not acquired:
                 return {"status": "another_tick_running", "complete": True, "prepared": 0}
+            ran = True
             return await _run(db, mgr, now=now, lookahead_days=lookahead_days)
-    except Exception:  # noqa: BLE001 - an unreachable lock is an outage: do nothing, count it
-        logger.warning("rsvp docket: single-flight lock unavailable", exc_info=True)
-        return {"status": "lock_unavailable", "complete": False, "prepared": 0}
+    except Exception:  # noqa: BLE001 - an outage is counted, never a clean docket
+        logger.warning("rsvp docket: tick failed (ran=%s)", ran, exc_info=True)
+        status = "run_failed" if ran else "lock_unavailable"
+        return {"status": status, "complete": False, "prepared": 0}
 
 
 async def _run(
@@ -483,6 +505,7 @@ async def _run(
         "complete": True,
         "prepared": 0,
         "already_parked": 0,
+        "owner_decided": 0,
         "disagreed": [],
         "no_match": 0,
         "unprepared": Counter(),
@@ -509,57 +532,65 @@ async def _run(
         return incomplete("open_cards_unavailable")
 
     end = now + timedelta(days=lookahead_days)
-    read = await query_calendar_invitations(db, start=now, end=end)
+    read = await query_calendar_invitations(db, start=now, end=end, limit=INVITATION_LIMIT)
     if not read.status_available or read.failed_butlers:
         # An invitation we could not see might be answered or moved: prepare and reject nothing.
         summary["unprepared"]["invitations_unavailable"] += 1
         return incomplete("invitations_unavailable")
+    truncated = len(read.rows) >= INVITATION_LIMIT
 
     owner_rows, rows_available = await query_owner_calendar_rows(db, start=now, end=end)
     degraded: list[str] = []
+    if truncated:
+        degraded.append("invitations_truncated")
     if not rows_available:
         degraded.append("calendar")
-    prefs_pool = db.pool(DOCKET_BUTLER)
     outside_known = True
     prefs = None
     try:
         # TODO(bu-5ii4gj.9 S4): read through load_scheduling_preferences once #6226 lands.
-        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(prefs_pool))
+        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(pool))
     except Exception:  # noqa: BLE001
         outside_known = False
         degraded.append("declared_hours")
-    if degraded:
+    # A degraded tick prepares nothing new and rejects only for fact-independent reasons.
+    tick_degraded = bool(degraded)
+    if tick_degraded:
         summary["degraded"] = degraded
         summary["complete"] = False
 
-    current: dict[str, tuple[Evaluation, str | None]] = {}
+    # entry id -> (etag, evaluation, readable): readable means every fact for it was read.
+    current: dict[str, tuple[str | None, Evaluation | None, bool]] = {}
     for row in read.rows:
         entry_id = str(row["instance_id"])
         if row.get("butler_name") != docket_butler() or row.get("writable") is not True:
             continue  # another butler's entry: the docket never prepares an answer for it
+        etag = row.get("event_etag")
+        if tick_degraded:
+            current[entry_id] = (etag, None, False)
+            summary["unprepared"]["facts_unreadable"] += 1
+            continue
         metadata = _metadata(row.get("event_metadata"))
         organizer = metadata.get("organizer")
         roles = await read_organizer_roles(pool, organizer if isinstance(organizer, str) else None)
         if roles is None:
+            current[entry_id] = (etag, None, False)
             summary["unprepared"]["organizer_unreadable"] += 1
             summary["complete"] = False
             continue
-        if not outside_known:
-            outside: bool | None = None
-        elif prefs is None or not prefs.has_constraints:
-            outside = False
+        if not outside_known or prefs is None or not prefs.has_constraints:
+            outside: bool | None = False if outside_known else None
         else:
             outside = not prefs.allows(row["instance_starts_at"], row["instance_ends_at"])
         facts = invitation_facts(
             row,
             now=now,
-            owner_rows=owner_rows if rows_available else None,
+            owner_rows=owner_rows,
             outside_hours=outside,
             organizer_roles=roles,
         )
         evaluation = evaluate_policies(policies, facts)
-        etag = row.get("event_etag")
-        current[entry_id] = (evaluation, etag)
+        current[entry_id] = (etag, evaluation, True)
 
         if evaluation.status == "disagree":
             summary["disagreed"].append({"entry_id": entry_id, "policies": evaluation.disagreeing})
@@ -595,29 +626,41 @@ async def _run(
         elif result.get("error"):
             summary["unprepared"][str(result["error"])] += 1
             summary["complete"] = False
+        elif result.get("status") in _DECIDED_REPLAYS:
+            summary["owner_decided"] += 1  # a replay of a card the owner already settled
         else:
             summary["already_parked"] += 1  # a replayed command: it already exists
 
-    # Re-evaluate every open docket card, but never reject on facts that could not be read.
-    revoked = {p.id for p in policies if p.revoked_at is not None}
-    facts_trustworthy = rows_available and outside_known
+    # Re-evaluate every open docket card. An entry whose facts could not be read keeps its card
+    # unless a fact-independent reason applies, and is counted unprepared.
+    by_policy = {p.id: p for p in policies}
     for card in open_cards:
         marker = card["marker"]
         entry_id = str(marker.get("entry_id"))
         seen = current.get(entry_id)
-        evaluation, etag = seen if seen is not None else (None, None)
-        if seen is None and not facts_trustworthy:
-            continue
-        if seen is not None and not facts_trustworthy and evaluation is not None:
-            # A match we cannot re-check is neither confirmed nor refuted; leave the card.
-            if evaluation.prepared is None:
+        policy = by_policy.get(str(marker.get("policy_id")))
+        revoked = policy is not None and policy.revoked_at is not None
+        version = policy.version if policy is not None else None
+        if seen is None:
+            # No longer a pending invitation (answered, moved or cancelled). Rejecting it needs the
+            # owner's own row to tell an answer from a move, so an unreadable calendar keeps it.
+            if truncated or not rows_available:
+                summary["unprepared"]["card_kept_unreadable"] += 1
+                summary["complete"] = False
                 continue
-        reason = supersede_reason(
-            marker,
-            evaluation=evaluation,
-            policy_revoked=marker.get("policy_id") in revoked,
-            etag=etag,
-        )
+            reason: str | None = "stale_event"
+        else:
+            etag, evaluation, readable = seen
+            reason = fact_independent_reason(
+                marker, etag=etag, policy_revoked=revoked, policy_version=version
+            )
+            if reason is None and not readable:
+                summary["unprepared"]["card_kept_unreadable"] += 1
+                continue
+            if reason is None:
+                reason = supersede_reason(
+                    marker, evaluation=evaluation, policy_revoked=revoked, etag=etag
+                )
         if reason is None:
             continue
         if await _reject(pool, card["id"], reason):
