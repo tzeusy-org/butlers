@@ -1902,6 +1902,7 @@ async def _park_resolution_move(
     the existing approvals surface, bound by its arguments digest, and the etag the owner saw
     is bound outside the arguments (``modules.calendar.resolution_move``).
     """
+    from butlers.api.read_models.calendar_resolution import owner_zone
     from butlers.modules.calendar.resolution_move import park_resolution_move
 
     context = issue.option_context.get(option.id) or {}
@@ -1938,6 +1939,8 @@ async def _park_resolution_move(
             issue_digest=body.issue_digest,
             call_args=option.exact_call["args"],
             etag=etag,
+            authority=option.authority,
+            zone=await owner_zone(db),
         )
         status = await pool.fetchval("SELECT status FROM pending_actions WHERE id = $1", action_id)
     except Exception as exc:

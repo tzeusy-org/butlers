@@ -28,13 +28,7 @@ CALL = {
 }
 
 
-@pytest.fixture
-async def pool(db):
-    """The production core + approvals chains on a fresh clone."""
-    return await db("core", "approvals")
-
-
-async def _park(pool, *, digest="d1", etag='"v0"', option="move_block:a"):
+async def _park(pool, *, digest="d1", etag='"v0"', option="move_block:a", authority="no_park_undo"):
     return await park_resolution_move(
         pool,
         butler_name="general",
@@ -43,10 +37,12 @@ async def _park(pool, *, digest="d1", etag='"v0"', option="move_block:a"):
         issue_digest=digest,
         call_args=CALL,
         etag=etag,
+        authority=authority,
     )
 
 
-async def test_the_card_is_the_exact_call_and_the_etag_lives_outside_it(pool) -> None:
+async def test_the_card_is_the_exact_call_and_the_etag_lives_outside_it(db) -> None:
+    pool = await db("core", "approvals")
     action_id, created = await _park(pool)
 
     row = await pool.fetchrow(
@@ -62,7 +58,8 @@ async def test_the_card_is_the_exact_call_and_the_etag_lives_outside_it(pool) ->
     assert offer is not None and offer["etag"] == '"v0"'
 
 
-async def test_a_repeat_returns_the_card_already_parked(pool) -> None:
+async def test_a_repeat_returns_the_card_already_parked(db) -> None:
+    pool = await db("core", "approvals")
     first, _ = await _park(pool)
 
     again, created = await _park(pool)
@@ -72,7 +69,8 @@ async def test_a_repeat_returns_the_card_already_parked(pool) -> None:
     assert count == 1
 
 
-async def test_a_changed_overlap_is_a_new_card_bound_to_its_own_etag(pool) -> None:
+async def test_a_changed_overlap_is_a_new_card_bound_to_its_own_etag(db) -> None:
+    pool = await db("core", "approvals")
     first, _ = await _park(pool)
 
     second, created = await _park(pool, digest="d2", etag='"v1"')
@@ -82,7 +80,8 @@ async def test_a_changed_overlap_is_a_new_card_bound_to_its_own_etag(pool) -> No
     assert (await offer_for_card(pool, second))["etag"] == '"v1"'
 
 
-async def test_any_other_card_has_no_binding(pool) -> None:
+async def test_any_other_card_has_no_binding(db) -> None:
+    pool = await db("core", "approvals")
     import uuid
 
     assert await offer_for_card(pool, uuid.uuid4()) is None

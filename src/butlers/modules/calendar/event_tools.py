@@ -43,10 +43,9 @@ from .party import gate_calendar_party_mutation
 from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
 from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
 from .resolution_move import (
-    RESOLUTION_DECLINED,
-    RESOLUTION_DECLINED_TEXT,
-    offer_for_card,
-    resolution_refusal,
+    ResolutionCheck,
+    check_resolution_binding,
+    resolution_declined_result,
 )
 
 if TYPE_CHECKING:
@@ -620,25 +619,23 @@ def register_event_tools(
 
         # An approved overlap-resolution move (bu-5ii4gj.11 R2b): bound to the etag the owner
         # saw, which lives outside the call's arguments, and written once.
-        resolution_offer = None
-        resolution_pool = getattr(getattr(module, "_db", None), "pool", None)
-        if not replan and not undo and resolution_pool is not None:
-            approval = get_approval_execution_context(
-                tool_name="calendar_update_event", tool_args=overlap_args
+        if replan or undo:
+            resolution_check = ResolutionCheck()
+        else:
+            resolution_check = await check_resolution_binding(
+                module,
+                tool_name="calendar_update_event",
+                tool_args=overlap_args,
+                request_id=normalized_request_id,
+                event=existing_event,
             )
-            if approval is not None:
-                resolution_offer = await offer_for_card(resolution_pool, approval.action_id)
-        resolution = resolution_offer is not None
+        resolution = resolution_check.bound
 
-        async def decline_resolution() -> dict[str, Any]:
-            """An approved move that wrote nothing: the event is not what the owner saw."""
-            declined_move = {
-                "status": RESOLUTION_DECLINED,
-                "reason": "changed_since_check",
-                "error": RESOLUTION_DECLINED_TEXT,
-                "event_id": normalized_event_id,
-                "calendar_id": resolved_calendar_id,
-            }
+        async def decline_resolution(reason: str) -> dict[str, Any]:
+            """An approved move that wrote nothing: unbound, or the event is not what was seen."""
+            declined_move = resolution_declined_result(
+                reason, event_id=normalized_event_id, calendar_id=resolved_calendar_id
+            )
             await module._finalize_workspace_mutation(
                 idempotency_key=idempotency_key,
                 action_type="workspace_user_update",
@@ -651,8 +648,8 @@ def register_event_tools(
             )
             return declined_move
 
-        if resolution_offer is not None and resolution_refusal(resolution_offer, existing_event):
-            return await decline_resolution()
+        if resolution_check.refusal is not None:
+            return await decline_resolution(resolution_check.refusal)
 
         party_gate = await gate_calendar_party_mutation(
             module,
@@ -927,7 +924,7 @@ def register_event_tools(
             if undo and refused:
                 return await decline_undo("changed_since_move")
             if resolution and refused:
-                return await decline_resolution()
+                return await decline_resolution("changed_since_check")
             error_payload = _build_structured_error(
                 exc,
                 provider=provider.name,
