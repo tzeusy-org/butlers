@@ -145,14 +145,13 @@ async def test_calendar_changes_truncation_is_reported(app):
     assert data["truncated"] is True and len(data["changes"]) == 200
 
 
-@pytest.mark.parametrize(
-    "since",
-    [
-        (_NOW - timedelta(days=15)).isoformat(),
-        "2026-01-01T00:00:00",
-    ],
-)
-async def test_calendar_changes_refuses_a_window_it_would_have_to_shorten(app, since):
+@pytest.mark.parametrize("since_label", ["fifteen_days_ago", "start_of_year"])
+async def test_calendar_changes_refuses_a_window_it_would_have_to_shorten(app, since_label):
+    # Computed in the test: a wall-clock value in the parametrize id differs between xdist workers.
+    since = {
+        "fifteen_days_ago": (_NOW - timedelta(days=15)).isoformat(),
+        "start_of_year": "2026-01-01T00:00:00",
+    }[since_label]
     app, _, switchboard = _build(app)
 
     resp = await _get(app, since)
