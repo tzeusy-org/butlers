@@ -573,7 +573,7 @@ class Snapshot:
     owner_rows: Sequence[Mapping[str, Any]] = field(default_factory=list)
     rows_available: bool = True
     #: Every copy with its metadata, unfiltered, for reading the owner's own response.
-    response_rows: list[Mapping[str, Any]] = field(default_factory=list)
+    response_rows: Sequence[Mapping[str, Any]] = field(default_factory=list)
     responses_available: bool = True
     truncated: bool = False
     degraded: list[str] = field(default_factory=list)
