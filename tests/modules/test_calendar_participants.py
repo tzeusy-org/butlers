@@ -505,7 +505,9 @@ class TestProjectionSeam:
 
     async def _near_now(self, pool, *, days=0):
         await pool.execute(
-            "UPDATE calendar_events SET starts_at = now() + $1 * interval '1 day'", days
+            "UPDATE calendar_events SET starts_at = now() + $1 * interval '1 day', "
+            "ends_at = now() + $1 * interval '1 day' + interval '1 hour'",
+            days,
         )
         participants._reresolved_at.clear()
 
@@ -568,9 +570,15 @@ class TestProjectionSeam:
         await _project(module, source, _event("far"))
         far = await pool.fetchval("SELECT id FROM calendar_events WHERE id <> $1", near)
         await participants.sync_manual_participants(pool, near, [alice])
-        await pool.execute("UPDATE calendar_events SET starts_at = now() WHERE id = $1", near)
         await pool.execute(
-            "UPDATE calendar_events SET starts_at = now() - interval '90 days' WHERE id = $1", far
+            "UPDATE calendar_events SET starts_at = now(), ends_at = now() + interval '1 hour' "
+            "WHERE id = $1",
+            near,
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() - interval '90 days', "
+            "ends_at = now() - interval '90 days' + interval '1 hour' WHERE id = $1",
+            far,
         )
         participants._reresolved_at.clear()
         await _person(pool, "Late", "stranger@nowhere.test")
@@ -603,9 +611,13 @@ class TestProjectionSeam:
             "SELECT e.id FROM calendar_events e JOIN calendar_event_participants p "
             "ON p.event_id = e.id LIMIT 1"
         )
-        await pool.execute("UPDATE calendar_events SET starts_at = now() + interval '1 hour'")
         await pool.execute(
-            "UPDATE calendar_events SET starts_at = now() + interval '5 days' WHERE id = $1",
+            "UPDATE calendar_events SET starts_at = now() + interval '1 hour', "
+            "ends_at = now() + interval '2 hours'"
+        )
+        await pool.execute(
+            "UPDATE calendar_events SET starts_at = now() + interval '5 days', "
+            "ends_at = now() + interval '5 days' + interval '1 hour' WHERE id = $1",
             with_people,
         )
         participants._reresolved_at.clear()
