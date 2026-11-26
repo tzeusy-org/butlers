@@ -1586,21 +1586,6 @@ export interface ConflictIssue {
   options_reason?: string | null;
 }
 
-/** Body of POST /api/calendar/workspace/conflicts/resolve (keep both only, for now). */
-export interface ConflictResolveRequest {
-  pair_id: string;
-  option_id: string;
-  issue_digest: string;
-  start: string;
-  end: string;
-}
-
-export interface ConflictResolveResponse {
-  status: "acknowledged" | "already_acknowledged";
-  pair_id: string;
-  option_id: string;
-}
-
 export interface ResolutionOption {
   id: string;
   kind: "move_block" | "move_own" | "decline" | "tentative" | "ask_organizer" | "keep_both";
