@@ -107,3 +107,24 @@ def test_the_pure_rule_reads_the_owner_seat():
     )
     assert owner_agreement({**base, "attendees": [other]}) is None
     assert owner_agreement({**base, "attendees": [{**seat, "responseStatus": "declined"}]}) is None
+
+
+async def test_the_current_terms_follow_a_move_while_the_agreed_terms_stay(db):
+    pool, source = await _world(db)
+    event = _event(attendees=_attendees())
+    await _project(_module(pool), source, event)
+    moved = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(hours=2),
+            "end_at": event.end_at + timedelta(hours=2),
+            "location": "Room 9",
+        }
+    )
+    await _project(_module(pool), source, moved)
+
+    row = await pool.fetchrow("SELECT * FROM calendar_owner_agreements")
+
+    assert row["agreed_starts_at"] == event.start_at
+    assert row["current_starts_at"] == moved.start_at and row["current_ends_at"] == moved.end_at
+    assert row["current_location_digest"] is not None
+    assert row["location_digest"] != row["current_location_digest"]

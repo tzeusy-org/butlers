@@ -7,9 +7,11 @@ Create Date: 2026-11-26 12:00:00.000000
 One row per accepted or tentative occurrence of a provider event the owner did not organise, in the
 calendar-hosting butler's own schema: the terms as agreed (start, end) and digests of the location
 and of the other attendees. It holds digests, never a location, a join link or an address. A later
-change to the event does not rewrite the row; the owner declining or clearing their answer deletes
-it, and the event going away cascades. ``join_digest`` is reserved and stays NULL until the
-provider mapping carries conference data.
+change to the event does not rewrite the agreed terms, but the ``current_*`` columns follow the
+event on every write, so a reader can compare the two without parsing provider
+metadata. The owner declining or clearing their answer deletes the row,
+and the event going away cascades.
+``join_digest`` is reserved and stays NULL until the provider mapping carries conference data.
 
 The core chain runs once per butler schema and every statement is idempotent. Downgrade drops the
 table (it is derived and rebuilt from the next sync).
@@ -36,6 +38,11 @@ CREATE TABLE IF NOT EXISTS calendar_owner_agreements (
     attendees_digest   TEXT NOT NULL,
     response_status    TEXT NOT NULL CHECK (response_status IN ('accepted', 'tentative')),
     observed_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    current_starts_at         TIMESTAMPTZ NOT NULL,
+    current_ends_at           TIMESTAMPTZ NOT NULL,
+    current_location_digest   TEXT,
+    current_attendees_digest  TEXT NOT NULL,
+    current_observed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (event_id, occurrence_start)
 )
 """

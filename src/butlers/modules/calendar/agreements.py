@@ -87,23 +87,41 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
             return "ended"
         response, others = agreed
         starts: datetime = row["starts_at"]
+        location = digest(row["location"])
+        others_digest = attendees_digest(others)
+        # The agreed terms never move; the current_* columns follow the event on every write.
+        followed = await pool.fetchval(
+            """
+            UPDATE calendar_owner_agreements
+               SET current_starts_at = $2, current_ends_at = $3, current_location_digest = $4,
+                   current_attendees_digest = $5, current_observed_at = now()
+             WHERE event_id = $1
+            RETURNING id
+            """,
+            event_id,
+            starts,
+            row["ends_at"],
+            location,
+            others_digest,
+        )
+        if followed:
+            return "kept"
         inserted = await pool.fetchval(
             """
             INSERT INTO calendar_owner_agreements (
                 event_id, occurrence_start, agreed_starts_at, agreed_ends_at,
-                location_digest, attendees_digest, response_status)
-            SELECT $1, $2, $2, $3, $4, $5, $6
-            -- A moved event keeps the terms the owner agreed to: one row per event until
-            -- occurrences are tracked separately (recurring events are skipped for now).
-            WHERE NOT EXISTS (SELECT 1 FROM calendar_owner_agreements WHERE event_id = $1)
+                location_digest, attendees_digest, response_status,
+                current_starts_at, current_ends_at, current_location_digest,
+                current_attendees_digest)
+            VALUES ($1, $2, $2, $3, $4, $5, $6, $2, $3, $4, $5)
             ON CONFLICT (event_id, occurrence_start) DO NOTHING
             RETURNING id
             """,
             event_id,
             starts,
             row["ends_at"],
-            digest(row["location"]),
-            attendees_digest(others),
+            location,
+            others_digest,
             response,
         )
         return "recorded" if inserted else "kept"
