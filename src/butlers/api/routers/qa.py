@@ -612,6 +612,7 @@ class QaCaseDossier(BaseModel):
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
     proposal_state: ProposalState = "none"
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
+    unpublished_proposal_retained: bool = False
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
     # "Tracked as <ref>, N occurrences since": the live link and the recurrences it held back.
@@ -2566,6 +2567,14 @@ async def get_case(
         state_track_stage=case.state,
         proposal_state=proposal_state,
         proposal_diff_snapshot=proposal_diff_snapshot,
+        unpublished_proposal_retained=(
+            pr_summary is None
+            and bool(row.get("branch_name"))
+            and not row.get("pr_url")
+            and row.get("pr_number") is None
+            and row.get("export_retained") is True
+            and row.get("pr_absence_proven") is True
+        ),
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
         known_issue_link=known_issue_link,

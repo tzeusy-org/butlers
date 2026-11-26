@@ -6872,6 +6872,8 @@ export interface QaCaseDossier {
    * PR exists ("unpublished"), retained with an unresolved publication outcome ("ambiguous"), or absent.
    */
   proposal_state: "none" | "unpublished" | "ambiguous" | "published";
+  /** A retained proposal with confirmed absence of a pull request. */
+  unpublished_proposal_retained?: boolean;
   /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
   proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */

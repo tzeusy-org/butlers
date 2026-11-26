@@ -416,6 +416,29 @@ describe("QA case dossier composition", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["none", true, true],
+    ["none", undefined, false],
+    ["ambiguous", true, false],
+  ] as const)("gates retained export without a display diff for %s and %s", (state, retained, shown) => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        proposal_state: state,
+        unpublished_proposal_retained: retained,
+        proposal_diff_snapshot: [],
+        investigation_notes: null,
+        pr: null,
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(Boolean(screen.queryByTestId("qa-proposal-export-unavailable"))).toBe(shown);
+  });
+
   it("never claims an unresolved publication outcome as unpublished", () => {
     qaHookMocks.useQaCase.mockReturnValue(
       caseResponse({

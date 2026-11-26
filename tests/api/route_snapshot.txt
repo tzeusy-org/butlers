@@ -2441,7 +2441,7 @@ SCHEMA PublicMcpSummary 2b840c550458
 SCHEMA QaActiveBreakdown d40c17eb9585
 SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd
-SCHEMA QaCaseDossier 3d30d332b3f1
+SCHEMA QaCaseDossier 17d2c6bb9b2d
 SCHEMA QaCaseSummary 0ea7d983c5d7
 SCHEMA QaCircuitBreaker 8bf3e6ef1ca1
 SCHEMA QaCredentialsStatus 456016a13c44

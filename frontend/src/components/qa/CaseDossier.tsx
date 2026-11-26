@@ -52,8 +52,10 @@ export function CaseDossier({
   // A retained proposal without a PR: proven unpublished, or ambiguous when a
   // publication outcome (e.g. a lost PR-create response) awaits reconciliation.
   const publicationAmbiguous = dossier?.proposal_state === "ambiguous";
-  const hasUnpublishedProposal =
-    dossier?.proposal_state === "unpublished" || publicationAmbiguous;
+  const retainedWithoutDisplay =
+    dossier?.proposal_state === "none" && dossier.unpublished_proposal_retained === true;
+  const proposalExportVisible = dossier?.proposal_state === "unpublished" || retainedWithoutDisplay;
+  const hasUnpublishedProposal = proposalExportVisible || publicationAmbiguous;
   const rawJournalEvents = journalQuery.data?.data ?? dossier?.journal ?? [];
   const journalEvents = useMemo(
     () =>
@@ -126,6 +128,10 @@ export function CaseDossier({
                 <p className="font-serif text-[17px] italic leading-8 text-destructive">
                   The investigation produced a local proposal; whether it was published is
                   unresolved.
+                </p>
+              ) : retainedWithoutDisplay ? (
+                <p className="font-serif text-[17px] italic leading-8 text-destructive">
+                  The investigation retained a local proposal. No pull request was created.
                 </p>
               ) : hasUnpublishedProposal ? (
                 <p className="font-serif text-[17px] italic leading-8 text-destructive">
@@ -235,14 +241,16 @@ export function CaseDossier({
 
         <section className="space-y-3" aria-label="Proposed fix">
           <DossierEyebrow>Proposed fix</DossierEyebrow>
-          <PRPanel
-            pr={dossier.pr}
-            whyThisFix={notes?.why_this_fix ?? null}
-            diffSnapshot={dossier.proposal_diff_snapshot}
-            stage={dossier.state_track_stage}
-            proposalState={dossier.proposal_state}
-          />
-          {dossier.proposal_state === "unpublished" ? (
+          {!retainedWithoutDisplay ? (
+            <PRPanel
+              pr={dossier.pr}
+              whyThisFix={notes?.why_this_fix ?? null}
+              diffSnapshot={dossier.proposal_diff_snapshot}
+              stage={dossier.state_track_stage}
+              proposalState={dossier.proposal_state}
+            />
+          ) : null}
+          {proposalExportVisible ? (
             <ProposalExportPanel caseId={dossier.case.id} />
           ) : null}
         </section>

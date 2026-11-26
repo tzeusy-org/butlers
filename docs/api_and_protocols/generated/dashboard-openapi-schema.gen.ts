@@ -35142,6 +35142,11 @@ export interface components {
              * @default 0
              */
             tracked_occurrences_since_link?: number;
+            /**
+             * Unpublished Proposal Retained
+             * @default false
+             */
+            unpublished_proposal_retained?: boolean;
         };
         /**
          * QaCaseSummary
