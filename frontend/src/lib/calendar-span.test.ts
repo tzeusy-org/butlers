@@ -293,3 +293,37 @@ describe("packSegments", () => {
     });
   });
 });
+
+
+describe("DST spring-forward block geometry", () => {
+  // America/New_York 2026-03-08: 02:00 does not exist, so the clock jumps 01:59 -> 03:00.
+  it("sizes a block by the wall clock the grid draws, not by elapsed time", () => {
+    const entry = {
+      entry_id: "spring-1",
+      start_at: "2026-03-08T06:30:00Z", // 01:30 EST
+      end_at: "2026-03-08T07:30:00Z", // 03:30 EDT, one real hour later
+      all_day: false,
+    };
+    const [seg] = entryDaySegments(entry, "America/New_York", {
+      startKey: "2026-03-08",
+      endKey: "2026-03-08",
+    });
+    // The grid's rows are wall-clock hours (00..23), so the block runs 01:30 to 03:30 on them.
+    expect(seg.startMin).toBe(90);
+    expect(seg.endMin).toBe(210);
+  });
+
+  it("an event wholly after the gap keeps its true one-hour height", () => {
+    const entry = {
+      entry_id: "spring-2",
+      start_at: "2026-03-08T07:00:00Z", // 03:00 EDT
+      end_at: "2026-03-08T08:00:00Z", // 04:00 EDT
+      all_day: false,
+    };
+    const [seg] = entryDaySegments(entry, "America/New_York", {
+      startKey: "2026-03-08",
+      endKey: "2026-03-08",
+    });
+    expect(seg.endMin - seg.startMin).toBe(60);
+  });
+});

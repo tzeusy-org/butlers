@@ -325,6 +325,9 @@ class CalendarEvent(BaseModel):
     end_at: datetime
     timezone: str
     all_day: bool = False
+    #: ``True`` only when the provider payload itself carried a ``timeZone``; otherwise
+    #: ``timezone`` is a write-time default and is not the event's own zone (bu-5ii4gj.5).
+    zone_from_payload: bool = False
     description: str | None = None
     body: str | None = None
     location: str | None = None

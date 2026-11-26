@@ -16,6 +16,7 @@ import {
   tzCalendarWindow,
   tzDateTimeLocalInput,
   tzDayKey,
+  sourceZoneTime,
 } from "./calendar-grid";
 
 describe("snapMinutes", () => {
@@ -266,5 +267,42 @@ describe("tzCalendarWindow", () => {
     expect(end).toEqual(addWeeks(start, 1));
     expect(queryStart).toBe(start.toISOString());
     expect(queryEnd).toBe(end.toISOString());
+  });
+});
+
+describe("sourceZoneTime", () => {
+  const london = { start_at: "2026-07-06T08:00:00Z", source_timezone: "Europe/London" };
+
+  it("gives the event's own clock when its zone differs from the display zone", () => {
+    expect(sourceZoneTime(london, "Australia/Sydney")).toEqual({ time: "09:00", place: "London" });
+    expect(sourceZoneTime({ ...london, source_timezone: "America/New_York" }, "UTC")).toEqual({
+      time: "04:00",
+      place: "New York",
+    });
+  });
+
+  it("adds nothing for the same zone, the same offset, all-day, or an unknown zone", () => {
+    expect(sourceZoneTime(london, "Europe/London")).toBeNull();
+    // Dublin and London share an offset in July: the same clock, nothing to add.
+    expect(sourceZoneTime({ ...london, source_timezone: "Europe/Dublin" }, "Europe/London")).toBeNull();
+    expect(sourceZoneTime({ ...london, all_day: true }, "Australia/Sydney")).toBeNull();
+    expect(sourceZoneTime({ ...london, source_timezone: null }, "Australia/Sydney")).toBeNull();
+    expect(sourceZoneTime({ ...london, source_timezone: "Not/AZone" }, "Australia/Sydney")).toBeNull();
+  });
+
+  it("uses the offset in force at that instant (winter London matches UTC)", () => {
+    expect(
+      sourceZoneTime({ start_at: "2026-01-06T09:00:00Z", source_timezone: "Europe/London" }, "UTC"),
+    ).toBeNull();
+  });
+
+  it("renders POSIX-inverted Etc/GMT zones as the real UTC offset", () => {
+    // Etc/GMT-5 is UTC+5, so 08:00Z is 13:00 there.
+    expect(
+      sourceZoneTime({ start_at: "2026-07-06T08:00:00Z", source_timezone: "Etc/GMT-5" }, "UTC"),
+    ).toEqual({ time: "13:00", place: "UTC+5" });
+    expect(
+      sourceZoneTime({ start_at: "2026-07-06T08:00:00Z", source_timezone: "Etc/GMT+5" }, "UTC"),
+    ).toEqual({ time: "03:00", place: "UTC-5" });
   });
 });

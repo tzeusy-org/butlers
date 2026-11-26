@@ -55,6 +55,11 @@ class UnifiedCalendarEntry(BaseModel):
     start_at: datetime
     end_at: datetime
     timezone: str
+    #: The IANA zone the event was authored in (``instance_timezone`` else ``event_timezone``),
+    #: kept beside ``timezone`` (the display zone the times above are converted to) so a client can
+    #: show a foreign-zone event's own clock. ``None`` when the row carries no valid zone: unknown,
+    #: never guessed (bu-5ii4gj.5).
+    source_timezone: str | None = None
     all_day: bool = False
 
     calendar_id: str | None = None

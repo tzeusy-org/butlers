@@ -696,6 +696,36 @@ async def _fetch_flattened_workspace_rows(
     return flattened, failed
 
 
+def _source_zone_name(row: Mapping[str, Any]) -> str | None:
+    """The event's own zone: a real IANA zone the provider stated, else ``None`` (never a guess).
+
+    Only a provider event whose payload carried a ``timeZone`` qualifies. Internal rows and
+    scheduler projections store write-time defaults (the ``UTC`` follow-the-owner sentinel, the
+    module config zone), which say nothing about where the event was authored.
+    """
+    metadata = _effective_event_metadata(row)
+    if metadata.get("source_type") != "provider_event":
+        return None
+    if metadata.get("source_zone_from_payload") is not True:
+        return None
+    for key in ("instance_timezone", "event_timezone"):
+        name = row.get(key)
+        if isinstance(name, str) and name.strip():
+            try:
+                ZoneInfo(name.strip())
+            except (ZoneInfoNotFoundError, ValueError):
+                continue  # an unusable instance zone falls through to the event's
+            return name.strip()
+    return None
+
+
+def _effective_event_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key in ("event_metadata", "instance_metadata"):
+        merged.update(_normalize_json_object(row.get(key)))
+    return merged
+
+
 def _normalize_entry(
     row: Mapping[str, Any],
     *,
@@ -767,6 +797,7 @@ def _normalize_entry(
         start_at=start_at,
         end_at=end_at,
         timezone=timezone_name,
+        source_timezone=_source_zone_name(row),
         all_day=bool(row.get("all_day") or False),
         calendar_id=row.get("calendar_id"),
         provider_event_id=provider_event_id,

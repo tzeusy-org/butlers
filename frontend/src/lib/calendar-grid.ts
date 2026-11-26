@@ -62,6 +62,54 @@ export function formatEventTime(
 }
 
 /**
+ * A short name for an IANA zone. `Etc/GMT-5` is POSIX-inverted (it is UTC+5), so those render
+ * as the real offset rather than "GMT-5".
+ */
+export function zonePlace(zone: string): string {
+  const etc = /^Etc\/GMT([+-])(\d{1,2})$/.exec(zone);
+  if (etc) {
+    const sign = etc[1] === "-" ? "+" : "-";
+    return `UTC${sign}${Number(etc[2])}`;
+  }
+  if (zone === "Etc/GMT" || zone === "Etc/UTC" || zone === "UTC") return "UTC";
+  return (zone.split("/").pop() ?? zone).replace(/_/g, " ");
+}
+
+/** The event's own clock when it was authored in another zone than the one displayed. */
+export interface SourceZoneTime {
+  /** `HH:mm` in the event's own zone. */
+  time: string;
+  /** A short place name for the zone ("London"), from its IANA id. */
+  place: string;
+}
+
+/**
+ * The start time in the event's own zone, to show beside the displayed one, or `null` when
+ * there is nothing to add: all-day, no known source zone, the same zone, or a different zone
+ * on the same clock offset at that instant. An unknown zone is never guessed.
+ */
+export function sourceZoneTime(
+  entry: { start_at: string; all_day?: boolean; source_timezone?: string | null },
+  displayTz: string,
+): SourceZoneTime | null {
+  const source = entry.source_timezone;
+  if (!source || entry.all_day || source === displayTz) return null;
+  const date = toDate(entry.start_at);
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    if (formatInTimeZone(date, source, "xxx") === formatInTimeZone(date, displayTz, "xxx")) {
+      return null;
+    }
+    return {
+      time: formatInTimeZone(date, source, "HH:mm"),
+      place: zonePlace(source),
+    };
+  } catch {
+    return null; // not a zone this runtime knows
+  }
+}
+
+/**
  * Format an instant as a `yyyy-MM-dd'T'HH:mm` value for a `datetime-local`
  * input, rendered in `tz` (the workspace wall clock). Returns `fallback` when
  * the value is missing/unparseable so the form never shows "Invalid Date".

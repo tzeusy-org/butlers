@@ -22,7 +22,7 @@ import { Mono } from "@/components/ui/Mono";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { StateDot } from "@/components/ui/StateDot";
 import { Tip } from "@/components/ui/tip";
-import { formatEventTime } from "@/lib/calendar-grid";
+import { formatEventTime, sourceZoneTime } from "@/lib/calendar-grid";
 import { cn } from "@/lib/utils";
 import { KindTag } from "@/pages/calendar/atoms";
 import { calendarMutationErrorMessage, isCalendarMutationOk } from "@/pages/calendar/mutation-result";
@@ -155,6 +155,7 @@ export function CalendarEntryDetailPanel({
   const endFmt = entry.all_day
     ? formatEventTime(entry.end_at, timezone, "EEE, MMM d")
     : formatEventTime(entry.end_at, timezone, "HH:mm");
+  const zoneTime = sourceZoneTime(entry, timezone);
   const attendees = useMemo(() => attendeesOf(entry), [entry]);
 
   return (
@@ -238,6 +239,18 @@ export function CalendarEntryDetailPanel({
           {!entry.all_day && ` – ${endFmt}`}
         </Mono>
         <Mono muted>{entry.timezone}</Mono>
+        {zoneTime ? (
+          <Mono muted data-testid="source-zone-time">
+            {zoneTime.time} in {zoneTime.place} (the event's own zone)
+          </Mono>
+        ) : null}
+        {!entry.all_day &&
+        entry.source_type === "provider_event" &&
+        !entry.source_timezone ? (
+          <Mono muted data-testid="source-zone-unknown">
+            zone unknown
+          </Mono>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2">

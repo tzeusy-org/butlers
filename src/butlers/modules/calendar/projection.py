@@ -962,6 +962,8 @@ class ProjectionMixin:
                 "calendar_id": calendar_id,
                 "butler_generated": event.butler_generated,
                 "butler_name": event.butler_name,
+                # The zone is the event's own only when the provider sent one.
+                "source_zone_from_payload": event.zone_from_payload,
                 "organizer": event.organizer,
                 "transparency": event.transparency,
                 "attendees": [self._attendee_to_payload(attendee) for attendee in event.attendees],

@@ -40990,6 +40990,8 @@ export interface components {
             source_key: string;
             /** Source Session Id */
             source_session_id?: string | null;
+            /** Source Timezone */
+            source_timezone?: string | null;
             /**
              * Source Type
              * @enum {string}

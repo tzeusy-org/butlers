@@ -1317,6 +1317,11 @@ export interface UnifiedCalendarEntry {
   start_at: string;
   end_at: string;
   timezone: string;
+  /**
+   * The IANA zone the event was authored in, beside `timezone` (the display zone `start_at` and
+   * `end_at` are converted to). `null`/absent when unknown: never guessed.
+   */
+  source_timezone?: string | null;
   all_day: boolean;
   calendar_id: string | null;
   provider_event_id: string | null;

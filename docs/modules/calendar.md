@@ -687,3 +687,11 @@ event resource, not external calendar ACL changes or a multi-write transaction.
 Owner-only legacy overlap/series approvals retain their original authority;
 a generic overlap approval never authorizes a non-owner audience without the
 owning party receipt.
+
+## Event zone beside the display zone
+
+Each workspace entry carries `source_timezone`, the IANA zone the event was authored in, beside
+`timezone`, the zone its `start_at` and `end_at` are converted to. It is set only for a provider event whose payload carried a `timeZone`
+(`source_zone_from_payload`); internal and scheduler rows and zone-less provider events are `null`
+(unknown, never inferred, never a write-time default). The grid block, agenda row and detail panel show the event's own
+start time and place ("09:00 London") when that zone differs from the display zone at that instant.

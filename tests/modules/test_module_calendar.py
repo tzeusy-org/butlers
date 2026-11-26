@@ -2944,6 +2944,7 @@ class TestGoogleDateOnlyProjection:
                 projected["attendee_status_provenance"][0]["response_status_explicit"] is explicit
             )
             assert projected["attendees"] == [tool_payload]
+            assert projected["source_zone_from_payload"] is parsed.zone_from_payload
 
     def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
         body = _build_google_event_body(
