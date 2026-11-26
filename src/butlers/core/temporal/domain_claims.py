@@ -38,6 +38,14 @@ STATUSES: tuple[str, ...] = ("active", "settled", "cancelled")
 _KEY = re.compile(r"^([a-z][a-z_]*):([a-z][a-z_]*):(\S.*)$")
 
 
+def clip_label(label: str) -> str:
+    """``label`` cut to ``MAX_LABEL_CHARS`` with an ellipsis, so a long title still claims."""
+    text = label.strip()
+    if len(text) <= MAX_LABEL_CHARS:
+        return text
+    return text[: MAX_LABEL_CHARS - 1].rstrip() + "\u2026"
+
+
 class ClaimError(ValueError):
     """A claim is malformed, or is not the caller's to make."""
 

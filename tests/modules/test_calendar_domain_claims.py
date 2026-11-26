@@ -380,3 +380,11 @@ async def test_an_over_cap_label_or_door_is_an_invalid_claim(db):
     )
     assert result.invalid == ["finance:bill:a", "finance:bill:b"]
     assert result.created == ["finance:bill:c"] and result.retraction_ran is False
+
+
+def test_clip_label_cuts_a_long_label_to_the_cap_with_an_ellipsis():
+    from butlers.core.temporal.domain_claims import MAX_LABEL_CHARS, clip_label
+
+    assert clip_label("  Electric Co ") == "Electric Co"
+    clipped = clip_label("P" * 130)
+    assert len(clipped) == MAX_LABEL_CHARS and clipped.endswith("…")
