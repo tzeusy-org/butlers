@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { useEffect } from "react";
 import { cleanup, render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -58,9 +59,12 @@ function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) 
   );
 }
 
-let sheet: string[] = [];
+const sheetHolder = { current: [] as string[] };
 function HintReader() {
-  sheet = useShortcutHintEntries().map((binding) => binding.description);
+  const entries = useShortcutHintEntries();
+  useEffect(() => {
+    sheetHolder.current = entries.map((binding) => binding.description);
+  });
   return null;
 }
 
@@ -125,16 +129,16 @@ it("every bound key reaches the ? sheet, and a key that does not apply is not li
   view();
   const user = userEvent.setup();
   await user.keyboard("j");
-  expect(sheet).toEqual(
+  expect(sheetHolder.current).toEqual(
     expect.arrayContaining([
       "Next item", "Previous item", "Open evidence",
       "Accept invitation", "Decline invitation", "Tentative invitation",
     ]),
   );
-  expect(sheet).not.toContain("Accept proposal");
+  expect(sheetHolder.current).not.toContain("Accept proposal");
   await user.keyboard("jjj");
-  expect(sheet).toEqual(expect.arrayContaining(["Accept proposal", "Dismiss proposal"]));
-  expect(sheet).not.toContain("Decline invitation");
+  expect(sheetHolder.current).toEqual(expect.arrayContaining(["Accept proposal", "Dismiss proposal"]));
+  expect(sheetHolder.current).not.toContain("Decline invitation");
 });
 
 it("says moved-under-you changes are not tracked and still says nothing is unknown", () => {
