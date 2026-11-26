@@ -21,6 +21,7 @@ pytestmark = [
 async def _anchored(db):
     pool, _module_, mcp, event = await _world(db)
     source = await pool.fetchval("SELECT id FROM calendar_sources WHERE lane = 'user'")
+    await pool.execute("UPDATE calendar_sources SET time_role = 'owner' WHERE id = $1", source)
     created = await _create(
         mcp,
         anchor_event_id="dentist",
@@ -143,27 +144,84 @@ async def test_an_absolute_reminder_is_untouched_by_a_moved_event(db):
     assert (await _state(pool, plain))["starts_at"] == event.start_at - timedelta(hours=1)
 
 
-async def test_a_receipt_is_unique_per_reminder_kind_and_revision(db):
+async def test_a_replayed_change_applies_once(db):
     from butlers.modules.calendar import reminder_follow
 
     pool, _source_id, event, reminder_id = await _anchored(db)
-    reminder = await pool.fetchrow(
-        "SELECT id, title, starts_at, ends_at, metadata -> 'anchor' AS anchor "
-        "FROM calendar_events WHERE id = $1::uuid",
-        reminder_id,
-    )
-    anchor = reminder_follow._anchor(reminder["anchor"])
     new_start = event.start_at + timedelta(hours=3)
     async with pool.acquire() as conn:
-        first = await reminder_follow._apply(
-            conn, reminder, anchor, event_start=new_start, retire=False
-        )
-        again = await reminder_follow._apply(
-            conn, reminder, anchor, event_start=new_start, retire=False
-        )
+        first = await reminder_follow._apply(conn, reminder_id, event_start=new_start, retire=False)
+        again = await reminder_follow._apply(conn, reminder_id, event_start=new_start, retire=False)
 
     assert first is not None and again is None
     assert await pool.fetchval("SELECT count(*) FROM reminder_receipts") == 1
+
+
+async def test_an_event_that_flips_back_and_forth_rebases_every_time(db):
+    pool, source, event, reminder_id = await _anchored(db)
+
+    for by in (1, 0, 1):  # 10:00 -> 11:00 -> 10:00 -> 11:00
+        await _sync(pool, source, _moved(event, timedelta(hours=by)))
+        state = await _state(pool, reminder_id)
+        assert state["starts_at"] == event.start_at + timedelta(hours=by) - timedelta(minutes=60)
+
+    assert await pool.fetchval("SELECT count(*) FROM reminder_receipts") == 3
+    assert len(await _candidates(pool)) == 3
+
+
+async def test_a_partner_calendars_decline_never_retires_the_owners_reminder(db):
+    pool, source, event, reminder_id = await _anchored(db)
+    partner = await pool.fetchval(
+        "INSERT INTO calendar_sources (source_key, source_kind, lane, provider, calendar_id, "
+        "display_name, writable, time_role, metadata) VALUES ('provider:google:partner', "
+        "'provider_event', 'user', 'google', 'partner', 'Partner', false, 'household_member', "
+        "'{}') RETURNING id"
+    )
+    declined = event.model_copy(
+        update={
+            "attendees": [
+                AttendeeInfo(
+                    email="me@example.com",
+                    self=True,
+                    response_status=AttendeeResponseStatus.declined,
+                )
+            ]
+        }
+    )
+
+    await _sync(pool, partner, declined)  # the partner's copy of the same event
+    await _sync(pool, partner, _moved(event, timedelta(hours=4)))
+
+    state = await _state(pool, reminder_id)
+    assert state["status"] == "confirmed"
+    assert state["starts_at"] == event.start_at - timedelta(minutes=60)
+    assert await pool.fetchval("SELECT count(*) FROM reminder_receipts") == 0
+
+
+async def test_a_broker_outage_loses_no_announcement(db, monkeypatch):
+    import importlib
+
+    pool, source, event, reminder_id = await _anchored(db)
+    broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
+    real = broker.propose_insight_candidate
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(broker, "propose_insight_candidate", down)
+    await _sync(pool, source, _moved(event, timedelta(hours=3)))
+
+    assert await pool.fetchval("SELECT count(*) FROM reminder_receipts") == 1
+    assert await pool.fetchval("SELECT count(*) FROM reminder_receipts WHERE announced_at IS NULL")
+    assert await _candidates(pool) == []
+
+    monkeypatch.setattr(broker, "propose_insight_candidate", real)
+    await _sync(pool, source, _moved(event, timedelta(hours=3)))  # any later follow retries it
+
+    assert len(await _candidates(pool)) == 1
+    assert not await pool.fetchval(
+        "SELECT count(*) FROM reminder_receipts WHERE announced_at IS NULL"
+    )
 
 
 def test_the_moved_line_is_in_the_owners_zone_not_utc():
