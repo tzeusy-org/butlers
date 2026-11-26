@@ -110,8 +110,8 @@ module's own response coordinator, never auto-approved on the agent path. A reje
 outcome. Each step SHALL leave a `plan_step` row in `calendar_action_log` with the plan id, step
 index, pre-state, `etag_after` and an outcome of `applied`, `declined`, `uncertain` or `skipped`.
 Re-applying the same `plan_id` SHALL replay the recorded `plan_step` receipts and finish only the
-rest, never re-send a step; until a card executes, a plan that no longer compiles to the same digest
-is refused with `plan_changed`, and once recorded receipts exist they are replayed as they are. No dashboard route SHALL apply a plan except by parking; the plan tools
+rest, never re-send a step; resume works only while the plan still compiles to the same digest; once a
+card executes the events differ and a re-apply is refused with `plan_changed`. No dashboard route SHALL apply a plan except by parking; the plan tools
 are MCP-only. Until the goal-runtime cutover (RFC 0038) the cards are per step; after it the parked
 steps become one decision set with per-item untick (`explicit_only`), and an unticked item leaves its
 event untouched and recomputes its dependents.
