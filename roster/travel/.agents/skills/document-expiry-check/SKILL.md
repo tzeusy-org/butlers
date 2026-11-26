@@ -5,7 +5,6 @@ version: 1.0.0
 tools_required:
   - list_trips
   - trip_summary
-  - calendar_create_event
   - notify
 ---
 
@@ -62,31 +61,9 @@ For each document with a non-null `expiry_date`:
 
 Skip documents with no expiry date (boarding passes, hotel confirmations, etc.).
 
-### Step 4: Create Calendar Reminders for <30 Day Documents
+### Step 4: Calendar Reminders (automatic)
 
-For each document classified as **Critical** (< 30 days until expiry):
-
-Check if a calendar reminder already exists for this document expiry. If not:
-
-```python
-calendar_create_event(
-    title="⚠️ [Document type] expires in [N] days",
-    start_at="<30 days before expiry, 09:00 local time>",
-    end_at="<30 days before expiry, 09:30 local time>",
-    description="Document: [type] | Expiry: [expiry_date] | Trip: [trip destination]",
-)
-```
-
-For **Expired** documents, create an immediate reminder (today at 09:00) if not already present:
-
-```python
-calendar_create_event(
-    title="🚨 [Document type] HAS EXPIRED",
-    start_at="<today, 09:00 local time>",
-    end_at="<today, 09:30 local time>",
-    description="Document: [type] | Expired: [expiry_date] | Trip: [trip destination] — immediate action required",
-)
-```
+Do not create calendar events for expiring documents. The daily overlay job claims a reminder 30 days before each visa or insurance expiry on its own.
 
 ### Step 5: Compose Expiry Alert
 
@@ -105,8 +82,6 @@ Travel document expiry alert:
 [For each warning document (30–90 days):]
 📋 [Document type] for [trip destination] expires in [N] days ([date])
 
-[If reminders were created:]
-Calendar reminders have been set for critical items.
 ```
 
 ### Step 6: Send Notification
@@ -149,21 +124,11 @@ summary = trip_summary(trip_id="uuid-tokyo", include_documents=True)
 # travel_insurance: 20 days → Critical
 # boarding_pass: no expiry → skip
 
-# Step 4: calendar reminder for insurance (Critical, < 30 days)
-calendar_create_event(
-    title="⚠️ Travel insurance expires in 20 days",
-    start_at="2026-02-28T09:00:00",
-    end_at="2026-02-28T09:30:00",
-    description="Document: travel_insurance | Expiry: 2026-03-20 | Trip: Tokyo — TravelGuard policy TG-991234",
-)
-
 # Step 5: compose
 message = """Travel document expiry alert:
 
 ⚠️ Travel insurance for Tokyo expires in 20 days (2026-03-20) — renew or extend
-📋 Japan visa for Tokyo expires in 45 days (2026-04-14)
-
-Calendar reminder set for travel insurance expiry."""
+📋 Japan visa for Tokyo expires in 45 days (2026-04-14)"""
 
 # Step 6: send
 notify(
