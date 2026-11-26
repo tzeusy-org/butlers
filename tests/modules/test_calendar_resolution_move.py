@@ -299,3 +299,14 @@ async def test_a_series_that_changed_since_the_check_declines_the_occurrence_mov
 
     assert result["status"] == RESOLUTION_DECLINED and result["reason"] == "changed_since_check"
     assert provider.update_calls == []
+
+
+@pytest.mark.parametrize(
+    "fetchrow", [AsyncMock(side_effect=RuntimeError("down")), AsyncMock(return_value={})]
+)
+async def test_an_unreadable_binding_is_no_binding_never_an_error(fetchrow):
+    from butlers.modules.calendar.resolution_move import offer_for_card
+
+    pool = SimpleNamespace(fetchrow=fetchrow)
+
+    assert await offer_for_card(pool, uuid.uuid4()) is None

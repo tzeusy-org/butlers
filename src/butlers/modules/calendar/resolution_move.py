@@ -172,15 +172,18 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
             "WHERE action_type = 'resolution_move' AND action_result->>'action_id' = $1",
             str(action_id),
         )
+        result = row["action_result"] if row is not None else None
+        if isinstance(result, str):
+            import json
+
+            result = json.loads(result)
     except asyncpg.UndefinedTableError:
         return None
-    if row is None:
+    except Exception:
+        # An unreadable binding is no binding: a resolution request then declines ``unbound``,
+        # and any other approved update is the ordinary update it always was.
+        logger.warning("resolution move: binding could not be read", exc_info=True)
         return None
-    result = row["action_result"]
-    if isinstance(result, str):
-        import json
-
-        result = json.loads(result)
     if not isinstance(result, dict) or result.get("action_id") != str(action_id):
         return None
     return result
