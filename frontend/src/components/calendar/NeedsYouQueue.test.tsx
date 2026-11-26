@@ -9,7 +9,7 @@ import { respondToCalendarInvitation } from "@/api/index";
 import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
 import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
 import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
-import { CommandRegistryProvider } from "@/lib/command-registry";
+import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 import { ShortcutRegistryProvider, useShortcutHintEntries } from "@/hooks/use-register-shortcut";
 import { buildNeedsYouQueue } from "@/pages/calendar/needs-you-queue";
 
@@ -60,9 +60,12 @@ function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) 
 }
 
 const sheetHolder = { current: [] as string[] };
+const paletteHolder = { current: [] as string[] };
 function HintReader() {
   const entries = useShortcutHintEntries();
+  const commands = useCommandMenuActions();
   useEffect(() => {
+    paletteHolder.current = commands.map((command) => command.label);
     sheetHolder.current = entries.map((binding) => binding.description);
   });
   return null;
@@ -121,8 +124,8 @@ it("an overlap opens evidence and has no accept key", async () => {
 
 it("an unknown kind is named and the count is a lower bound", () => {
   view({ proposalsComplete: false });
-  expect(screen.getByRole("heading", { name: "4+ need you" })).toBeTruthy();
-  expect(screen.getByRole("status").textContent).toContain("proposals");
+  expect(screen.getByRole("heading", { name: "4+ need you · proposals unknown" })).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toContain("longer than shown");
 });
 
 it("every bound key reaches the ? sheet, and a key that does not apply is not listed", async () => {
@@ -145,4 +148,22 @@ it("says moved-under-you changes are not tracked and still says nothing is unkno
   view();
   expect(screen.getByText("Moved-under-you changes are not tracked yet.")).toBeTruthy();
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("every bound key has its palette form", async () => {
+  view();
+  const user = userEvent.setup();
+  await user.keyboard("j");
+  expect(paletteHolder.current).toEqual(
+    expect.arrayContaining([
+      "Needs you: open evidence",
+      "Needs you: accept invitation",
+      "Needs you: decline invitation",
+      "Needs you: tentative invitation",
+    ]),
+  );
+  await user.keyboard("jjj");
+  expect(paletteHolder.current).toEqual(
+    expect.arrayContaining(["Needs you: accept proposal", "Needs you: dismiss proposal"]),
+  );
 });

@@ -132,10 +132,13 @@ export function NeedsYouQueue({
 
   return (
     <section aria-label="Needs you" className="border-b border-border py-3">
-      <h2 className="text-sm font-medium">{count ?? (nothingKnown ? "Nothing needs you" : "Needs you")}</h2>
+      <h2 className="text-sm font-medium">
+        {(count ?? (nothingKnown ? "Nothing needs you" : "Needs you")) +
+          (unknown.length > 0 ? ` · ${unknown.join(", ")} unknown` : "")}
+      </h2>
       {unknown.length > 0 ? (
         <p role="status" className="text-xs text-muted-foreground">
-          {unknown.join(", ")} unknown. This list may be longer than shown.
+          This list may be longer than shown.
         </p>
       ) : null}
       <p className="text-xs text-muted-foreground">Moved-under-you changes are not tracked yet.</p>
