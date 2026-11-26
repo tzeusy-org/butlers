@@ -3160,7 +3160,7 @@ async def _respond_through_approval(
             result = {
                 "status": "rejected",
                 "command_id": str(command_id),
-                "reason": "response_approval_" + pending["status"],
+                "reason": f"response_approval_{pending['status']}",
             }
         else:
             if pending["status"] == "approved":
