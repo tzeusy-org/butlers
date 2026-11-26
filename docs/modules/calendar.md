@@ -344,6 +344,13 @@ reported from the copy observed most recently (ties by butler name). The compari
 revision journal treats a head as newer when it was observed after the calendar source's last sync
 (the sync cursor), not after the projection's last change.
 
+Each newly opened or reopened condition yields one insight candidate (slice A-S4) whose premise is
+the condition itself, so a revert before delivery withdraws it unsent and a revert after delivery
+amends it in place. It goes on the timed lane when the occurrence starts within 24 hours (the timed
+lane's shared per-day cap of six still applies, enforced by the timed cycle) and falls back to the
+digest lane while the timed lane is dark; it never calls notify. The line is built from the title
+through `inert_text` and the delivery defang, and never carries description text.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync
