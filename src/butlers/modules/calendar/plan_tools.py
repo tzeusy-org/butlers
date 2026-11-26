@@ -159,7 +159,8 @@ async def plan_change(
     except Exception:
         logger.warning("calendar_plan_change: projection unreadable", exc_info=True)
         return _refused("projection_unreadable")
-    if kind == "clear_window" and not zone_name:
+    if not zone_name:
+        # Working hours are the owner's, in their zone: no zone, no guess (either verb).
         return _refused("owner_zone_unknown")
 
     busy_rows = [r for r in rows if blocks_owner(r)]
@@ -177,7 +178,14 @@ async def plan_change(
         )
     hours = None
     if kind == "shift_window" and zone_name:
-        hours = cr.free_windows([], lo, hi, ZoneInfo(str(zone_name)))
+        # Whole owner-local days, not [lo, hi): a destination in the day's working hours before
+        # ``lo`` or after ``hi`` is still inside the owner's working day.
+        zone = ZoneInfo(str(zone_name))
+        day_lo = lo.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_hi = hi.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=1
+        )
+        hours = cr.free_windows([], day_lo, day_hi, zone)
     plan = compile_plan(
         kind,
         window,

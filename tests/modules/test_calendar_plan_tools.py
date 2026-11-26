@@ -226,3 +226,41 @@ async def test_the_same_plan_comes_back_on_a_retry():
     ):
         first, again = await _clear(pool), await _clear(pool)
     assert first["plan_id"] == again["plan_id"] and first["plan_digest"] == again["plan_digest"]
+
+
+async def test_a_shift_with_no_owner_zone_is_refused_like_a_clear():
+    pool = _Pool([_row("solo", 14)], zone=None)
+    with patch(
+        "butlers.modules.calendar.plan_tools.load_configured_general_timezone",
+        return_value=None,
+    ):
+        result = await plan_change(
+            _module(pool),
+            kind="shift_window",
+            window_start=WINDOW[0],
+            window_end=WINDOW[1],
+            shift_minutes=30,
+            now=NOW,
+        )
+    assert result["reason"] == "owner_zone_unknown" and "steps" not in result
+
+
+async def test_working_hours_cover_the_whole_owner_day_not_just_the_scanned_range():
+    # Window 09:00-12:00; the event straddles its end (11:30-13:00) and shifts to 12:30-14:00:
+    # inside the working day, past the scan's own end.
+    event = _row("late", 11, instance_starts_at=DAY + timedelta(hours=11, minutes=30))
+    event["instance_ends_at"] = DAY + timedelta(hours=13)
+    pool = _Pool([event])
+    with patch(
+        "butlers.modules.calendar.plan_tools.load_configured_general_timezone",
+        return_value="UTC",
+    ):
+        result = await plan_change(
+            _module(pool),
+            kind="shift_window",
+            window_start=DAY + timedelta(hours=9),
+            window_end=DAY + timedelta(hours=12),
+            shift_minutes=60,
+            now=NOW,
+        )
+    assert [s["event_ref"] for s in result["steps"]] == ["late"]
