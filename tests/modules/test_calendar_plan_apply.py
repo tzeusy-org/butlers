@@ -222,7 +222,31 @@ async def test_reapplying_replays_receipts_and_parks_only_the_missing_steps():
         (
             {
                 "status": "executed",
-                "execution_result": {"success": False, "result": {"status": "failed"}},
+                "execution_result": {"success": True, "result": {"status": "noop"}},
+            },
+            ("applied", None),
+        ),
+        (
+            {
+                "status": "executed",
+                "execution_result": {
+                    "success": True,
+                    "result": {"status": "failed", "reason": "response_provider_rejected"},
+                },
+            },
+            ("declined", "response_provider_rejected"),
+        ),
+        (
+            {
+                "status": "failed",
+                "execution_result": {"success": False, "error": "response_version_changed"},
+            },
+            ("declined", "response_version_changed"),
+        ),
+        (
+            {
+                "status": "executed",
+                "execution_result": {"success": False, "result": {"status": "uncertain"}},
             },
             ("uncertain", "execution_not_confirmed"),
         ),

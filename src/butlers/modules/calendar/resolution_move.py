@@ -207,7 +207,7 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
 
 
 #: The ``result.status`` of an approved update or response that really changed the calendar.
-_WROTE_STATUSES = frozenset({"updated", "applied"})
+_WROTE_STATUSES = frozenset({"updated", "applied", "noop"})  # noop: the response already stood
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -226,16 +226,20 @@ def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | 
     ``applied`` only when the executor ran it, succeeded, and the call itself reports that it
     wrote (``updated`` or ``applied``). A card still waiting is ``pending``; one the owner rejected
     or that expired, a move that declined (``resolution_declined``) and a move onto a busy slot
-    (``conflict``, the card's own ``fail`` policy) are ``declined`` with the reason. Anything else,
+    (``conflict``, the card's own ``fail`` policy), a response the provider rejected (``failed``)
+    and one whose event changed under it (``response_version_changed``) are ``declined`` with the
+    reason; ``noop`` (the response already stood) counts as ``applied``. Anything else,
     including an execution that failed or reports no status, is ``uncertain``: never ``applied``.
     """
     if status in ("pending", "approved"):
         return "pending", None
     if status in ("rejected", "expired", "cancelled", "abandoned"):
         return "declined", f"card_{status}"
+    result = _object(execution_result)
+    if status == "failed" and "version_changed" in str(result.get("error") or ""):
+        return "declined", "response_version_changed"
     if status != "executed":
         return "uncertain", "card_state_unknown"
-    result = _object(execution_result)
     inner = _object(result.get("result"))
     reported = inner.get("status")
     if result.get("success") is True and reported in _WROTE_STATUSES:
@@ -245,6 +249,9 @@ def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | 
         return "declined", reason if isinstance(reason, str) else "move_not_applied"
     if reported == "conflict":
         return "declined", "destination_busy"
+    if reported == "failed":
+        reason = inner.get("reason")
+        return "declined", reason if isinstance(reason, str) else "response_failed"
     return "uncertain", "execution_not_confirmed"
 
 
