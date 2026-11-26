@@ -45,6 +45,8 @@ logger = logging.getLogger("butlers.core.scheduler")
 
 # Kept beside tick(): the reviewed host-policy selector scan resolves this alias per module.
 _QA_BUTLER_NAME = "qa"
+#: The owner-zone read must never hold a tick; past this the default zone is used.
+_OWNER_ZONE_TIMEOUT_S = 5.0
 
 
 async def tick(
@@ -60,6 +62,7 @@ async def tick(
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    owner_zone_resolver: Callable[[str], Awaitable[str]] | None = None,
     stopping: asyncio.Event | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
@@ -269,6 +272,16 @@ async def tick(
         span.set_attribute("tasks_due", tasks_due)
 
         dispatched = 0
+        if owner_zone_resolver is not None and rows:
+            # One source for the owner zone sentinel rows follow: the same one the owner-clock
+            # re-anchor uses, so a re-anchored row does not snap back after its first firing.
+            try:
+                async with asyncio.timeout(_OWNER_ZONE_TIMEOUT_S):
+                    default_timezone = await owner_zone_resolver(default_timezone)
+            except Exception:
+                logger.warning(
+                    "Scheduler: owner zone resolver failed; using default", exc_info=True
+                )
         for row in rows:
             task_id = row["id"]
             original_next_run_at = row["next_run_at"]
