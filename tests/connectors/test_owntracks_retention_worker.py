@@ -8,14 +8,18 @@ skipped and the others still run.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
 import pytest
+from starlette.applications import Starlette
 
 from butlers.connectors.filtered_event_buffer import _replay_one
 from butlers.connectors.owntracks_retention import (
@@ -27,7 +31,11 @@ from butlers.connectors.owntracks_retention import (
     fetch_ready_grants,
     run_retention_once,
 )
-from butlers.core.service_plane.registry import LOCATION_RETENTION_GRANTS_READY
+from butlers.core.service_plane import wiring
+from butlers.core.service_plane.registry import (
+    CONNECTOR_OWNTRACKS_WORKLOAD,
+    LOCATION_RETENTION_GRANTS_READY,
+)
 from butlers.core.service_plane.workload_identity import (
     DAEMON_HEADER,
     RELAY_AUDIENCE,
@@ -36,6 +44,7 @@ from butlers.core.service_plane.workload_identity import (
 from butlers.testing.migration import load_migration
 
 _DIGEST = "v1:" + "c" * 64
+_ROSTER = Path(__file__).resolve().parents[2] / "roster"
 
 
 def _grant() -> dict[str, Any]:
@@ -209,6 +218,67 @@ async def test_a_refusal_executes_nothing(tmp_path: Path) -> None:
     executor = _Executor()
     assert await run_retention_once(_Pool(), fetch, execute=executor) == []
     assert executor.executed == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["confirmed", "uncertain", "rejected", "malformed", "wrong-workload", "switch-off"],
+)
+async def test_the_mounted_ready_grant_relay_drives_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Keep the real HTTP relay, route classification and strict worker in the loop."""
+    grant = _grant()
+    token = "opaque-test-token"
+    (tmp_path / RELAY_AUDIENCE).write_text(token)
+    if case == "switch-off":
+        monkeypatch.delenv("BUTLERS_SERVICE_PLANE_AUTH", raising=False)
+    else:
+        monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
+    workload = "butlers-up" if case == "wrong-workload" else CONNECTOR_OWNTRACKS_WORKLOAD
+    verifier = SimpleNamespace(verify=AsyncMock(return_value=workload))
+    monkeypatch.setattr(wiring, "cached_verifier", lambda audience: verifier)
+
+    routing = importlib.import_module("butlers.tools.switchboard.routing.route")
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    monkeypatch.setattr(
+        routing,
+        "resolve_routing_target",
+        AsyncMock(return_value=({"endpoint_url": "http://peer.invalid/mcp"}, None)),
+    )
+    monkeypatch.setattr(routing, "_log_routing", AsyncMock())
+    monkeypatch.setattr(routing, "_record_confirmed_route", AsyncMock())
+    grants = ["malformed"] if case == "malformed" else [grant]
+    content = [] if case == "uncertain" else [SimpleNamespace(text=json.dumps({"grants": grants}))]
+    peer_result = SimpleNamespace(is_error=(case == "rejected"), content=content)
+    peer = AsyncMock(return_value=peer_result)
+    monkeypatch.setattr(routing, "_call_tool_with_router_client", peer)
+
+    app = Starlette(routes=[wiring.build_switchboard_relay_route(_Pool(), _ROSTER)])
+
+    async def fetch() -> Any:
+        return await fetch_ready_grants(
+            switchboard_url="http://butlers-control:41100/sse",
+            token_dir=tmp_path,
+            transport=httpx.ASGITransport(app=app),
+        )
+
+    executor = _Executor()
+    receipts = await run_retention_once(_Pool(), fetch, execute=executor)
+
+    if case == "switch-off":
+        verifier.verify.assert_not_awaited()
+    else:
+        verifier.verify.assert_awaited_once_with(token)
+    if case in {"wrong-workload", "switch-off"}:
+        peer.assert_not_awaited()
+    else:
+        peer.assert_awaited_once_with(
+            "http://peer.invalid/mcp", "location_retention_grants_ready_service", {}
+        )
+    expected = [grant["grant_id"]] if case == "confirmed" else []
+    assert executor.executed == expected
+    assert [str(receipt.grant_id) for receipt in receipts] == expected
 
 
 def test_the_withheld_copy_matches_core_345s_trigger() -> None:
