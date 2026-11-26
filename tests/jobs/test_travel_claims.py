@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from butlers.jobs import calendar_overlay as job
+from tests.jobs.calendar_contribution_harness import save_owner_zone
 from tests.modules.test_calendar_reminder_integration import (
     _make_module,
     _ReminderProviderDouble,
@@ -141,6 +142,7 @@ def e2e(fn):
 async def _world(db, monkeypatch):
     pool = await db("core", "travel", schema="travel")
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
+    save_owner_zone(monkeypatch, "Asia/Singapore")
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     await pool.execute("TRUNCATE TABLE travel.trips CASCADE")
     mod = _make_module(pool, butler_name="travel")
@@ -286,3 +288,20 @@ def test_a_long_travel_label_is_clipped_so_the_claim_stays_valid():
     for raw in claims.values():
         assert len(raw["label"]) <= MAX_LABEL_CHARS
         parse_claim(raw, source_butler="travel")
+
+
+@e2e
+async def test_no_saved_owner_zone_emits_no_travel_claims_and_retracts_nothing(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    await _flight(pool)
+    await job.run_travel_calendar_overlay_contribution(pool, None)
+    before = await _rows(pool)
+    assert before
+
+    save_owner_zone(monkeypatch, None)
+    result = await job.run_travel_calendar_overlay_contribution(pool, None)
+
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"}
+    assert [(r["origin_ref"], r["status"]) for r in await _rows(pool)] == [
+        (r["origin_ref"], r["status"]) for r in before
+    ]

@@ -1252,14 +1252,18 @@ async def run_travel_calendar_overlay_contribution(
             )
             check_out_count += 1
 
-    claims_by_date = travel_claims(
-        leg_rows,
-        accom_rows,
-        reservation_rows,
-        document_rows,
-        today=today,
-        zone=zone,
-        now=_utcnow(),
+    claims_by_date = (
+        travel_claims(
+            leg_rows,
+            accom_rows,
+            reservation_rows,
+            document_rows,
+            today=today,
+            zone=zone,
+            now=_utcnow(),
+        )
+        if owner_zone_key(zone) is not None
+        else {}
     )
     if complete:
         dates_written, total_entries = await write_overlay_envelopes(
@@ -1283,6 +1287,7 @@ async def run_travel_calendar_overlay_contribution(
         window_start=window_start,
         today=today,
         lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
