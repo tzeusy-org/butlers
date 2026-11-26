@@ -127,6 +127,16 @@ unreadable or stale calendar is unknown and never free; the last known text is h
 memory only. The dashboard shows it in the shell header and on the Overview through `useNow`
 (`["now"]`, invalidated by `calendar` bus events and at the line's `fresh_until`).
 
+Anchored reminders also follow their event (slice R-S2, `reminder_follow.py`, core_383). When a
+provider event is written to the projection, a cancelled event or one the owner declined retires
+its anchored reminders (cancelled, reason `anchor_cancelled`), and a moved occurrence rebases them
+to the new start plus the offset and moves the stored anchor with it. Each change writes one
+`reminder_receipts` row in the same transaction (unique per reminder, kind and revision, so a
+replayed sync changes and announces nothing again) and then proposes exactly one insight candidate
+through the broker, never a direct notify: a timed line when the reminder is under two hours away
+(falling back to the digest while the timed lane is dark), a digest line otherwise. The candidate
+carries no premise. Recurring anchors are not followed yet.
+
 ### Overcommitment owner conditions
 
 The dashboard-api process runs a supervised `calendar_overcommitment` loop

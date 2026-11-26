@@ -22,6 +22,7 @@ from butlers.modules.calendar.participants import (
     sync_event_participants,
     sync_manual_participants,
 )
+from butlers.modules.calendar.reminder_follow import follow_anchored_reminders
 
 from .constants import (
     _INVALID_PROBE_CALENDAR_IDS,
@@ -1007,6 +1008,9 @@ class ProjectionMixin:
             if participant_pool is not None:
                 await sync_event_participants(participant_pool, event_db_id)
                 await record_owner_agreement(participant_pool, event_db_id)
+                await follow_anchored_reminders(
+                    participant_pool, event_db_id, origin_butler=getattr(self, "_butler_name", None)
+                )
             # Sync cycles preserve links on empty entity sets. A workspace update
             # must opt in with the explicit clear signal before a zero-length set
             # can delete the existing links.
