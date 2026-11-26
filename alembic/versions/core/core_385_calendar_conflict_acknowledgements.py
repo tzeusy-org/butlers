@@ -19,7 +19,7 @@ from alembic import op
 from butlers.db_authority.roles import butler_roles
 
 revision = "core_385"
-down_revision = "core_377"
+down_revision = "core_378"
 branch_labels = None
 depends_on = None
 
