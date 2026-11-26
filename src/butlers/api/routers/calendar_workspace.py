@@ -3157,7 +3157,11 @@ async def _respond_through_approval(
                 "command_id": str(command_id),
             }
         elif pending["status"] in {"rejected", "expired"}:
-            result = {"status": "rejected", "command_id": str(command_id)}
+            result = {
+                "status": "rejected",
+                "command_id": str(command_id),
+                "reason": "response_approval_" + pending["status"],
+            }
         else:
             if pending["status"] == "approved":
                 # Recovery dispatches only this existing, exact owning command.
