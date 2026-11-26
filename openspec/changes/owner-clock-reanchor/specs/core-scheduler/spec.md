@@ -52,3 +52,23 @@ makes the run incomplete (never reported as done) and counts are per schema.
 
 - **WHEN** one butler schema has no readable pool
 - **THEN** the run reports `complete: false` and names that schema, and counts are per schema
+
+### Requirement: One owner card per clock transition
+
+ID: REQ-core-scheduler-007
+Source: bu-5ii4gj.5 (run 26 move 5), slice card
+Scope: v1-mandatory
+
+A clock transition that re-anchors schedules SHALL compose exactly one owner card: how many items moved
+to the new place's time, which pinned schedules were kept (with the time in their own zone and in the
+new one), what needs the owner's approval, and any schema that could not be read ("will retry"). Each
+kept and moved item is a door to its schedule row. An unknown clock composes a card saying so and that
+schedules stay on the old zone; a dark run, or one with nothing moved, nothing to approve and no
+unread schema, composes none. Only schedules whose compare-and-set landed count as moved. Schedule
+titles appear on the card only, never in logs. Composing is separate from delivery, which goes through
+the owner delivery ledger behind the same flag.
+
+#### Scenario: A trip moves a brief and keeps a call
+
+- **WHEN** the clock moves to Tokyo, one owner-local schedule moves and a schedule pinned to Singapore is kept
+- **THEN** the card reads "Moved to Tokyo time: 1 item. Kept: Call Mum 19:00 Singapore (20:00 here)." with a door for each
