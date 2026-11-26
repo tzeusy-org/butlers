@@ -41,6 +41,7 @@ A ledger failure is logged and the loop waits for its next tick.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import UTC, datetime, time, timedelta
@@ -55,7 +56,9 @@ from butlers.api.read_models.calendar_workspace import (
 from butlers.core.general_settings import load_general_settings
 from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.owner_conditions import Observation, compute_fingerprint, reconcile_snapshot
-from butlers.core.temporal.conflicts import DetectedIssue, overlap_pair_id
+from butlers.core.temporal.conflicts import ConflictEventRef, DetectedIssue, overlap_pair_id
+from butlers.core.temporal.projected_zone import TripLeg, leg_is_confirmed, projected_owner_zone
+from butlers.perception import flags
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,118 @@ def _overloaded_day_observation(issue: DetectedIssue) -> Observation:
     )
 
 
+# -- off-hours in the zone the owner will be in (bu-5ii4gj.5) ---------------------------
+
+OFF_HOURS_KIND = "off_hours_in_local_zone"
+#: Local quiet hours: a meeting that touches [23:00, 07:00) in the zone the owner will be in.
+_NIGHT_START = time(23, 0)
+_NIGHT_END = time(7, 0)
+#: How far before the window a leg can still decide the owner's zone at its start.
+_LEG_LOOKBACK = timedelta(days=90)
+_TRIP_LEGS_SQL = """
+    SELECT l.departure_at, l.arrival_at, l.arrival_airport_station, l.arrival_city,
+           l.confirmation_number, t.status AS trip_status, t.metadata AS trip_metadata
+    FROM travel.legs l JOIN travel.trips t ON t.id = l.trip_id
+    WHERE l.departure_at < $2 AND l.arrival_at >= $1 AND t.status <> 'cancelled'
+"""
+
+
+async def read_trip_legs(
+    db: DatabaseManager, *, start: datetime, end: datetime
+) -> tuple[list[TripLeg], bool]:
+    """The Travel butler's legs that can decide the owner's zone in ``[start, end)``.
+
+    Returns ``(legs, complete)``; an unreadable Travel schema is ``complete=False`` so the caller
+    never reads "no legs" as "the owner is home".
+    """
+    try:
+        results, failed = await db.fan_out_with_status(
+            _TRIP_LEGS_SQL, (start - _LEG_LOOKBACK, end), butler_names=["travel"]
+        )
+    except Exception:
+        logger.warning("calendar overcommitment: trip legs unreadable", exc_info=True)
+        return [], False
+    legs: list[TripLeg] = []
+    for row in (r for rows in results.values() for r in rows):
+        meta = row["trip_metadata"]
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except ValueError:
+                meta = None
+        legs.append(
+            TripLeg(
+                departure_at=row["departure_at"],
+                arrival_at=row["arrival_at"],
+                arrival_airport=row["arrival_airport_station"],
+                arrival_city=row["arrival_city"],
+                confirmed=leg_is_confirmed(
+                    confirmation_number=row["confirmation_number"],
+                    trip_status=row["trip_status"],
+                    trip_metadata=meta if isinstance(meta, dict) else None,
+                ),
+            )
+        )
+    return legs, not failed and bool(results)
+
+
+def _touches_night(start: datetime, end: datetime) -> bool:
+    """Whether ``[start, end)`` (both in one zone) overlaps any local 23:00 to 07:00 night."""
+    day = start.date() - timedelta(days=1)
+    while day <= end.date():
+        night_start = datetime.combine(day, _NIGHT_START, tzinfo=start.tzinfo)
+        night_end = datetime.combine(day + timedelta(days=1), _NIGHT_END, tzinfo=start.tzinfo)
+        if start < night_end and end > night_start:
+            return True
+        day += timedelta(days=1)
+    return False
+
+
+def build_off_hours_observations(
+    events: list[ConflictEventRef],
+    legs: list[TripLeg],
+    *,
+    home_zone: str,
+    identity_keys: dict[str, str],
+) -> list[Observation]:
+    """One title-free observation per meeting that falls in a travel-zone night.
+
+    Only a confirmed-booking zone other than the home zone qualifies; an unknown zone (in the
+    air, an unconfirmed or unnamed booking) and the home zone raise nothing. The metadata records
+    the basis and the zone, so the reader can say "assumed" or "confirmed".
+    """
+    observations: list[Observation] = []
+    for event in events:
+        projected = projected_owner_zone(event.start_at, legs=legs, home_zone=home_zone)
+        if projected.zone is None or projected.zone == home_zone:
+            continue
+        zone = ZoneInfo(projected.zone)
+        local_start, local_end = event.start_at.astimezone(zone), event.end_at.astimezone(zone)
+        if not _touches_night(local_start, local_end):
+            continue
+        identity = identity_keys.get(event.entry_id, f"instance\x01{event.entry_id}")
+        observations.append(
+            Observation(
+                fingerprint=overcommitment_fingerprint({"kind": OFF_HOURS_KIND, "event": identity}),
+                identity_version=IDENTITY_VERSION,
+                summary=(
+                    f"Meeting at {local_start:%H:%M} local time in {projected.zone} "
+                    f"on {local_start.date()} falls in the night ({projected.basis})"
+                ),
+                metadata={
+                    "kind": OFF_HOURS_KIND,
+                    "date": local_start.date().isoformat(),
+                    "severity": "warning",
+                    "zone": projected.zone,
+                    "basis": projected.basis,
+                    "local_start": f"{local_start:%H:%M}",
+                    "entry_ids": [event.entry_id],
+                },
+            )
+        )
+    return observations
+
+
 def _skip(reason: str) -> dict[str, Any]:
     mark_tick_incomplete()
     logger.warning("calendar overcommitment: tick not reconciled (%s)", reason)
@@ -200,12 +315,24 @@ async def run_calendar_overcommitment_check(
         mark_tick_incomplete()
 
     observations = build_overcommitment_observations(scan)
+    complete = scan.available
+    if flags.OWNER_CLOCK_LIVE:
+        # Dark until the owner clock is live. A trip read that failed must not resolve an open
+        # off-hours episode by omission, so it makes the snapshot incomplete.
+        legs, legs_complete = await read_trip_legs(db, start=start, end=end)
+        if legs_complete:
+            observations += build_off_hours_observations(
+                scan.owner_events, legs, home_zone=tz.key, identity_keys=scan.entry_identity_keys
+            )
+        else:
+            complete = False
+            mark_tick_incomplete()
     try:
         transitions = await reconcile_snapshot(
             pool,
             source=CONDITION_SOURCE,
             observations=observations,
-            snapshot_complete=scan.available,
+            snapshot_complete=complete,
             initial_grace_seconds=INITIAL_GRACE_S,
         )
     except Exception:
@@ -213,7 +340,7 @@ async def run_calendar_overcommitment_check(
         return _skip("reconcile_failed")
     return {
         "reconciled": True,
-        "complete": scan.available,
+        "complete": complete,
         "observed": len(observations),
         "transitions": [t.transition for t in transitions],
     }

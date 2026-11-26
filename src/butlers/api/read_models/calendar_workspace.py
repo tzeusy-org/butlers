@@ -59,6 +59,7 @@ from butlers.core.temporal.calendar_source_roles import (
 )
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
+    ConflictEventRef,
     DetectedIssue,
     detect_conflict_issues,
     overlap_pair_id,
@@ -1381,6 +1382,9 @@ class CalendarConflictScan:
     #: (REQ-module-calendar-038).
     #: Context only: they form no issue and add no hours.
     household_context: list[HouseholdEvent] = field(default_factory=list)
+    #: The owner's timed meetings in the window (deduplicated, status events and all-day
+    #: excluded): what a zone-aware check reads. Carries titles, so a consumer must not copy them.
+    owner_events: list[ConflictEventRef] = field(default_factory=list)
 
 
 def _household_from_workspace_rows(
@@ -1826,6 +1830,18 @@ async def query_calendar_conflicts(
         unclassified_sources=len({str(row.get("source_id")) for row in unclassified}),
         unclassified_events=len(unclassified),
         household_context=_household_from_workspace_rows(deduped, start=start, end=end),
+        owner_events=[
+            ConflictEventRef(
+                entry_id=c.entry_id,
+                title=c.title,
+                start_at=c.start_at,
+                end_at=c.end_at,
+                timezone=c.timezone,
+                status=c.status,
+            )
+            for c in candidates
+            if not c.all_day and c.counts_toward_day_load and c.status != "cancelled"
+        ],
     )
 
 
