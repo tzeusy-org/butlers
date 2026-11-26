@@ -1834,6 +1834,14 @@ async def test_an_acknowledgement_lapses_when_an_event_changes(app, live):
     assert len(await _overlaps(db)) == 1
 
 
+async def test_keep_both_still_suppresses_on_a_filtered_read(app, live):
+    db, _, _ = await _kept_world(app)
+
+    scan = await query_calendar_conflicts(db, **_WINDOW, now=_NOW, butlers=["general"])
+
+    assert [i for i in scan.issues if i.kind == "overlap"] == []
+
+
 async def test_the_passage_of_time_does_not_void_keep_both(app, live):
     db, _, _ = await _kept_world(app)
 

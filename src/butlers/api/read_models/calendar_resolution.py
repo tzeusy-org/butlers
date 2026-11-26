@@ -214,13 +214,43 @@ async def attach_resolution_options(
     incomplete), when the owner's zone is unknown, or when any provider source is stale.
     """
     pending = [i for i in issues if i.kind == "overlap" and i.pair_id and len(i.events) == 2]
-    if not pending or filtered or not complete:
+    if not pending:
+        return
+    rows = list(all_rows)
+    copies: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        key = identity_keys.get(str(row["instance_id"]))
+        if key:
+            copies.setdefault(key, []).append(row)
+    compiled: list[tuple[DetectedIssue, list[cr.ResolutionEvent]]] = []
+    issue_context: dict[int, dict[str, dict[str, Any]]] = {}
+    for issue in pending:
+        try:
+            events = []
+            context: dict[str, dict[str, Any]] = {}
+            for ref in issue.events:
+                row = rows_by_entry[ref.entry_id]
+                best = _owner_copy(row, copies, identity_keys.get(ref.entry_id, ""))
+                events.append(resolution_event(best, entry_id=ref.entry_id))
+                context[ref.entry_id] = {
+                    "instance_id": str(best["instance_id"]),
+                    "etag": best.get("event_etag"),
+                }
+            # Every overlap gets its state digest, whether or not options can be offered: "keep
+            # both" must keep suppressing on a filtered, partial or zone-less read.
+            issue.state_digest = cr.state_digest(str(issue.pair_id), events)
+        except Exception:
+            logger.warning("resolution state could not be read", exc_info=True)
+            continue
+        issue.option_context = {}
+        compiled.append((issue, events))
+        issue_context[id(issue)] = context
+    if filtered or not complete:
         return
     zone = await owner_zone(db)
     if zone is None:
         return
     stale = await any_provider_source_stale(db, now)
-    rows = list(all_rows)
     free = cr.free_windows(
         busy_intervals(rows),
         max(start, now),
@@ -228,25 +258,20 @@ async def attach_resolution_options(
         zone,
         gap=timedelta(minutes=gap_minutes),
     )
-    copies: dict[str, list[Mapping[str, Any]]] = {}
-    for row in rows:
-        key = identity_keys.get(str(row["instance_id"]))
-        if key:
-            copies.setdefault(key, []).append(row)
-    for issue in pending:
+    for issue, events in compiled:
         try:
-            events = []
-            for ref in issue.events:
-                row = rows_by_entry[ref.entry_id]
-                best = _owner_copy(row, copies, identity_keys.get(ref.entry_id, ""))
-                events.append(resolution_event(best, entry_id=ref.entry_id))
-            issue.state_digest = cr.state_digest(str(issue.pair_id), events)
             result = cr.options_for(
                 str(issue.pair_id), events[0], events[1], free, not_before=now, stale_source=stale
             )
         except Exception:
             logger.warning("resolution options could not be compiled", exc_info=True)
             continue
+        context = issue_context[id(issue)]
         issue.options = result.options
+        issue.option_context = {
+            o.id: context[o.rationale_fields["entry_id"]]
+            for o in result.options
+            if o.rationale_fields.get("entry_id") in context
+        }
         issue.options_reason = result.reason
         issue.issue_digest = cr.issue_digest(events, result.options) if result.options else None
