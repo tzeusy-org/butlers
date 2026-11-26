@@ -94,7 +94,7 @@ Scope: v1-mandatory
 
 The producers SHALL be the butlers that own the record: finance (bills, subscription renewals,
 `cancel_by`), travel (legs, accommodations, reservations, check-in reminders, document expiry),
-health (visits), relationship (important dates, follow-ups) and education (one aggregated daily
+health (the visits Health booked, read from its calendar projection by the same structural rule the visit brief uses, never from `appointment` facts), relationship (important dates, follow-ups) and education (one aggregated daily
 "N reviews due" claim, never one per node). The contributing set of the existing job requirement
 widens to include education for this claim only. The finance and travel agent instructions SHALL no
 longer tell a model to create reminders or block flights for records a claim now covers.
