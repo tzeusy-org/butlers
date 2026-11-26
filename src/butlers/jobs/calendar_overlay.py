@@ -485,6 +485,7 @@ async def finish_contribution(
     claims_by_date: dict[str, list[dict[str, Any]]],
     complete: bool,
     window_start: datetime,
+    zone: tzinfo,
 ) -> tuple[int, int, dict[str, Any], bool]:
     """Write a producer's envelopes and reconcile its claims, honouring a partial run.
 
@@ -515,6 +516,7 @@ async def finish_contribution(
         window_start=window_start,
         today=today,
         lookahead_days=lookahead_days,
+        zone=zone,
     )
     return dates_written, total_entries, claim_result, complete
 
@@ -767,8 +769,6 @@ async def run_finance_calendar_overlay_contribution(
         claims_by_date=claims_by_date,
         complete=complete,
         window_start=day_start_utc(today, zone),
-        today=today,
-        lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
         zone=zone,
     )
 
@@ -1321,8 +1321,6 @@ async def run_travel_calendar_overlay_contribution(
         claims_by_date=claims_by_date,
         complete=complete,
         window_start=window_start,
-        today=today,
-        lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
         zone=zone,
     )
 
@@ -1678,6 +1676,7 @@ async def run_relationship_calendar_overlay_contribution(
         entries_by_date=entries_by_date,
         claims_by_date=claims_by_date,
         complete=complete,
+        window_start=day_start_utc(today, zone),
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -1879,6 +1878,7 @@ async def run_health_calendar_overlay_contribution(
         entries_by_date=entries_by_date,
         claims_by_date=claims_by_date,
         complete=complete,
+        window_start=day_start_utc(today, zone),
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
