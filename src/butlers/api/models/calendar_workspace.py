@@ -603,6 +603,24 @@ class ResolutionOption(BaseModel):
     rationale_fields: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConflictResolveRequest(BaseModel):
+    """Resolve one overlap by one of the options the scan offered (bu-5ii4gj.11)."""
+
+    pair_id: str = Field(min_length=1)
+    option_id: str = Field(min_length=1)
+    #: The digest the owner saw. A moved overlap answers 409 instead of acting on a stale read.
+    issue_digest: str = Field(min_length=1)
+    start: datetime
+    end: datetime
+    timezone: str | None = None
+
+
+class ConflictResolveResponse(BaseModel):
+    status: Literal["acknowledged", "already_acknowledged"]
+    pair_id: str
+    option_id: str
+
+
 class ConflictIssue(BaseModel):
     """A single scheduling problem detected in the scanned window."""
 

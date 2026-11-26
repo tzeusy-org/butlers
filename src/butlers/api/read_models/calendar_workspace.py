@@ -1829,6 +1829,21 @@ async def query_calendar_conflicts(
             filtered=bool(butlers),
         )
 
+    # An overlap the owner chose to keep stays quiet until its digest moves (any etag, time or
+    # attendee change). Only issues that carry a digest can be acknowledged, so this is inert
+    # while the options are dark.
+    if any(i.issue_digest for i in issues):
+        acknowledged = await load_conflict_acknowledgements(db)
+        issues = [
+            i
+            for i in issues
+            if not (
+                i.issue_digest
+                and i.pair_id is not None
+                and acknowledged.get(str(i.pair_id)) == i.issue_digest
+            )
+        ]
+
     # Join pending proposals by the provider-identity pair id, or the legacy instance
     # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a
     # missing proposals table leaves proposal_ids empty rather than degrading the scan.
@@ -2472,6 +2487,44 @@ async def _read_keep_separate_keys(db: DatabaseManager) -> tuple[set[str], bool]
         logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
         return set(), False
     return {row["cluster_key"] for row in rows}, True
+
+
+_ACK_TABLE = "public.calendar_conflict_acknowledgements"
+
+
+async def load_conflict_acknowledgements(db: DatabaseManager) -> dict[str, str]:
+    """``{pair_id: issue_digest}`` of overlaps the owner chose to keep, fail-open (empty)."""
+    pool = _dedup_pool(db)
+    if pool is None:
+        return {}
+    try:
+        rows = await pool.fetch(f"SELECT pair_id, issue_digest FROM {_ACK_TABLE}")
+    except Exception:
+        logger.warning("load_conflict_acknowledgements failed; none suppressed", exc_info=True)
+        return {}
+    return {str(row["pair_id"]): str(row["issue_digest"]) for row in rows}
+
+
+async def record_conflict_acknowledgement(
+    db: DatabaseManager, *, pair_id: str, issue_digest: str, option_id: str
+) -> bool:
+    """Persist "keep both" for one overlap. Returns False when no store is reachable."""
+    pool = _dedup_pool(db)
+    if pool is None:
+        return False
+    await pool.execute(
+        f"""
+        INSERT INTO {_ACK_TABLE} (pair_id, issue_digest, option_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (pair_id) DO UPDATE
+        SET issue_digest = EXCLUDED.issue_digest, option_id = EXCLUDED.option_id,
+            acknowledged_at = now()
+        """,
+        pair_id,
+        issue_digest,
+        option_id,
+    )
+    return True
 
 
 async def query_scheduler_mirror_counts(

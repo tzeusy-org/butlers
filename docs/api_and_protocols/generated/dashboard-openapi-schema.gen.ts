@@ -2501,6 +2501,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/workspace/conflicts/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Workspace Conflict
+         * @description Record "keep both" for one overlap, bound to the digest the owner saw.
+         *
+         *     Writes only the local acknowledgement: no provider call and no approval, so it is the one
+         *     option that needs no park. The overlap is re-read here and its digest compared, so an
+         *     acknowledgement can never attach to a changed overlap (409 ``issue_changed``). Options that
+         *     write to a provider are not accepted by this route yet (422).
+         */
+        post: operations["resolve_workspace_conflict_api_calendar_workspace_conflicts_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/workspace/day-briefing": {
         parameters: {
             query?: never;
@@ -17832,6 +17857,11 @@ export interface components {
             data: components["schemas"]["ConditionsFacts"];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[ConflictResolveResponse] */
+        ApiResponse_ConflictResolveResponse_: {
+            data: components["schemas"]["ConflictResolveResponse"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[ConflictScanResponse] */
         ApiResponse_ConflictScanResponse_: {
             data: components["schemas"]["ConflictScanResponse"];
@@ -24205,6 +24235,42 @@ export interface components {
             severity: "info" | "warning";
             /** Summary */
             summary: string;
+        };
+        /**
+         * ConflictResolveRequest
+         * @description Resolve one overlap by one of the options the scan offered (bu-5ii4gj.11).
+         */
+        ConflictResolveRequest: {
+            /**
+             * End
+             * Format: date-time
+             */
+            end: string;
+            /** Issue Digest */
+            issue_digest: string;
+            /** Option Id */
+            option_id: string;
+            /** Pair Id */
+            pair_id: string;
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+            /** Timezone */
+            timezone?: string | null;
+        };
+        /** ConflictResolveResponse */
+        ConflictResolveResponse: {
+            /** Option Id */
+            option_id: string;
+            /** Pair Id */
+            pair_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "acknowledged" | "already_acknowledged";
         };
         /**
          * ConflictScanResponse
@@ -45791,6 +45857,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_ConflictScanResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_workspace_conflict_api_calendar_workspace_conflicts_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConflictResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ConflictResolveResponse_"];
                 };
             };
             /** @description Validation Error */
