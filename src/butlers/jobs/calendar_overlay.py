@@ -263,9 +263,9 @@ def _version(*parts: Any) -> str:
     return hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
 
 
-def _row_id(row: Any) -> str | None:
+def _row_id(row: Any, column: str = "id") -> str | None:
     try:
-        value = row["id"]
+        value = row[column]
     except (KeyError, IndexError):
         return None
     return str(value) if value is not None else None
@@ -432,14 +432,26 @@ def finance_claims(
 
 
 async def _read_source(
-    pool: asyncpg.Pool, name: str, sql: str, *args: Any, butler: str
+    pool: asyncpg.Pool,
+    name: str,
+    sql: str,
+    *args: Any,
+    butler: str,
+    missing_ok: bool = False,
 ) -> tuple[list[Any], bool]:
     """Read one domain source; a failure is reported (``ok=False``) rather than raised.
 
     The caller treats any failed source as a partial run: previous entries and claims stand.
+    ``missing_ok`` reads a source whose table may legitimately not exist (the butler does not run
+    that module) as empty and complete, rather than as a failure.
     """
     try:
         return list(await pool.fetch(sql, *args)), True
+    except asyncpg.UndefinedTableError:
+        if missing_ok:
+            return [], True
+        logger.warning("%s overlay: %s table missing; run is partial", butler, name)
+        return [], False
     except Exception:
         logger.warning("%s overlay: %s read failed; run is partial", butler, name, exc_info=True)
         return [], False
@@ -461,6 +473,50 @@ async def mark_overlay_envelopes_incomplete(
             await state_set(pool, key, {**existing, "complete": False})
             marked += 1
     return marked
+
+
+async def finish_contribution(
+    pool: asyncpg.Pool,
+    *,
+    butler: str,
+    today: date_cls,
+    lookahead_days: int,
+    entries_by_date: dict[str, list[OverlayEntry]],
+    claims_by_date: dict[str, list[dict[str, Any]]],
+    complete: bool,
+    window_start: datetime,
+) -> tuple[int, int, dict[str, Any], bool]:
+    """Write a producer's envelopes and reconcile its claims, honouring a partial run.
+
+    A complete run rewrites every envelope in the window with its entries and claims. A partial run
+    (a source could not be read) rewrites nothing: it flags the existing envelopes incomplete and
+    reconciles with ``complete=False``, so nothing is retracted. A reconcile that raises also makes
+    the run partial. Returns ``(dates_written, total_entries, claim_result, complete)``.
+    """
+    if complete:
+        dates_written, total_entries = await write_overlay_envelopes(
+            pool,
+            butler=butler,
+            today=today,
+            lookahead_days=lookahead_days,
+            entries_by_date=entries_by_date,
+            claims_by_date=claims_by_date,
+        )
+    else:
+        dates_written = await mark_overlay_envelopes_incomplete(
+            pool, today=today, lookahead_days=lookahead_days
+        )
+        total_entries = 0
+    claim_result, complete = await settle_claims(
+        pool,
+        butler=butler,
+        claims=[c for day in claims_by_date.values() for c in day],
+        complete=complete,
+        window_start=window_start,
+        today=today,
+        lookahead_days=lookahead_days,
+    )
+    return dates_written, total_entries, claim_result, complete
 
 
 async def reconcile_claims_in_process(
@@ -702,24 +758,13 @@ async def run_finance_calendar_overlay_contribution(
                 }
             )
 
-    if complete:
-        dates_written, total_entries = await write_overlay_envelopes(
-            pool,
-            butler="finance",
-            today=today,
-            lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
-            entries_by_date=entries_by_date,
-            claims_by_date=claims_by_date,
-        )
-    else:
-        dates_written = await mark_overlay_envelopes_incomplete(
-            pool, today=today, lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS
-        )
-        total_entries = 0
-    claim_result, complete = await settle_claims(
+    dates_written, total_entries, claim_result, complete = await finish_contribution(
         pool,
         butler="finance",
-        claims=[c for day in claims_by_date.values() for c in day],
+        today=today,
+        lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
+        entries_by_date=entries_by_date,
+        claims_by_date=claims_by_date,
         complete=complete,
         window_start=day_start_utc(today, zone),
         today=today,
@@ -798,6 +843,7 @@ def _timed_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
+    route: str = "/travel",
 ) -> dict[str, Any]:
     span: dict[str, Any] = {"start": start.isoformat(), "timezone": _zone_name(zone)}
     if end is not None:
@@ -812,7 +858,7 @@ def _timed_claim(
         "span": span,
         "owner_action": owner_action,
         "status": "active",
-        "door": {"route": "/travel", "ref": ref},
+        "door": {"route": route, "ref": ref},
     }
 
 
@@ -828,6 +874,7 @@ def _day_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
+    route: str = "/travel",
 ) -> dict[str, Any]:
     return {
         "claim_key": key,
@@ -839,7 +886,7 @@ def _day_claim(
         "span": {"date": day.isoformat(), "timezone": _zone_name(zone)},
         "owner_action": owner_action,
         "status": "active",
-        "door": {"route": "/travel", "ref": ref},
+        "door": {"route": route, "ref": ref},
     }
 
 
@@ -1265,24 +1312,13 @@ async def run_travel_calendar_overlay_contribution(
         if owner_zone_key(zone) is not None
         else {}
     )
-    if complete:
-        dates_written, total_entries = await write_overlay_envelopes(
-            pool,
-            butler="travel",
-            today=today,
-            lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
-            entries_by_date=entries_by_date,
-            claims_by_date=claims_by_date,
-        )
-    else:
-        dates_written = await mark_overlay_envelopes_incomplete(
-            pool, today=today, lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS
-        )
-        total_entries = 0
-    claim_result, complete = await settle_claims(
+    dates_written, total_entries, claim_result, complete = await finish_contribution(
         pool,
         butler="travel",
-        claims=[c for day in claims_by_date.values() for c in day],
+        today=today,
+        lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
+        entries_by_date=entries_by_date,
+        claims_by_date=claims_by_date,
         complete=complete,
         window_start=window_start,
         today=today,
@@ -1358,6 +1394,47 @@ def _follow_up_priority(days_until: int) -> str:
     return "low"
 
 
+def _add_relationship_claim(
+    claims_by_date: dict[str, list[dict[str, Any]]],
+    date_str: str,
+    row: Any,
+    *,
+    column: str,
+    key_kind: str,
+    version: str,
+    kind: str,
+    label: str,
+    priority: str,
+    landing: date_cls,
+    zone: tzinfo,
+    owner_action: bool = False,
+) -> None:
+    """Add an overlay-presence claim for a relationship record (none when the row has no id).
+
+    Relationship records already reach the owner through their own flows, so a claim owns no
+    calendar row: it gives the record a stable key, so the workspace shows it once and can offer a
+    door to it. The person-posture filter has already decided the row is shown.
+    """
+    ref = _row_id(row, column)
+    if ref is None:
+        return
+    claims_by_date.setdefault(date_str, []).append(
+        _day_claim(
+            key=f"relationship:{key_kind}:{ref}",
+            version=version,
+            kind=kind,
+            label=label,
+            priority=priority,
+            presence="overlay",
+            day=landing,
+            zone=zone,
+            ref=ref,
+            route="/relationship",
+            owner_action=owner_action,
+        )
+    )
+
+
 async def run_relationship_calendar_overlay_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1406,10 +1483,13 @@ async def run_relationship_calendar_overlay_contribution(
     # anchored via contact_entity_map and entity-anchored via local_entity_id.
     # Unlike the briefing, this query keeps ALL labels (not just birthdays); the
     # birthday/important_date split happens in Python by label.
-    date_rows = await pool.fetch(
+    complete = True
+    date_rows, ok = await _read_source(
+        pool,
+        "important dates",
         """
-        SELECT COALESCE(e.canonical_name, 'Unknown') AS name, id.label, id.month, id.day, id.year,
-               e.posture
+        SELECT id.id AS date_id, COALESCE(e.canonical_name, 'Unknown') AS name, id.label,
+               id.month, id.day, id.year, e.posture
         FROM important_dates id
         JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
         JOIN public.entities e ON e.id = cem.entity_id
@@ -1422,7 +1502,7 @@ async def run_relationship_calendar_overlay_contribution(
 
         UNION ALL
 
-        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
+        SELECT id.id AS date_id, COALESCE(e.canonical_name, 'Unknown') AS name,
                id.label, id.month, id.day, id.year, e.posture
         FROM important_dates id
         JOIN public.entities e ON e.id = id.local_entity_id
@@ -1438,7 +1518,9 @@ async def run_relationship_calendar_overlay_contribution(
         """,
         months,
         days,
+        butler="relationship",
     )
+    complete &= ok
 
     # --- Follow-up reminders due within the window (and overdue) ---
     # Reminders are SPO facts (predicate='reminder'); the contact UUID is embedded
@@ -1448,9 +1530,11 @@ async def run_relationship_calendar_overlay_contribution(
     local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
     window_end = (local_midnight + timedelta(days=lookahead + 1)).astimezone(UTC)
 
-    reminder_rows = await pool.fetch(
+    reminder_rows, ok = await _read_source(
+        pool,
+        "follow-ups",
         """
-        SELECT COALESCE(e.canonical_name, 'Unknown') AS name,
+        SELECT f.id AS fact_id, COALESCE(e.canonical_name, 'Unknown') AS name,
                f.content AS label,
                COALESCE(
                    (f.metadata->>'next_trigger_at')::timestamptz,
@@ -1476,9 +1560,12 @@ async def run_relationship_calendar_overlay_contribution(
         ORDER BY trigger_at ASC
         """,
         window_end,
+        butler="relationship",
     )
+    complete &= ok
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
+    claims_by_date: dict[str, list[dict[str, Any]]] = {}
     birthday_count = important_date_count = follow_up_count = remembrance_count = 0
 
     for row in date_rows:
@@ -1499,6 +1586,19 @@ async def run_relationship_calendar_overlay_contribution(
                     "meta": {"person": row["name"], "month": row["month"], "day": row["day"]},
                 }
             )
+            _add_relationship_claim(
+                claims_by_date,
+                date_str,
+                row,
+                column="date_id",
+                key_kind="important_date",
+                version=_version(date_str, raw_label, posture),
+                kind="remembrance",
+                label=f"{row['name']}'s birthday (remembrance)",
+                priority="low",
+                landing=landing,
+                zone=zone,
+            )
             remembrance_count += 1
             continue
         if posture != ACTIVE:
@@ -1517,6 +1617,19 @@ async def run_relationship_calendar_overlay_contribution(
             },
         }
         entries_by_date.setdefault(date_str, []).append(entry)
+        _add_relationship_claim(
+            claims_by_date,
+            date_str,
+            row,
+            column="date_id",
+            key_kind="important_date",
+            version=_version(date_str, raw_label, posture),
+            kind=kind,
+            label=str(row["name"]),
+            priority=entry["priority"],
+            landing=landing,
+            zone=zone,
+        )
         if is_birthday:
             birthday_count += 1
         else:
@@ -1541,14 +1654,30 @@ async def run_relationship_calendar_overlay_contribution(
             },
         }
         entries_by_date.setdefault(date_str, []).append(entry)
+        _add_relationship_claim(
+            claims_by_date,
+            date_str,
+            row,
+            column="fact_id",
+            key_kind="follow_up",
+            version=_version(trigger.isoformat(), row["label"], is_overdue),
+            kind="follow_up",
+            label=str(row["label"] or "follow-up"),
+            priority=entry["priority"],
+            landing=landing,
+            zone=zone,
+            owner_action=True,
+        )
         follow_up_count += 1
 
-    dates_written, total_entries = await write_overlay_envelopes(
+    dates_written, total_entries, claim_result, complete = await finish_contribution(
         pool,
         butler="relationship",
         today=today,
         lookahead_days=lookahead,
         entries_by_date=entries_by_date,
+        claims_by_date=claims_by_date,
+        complete=complete,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -1573,6 +1702,8 @@ async def run_relationship_calendar_overlay_contribution(
         "important_date_entries": important_date_count,
         "follow_up_entries": follow_up_count,
         "remembrance_entries": remembrance_count,
+        "complete": complete,
+        "claims": claim_result,
         "total_entries": total_entries,
         "pruned": pruned,
     }
@@ -1598,14 +1729,15 @@ async def run_health_calendar_overlay_contribution(
 ) -> dict[str, Any]:
     """Health butler calendar overlay contribution job (deterministic, zero LLM).
 
-    Queries the health schema's own ``facts`` table (the butler's memory-backed
-    store of record for medications and appointments — the legacy relational
-    ``health.medications`` table is orphaned) and writes per-date overlay
+    Reads the appointments Health booked from its calendar projection (the source the visit
+    brief uses; the ``appointment`` facts nothing writes are no longer read, bu-rx0tyg) and the
+    health schema's own ``facts`` table for medications (the legacy relational
+    ``health.medications`` table is orphaned), and writes per-date overlay
     envelopes under ``calendar/overlay/<date>``:
 
-    - ``appointment`` entries for appointment temporal facts (``predicate =
-      'appointment'``) whose ``valid_at`` falls within the lookahead window,
-      bucketed onto the owner-zone calendar date they land on.
+    - ``appointment`` entries for those appointments starting within the lookahead window,
+      bucketed onto the owner-zone calendar date they land on, each with an overlay-presence
+      ``health:visit:<event id>`` claim.
     - ``medication_reminder`` entries for active medication property facts
       (``predicate = 'medication'``, ``metadata->>'active' = true``). Medications
       recur daily, so one reminder is emitted per active medication on **every**
@@ -1629,24 +1761,32 @@ async def run_health_calendar_overlay_contribution(
         UTC
     )
 
-    # --- Appointments: temporal facts whose valid_at lands within the window ---
-    appointment_rows = await pool.fetch(
-        """
-        SELECT id, content, valid_at, metadata
-        FROM facts
-        WHERE predicate = 'appointment'
-          AND scope = 'health'
-          AND validity = 'active'
-          AND valid_at >= $1
-          AND valid_at < $2
-        ORDER BY valid_at ASC
+    complete = True
+    # --- Appointments Health booked: its calendar projection is the source (bu-rx0tyg) ---
+    # The same structural identification the visit brief uses (Health's applied
+    # ``workspace_user_create`` row), not the ``appointment`` facts nothing writes.
+    from butlers.jobs.health_visit_brief import APPOINTMENTS_SQL
+
+    appointment_rows, ok = await _read_source(
+        pool,
+        "appointments",
+        APPOINTMENTS_SQL
+        + """
+        SELECT event_id, title, starts_at, ends_at FROM appts
+        WHERE starts_at >= $1 AND starts_at < $2
+        ORDER BY starts_at, event_id
         """,
         window_start,
         window_end,
+        butler="health",
+        missing_ok=True,  # a Health without the calendar module has no appointments to read
     )
+    complete &= ok
 
     # --- Active medications: property facts that recur daily ---
-    medication_rows = await pool.fetch(
+    medication_rows, ok = await _read_source(
+        pool,
+        "medications",
         """
         SELECT id,
                metadata->>'name' AS name,
@@ -1660,7 +1800,9 @@ async def run_health_calendar_overlay_contribution(
           AND (metadata->>'active')::boolean = true
         ORDER BY metadata->>'name'
         """,
+        butler="health",
     )
+    complete &= ok
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
 
@@ -1668,27 +1810,43 @@ async def run_health_calendar_overlay_contribution(
         entries_by_date.setdefault(date_str, []).append(entry)
 
     appointment_count = 0
+    claims_by_date: dict[str, list[dict[str, Any]]] = {}
     for row in appointment_rows:
-        valid_at: datetime = row["valid_at"]
-        if valid_at is None or not (window_start <= valid_at < window_end):
+        starts_at: datetime = row["starts_at"]
+        ends_at: datetime = row["ends_at"]
+        if not (window_start <= starts_at < window_end):
             continue
-        date_str = _local_date_str(valid_at, zone)
+        date_str = _local_date_str(starts_at, zone)
         days_until = (date_cls.fromisoformat(date_str) - today).days
-        meta = dict(row["metadata"] or {})
-        title = meta.get("title") or meta.get("name") or row["content"] or "Appointment"
-        entry: OverlayEntry = {
-            "kind": "appointment",
-            "label": str(title),
-            "priority": _appointment_priority(days_until),
-            "meta": {
-                "appointment_id": str(row["id"]),
-                "starts_at": valid_at.isoformat(),
-                "location": meta.get("location"),
-                "provider": meta.get("provider") or meta.get("doctor"),
-                "notes": meta.get("notes"),
+        title = str(row["title"] or "Appointment")
+        priority = _appointment_priority(days_until)
+        event_id = str(row["event_id"])
+        _add(
+            date_str,
+            {
+                "kind": "appointment",
+                "label": title,
+                "priority": priority,
+                "meta": {"appointment_id": event_id, "starts_at": starts_at.isoformat()},
             },
-        }
-        _add(date_str, entry)
+        )
+        # The visit already is a calendar event: its claim owns no row of its own (overlay
+        # presence), so the workspace can show it once and offer a door to the record.
+        claims_by_date.setdefault(date_str, []).append(
+            _timed_claim(
+                key=f"health:visit:{event_id}",
+                version=_version(starts_at.isoformat(), ends_at.isoformat(), title),
+                kind="appointment",
+                label=title,
+                priority=priority,
+                presence="overlay",
+                start=starts_at,
+                end=ends_at,
+                zone=zone,
+                ref=event_id,
+                route="/health",
+            )
+        )
         appointment_count += 1
 
     # Medication reminders recur daily across the whole window.
@@ -1713,12 +1871,14 @@ async def run_health_calendar_overlay_contribution(
                     },
                 )
 
-    dates_written, total_entries = await write_overlay_envelopes(
+    dates_written, total_entries, claim_result, complete = await finish_contribution(
         pool,
         butler="health",
         today=today,
         lookahead_days=HEALTH_OVERLAY_LOOKAHEAD_DAYS,
         entries_by_date=entries_by_date,
+        claims_by_date=claims_by_date,
+        complete=complete,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -1742,4 +1902,6 @@ async def run_health_calendar_overlay_contribution(
         "medication_reminder_medications": medication_count,
         "total_entries": total_entries,
         "pruned": pruned,
+        "complete": complete,
+        "claims": claim_result,
     }

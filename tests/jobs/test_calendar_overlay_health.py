@@ -59,14 +59,14 @@ def _appointment(
     *,
     valid_at: datetime,
     content: str | None = "Dental cleaning",
-    metadata: dict[str, Any] | None = None,
     appt_id: str = "33333333-3333-3333-3333-333333333333",
 ) -> dict[str, Any]:
+    """A Health-booked calendar event row (the appointment source, bu-rx0tyg)."""
     return {
-        "id": appt_id,
-        "content": content,
-        "valid_at": valid_at,
-        "metadata": metadata or {"location": "Smile Clinic", "provider": "Dr. Tan"},
+        "event_id": appt_id,
+        "title": content,
+        "starts_at": valid_at,
+        "ends_at": valid_at + timedelta(hours=1),
     }
 
 
@@ -126,23 +126,25 @@ async def test_appointment_routed_to_its_sgt_date():
     assert env["has_entries"] is True
     assert env["entries"][0]["kind"] == "appointment"
     assert env["entries"][0]["label"] == "Dental cleaning"
-    assert env["entries"][0]["meta"]["location"] == "Smile Clinic"
-    assert env["entries"][0]["meta"]["provider"] == "Dr. Tan"
-    assert env["entries"][0]["meta"]["appointment_id"]
+    assert env["entries"][0]["meta"]["appointment_id"] == "33333333-3333-3333-3333-333333333333"
     assert result["appointment_entries"] == 1
 
 
-async def test_appointment_title_prefers_metadata_title():
-    appts = [
-        _appointment(
-            valid_at=_sgt_noon(date_cls(2026, 6, 25)),
-            content=None,
-            metadata={"title": "Annual physical"},
-        )
-    ]
+async def test_an_untitled_appointment_reads_appointment():
+    appts = [_appointment(valid_at=_sgt_noon(date_cls(2026, 6, 25)), content=None)]
     _, cap, _ = await _run(appointments=appts)
     env = cap.store[overlay_key("2026-06-25")]
-    assert env["entries"][0]["label"] == "Annual physical"
+    assert env["entries"][0]["label"] == "Appointment"
+
+
+async def test_a_visit_claims_an_overlay_presence_keyed_by_its_event():
+    appts = [_appointment(valid_at=_sgt_noon(date_cls(2026, 6, 25)))]
+    result, cap, _ = await _run(appointments=appts)
+
+    claims = cap.store[overlay_key("2026-06-25")]["claims"]
+    assert [c["claim_key"] for c in claims] == ["health:visit:33333333-3333-3333-3333-333333333333"]
+    assert claims[0]["presence"] == "overlay" and claims[0]["kind"] == "appointment"
+    assert result["complete"] is True
 
 
 async def test_appointment_timezone_bucketing_uses_sgt_calendar_date():
