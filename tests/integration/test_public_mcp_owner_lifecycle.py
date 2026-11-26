@@ -1674,7 +1674,17 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
 
 
 @pytest.mark.parametrize(
-    "boundary", ["capture", "deletion", "drop", "cleanup", "ddl", "before-applied"]
+    "boundary",
+    [
+        "capture",
+        "deletion",
+        "detach-same-target",
+        "detach-changed-target",
+        "drop",
+        "cleanup",
+        "ddl",
+        "before-applied",
+    ],
 )
 def test_actual_program_interruption_resumes_with_exact_owned_journal(
     copied, boundary, record_property
@@ -1698,6 +1708,8 @@ def test_actual_program_interruption_resumes_with_exact_owned_journal(
                 "SELECT EXISTS(SELECT 1 FROM pg_subscription",
                 program.index("DELETE FROM mcp_local.manifest_applied"),
             )
+        elif boundary in ("detach-same-target", "detach-changed-target"):
+            cut = program.index("DROP SUBSCRIPTION butlers_public_sub;")
         elif boundary == "drop":
             cut = program.index(
                 "SELECT set_config('butlers.e_cleanup_sources'", program.index("DROP SUBSCRIPTION")
@@ -1749,6 +1761,41 @@ def test_actual_program_interruption_resumes_with_exact_owned_journal(
                     "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
                 )
             ).scalar_one_or_none()
+        if boundary in ("detach-same-target", "detach-changed-target"):
+            assert current_oid in journal.subscription_oids
+            with projection.connect() as conn:
+                assert conn.execute(
+                    text("SELECT subenabled, subslotname FROM pg_subscription WHERE oid=:oid"),
+                    {"oid": current_oid},
+                ).one() == (False, None)
+            if boundary == "detach-changed-target":
+                with projection.begin() as conn:
+                    conn.exec_driver_sql(
+                        "UPDATE mcp_local.rebuild_state SET subscription_oids='{}'::oid[]"
+                    )
+                try:
+                    refused = _run(topology, program, success=False)
+                    assert b"existing subscription identity/options refused" in refused.output
+                    assert (
+                        _scalar(projection, "SELECT count(*) FROM mcp_local.manifest_applied") == 0
+                    )
+                    assert (
+                        _scalar(
+                            projection,
+                            "SELECT count(*) FROM pg_subscription WHERE oid=:oid "
+                            "AND NOT subenabled AND subslotname IS NULL",
+                            {"oid": current_oid},
+                        )
+                        == 1
+                    )
+                finally:
+                    with projection.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE mcp_local.rebuild_state SET subscription_oids=CAST(:oids AS oid[])"
+                            ),
+                            {"oids": journal.subscription_oids},
+                        )
         candidates = list(journal.subscription_oids) + ([current_oid] if current_oid else [])
         with topology.admin.connect() as conn:
             real_sync = (
@@ -1762,9 +1809,9 @@ def test_actual_program_interruption_resumes_with_exact_owned_journal(
                 .all()
             )
         record_property("actual_owned_sync_slots_before_resume", len(real_sync))
-        # A changed-target retry retains all retired declarations and OIDs; it
-        # must not silently forget the interrupted narrowing attempt.
-        _apply(topology, projection, full)
+        # A changed-target retry retains all retired declarations and OIDs.
+        retry_target = target if boundary == "detach-same-target" else full
+        _apply(topology, projection, retry_target)
         assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 0
         for observed_slot in real_sync:
             assert (
@@ -1787,6 +1834,9 @@ def test_actual_program_interruption_resumes_with_exact_owned_journal(
     finally:
         unrelated.execute(text("SELECT pg_drop_replication_slot(:slot)"), {"slot": slot})
         unrelated.close()
+        if boundary not in ("detach-same-target", "detach-changed-target"):
+            _apply(topology, projection, full)
+    if boundary == "detach-same-target":
         _apply(topology, projection, full)
 
 
