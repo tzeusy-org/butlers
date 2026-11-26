@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from butlers.core.scheduler.anchor import effective_anchor
 from butlers.core.scheduler.timing import _next_run
 from butlers.core.temporal.city_zones import normalise_place, zone_for_place
 from butlers.core.temporal.projected_zone import TripLeg
@@ -150,12 +151,8 @@ def _title(row: Mapping[str, Any]) -> str:
 
 
 def is_owner_local(row: Mapping[str, Any]) -> bool:
-    """Whether a schedule row follows the owner's clock (the ``'UTC'`` sentinel, until P6)."""
-    if not row.get("cron"):
-        return False
-    if (row.get("task_type") or "cron") != "cron":
-        return False
-    return (row.get("timezone") or "").strip().upper() in {"", "UTC"}
+    """Whether a schedule row follows the owner's clock (its effective anchor, see core_384)."""
+    return effective_anchor(row).kind == "owner_local"
 
 
 def plan_reanchor(
@@ -182,14 +179,9 @@ def plan_reanchor(
     for row in rows:
         if not is_owner_local(row):
             pinned += 1
-            zone = (row.get("timezone") or "").strip()
-            if (
-                (row.get("task_type") or "cron") == "cron"
-                and row.get("cron")
-                and zone
-                and row.get("next_run_at") is not None
-            ):
-                kept.append(Kept(row["name"], _title(row), zone, row["next_run_at"]))
+            anchor = effective_anchor(row)
+            if anchor.kind == "zone_pinned" and anchor.zone and row.get("next_run_at") is not None:
+                kept.append(Kept(row["name"], _title(row), anchor.zone, row["next_run_at"]))
             continue
         current = row["next_run_at"]
         if current is None or current <= now:
@@ -231,7 +223,7 @@ async def apply_reanchor(pool: Any, plan: ReanchorPlan) -> int:
 
 _ROWS_SQL = """
     SELECT id, name, display_title, cron, timezone, next_run_at,
-           COALESCE(task_type, 'cron') AS task_type
+           COALESCE(task_type, 'cron') AS task_type, until_at, anchor_kind, anchor_zone
     FROM scheduled_tasks
     WHERE enabled = true AND delete_requested_at IS NULL
 """

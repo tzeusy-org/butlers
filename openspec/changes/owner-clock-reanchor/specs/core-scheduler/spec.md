@@ -72,3 +72,41 @@ the owner delivery ledger behind the same flag.
 
 - **WHEN** the clock moves to Tokyo, one owner-local schedule moves and a schedule pinned to Singapore is kept
 - **THEN** the card reads "Moved to Tokyo time: 1 item. Kept: Call Mum 19:00 Singapore (20:00 here)." with a door for each
+
+### Requirement: A scheduled task declares what it is anchored to
+
+ID: REQ-core-scheduler-008
+Source: bu-5ii4gj.5 (run 26 move 5), slice P6 (additive)
+Scope: v1-mandatory
+
+`scheduled_tasks` SHALL carry a nullable `anchor_kind` (`owner_local`, `zone_pinned`, `absolute`,
+`interval`) and `anchor_zone`. The kind is derived unless declared: existing rows are not backfilled,
+and a row with no declared kind SHALL be read by one predicate that derives it from the row (a
+non-cron, deadline or one-shot row, whose window closes within a minute of its next run, is
+`absolute`; the `'UTC'` sentinel or a null or empty timezone is `owner_local`; any other timezone is
+`zone_pinned` to it). Writers clear on change: TOML sync and `schedule_update` SHALL set both columns
+to NULL in the same statement whenever they change the row's timezone, cron, task type or until_at.
+Checks on the table guard declared rows only: they refuse a `zone_pinned` row whose `timezone`
+differs from its `anchor_zone` and an `owner_local` row with a literal timezone, and the downgrade
+drops them. `schedule_create` MAY declare a kind, written in the INSERT itself; `zone_pinned` stores
+its zone as the row's `timezone` (a UTC pin is spelled `Etc/UTC`), and a deadline row SHALL refuse a
+declaration. The migration touches only the current schema's table and changes no evaluation:
+dispatch still evaluates the `timezone` column.
+
+Later work, not in this change: making the kind required, retiring the `'UTC'` sentinel, TOML roster defaults, `calendar_events` columns and job rows
+pinned to UTC.
+
+#### Scenario: Existing rows stay derived
+
+- **WHEN** schemas hold a sentinel row, a London row, an `Etc/UTC` row, a reminder and a deadline row
+- **THEN** none is rewritten, and they read as `owner_local`, `zone_pinned` London, `zone_pinned` `Etc/UTC`, `absolute` and `absolute`, in every schema
+
+#### Scenario: A writer that changes the shape clears the declaration
+
+- **WHEN** a declared row has its timezone changed by TOML sync or `schedule_update`, or becomes a one-shot
+- **THEN** the sync succeeds and the row reads under its new shape, not the old declaration
+
+#### Scenario: The column cannot contradict the timezone
+
+- **WHEN** a row is set `owner_local` with a London timezone, or `zone_pinned` to a zone other than its timezone
+- **THEN** the database refuses it

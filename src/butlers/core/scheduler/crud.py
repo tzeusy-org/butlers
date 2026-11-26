@@ -12,6 +12,7 @@ from croniter import croniter
 
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.owner_creation import owner_creation_transaction
+from butlers.core.scheduler.anchor import resolve_declared_anchor
 from butlers.core.scheduler.retire import delete_or_retire_scheduled_task
 from butlers.core.scheduler.rows import (
     _DEFAULT_COMPLEXITY,
@@ -190,6 +191,8 @@ async def schedule_create(
     location: str | None = None,
     calendar_event_id: str | None = None,
     calendar_link_id: str | None = None,
+    anchor_kind: str | None = None,
+    anchor_zone: str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     # deadline-specific fields (required when task_type='deadline')
@@ -211,6 +214,9 @@ async def schedule_create(
     Args:
         pool: asyncpg connection pool.
         name: Human-readable task name.
+        anchor_kind: Optional declared anchor (``owner_local``, ``zone_pinned``, ``absolute``,
+            ``interval``; see ``core.scheduler.anchor``). Omitted leaves it undeclared and it is
+            derived from ``timezone`` at read. ``zone_pinned`` takes ``anchor_zone``.
         calendar_link_id: The caller's stable handle for a calendar-mirrored task. Never a
             provider id: ``calendar_event_id`` is reserved for the id Google returns.
         cron: Cron expression (5-field). Required for cron tasks; ignored for
@@ -237,6 +243,8 @@ async def schedule_create(
 
     # --- Deadline branch: delegate to deadline_create -----------------------
     if task_type == "deadline":
+        if anchor_kind is not None or anchor_zone is not None:
+            raise ValueError("a deadline schedule has no wall-clock anchor to declare")
         from datetime import date as _date
 
         from butlers.core.temporal.deadlines import validate_deadline_input
@@ -268,6 +276,7 @@ async def schedule_create(
         )
 
     # --- Cron branch --------------------------------------------------------
+    anchor_kind, anchor_zone, timezone = resolve_declared_anchor(anchor_kind, anchor_zone, timezone)
     if cron is None:
         raise ValueError("cron is required when task_type='cron'")
     if not croniter.is_valid(cron):
@@ -327,11 +336,13 @@ async def schedule_create(
                 calendar_link_id,
                 source,
                 enabled,
-                next_run_at
+                next_run_at,
+                anchor_kind,
+                anchor_zone
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                'db', true, $17
+                'db', true, $17, $18, $19
             )
             RETURNING id
             """,
@@ -352,6 +363,8 @@ async def schedule_create(
             calendar_event_id,
             calendar_link_id,
             next_run_at,
+            anchor_kind,
+            anchor_zone,
         )
     except asyncpg.UniqueViolationError as exc:
         raise ValueError(f"Task name {name!r} already exists") from exc
