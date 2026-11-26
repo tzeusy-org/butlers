@@ -8,24 +8,31 @@ Scope: v1-mandatory
 
 Every overlay envelope SHALL carry `generated_at` (the instant the producing job ran) and
 `cadence_seconds` (how often that job is scheduled). The workspace read SHALL derive, per
-contributing butler, one of four states and SHALL return them with the overlay lane: `ok` (an
+contributing butler, one of five states and SHALL return them with the overlay lane: `ok` (an
 envelope exists and `now` is within twice the cadence of `generated_at`), `stale` (an envelope
-exists but is older than that), `missing` (the butler's source was read and holds no envelope), and
-`failed` (the butler's source could not be read). A `stale` or `failed` butler SHALL be named in the
-response, and its entries SHALL NOT be presented as current. A failed read SHALL NOT be reported as
-"no domain context": that value stays reserved for `missing` and `ok` with no entries. An envelope
-written before this requirement, with no `generated_at`, SHALL read as `stale`.
+exists but is older than that), `partial` (the envelope is marked incomplete, because the producer
+could not read all of its records), `missing` (the view was read and holds no envelope for the
+butler), and `failed` (the view could not be read, so every contributor is `failed` and
+`overlays_available` is false). A `stale`, `partial` or `failed` butler SHALL be named in the
+response, and its entries SHALL NOT be presented as current. A failed read is never presented as "no
+domain context": `overlays_available=false` disambiguates, and the empty value stays reserved for
+`missing` and for `ok` with no entries. An envelope written before this requirement, with no
+`generated_at`, SHALL read as `stale`. Per-butler reads of the view are later work, if ever.
 
 #### Scenario: A frozen producer reads as stale
 
 - **WHEN** a butler's job has not run for longer than twice its cadence
-- **THEN** the response names that butler as stale and marks none of its entries as current status
+- **THEN** the response names that butler as stale and marks none of its entries as current
 
-#### Scenario: A failed source is not an empty one
+#### Scenario: An incomplete envelope reads as partial
 
-- **WHEN** one butler's pool cannot be read during the workspace fan-out
-- **THEN** the response carries a degraded state naming that butler, and `has_domain_context` is not set to false because of it
-- **AND** the other butlers' entries are still returned
+- **WHEN** a butler's envelope is marked incomplete
+- **THEN** the response names that butler as partial and marks its entries as not current
+
+#### Scenario: An unreadable view is not an empty one
+
+- **WHEN** the overlay view cannot be read
+- **THEN** every contributor is `failed`, `overlays_available` is false, and `has_domain_context` is not read as "no domain context"
 
 ### Requirement: A domain record owns one claim
 
@@ -121,7 +128,7 @@ Scope: v1-mandatory
 When the owner snoozes or moves a claim's calendar row, the override SHALL be kept with that row
 (through the existing butler-event tools, so no new write path) and SHALL hold across re-emits of
 the same `record_version`. A changed `record_version` that moves the claim's time SHALL drop the
-override.
+override. An in-place update SHALL keep the owner's override fields unless the claim's span changed.
 
 #### Scenario: Snooze survives an unchanged record
 

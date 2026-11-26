@@ -27,8 +27,9 @@ ID: REQ-module-calendar-062
 Source: bu-5ii4gj.13 (run 26 move 13), slice S2
 Scope: v1-mandatory
 
-Retracting a claim row SHALL set its status to cancelled, so the outbound push removes the provider's
-copy and the history stays. A claim that returns (the record becomes active again) SHALL revive the
+Retracting a claim row SHALL set its status to cancelled, so the existing outbound push of cancelled
+butler-lane rows removes the provider's copy and the history stays (the push behaviour is unchanged;
+the reconcile is tested at that seam). A claim that returns (the record becomes active again) SHALL revive the
 same row, not create a second one. A butler's reconcile SHALL touch only rows whose `origin_ref`
 starts with `claim:`.
 
