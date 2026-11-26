@@ -144,6 +144,8 @@ async def test_adapter_project_writes_resolved_entity_to_episode_entities() -> N
         event_title="Team standup",
         event_description=None,
         event_location=None,
+        event_metadata={},
+        source_time_role="owner",
     )
 
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
@@ -245,6 +247,8 @@ async def test_adapter_project_owner_none_when_unresolved() -> None:
         event_title="Solo block",
         event_description=None,
         event_location=None,
+        event_metadata={},
+        source_time_role="owner",
     )
 
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))

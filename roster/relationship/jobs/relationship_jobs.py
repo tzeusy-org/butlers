@@ -19,7 +19,8 @@ import asyncpg
 
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.state import state_get, state_set
-from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
+from butlers.core.temporal.calendar_provenance import is_owner_attending
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
@@ -1494,10 +1495,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # The same owner-time predicate as the dashboard and the other meeting jobs: an event on a
-        # partner or shared calendar, one the owner declined, or an unanswered invitation from an
-        # untrusted organizer, is not the owner's own time.
-        if not counts_as_owner_time(cal_row["source_time_role"], meta):
+        # An event on a partner or shared calendar is not the owner's own time (the role gate), and
+        # one the owner declined or an unanswered invitation from an untrusted organizer is not
+        # attended. Free (transparent) is deliberately not tested: a coffee marked free is still a
+        # meeting that happened, so transparency is not attendance.
+        if not (asserts_owner_time(cal_row["source_time_role"], meta) and is_owner_attending(meta)):
             logger.debug(
                 "interaction_sync: skipping calendar event %s — not the owner's time "
                 "(partner calendar, declined or quarantined invitation)",

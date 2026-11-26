@@ -128,3 +128,65 @@ async def test_the_chronicler_adapter_projects_a_primary_event_and_not_a_partner
 
         assert [e.title for e in episodes] == ["Primary event"]
         assert result.rows_projected == 1
+
+
+async def _partner_event_with_a_seat(pool, *, free: bool = False):
+    """A partner calendar's event on which the owner holds a self seat they accepted."""
+    from butlers.modules.calendar.participants import sync_event_participants
+    from roster.relationship.tests.calendar_projection import (
+        link_identity,
+        make_entity,
+        project_event,
+    )
+
+    owner = await make_entity(pool, roles=["owner"])
+    await link_identity(pool, entity_id=owner, predicate="has-email", value=_OWNER)
+    alice = await make_entity(pool)
+    await link_identity(pool, entity_id=alice, predicate="has-email", value="alice@example.com")
+    event_id = await project_event(
+        pool,
+        title="Shared invite",
+        starts_at=datetime.now(UTC) - timedelta(hours=3),
+        attendees=[{**_LISTED, "self": True}, _GUEST],
+        calendar_id="partner-cal",
+        time_role="other_person",
+    )
+    await sync_event_participants(pool, event_id)
+    if free:
+        await pool.execute(
+            'UPDATE calendar_events SET metadata = metadata || \'{"transparency": "transparent"}\''
+        )
+    return event_id
+
+
+async def test_a_partner_calendar_event_the_owner_accepted_by_seat_still_counts(
+    interaction_sync_pool,
+):
+    """Pins current behaviour: an invitation role counts when the owner holds an accepted seat."""
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    run_interaction_sync = roster_module(
+        "relationship", "jobs/relationship_jobs"
+    ).run_interaction_sync
+    async with interaction_sync_pool() as pool:
+        event_id = await _partner_event_with_a_seat(pool)
+
+        await run_encounter_reducer(pool)
+        result = await run_interaction_sync(pool)
+
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == {event_id}
+        assert result["calendar_events_scanned"] == 1 and result["logged"] == 1
+
+
+async def test_a_free_marked_accepted_meeting_still_logs_an_interaction(interaction_sync_pool):
+    """Transparency is not attendance: interaction sync does not drop a free-marked meeting."""
+    run_interaction_sync = roster_module(
+        "relationship", "jobs/relationship_jobs"
+    ).run_interaction_sync
+    async with interaction_sync_pool() as pool:
+        await _partner_event_with_a_seat(pool, free=True)
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1
