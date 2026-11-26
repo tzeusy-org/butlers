@@ -150,3 +150,22 @@ async def test_declining_leaves_a_tombstone_and_accepting_again_starts_a_fresh_a
     rows = await _agreements(pool)
 
     assert len(rows) == 1 and rows[0]["agreed_starts_at"] == moved.start_at
+
+
+async def test_an_unchanged_resync_leaves_the_last_change_time_alone_and_a_move_advances_it(db):
+    pool, source = await _world(db)
+    event = _event(attendees=_attendees())
+    await _project(_module(pool), source, event)
+    first = await pool.fetchval("SELECT current_observed_at FROM calendar_owner_agreements")
+
+    await _project(_module(pool), source, event)
+    assert await pool.fetchval("SELECT current_observed_at FROM calendar_owner_agreements") == first
+
+    moved = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(hours=1),
+            "end_at": event.end_at + timedelta(hours=1),
+        }
+    )
+    await _project(_module(pool), source, moved)
+    assert await pool.fetchval("SELECT current_observed_at FROM calendar_owner_agreements") > first

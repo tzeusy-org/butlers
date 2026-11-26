@@ -6,7 +6,10 @@ location and of the other attendees in ``calendar_owner_agreements``, one row pe
 later edit to the event never rewrites the row: the row is what the owner agreed to, which the
 drift job (a later slice) compares the current event against. The owner's response becoming
 ``declined`` or ``needsAction``, or the event losing its owner seat or its provider source, ends
-the agreement. Nothing here raises: the event write has already committed.
+the agreement. Within one schema, ``(event_id, occurrence_start)`` is equivalent to the provider
+identity of the occurrence (one projected row per provider event). ``current_observed_at`` means
+"last change": a sync that changes nothing writes nothing. Nothing here raises: the event write
+has already committed.
 """
 
 from __future__ import annotations
@@ -104,6 +107,9 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
                    current_starts_at = $2, current_ends_at = $3, current_location_digest = $4,
                    current_attendees_digest = $5, current_observed_at = now(), ended_at = NULL
              WHERE event_id = $1
+               AND (current_starts_at, current_ends_at, current_location_digest,
+                    current_attendees_digest, ended_at)
+                   IS DISTINCT FROM ($2, $3, $4, $5, NULL::timestamptz)
             RETURNING id
             """,
             event_id,
@@ -113,7 +119,11 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
             others_digest,
             response,
         )
-        if followed:
+        # A sync that changes nothing writes nothing: the guard above matched no row.
+        if followed or await pool.fetchval(
+            "SELECT 1 FROM calendar_owner_agreements WHERE event_id = $1 AND ended_at IS NULL",
+            event_id,
+        ):
             return "kept"
         inserted = await pool.fetchval(
             """
