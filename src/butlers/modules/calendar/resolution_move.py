@@ -263,7 +263,7 @@ async def record_applied_move(
             "UPDATE calendar_action_log SET action_result = action_result || $2::jsonb "
             "WHERE action_type = 'resolution_move' AND action_result->>'action_id' = $1",
             str(action_id),
-            json.dumps({"etag_after": etag_after, "pre_start": pre_start, "pre_end": pre_end}),
+            {"etag_after": etag_after, "pre_start": pre_start, "pre_end": pre_end},
         )
     except Exception:
         logger.warning("resolution move: etag_after could not be recorded", exc_info=True)

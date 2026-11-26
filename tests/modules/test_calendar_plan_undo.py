@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -156,7 +155,7 @@ async def test_an_applied_move_records_the_etag_it_left_and_the_times_it_replace
 
     _sql, bound_id, payload = pool.execute.await_args.args
     assert bound_id == str(action)
-    assert json.loads(payload) == {"etag_after": "e1", "pre_start": "s", "pre_end": "e"}
+    assert payload == {"etag_after": "e1", "pre_start": "s", "pre_end": "e"}
 
 
 async def test_recording_is_best_effort_and_skipped_without_an_etag():
