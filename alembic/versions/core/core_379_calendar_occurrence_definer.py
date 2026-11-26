@@ -11,8 +11,9 @@ It answers one boolean and never a time, a digest or an address:
 
 * ``true``  -- an agreement row exists and the event's current start, end, location or attendees
   differ from what the owner accepted;
-* ``false`` -- the row matches again, or is gone (declined, cancelled, no longer a seat);
-* ``NULL``  -- unknown: no butler named, a name that is not a schema holding the table, or no id.
+* ``false`` -- the row matches again, or the agreement ended (declined, cancelled, no seat);
+* ``NULL``  -- unknown: no row for the occurrence, no butler named, a name that is not a schema
+  holding the table, or no id.
 
 The butler schema is a parameter because every calendar-hosting butler keeps its own agreements.
 It is accepted only when it names an existing relation, and is quoted with ``%I``.
@@ -53,14 +54,15 @@ BEGIN
         RETURN NULL;
     END IF;
     EXECUTE pg_catalog.format(
-        'SELECT current_starts_at IS DISTINCT FROM agreed_starts_at'
+        'SELECT ended_at IS NULL AND ('
+        'current_starts_at IS DISTINCT FROM agreed_starts_at'
         ' OR current_ends_at IS DISTINCT FROM agreed_ends_at'
         ' OR current_location_digest IS DISTINCT FROM location_digest'
-        ' OR current_attendees_digest IS DISTINCT FROM attendees_digest'
+        ' OR current_attendees_digest IS DISTINCT FROM attendees_digest)'
         ' FROM %I.calendar_owner_agreements WHERE event_id = $1 AND occurrence_start = $2',
         p_butler)
         INTO v_changed USING p_event_id, p_original_start;
-    RETURN COALESCE(v_changed, false);
+    RETURN v_changed;
 END;
 $fn$
 """

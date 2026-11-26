@@ -106,7 +106,7 @@ async def test_a_gone_agreement_is_false_and_a_bad_butler_or_argument_is_unknown
 
     assert await _check(pool, event_id, start, butler="no_such_schema") is None
     assert await _check(pool, event_id, start, butler="x; DROP TABLE x") is None
-    assert await _check(pool, uuid.uuid4(), start) is False
+    assert await _check(pool, uuid.uuid4(), start) is None
     probe = _premises().PREMISE_PROBES[_PROBE]
     assert await probe(pool, {"butler": "any", "event_id": "nope", "original_start": "x"}) is None
     assert (

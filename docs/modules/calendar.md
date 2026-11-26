@@ -306,7 +306,8 @@ the event on every write, so the agreed and the current terms can be compared in
 reads that comparison through `public.resolve_calendar_occurrence(butler, event_id, original_start)`
 (core_379, slice A-S3), a SECURITY DEFINER function granted to the Switchboard role only. It answers
 one boolean: true while the occurrence differs from what the owner accepted, false when it matches
-again or the agreement is gone, and unknown (NULL) when the butler schema has no such table. The
+again or the agreement ended (declined, cleared, cancelled), and unknown (NULL) when there is no
+agreement row or the butler schema has no such table. The
 insight engine reaches it through the premise probe `("calendar", "occurrence_still_changed")`
 whose args are `butler`, `event_id` and a timezone-aware `original_start`.
 
