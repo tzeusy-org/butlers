@@ -114,7 +114,7 @@ OP GET /api/butlers/{name}/state/{key} 3274c3eb0d57
 OP GET /api/calendar/accounts 27d1cf4a2b27
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
-OP GET /api/calendar/workspace/changes e80cf9893620
+OP GET /api/calendar/workspace/changes 2712ce44dcbb
 OP GET /api/calendar/workspace/conflicts 6e4f58219019
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905

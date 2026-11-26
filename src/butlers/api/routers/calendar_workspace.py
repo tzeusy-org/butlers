@@ -1994,11 +1994,12 @@ async def get_workspace_changes(
     Read from the connector's revision journal through a narrow reader; the owner's own edits and
     events the owner declined are not returned. A failed read answers ``changes_available=false``
     with no items (never an empty "no changes"). ``since`` defaults to seven days ago; if given it
-    must carry a timezone and be at most 14 days (plus five minutes of clock skew) old (HTTP 400
-    otherwise); a future value reads as now. The window is never shortened silently. Only events
-    still ahead are returned, one item per organizer change across the owner's calendars, never a
-    baseline or a new invitation; ``truncated`` says more exist than the cap, and
-    ``owners_complete=false`` that the owner's account addresses were unreadable (a lower bound).
+    must carry a timezone and be at most 14 days old, plus five minutes of clock skew (HTTP 400
+    otherwise; the slack beyond 14 days is clamped to 14 days). A future value reads as now. The
+    window is never shortened silently. Only events still ahead are returned, one item per
+    organizer change across the owner's calendars, never a baseline or a new invitation.
+    ``truncated`` says more exist than the cap. ``owners_complete=false`` says the owner's account
+    addresses were unreadable, so the list may include the owner's own edits (an upper bound).
     """
     now = datetime.now(UTC)
     if since is None:

@@ -83,7 +83,8 @@ class ChangesRead:
     #: ``True`` when more changes exist than the cap returned.
     truncated: bool = False
     #: ``False`` when the owner's account addresses could not be read: an owner edit made through
-    #: another account may then appear, so the list is a lower bound, not exact.
+    #: another account may then appear, so the list is an upper bound
+    #: (it may include the owner's own edits).
     owners_complete: bool = True
 
 
