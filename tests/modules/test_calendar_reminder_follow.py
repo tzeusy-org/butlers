@@ -164,3 +164,17 @@ async def test_a_receipt_is_unique_per_reminder_kind_and_revision(db):
 
     assert first is not None and again is None
     assert await pool.fetchval("SELECT count(*) FROM reminder_receipts") == 1
+
+
+def test_the_moved_line_is_in_the_owners_zone_not_utc():
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from butlers.modules.calendar import reminder_follow
+
+    change = {
+        "kind": "rebased",
+        "title": "Leave for the dentist",
+        "new_start": datetime(2026, 12, 1, 3, 30, tzinfo=UTC),
+    }
+    assert "Tue 01 Dec 12:30 JST" in reminder_follow._line(change, ZoneInfo("Asia/Tokyo"))

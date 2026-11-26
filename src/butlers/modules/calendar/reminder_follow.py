@@ -139,14 +139,14 @@ async def _apply(
     }
 
 
-def _line(change: dict[str, Any]) -> str:
+def _line(change: dict[str, Any], zone: Any = UTC) -> str:
     from butlers.jobs.meeting_card import inert_text
 
     title = inert_text(change["title"], 80) or "your reminder"
     if change["kind"] == "retired":
         return f"Reminder cancelled: {title}. Its event was cancelled or you declined it."
-    when = change["new_start"].astimezone(UTC)
-    return f"Reminder moved: {title} is now {when:%a %d %b %H:%M} UTC, following its event."
+    when = change["new_start"].astimezone(zone)
+    return f"Reminder moved: {title} is now {when:%a %d %b %H:%M %Z}, following its event."
 
 
 async def _announce(pool: Any, change: dict[str, Any], origin_butler: str, now: datetime) -> str:
@@ -156,6 +156,9 @@ async def _announce(pool: Any, change: dict[str, Any], origin_butler: str, now: 
     except Exception:
         logger.warning("reminder follow: insight broker unavailable", exc_info=True)
         return "skipped"
+    from butlers.jobs.briefing import owner_briefing_zone
+
+    zone = await owner_briefing_zone(pool)  # owner-facing text is in the owner's zone
     digest = hashlib.sha256(f"{change['kind']}|{change['revision']}".encode()).hexdigest()[:12]
     key = f"{origin_butler}:reminder-{change['kind']}:{change['reminder_id']}:{digest}"
     fire_at = change["new_start"] or now
@@ -164,7 +167,7 @@ async def _announce(pool: Any, change: dict[str, Any], origin_butler: str, now: 
         "priority": CANDIDATE_PRIORITY,
         "category": CANDIDATE_CATEGORY,
         "dedup_key": key,
-        "message": _line(change),
+        "message": _line(change, zone),
         "premise": None,
         "now": now,
     }
