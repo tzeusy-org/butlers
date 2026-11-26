@@ -29,9 +29,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, tzinfo
 from typing import Any, Literal
 
 OptionKind = Literal["move_block", "move_own", "decline", "tentative", "ask_organizer", "keep_both"]
@@ -44,6 +44,11 @@ MAX_OPTIONS = 5
 ASK_ORGANIZER_SLOTS = 2
 #: Proposed slots start on this grid, never at an odd second.
 SLOT_GRID = timedelta(minutes=15)
+#: Dark until the resolve route ships (R2): the read model attaches options only when true.
+RESOLUTION_OPTIONS_LIVE = False
+#: The working day a moved event may land in, in the owner's display zone.
+DAY_START_HOUR = 8
+DAY_END_HOUR = 19
 #: The tool that records an acknowledgement. It has no provider effect.
 ACKNOWLEDGE_TOOL = "calendar_conflict_acknowledge"
 
@@ -277,3 +282,43 @@ def issue_digest(events: Sequence[ResolutionEvent], options: Sequence[Option]) -
     }
     blob = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def free_windows(
+    busy: Iterable[tuple[datetime, datetime]],
+    lo: datetime,
+    hi: datetime,
+    zone: tzinfo,
+    *,
+    day_start_hour: int = DAY_START_HOUR,
+    day_end_hour: int = DAY_END_HOUR,
+) -> list[tuple[datetime, datetime]]:
+    """Working-day windows inside ``[lo, hi)`` that no busy interval touches, earliest first.
+
+    ``busy`` must hold every owner-busy interval across every calendar read, so a slot taken from
+    here never trades one overlap for another. Only the scanned window is searched: a slot outside
+    it was never checked, so it is never offered.
+    """
+    merged: list[list[datetime]] = []
+    for start, end in sorted(busy):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    windows: list[tuple[datetime, datetime]] = []
+    day = lo.astimezone(zone).date()
+    last_day = hi.astimezone(zone).date()
+    while day <= last_day:
+        w_start = max(datetime.combine(day, time(day_start_hour), tzinfo=zone), lo)
+        w_end = min(datetime.combine(day, time(day_end_hour), tzinfo=zone), hi)
+        cursor = w_start
+        for b_start, b_end in merged:
+            if b_end <= cursor or b_start >= w_end:
+                continue
+            if b_start > cursor:
+                windows.append((cursor, b_start))
+            cursor = max(cursor, b_end)
+        if cursor < w_end:
+            windows.append((cursor, w_end))
+        day += timedelta(days=1)
+    return [(a, b) for a, b in windows if b > a]

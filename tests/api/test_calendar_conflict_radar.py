@@ -1423,3 +1423,107 @@ async def test_a_quarantined_invitation_adds_no_conflict_or_load(app):
         response = await client.get("/api/calendar/workspace/conflicts", params=_PARAMS)
     assert response.status_code == 200
     assert response.json()["data"]["issues"] == []
+
+
+# ---------------------------------------------------------------------------
+# Resolution options on overlap issues (bu-5ii4gj.11 R1b)
+# ---------------------------------------------------------------------------
+
+_INVITED = {
+    "source_type": "provider_event",
+    "attendees": [
+        {"email": "me@example.com", "self": True, "responseStatus": "accepted"},
+        {"email": "boss@example.com", "organizer": True, "responseStatus": "accepted"},
+    ],
+}
+
+
+def _options_world(app, **overrides):
+    block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
+    block["etag"] = "x"
+    block["event_etag"] = "etag-block"
+    meeting = _ws_row(
+        entry_id="mtg",
+        title="Planning",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata=_INVITED,
+    )
+    meeting["event_etag"] = "etag-mtg"
+    for row in (block, meeting):
+        row.update(overrides)
+    return block, meeting
+
+
+_WINDOW = {"start": _DAY - timedelta(days=30), "end": _DAY + timedelta(hours=15)}
+_NOW = _DAY - timedelta(hours=1)
+
+
+@pytest.fixture
+def live(monkeypatch):
+    monkeypatch.setattr("butlers.core.temporal.conflict_resolution.RESOLUTION_OPTIONS_LIVE", True)
+
+
+async def _overlap(app, rows, **extra):
+    _, db = _build_app(app, workspace_rows={"general": rows})
+    scan = await query_calendar_conflicts(db, **_WINDOW, now=_NOW, **extra)
+    (overlap,) = [i for i in scan.issues if i.kind == "overlap"]
+    return overlap
+
+
+async def test_options_are_absent_while_the_flag_is_dark(app):
+    overlap = await _overlap(app, list(_options_world(app)))
+    assert overlap.options == [] and overlap.issue_digest is None
+
+
+async def test_a_block_against_a_meeting_offers_a_move_into_a_free_window(app, live):
+    overlap = await _overlap(app, list(_options_world(app)))
+
+    kinds = [o.kind for o in overlap.options]
+    assert kinds[0] == "move_block" and kinds[-1] == "keep_both"
+    assert {"decline", "tentative"} <= set(kinds)
+    move = overlap.options[0]
+    assert move.authority == "no_park_undo"
+    start = datetime.fromisoformat(move.exact_call["args"]["start_at"])
+    end = datetime.fromisoformat(move.exact_call["args"]["end_at"])
+    # Free of both overlapping events (09:00-10:30) and inside the working day.
+    assert end <= _DAY or start >= _DAY + timedelta(minutes=90)
+    assert overlap.issue_digest
+
+
+async def test_a_slot_must_be_free_on_every_calendar_not_just_the_two_in_the_overlap(app, live):
+    rows = list(_options_world(app))
+    rows.append(_ws_row(entry_id="early", title="Gym", start=_DAY - timedelta(hours=1)))
+
+    overlap = await _overlap(app, rows)
+
+    move = overlap.options[0]
+    start = datetime.fromisoformat(move.exact_call["args"]["start_at"])
+    assert start == _DAY + timedelta(minutes=90)  # 08:00-09:00 is taken by the third event
+
+
+async def test_a_stale_source_offers_nothing_and_says_so(app, live):
+    block, meeting = _options_world(app, last_synced_at=_NOW - timedelta(days=1))
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
+async def test_the_digest_follows_an_etag(app, live):
+    block, meeting = _options_world(app)
+    first = (await _overlap(app, [block, meeting])).issue_digest
+    meeting["event_etag"] = "etag-mtg-2"
+
+    assert (await _overlap(app, [block, meeting])).issue_digest != first
+
+
+async def test_the_endpoint_serialises_options_and_the_digest(app, live):
+    block, meeting = _options_world(app, last_synced_at=datetime.now(UTC))
+    app, _ = _build_app(app, workspace_rows={"general": [block, meeting]})
+
+    resp = await _get(app)
+
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    assert overlap["issue_digest"]
+    assert overlap["options"][-1]["kind"] == "keep_both"
+    assert all("title" not in o["rationale_fields"] for o in overlap["options"])

@@ -24181,11 +24181,17 @@ export interface components {
             date: string;
             /** Events */
             events?: components["schemas"]["ConflictEventRef"][];
+            /** Issue Digest */
+            issue_digest?: string | null;
             /**
              * Kind
              * @enum {string}
              */
             kind: "overlap" | "back_to_back" | "overloaded_day";
+            /** Options */
+            options?: components["schemas"]["ResolutionOption"][];
+            /** Options Reason */
+            options_reason?: string | null;
             /** Proposal Ids */
             proposal_ids?: string[];
             /**
@@ -36750,6 +36756,32 @@ export interface components {
         ResetUsageRequest: {
             /** Window */
             window: string;
+        };
+        /**
+         * ResolutionOption
+         * @description One way to finish an overlap: an exact call and who has to say yes (bu-5ii4gj.11).
+         */
+        ResolutionOption: {
+            /**
+             * Authority
+             * @enum {string}
+             */
+            authority: "no_park_undo" | "owner_submit" | "parked_per_event";
+            /** Exact Call */
+            exact_call: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "move_block" | "move_own" | "decline" | "tentative" | "ask_organizer" | "keep_both";
+            /** Rationale Fields */
+            rationale_fields?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * ResolveGapInterviewRequest
