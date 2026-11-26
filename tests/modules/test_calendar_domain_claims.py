@@ -24,6 +24,7 @@ pytestmark = [
 ]
 
 _START = datetime(2030, 3, 4, 9, 0, tzinfo=UTC)
+_WIN = _START - timedelta(days=1)  # the producer's window starts the day before the claim
 
 
 def _claim(record: str = "b1", *, version="v1", presence="block", status="active", **over):
@@ -74,6 +75,7 @@ async def test_a_block_or_reminder_claim_owns_one_row_and_an_overlay_claim_owns_
             _claim("c", presence="overlay"),
         ],
         complete=True,
+        window_start=_WIN,
     )
 
     rows = await _rows(pool)
@@ -85,10 +87,10 @@ async def test_a_block_or_reminder_claim_owns_one_row_and_an_overlay_claim_owns_
 async def test_the_same_complete_set_twice_writes_nothing_the_second_time(db):
     mod, pool = await _module(db)
     claims = [_claim("a"), _claim("b", presence="reminder")]
-    await mod.reconcile_domain_claims("finance", claims, complete=True)
+    await mod.reconcile_domain_claims("finance", claims, complete=True, window_start=_WIN)
     before = {r["origin_ref"]: r["xmin"] for r in await _rows(pool)}
 
-    second = await mod.reconcile_domain_claims("finance", claims, complete=True)
+    second = await mod.reconcile_domain_claims("finance", claims, complete=True, window_start=_WIN)
 
     assert second.writes == 0 and sorted(second.unchanged) == ["finance:bill:a", "finance:bill:b"]
     assert {r["origin_ref"]: r["xmin"] for r in await _rows(pool)} == before
@@ -97,7 +99,7 @@ async def test_the_same_complete_set_twice_writes_nothing_the_second_time(db):
 async def test_a_changed_version_moves_the_same_row_and_the_provider_gets_a_patch(db):
     mod, pool = await _module(db)
     provider = mod._provider
-    await mod.reconcile_domain_claims("finance", [_claim()], complete=True)
+    await mod.reconcile_domain_claims("finance", [_claim()], complete=True, window_start=_WIN)
     await mod._push_internal_events_to_provider()
     row_id = (await _rows(pool))[0]["id"]
     assert len(provider.create_calls) == 1
@@ -111,7 +113,7 @@ async def test_a_changed_version_moves_the_same_row_and_the_provider_gets_a_patc
             "timezone": "Asia/Singapore",
         },
     )
-    result = await mod.reconcile_domain_claims("finance", [moved], complete=True)
+    result = await mod.reconcile_domain_claims("finance", [moved], complete=True, window_start=_WIN)
     await mod._push_internal_events_to_provider()
 
     rows = await _rows(pool)
@@ -123,11 +125,11 @@ async def test_a_changed_version_moves_the_same_row_and_the_provider_gets_a_patc
 async def test_a_settled_claim_retracts_its_row_and_the_provider_copy_is_deleted(db):
     mod, pool = await _module(db)
     provider = mod._provider
-    await mod.reconcile_domain_claims("finance", [_claim()], complete=True)
+    await mod.reconcile_domain_claims("finance", [_claim()], complete=True, window_start=_WIN)
     await mod._push_internal_events_to_provider()
 
     result = await mod.reconcile_domain_claims(
-        "finance", [_claim(version="v2", status="settled")], complete=True
+        "finance", [_claim(version="v2", status="settled")], complete=True, window_start=_WIN
     )
     await mod._push_internal_events_to_provider()
 
@@ -139,13 +141,19 @@ async def test_a_settled_claim_retracts_its_row_and_the_provider_copy_is_deleted
 
 async def test_an_absent_claim_is_retracted_only_on_a_complete_read(db):
     mod, pool = await _module(db)
-    await mod.reconcile_domain_claims("finance", [_claim("a"), _claim("b")], complete=True)
+    await mod.reconcile_domain_claims(
+        "finance", [_claim("a"), _claim("b")], complete=True, window_start=_WIN
+    )
 
-    partial = await mod.reconcile_domain_claims("finance", [_claim("a")], complete=False)
+    partial = await mod.reconcile_domain_claims(
+        "finance", [_claim("a")], complete=False, window_start=_WIN
+    )
     assert partial.retracted == [] and partial.retraction_ran is False
     assert {r["status"] for r in await _rows(pool)} == {"confirmed"}
 
-    full = await mod.reconcile_domain_claims("finance", [_claim("a")], complete=True)
+    full = await mod.reconcile_domain_claims(
+        "finance", [_claim("a")], complete=True, window_start=_WIN
+    )
     assert full.retracted == ["finance:bill:b"]
     assert {r["origin_ref"]: r["status"] for r in await _rows(pool)} == {
         "claim:finance:bill:a": "confirmed",
@@ -155,10 +163,15 @@ async def test_an_absent_claim_is_retracted_only_on_a_complete_read(db):
 
 async def test_a_malformed_claim_is_skipped_and_withholds_retraction(db):
     mod, pool = await _module(db)
-    await mod.reconcile_domain_claims("finance", [_claim("a"), _claim("b")], complete=True)
+    await mod.reconcile_domain_claims(
+        "finance", [_claim("a"), _claim("b")], complete=True, window_start=_WIN
+    )
 
     result = await mod.reconcile_domain_claims(
-        "finance", [_claim("a"), {"claim_key": "finance:bill:b", "label": ""}], complete=True
+        "finance",
+        [_claim("a"), {"claim_key": "finance:bill:b", "label": ""}],
+        complete=True,
+        window_start=_WIN,
     )
 
     assert result.invalid == ["finance:bill:b"] and result.retracted == []
@@ -167,12 +180,21 @@ async def test_a_malformed_claim_is_skipped_and_withholds_retraction(db):
 
 async def test_a_returning_claim_revives_the_same_row(db):
     mod, pool = await _module(db)
-    await mod.reconcile_domain_claims("finance", [_claim()], complete=True)
+    provider = mod._provider
+    await mod.reconcile_domain_claims("finance", [_claim()], complete=True, window_start=_WIN)
+    await mod._push_internal_events_to_provider()
     row_id = (await _rows(pool))[0]["id"]
-    await mod.reconcile_domain_claims("finance", [], complete=True)
+    await mod.reconcile_domain_claims("finance", [], complete=True, window_start=_WIN)
+    await mod._push_internal_events_to_provider()
+    assert len(provider.delete_calls) == 1
 
-    result = await mod.reconcile_domain_claims("finance", [_claim(version="v3")], complete=True)
+    result = await mod.reconcile_domain_claims(
+        "finance", [_claim(version="v3")], complete=True, window_start=_WIN
+    )
+    await mod._push_internal_events_to_provider()
 
+    # The push recreates the provider copy (the delete cleared its id), it does not patch.
+    assert len(provider.create_calls) == 2
     rows = await _rows(pool)
     assert len(rows) == 1 and rows[0]["id"] == row_id and rows[0]["status"] == "confirmed"
     assert result.revived == ["finance:bill:b1"]
@@ -182,9 +204,9 @@ async def test_a_butler_cannot_reconcile_anothers_claims(db):
     mod, pool = await _module(db)
 
     with pytest.raises(ClaimError):
-        await mod.reconcile_domain_claims("travel", [_claim()], complete=True)
+        await mod.reconcile_domain_claims("travel", [_claim()], complete=True, window_start=_WIN)
     result = await mod.reconcile_domain_claims(
-        "finance", [_claim(claim_key="travel:leg:1")], complete=True
+        "finance", [_claim(claim_key="travel:leg:1")], complete=True, window_start=_WIN
     )
 
     assert result.invalid == ["travel:leg:1"] and await _rows(pool) == []
@@ -202,6 +224,7 @@ async def test_the_reminder_tick_skips_a_block_claim_and_keeps_a_reminder_claim(
         "finance",
         [_claim("a", presence="block", span=span), _claim("b", presence="reminder", span=span)],
         complete=True,
+        window_start=_WIN,
     )
     seen = []
 
@@ -258,3 +281,102 @@ async def test_the_overlay_writer_stores_schema_v2_claims_per_date(db):
     second = await state_get(pool, job.overlay_key("2030-03-05"))
     assert first["schema_version"] == 2 and first["claims"] == [claim]
     assert second["schema_version"] == 2 and second["claims"] == []
+
+
+def _moved(version, days=2):
+    later = _START + timedelta(days=days)
+    return _claim(
+        version=version,
+        span={
+            "start": later.isoformat(),
+            "end": (later + timedelta(hours=1)).isoformat(),
+            "timezone": "Asia/Singapore",
+        },
+    )
+
+
+async def _reconcile(mod, claims):
+    return await mod.reconcile_domain_claims("finance", claims, complete=True, window_start=_WIN)
+
+
+async def test_an_owner_move_survives_a_re_emit_and_an_amount_change_but_not_a_span_change(db):
+    mod, pool = await _module(db)
+    await _reconcile(mod, [_claim()])
+    owner_time = _START + timedelta(hours=5)
+    await pool.execute(
+        "UPDATE calendar_events SET starts_at = $1::timestamptz, "
+        "ends_at = $1::timestamptz + interval '1 hour', title = 'My own title' "
+        "WHERE origin_ref LIKE 'claim:%'",
+        owner_time,
+    )
+    before = (await _rows(pool))[0]["xmin"]
+
+    # Same version: no write at all.
+    result = await _reconcile(mod, [_claim()])
+    row = (await _rows(pool))[0]
+    assert result.unchanged == ["finance:bill:b1"] and row["xmin"] == before
+    assert row["starts_at"] == owner_time and row["title"] == "My own title"
+
+    # New version, same span (an amount changed): metadata refreshes, the owner's move stands.
+    result = await _reconcile(mod, [_claim(version="v2")])
+    row = (await _rows(pool))[0]
+    assert result.updated == ["finance:bill:b1"]
+    assert row["starts_at"] == owner_time and row["title"] == "My own title"
+    assert row["metadata"]["claim"]["record_version"] == "v2"
+
+    # The claim's own span moved: the row follows the record again, the override is dropped.
+    await _reconcile(mod, [_moved("v3")])
+    row = (await _rows(pool))[0]
+    assert row["starts_at"] == _START + timedelta(days=2) and row["title"] == "Electric Co"
+
+
+async def test_an_owner_delete_stays_gone_until_the_claims_span_changes(db):
+    mod, pool = await _module(db)
+    await _reconcile(mod, [_claim()])
+    await pool.execute(
+        "UPDATE calendar_events SET status = 'cancelled' WHERE origin_ref LIKE 'claim:%'"
+    )
+
+    again = await _reconcile(mod, [_claim()])
+    amount = await _reconcile(mod, [_claim(version="v2")])
+    assert again.unchanged == amount.unchanged == ["finance:bill:b1"]
+    assert [r["status"] for r in await _rows(pool)] == ["cancelled"]
+
+    back = await _reconcile(mod, [_moved("v3")])
+    assert back.revived == ["finance:bill:b1"]
+    assert [r["status"] for r in await _rows(pool)] == ["confirmed"]
+
+
+async def test_a_row_that_slid_out_of_the_window_keeps_its_state_and_the_push_deletes_nothing(db):
+    mod, pool = await _module(db)
+    provider = mod._provider
+    await mod.reconcile_domain_claims("finance", [_claim()], complete=True, window_start=_WIN)
+    await mod._push_internal_events_to_provider()
+
+    # The day after the claim's date the window starts later and the producer no longer lists it.
+    tomorrow = _START + timedelta(days=1)
+    result = await mod.reconcile_domain_claims("finance", [], complete=True, window_start=tomorrow)
+    await mod._push_internal_events_to_provider()
+
+    assert result.retracted == [] and not provider.delete_calls
+    assert [r["status"] for r in await _rows(pool)] == ["confirmed"]
+
+    # An upcoming row that disappears inside the window is still retracted.
+    await mod.reconcile_domain_claims("finance", [], complete=True, window_start=_WIN)
+    assert [r["status"] for r in await _rows(pool)] == ["cancelled"]
+
+
+async def test_an_over_cap_label_or_door_is_an_invalid_claim(db):
+    mod, pool = await _module(db)
+    result = await mod.reconcile_domain_claims(
+        "finance",
+        [
+            _claim("a", label="x" * 121),
+            _claim("b", door={"route": "/x", "ref": "y" * 3000}),
+            _claim("c"),
+        ],
+        complete=True,
+        window_start=_WIN,
+    )
+    assert result.invalid == ["finance:bill:a", "finance:bill:b"]
+    assert result.created == ["finance:bill:c"] and result.retraction_ran is False

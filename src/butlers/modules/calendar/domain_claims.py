@@ -19,6 +19,7 @@ import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from butlers.core.temporal.domain_claims import (
@@ -51,11 +52,20 @@ class ClaimReconcileResult:
         return len(self.created) + len(self.updated) + len(self.revived) + len(self.retracted)
 
 
+def _span_signature(claim: DomainClaim) -> str:
+    """What the claim says about when and what. The row is the owner's to edit, or to delete,
+    until this changes."""
+    span = claim.span
+    when = f"{span.start.isoformat()}|{span.end.isoformat()}"
+    return f"{when}|{span.timezone}|{span.all_day}|{claim.label}"
+
+
 def _claim_metadata(claim: DomainClaim) -> dict[str, Any]:
     return {
         "claim": {
             "claim_key": claim.claim_key,
             "record_version": claim.record_version,
+            "span_sig": _span_signature(claim),
             "kind": claim.kind,
             "presence": claim.presence,
             "priority": claim.priority,
@@ -66,16 +76,15 @@ def _claim_metadata(claim: DomainClaim) -> dict[str, Any]:
     }
 
 
-def _existing_version(metadata: Any) -> tuple[str | None, str | None]:
+def _existing_claim(metadata: Any) -> Mapping[str, Any]:
+    """The ``claim`` block the row was last written with (empty when it has none)."""
     if isinstance(metadata, str):
         try:
             metadata = json.loads(metadata)
         except ValueError:
-            return None, None
+            return {}
     claim = metadata.get("claim") if isinstance(metadata, Mapping) else None
-    if not isinstance(claim, Mapping):
-        return None, None
-    return claim.get("record_version"), claim.get("presence")
+    return claim if isinstance(claim, Mapping) else {}
 
 
 class DomainClaimsMixin:
@@ -86,11 +95,15 @@ class DomainClaimsMixin:
         source_butler: str,
         claims: Iterable[Mapping[str, Any]],
         complete: bool,
+        window_start: datetime,
     ) -> ClaimReconcileResult:
         """Make the butler's ``claim:`` rows match ``claims``; see the module docstring.
 
-        ``claims`` is the producer's whole set for its window. Raises :class:`ClaimError` when
-        ``source_butler`` is not this module's own butler or a claim key repeats. A malformed
+        ``claims`` is the producer's whole set for its window, which starts at ``window_start``.
+        A complete read retracts only rows ending at or after ``window_start``: a row that has
+        slid out of the window keeps its last state (history stays on the owner's calendar).
+        Raises :class:`ClaimError` when ``source_butler`` is not this module's own butler or a
+        claim key repeats. A malformed
         claim is skipped and logged, and it also withholds retraction (its record is unknown).
         """
         own = self._resolve_effective_butler_name()  # type: ignore[attr-defined]
@@ -170,22 +183,46 @@ class DomainClaimsMixin:
                     )
                     result.created.append(key)
                     continue
-                version, presence = _existing_version(row["metadata"])
-                revived = row["status"] == "cancelled"
-                if (
-                    not revived
-                    and version == claim.record_version
-                    and presence == claim.presence
-                    and row["title"] == claim.label
-                    and row["timezone"] == span.timezone
-                    and row["starts_at"] == span.start
-                    and row["ends_at"] == span.end
-                    and row["all_day"] == span.all_day
-                ):
+                last = _existing_claim(row["metadata"])
+                signature = _span_signature(claim)
+                cancelled = row["status"] == "cancelled"
+                # A cancelled row we did not retract was deleted by the owner (an override).
+                owner_deleted = cancelled and not last.get("retracted")
+                same_when = last.get("span_sig") == signature and last.get("presence") == (
+                    claim.presence
+                )
+                if owner_deleted and same_when:
+                    # The owner dismissed this claim; it stays gone until its span changes.
                     result.unchanged.append(key)
                     continue
-                # ``||`` keeps everything else on the row: the provider mirror id and any
-                # owner override written by the butler-event tools.
+                revived = cancelled
+                if (
+                    not cancelled
+                    and same_when
+                    and last.get("record_version") == (claim.record_version)
+                ):
+                    # Same record version: write nothing, whatever the row says now.
+                    result.unchanged.append(key)
+                    continue
+                if not cancelled and same_when:
+                    # A new version that does not move or rename the claim (an amount): refresh
+                    # the claim's metadata and leave the owner's edits to the row alone.
+                    await conn.execute(
+                        """
+                        UPDATE calendar_events
+                        SET metadata = COALESCE(metadata, '{}'::jsonb) || ($2::text)::jsonb,
+                            updated_at = now()
+                        WHERE id = $1
+                        """,
+                        row["id"],
+                        metadata,
+                    )
+                    result.updated.append(key)
+                    continue
+                # The claim's span or presence changed, or it returned: the row follows the record
+                # again, which drops an owner override. ``||`` keeps everything else on the row,
+                # such as the provider mirror id. (Rows written before span_sig existed take one
+                # full rewrite here.)
                 await conn.execute(
                     """
                     UPDATE calendar_events
@@ -207,18 +244,22 @@ class DomainClaimsMixin:
 
             if retract:
                 wanted = {k for k, c in parsed.items() if c.wants_row}
-                gone = [
-                    r["id"]
+                gone_keys = [
+                    k
                     for k, r in existing.items()
-                    if k not in wanted and r["status"] != "cancelled"
+                    if k not in wanted
+                    and r["status"] != "cancelled"
+                    and (r["ends_at"] or r["starts_at"]) >= window_start
                 ]
+                gone = [existing[k]["id"] for k in gone_keys]
                 if gone:
                     await conn.execute(
-                        "UPDATE calendar_events SET status = 'cancelled', updated_at = now() "
+                        "UPDATE calendar_events SET status = 'cancelled', updated_at = now(), "
+                        "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+                        "'claim', COALESCE(metadata->'claim', '{}'::jsonb) "
+                        "|| '{\"retracted\": true}'::jsonb) "
                         "WHERE id = ANY($1::uuid[])",
                         gone,
                     )
-                result.retracted.extend(
-                    k for k, r in existing.items() if k not in wanted and r["status"] != "cancelled"
-                )
+                result.retracted.extend(gone_keys)
         return result

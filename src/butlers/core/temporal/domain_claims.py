@@ -14,6 +14,7 @@ unchanged version means nothing to write.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CLAIM_SCHEMA_VERSION = 2
+MAX_LABEL_CHARS = 120
+MAX_DOOR_BYTES = 2048
 #: ``calendar_events.origin_ref`` prefix of every row a claim owns.
 CLAIM_ORIGIN_PREFIX = "claim:"
 #: A reminder claim with no stated end gets this long a row.
@@ -145,6 +148,8 @@ def parse_claim(raw: object, *, source_butler: str) -> DomainClaim:
     label = raw.get("label")
     if not isinstance(label, str) or not label.strip():
         raise ClaimError("label is required")
+    if len(label.strip()) > MAX_LABEL_CHARS:
+        raise ClaimError(f"label exceeds {MAX_LABEL_CHARS} characters")
     kind = raw.get("kind")
     if not isinstance(kind, str) or not kind:
         raise ClaimError("kind is required")
@@ -162,6 +167,8 @@ def parse_claim(raw: object, *, source_butler: str) -> DomainClaim:
     door = raw.get("door")
     if door is not None and not isinstance(door, Mapping):
         raise ClaimError("door must be an object")
+    if door is not None and len(json.dumps(door, default=str)) > MAX_DOOR_BYTES:
+        raise ClaimError(f"door exceeds {MAX_DOOR_BYTES} bytes")
     priority = raw.get("priority")
     return DomainClaim(
         claim_key=key,
