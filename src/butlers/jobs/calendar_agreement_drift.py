@@ -50,6 +50,7 @@ from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.owner_conditions import Observation, compute_fingerprint, reconcile_snapshot
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.calendar_sync_deadman import compute_calendar_sync_report
+from butlers.jobs.retention import INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS
 from butlers.modules.calendar.agreements import attendees_digest
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,9 @@ MATERIAL_START_MOVE = timedelta(minutes=15)
 TIMED_WITHIN = timedelta(hours=24)
 CANDIDATE_PRIORITY = 60
 CANDIDATE_CATEGORY = "calendar_changed"
-#: The insight_candidates retention (retention.py): an older episode may have had a delivered
-#: candidate pruned, so it is never proposed again.
-CANDIDATE_RECOVERY_DAYS = 90
+#: The insight_candidates retention: an older episode may have had a delivered candidate pruned,
+#: so it is never proposed again. Shared with the pruner so the two cannot drift apart.
+CANDIDATE_RECOVERY_DAYS = INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS
 _EMPTY_ATTENDEES = attendees_digest([])
 
 _AGREEMENTS_SQL = f"""
