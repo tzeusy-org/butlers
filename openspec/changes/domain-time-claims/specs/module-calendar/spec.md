@@ -11,8 +11,13 @@ complete, window_start)` that the owning butler's own job calls inside its own d
 `block` or `reminder` it SHALL upsert one `lane="butler"` row in that butler's own
 `calendar_events`, keyed `(source_id, origin_ref = "claim:" + claim_key)`, carrying the claim's
 `record_version` in its metadata; a claim with presence `overlay` SHALL produce no row. A changed
-`record_version` SHALL update the same row in place, and an unchanged `record_version` SHALL write
-nothing, whatever the row's times or title now say. When `complete` is true, a `claim:` row of that
+`record_version` SHALL update the same row in place. The claim carries a span signature (its
+times, timezone, all-day flag and label). An unchanged `record_version` and presence SHALL write
+nothing, whatever the row's times or title now say. A new `record_version` with the same span
+signature SHALL refresh the claim's metadata only, leaving the owner's times and title on the row.
+A changed span signature, a changed presence or a revival SHALL rewrite the row from the claim and
+drop any owner override. A claim row the owner deleted SHALL stay gone until the claim's span
+signature changes. When `complete` is true, a `claim:` row of that
 butler whose claim is absent or whose status is `settled` or `cancelled` SHALL be retracted, but only
 if the row ends at or after `window_start`: a row that has slid out of the producer's window keeps
 its last state. A claim's label SHALL be at most 120 characters and its door at most 2 KB serialized,

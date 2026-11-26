@@ -68,8 +68,8 @@ complete set of claims for its window, and reconciles the calendar rows for them
 (REQ-module-calendar-061). A claim whose record is settled, cancelled or gone, or whose person is
 quiet or no-contact, SHALL be emitted with its settled or cancelled status or omitted, and its
 calendar row SHALL be retracted in that run. A record whose `record_version` is unchanged SHALL cause
-no write. A run that fails, or reads a source only partially, SHALL keep the previous claims, mark the
-envelope incomplete, and retract nothing.
+no write. A run that fails, reads a source only partially, or fails to reconcile its claims SHALL keep the
+previous claims, mark the envelope incomplete, report the error in its result, and retract nothing.
 
 #### Scenario: A settled bill is retracted
 
@@ -94,7 +94,8 @@ Scope: v1-mandatory
 
 The producers SHALL be the butlers that own the record: finance (bills, subscription renewals,
 `cancel_by`), travel (legs, accommodations, reservations, check-in reminders, document expiry),
-health (the visits Health booked, read from its calendar projection by the same structural rule the visit brief uses, never from `appointment` facts), relationship (important dates, follow-ups) and education (one aggregated daily
+health (the visits Health booked, read from its calendar projection by the same structural rule
+the visit brief uses, never from `appointment` facts), relationship (important dates, follow-ups) and education (one aggregated daily
 "N reviews due" claim, never one per node). The contributing set of the existing job requirement
 widens to include education for this claim only. The finance and travel agent instructions SHALL no
 longer tell a model to create reminders or block flights for records a claim now covers.
@@ -125,11 +126,14 @@ ID: REQ-calendar-overlay-aggregation-012
 Source: bu-5ii4gj.13 (run 26 move 13), slice S6
 Scope: v1-mandatory
 
-When the owner snoozes or moves a claim's calendar row, the override SHALL be kept with that row
-(through the existing butler-event tools, so no new write path) and SHALL hold across re-emits of
-the same `record_version`. A changed `record_version` that moves the claim's time SHALL drop the
-override. A claim whose time or title changes SHALL change its `record_version`; the next version writes the
-row from the claim again.
+When the owner snoozes, moves or deletes a claim's calendar row, the override SHALL be kept with that
+row (through the existing butler-event tools, so no new write path). It SHALL hold across re-emits
+of the same `record_version`, and across a new `record_version` whose span signature (times,
+timezone, all-day flag and label) is unchanged, because such a change only refreshes the claim's
+metadata. A changed span signature drops the override and writes the row from the claim again. A
+claim a producer changes in time or title SHALL therefore change its span signature. A stay's
+check-in and check-out days SHALL be overlay presences, not blocks, so a hotel day does not read as
+busy all day.
 
 #### Scenario: Snooze survives an unchanged record
 
