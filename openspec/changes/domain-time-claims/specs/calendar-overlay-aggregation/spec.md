@@ -2,7 +2,7 @@
 
 ### Requirement: Overlay freshness and failure are stated
 
-ID: REQ-calendar-overlay-aggregation-006
+ID: REQ-calendar-overlay-aggregation-007
 Source: bu-5ii4gj.13 (run 26 move 13), slice S1
 Scope: v1-mandatory
 
@@ -36,7 +36,7 @@ domain context": `overlays_available=false` disambiguates, and the empty value s
 
 ### Requirement: A domain record owns one claim
 
-ID: REQ-calendar-overlay-aggregation-007
+ID: REQ-calendar-overlay-aggregation-008
 Source: bu-5ii4gj.13 (run 26 move 13), slice S2
 Scope: v1-mandatory
 
@@ -59,7 +59,7 @@ person-posture filter SHALL still apply. No model SHALL write or reconcile a cla
 
 ### Requirement: A claim is moved or retracted with its record
 
-ID: REQ-calendar-overlay-aggregation-008
+ID: REQ-calendar-overlay-aggregation-009
 Source: bu-5ii4gj.13 (run 26 move 13), slice S2
 Scope: v1-mandatory
 
@@ -88,7 +88,7 @@ envelope incomplete, and retract nothing.
 
 ### Requirement: Claim producers
 
-ID: REQ-calendar-overlay-aggregation-009
+ID: REQ-calendar-overlay-aggregation-010
 Source: bu-5ii4gj.13 (run 26 move 13), slices S3 to S5
 Scope: v1-mandatory
 
@@ -106,7 +106,7 @@ longer tell a model to create reminders or block flights for records a claim now
 
 ### Requirement: The workspace shows a record once, with a door
 
-ID: REQ-calendar-overlay-aggregation-010
+ID: REQ-calendar-overlay-aggregation-011
 Source: bu-5ii4gj.13 (run 26 move 13), slice S6
 Scope: v1-mandatory
 
@@ -121,7 +121,7 @@ claim SHALL offer a door to its record through the claim's `door`.
 
 ### Requirement: An owner override survives a re-emit until the record changes
 
-ID: REQ-calendar-overlay-aggregation-011
+ID: REQ-calendar-overlay-aggregation-012
 Source: bu-5ii4gj.13 (run 26 move 13), slice S6
 Scope: v1-mandatory
 

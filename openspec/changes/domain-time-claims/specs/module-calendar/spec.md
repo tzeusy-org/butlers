@@ -36,4 +36,4 @@ starts with `claim:`.
 #### Scenario: A returning claim revives its row
 
 - **WHEN** a retracted claim's record becomes active again
-- **THEN** the same row is un-cancelled and the provider receives an update
+- **THEN** the same row is un-cancelled, and the push recreates the provider copy if it was removed, or updates it otherwise
