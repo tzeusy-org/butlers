@@ -611,3 +611,59 @@ async def test_third_party_text_is_defanged_in_the_line() -> None:
     item = _agreed(title="Sync https://evil.test/x", current_start=_T0 + timedelta(hours=2))
     line = job.change_line(item, ["moved"], 120)
     assert "https://" not in line and "evil[.]test" in line
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_an_episode_older_than_the_candidate_retention_is_not_recovered(
+    db, monkeypatch
+) -> None:
+    from butlers.core.owner_conditions import create_owner_conditions_table
+    from butlers.tools.switchboard.insight import broker
+    from tests.modules.test_calendar_owner_agreements import _attendees, _world
+    from tests.modules.test_calendar_participants import _event, _module, _project
+
+    pool, source = await _world(db)
+    await create_owner_conditions_table(pool)
+    await broker.create_insight_tables(pool)
+    await pool.execute("TRUNCATE TABLE public.owner_conditions")
+    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
+    event = _event(attendees=_attendees()).model_copy(
+        update={"start_at": start, "end_at": start + timedelta(hours=1)}
+    )
+    report = MagicMock(is_available=True, is_stale=False, failed_butlers=())
+    monkeypatch.setattr(job, "compute_calendar_sync_report", AsyncMock(return_value=report))
+    monkeypatch.setattr(job, "read_journal_heads", AsyncMock(return_value={}))
+    db_mgr = db_manager({"switchboard": pool}, modules={"relationship": ["calendar"]})
+
+    async def fan_out(sql, args, butler_names=None):
+        return {"relationship": await pool.fetch(sql)}, []
+
+    db_mgr.fan_out_with_status = fan_out
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("broker down")
+
+    await _project(_module(pool), source, event)
+    monkeypatch.setattr(broker, "propose_insight_candidate", down)
+    moved = event.model_copy(
+        update={
+            "start_at": start + timedelta(hours=2),
+            "end_at": start + timedelta(hours=3),
+        }
+    )
+    await _project(_module(pool), source, moved)
+    await job.run_calendar_agreement_drift_check(db_mgr)  # opened, its candidate lost
+    # The delivered candidate would long since have been pruned: an old episode stays quiet.
+    await pool.execute(
+        "UPDATE public.owner_conditions SET first_detected_at = now() - interval '100 days'"
+    )
+    monkeypatch.undo()
+    monkeypatch.setattr(job, "compute_calendar_sync_report", AsyncMock(return_value=report))
+    monkeypatch.setattr(job, "read_journal_heads", AsyncMock(return_value={}))
+
+    result = await job.run_calendar_agreement_drift_check(db_mgr)
+
+    assert result["queued"] == 0
+    assert await pool.fetchval("SELECT count(*) FROM insight_candidates") == 0

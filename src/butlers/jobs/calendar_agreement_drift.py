@@ -62,6 +62,9 @@ MATERIAL_START_MOVE = timedelta(minutes=15)
 TIMED_WITHIN = timedelta(hours=24)
 CANDIDATE_PRIORITY = 60
 CANDIDATE_CATEGORY = "calendar_changed"
+#: The insight_candidates retention (retention.py): an older episode may have had a delivered
+#: candidate pruned, so it is never proposed again.
+CANDIDATE_RECOVERY_DAYS = 90
 _EMPTY_ATTENDEES = attendees_digest([])
 
 _AGREEMENTS_SQL = f"""
@@ -260,7 +263,8 @@ async def unproposed_episodes(
 
     The condition is durable but its candidate is a separate write, so on a complete tick every
     changed occurrence with an open episode and no candidate row under that episode's key is
-    proposed again. ``skip`` holds the fingerprints this tick's transitions already cover.
+    proposed again, within ``CANDIDATE_RECOVERY_DAYS``. ``skip`` holds the fingerprints this tick's
+    transitions already cover.
     """
     from types import SimpleNamespace
 
@@ -268,8 +272,10 @@ async def unproposed_episodes(
         row["fingerprint"]: row["episode"]
         for row in await pool.fetch(
             "SELECT fingerprint, episode FROM public.owner_conditions "
-            "WHERE source = $1 AND state IN ('open', 'aging')",
+            "WHERE source = $1 AND state IN ('open', 'aging') "
+            "AND first_detected_at > now() - make_interval(days => $2)",
             CONDITION_SOURCE,
+            CANDIDATE_RECOVERY_DAYS,
         )
     }
     keys: dict[str, tuple[str, int]] = {}
