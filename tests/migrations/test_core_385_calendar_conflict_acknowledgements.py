@@ -23,7 +23,7 @@ pytestmark = [
 ]
 
 _TABLE = "public.calendar_conflict_acknowledgements"
-_BELOW = "core_378"
+_BELOW = "core_380"
 
 
 def _roles(engine) -> None:

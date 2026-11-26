@@ -1,7 +1,7 @@
 """core_385 -- calendar_conflict_acknowledgements: "keep both" as durable state.
 
 Revision ID: core_385
-Revises: core_378
+Revises: core_380
 Create Date: 2026-11-26 00:00:00.000000
 
 An owner who says "keep both" on an overlap has decided it; the radar must stop raising it
@@ -20,7 +20,7 @@ from alembic import op
 from butlers.db_authority.roles import butler_roles
 
 revision = "core_385"
-down_revision = "core_378"
+down_revision = "core_380"
 branch_labels = None
 depends_on = None
 
