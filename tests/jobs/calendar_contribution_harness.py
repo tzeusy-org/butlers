@@ -79,14 +79,36 @@ async def run_overlay_job(
     seed: Mapping[str, Any] | None = None,
     today: date,
     extra: tuple[list[Mapping[str, Any]], ...] = (),
+    owner_zone: str | BaseException | None = "Asia/Singapore",
 ) -> tuple[dict[str, Any], ContributionStateStore, FakePool]:
-    """Run an overlay *job* whose source reads answer *first*, *second*, then *extra* in order."""
+    """Run an overlay *job* whose source reads answer *first*, *second*, then *extra* in order.
+
+    *owner_zone* is the saved owner timezone the run resolves: a zone name, None for "never saved",
+    or an exception for a failed read.
+    """
     module = "butlers.jobs.calendar_overlay"
     pool = source_reads(first or [], second or [], *extra)
     state = ContributionStateStore(seed=seed)
     with (
         patch("butlers.jobs.briefing._now", return_value=sgt_noon(today)),
+        patch(
+            "butlers.jobs.briefing.load_configured_general_timezone",
+            AsyncMock(side_effect=owner_zone)
+            if isinstance(owner_zone, BaseException)
+            else AsyncMock(return_value=owner_zone),
+        ),
         patch_state(module, state),
     ):
         result = await job(pool, None)
     return result, state, pool
+
+
+def save_owner_zone(monkeypatch: Any, name: str | BaseException | None) -> None:
+    """The owner's saved timezone a run resolves (None: never saved; exception: read failed)."""
+
+    async def load(pool: Any) -> str | None:
+        if isinstance(name, BaseException):
+            raise name
+        return name
+
+    monkeypatch.setattr("butlers.jobs.briefing.load_configured_general_timezone", load)

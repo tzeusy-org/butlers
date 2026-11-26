@@ -16,6 +16,7 @@ import pytest
 from butlers.api.read_models.calendar_workspace import CalendarOverlayRow, compute_overlay_freshness
 from butlers.core.state import state_get
 from butlers.jobs import calendar_overlay as job
+from tests.jobs.calendar_contribution_harness import save_owner_zone
 from tests.modules.test_calendar_reminder_integration import (
     _make_module,
     _ReminderProviderDouble,
@@ -132,6 +133,7 @@ async def _world(db, monkeypatch, *, real_module=False):
     pool = await db("core", "memory", "finance", schemas=schemas, schema="finance")
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
+    save_owner_zone(monkeypatch, "Asia/Singapore")
     for table in ("bills", "subscriptions", "facts"):
         await pool.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
     mod = _make_module(pool, butler_name="finance")
@@ -315,6 +317,52 @@ async def test_a_reconcile_error_makes_the_run_partial_and_names_the_error(db, m
     assert result["claims"] == {"error": "TypeError"} and result["complete"] is False
     stored = await state_get(pool, job.overlay_key("2030-03-10"))
     assert stored["complete"] is False
+
+
+@e2e
+async def test_no_saved_owner_zone_writes_the_entries_but_no_claims_and_retracts_nothing(
+    db, monkeypatch
+):
+    pool, _ = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+    assert len(await _rows(pool)) == 1
+
+    save_owner_zone(monkeypatch, None)  # never saved: briefing_day falls back to its display zone
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"}
+    assert result["complete"] is True and result["total_entries"] >= 1
+    rows = await _rows(pool)
+    assert [r["status"] for r in rows] == ["confirmed"]  # the earlier row stands, not cancelled
+
+
+@e2e
+@pytest.mark.parametrize("bad", [RuntimeError("db down"), "Europe/Londn"])
+async def test_a_failed_or_invalid_zone_read_skips_the_run_and_writes_nothing(db, monkeypatch, bad):
+    pool, _ = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+    before = await state_get(pool, job.overlay_key("2030-03-10"))
+    rows_before = await _rows(pool)
+
+    save_owner_zone(monkeypatch, bad)
+    with pytest.raises(Exception):  # noqa: B017 - the run is skipped, whatever the cause
+        await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert await state_get(pool, job.overlay_key("2030-03-10")) == before
+    assert [(r["origin_ref"], r["status"], r["xmin"]) for r in await _rows(pool)] == [
+        (r["origin_ref"], r["status"], r["xmin"]) for r in rows_before
+    ]
+
+
+def test_a_claim_needs_a_resolved_zone():
+    from datetime import timedelta, timezone
+
+    assert job.owner_zone_key(SGT) == "Asia/Singapore"
+    assert job.owner_zone_key(timezone(timedelta(hours=8))) is None
+    with pytest.raises(ValueError):
+        job._zone_name(timezone(timedelta(hours=8)))
 
 
 def test_a_renewal_outside_the_window_or_in_the_past_claims_nothing():

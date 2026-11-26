@@ -271,20 +271,23 @@ def _row_id(row: Any) -> str | None:
     return str(value) if value is not None else None
 
 
-def _zone_name(zone: tzinfo) -> str:
-    """The IANA name a claim carries for ``zone``.
+def owner_zone_key(zone: tzinfo) -> str | None:
+    """The IANA name of a resolved owner zone, or None for the unsaved-zone fallback.
 
-    A resolved ``ZoneInfo`` carries its own key. A fixed-offset fallback (no owner zone saved) has
-    none, so it is named by its whole-hour offset as an ``Etc/GMT`` zone (no DST).
+    ``briefing_day`` returns the owner's saved ``ZoneInfo``; when no zone was ever saved it returns
+    a fixed-offset fallback with no IANA name. Claims name their zone, so they exist only for a
+    resolved one: a fallback is a display convention, not a zone the owner lives in.
     """
     key = getattr(zone, "key", None)
-    if isinstance(key, str):
-        return key
-    offset = zone.utcoffset(None)
-    if offset is None or offset.total_seconds() % 3600:
-        return "UTC"
-    hours = int(offset.total_seconds() // 3600)
-    return "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
+    return key if isinstance(key, str) else None
+
+
+def _zone_name(zone: tzinfo) -> str:
+    """The IANA name a claim carries for ``zone`` (the caller has checked it is resolved)."""
+    key = owner_zone_key(zone)
+    if key is None:
+        raise ValueError("claims need a resolved owner zone; none is saved")
+    return key
 
 
 def _claim(
@@ -489,13 +492,19 @@ async def settle_claims(
     window_start: datetime,
     today: date_cls,
     lookahead_days: int,
+    zone: tzinfo,
 ) -> tuple[dict[str, Any], bool]:
     """Reconcile, and let a failed reconcile make the run partial.
+
+    With no owner zone saved there is no zone to name a claim in: no claim was built, nothing is
+    reconciled or retracted, and the previous calendar rows stand (``skipped`` says so).
 
     Returns ``(claim_result, complete)``. When the reconcile raised, the window's envelopes are
     flagged incomplete (their entries and ``generated_at`` stand) and ``complete`` is False, so the
     overlay reads as partial instead of silently current while no claim reached the calendar.
     """
+    if owner_zone_key(zone) is None:
+        return {"skipped": "owner_zone_unsaved"}, complete
     claim_result = await reconcile_claims_in_process(
         pool, butler=butler, claims=claims, complete=complete, window_start=window_start
     )
@@ -647,14 +656,18 @@ async def run_finance_calendar_overlay_contribution(
         }
         entries_by_date.setdefault(date_str, []).append(entry)
 
-    claims_by_date = finance_claims(
-        bills_rows,
-        sub_rows,
-        today=today,
-        zone=zone,
-        now=_utcnow(),
-        horizon=horizon,
-        bill_days=bill_days,
+    claims_by_date = (
+        finance_claims(
+            bills_rows,
+            sub_rows,
+            today=today,
+            zone=zone,
+            now=_utcnow(),
+            horizon=horizon,
+            bill_days=bill_days,
+        )
+        if owner_zone_key(zone) is not None
+        else {}
     )
     if preference_failed:
         # The bill reminder's lead time is unknown this run: leave the bill rows as they are
@@ -697,6 +710,7 @@ async def run_finance_calendar_overlay_contribution(
         window_start=day_start_utc(today, zone),
         today=today,
         lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
