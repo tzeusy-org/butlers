@@ -14,6 +14,7 @@ import pytest
 
 from butlers.core.state import state_get
 from butlers.jobs import calendar_overlay as job
+from tests.jobs.calendar_contribution_harness import save_owner_zone
 
 SGT = ZoneInfo("Asia/Singapore")
 TODAY = date(2030, 3, 1)
@@ -61,6 +62,7 @@ async def _world(db, monkeypatch):
         schema="education",
     )
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
+    save_owner_zone(monkeypatch, "Asia/Singapore")
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     await pool.execute("TRUNCATE TABLE education.mind_maps CASCADE")
     return pool
@@ -128,3 +130,17 @@ async def test_a_failed_read_keeps_the_envelopes_and_flags_them_incomplete(db, m
     after = await state_get(pool, job.overlay_key("2030-03-01"))
     assert result["complete"] is False
     assert after["complete"] is False and after["claims"] == before["claims"]
+
+
+@_e2e
+async def test_no_saved_owner_zone_shows_the_count_but_claims_nothing(db, monkeypatch):
+    pool = await _world(db, monkeypatch)
+    active = await _active_map(pool)
+    await _node(pool, active, due=NOW)
+    save_owner_zone(monkeypatch, None)
+
+    result = await job.run_education_calendar_overlay_contribution(pool, None)
+
+    env = await state_get(pool, job.overlay_key("2030-03-01"))
+    assert [e["label"] for e in env["entries"]] == ["1 review due"] and env["claims"] == []
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"}

@@ -1917,6 +1917,14 @@ async def run_health_calendar_overlay_contribution(
 EDUCATION_OVERLAY_LOOKAHEAD_DAYS = 7
 
 
+def _reviews_label(count: int) -> str:
+    return f"{count} {'review' if count == 1 else 'reviews'} due"
+
+
+def _reviews_priority(day: date_cls, today: date_cls) -> str:
+    return "medium" if day <= today else "low"
+
+
 def education_claims(
     due_by_date: dict[date_cls, int], *, today: date_cls, zone: tzinfo
 ) -> dict[str, list[dict[str, Any]]]:
@@ -1930,14 +1938,13 @@ def education_claims(
     for day, count in sorted(due_by_date.items()):
         if count <= 0:
             continue
-        noun = "review" if count == 1 else "reviews"
         out.setdefault(day.isoformat(), []).append(
             _day_claim(
                 key=f"education:reviews:{day.isoformat()}",
                 version=_version(day, count),
                 kind="reviews_due",
-                label=f"{count} {noun} due",
-                priority="medium" if day <= today else "low",
+                label=_reviews_label(count),
+                priority=_reviews_priority(day, today),
                 presence="overlay",
                 day=day,
                 zone=zone,
@@ -1988,17 +1995,22 @@ async def run_education_calendar_overlay_contribution(
         day = max(date_cls.fromisoformat(_local_date_str(row["next_review_at"], zone)), today)
         due_by_date[day] = due_by_date.get(day, 0) + 1
 
-    claims_by_date = education_claims(due_by_date, today=today, zone=zone)
+    claims_by_date = (
+        education_claims(due_by_date, today=today, zone=zone)
+        if owner_zone_key(zone) is not None
+        else {}
+    )
     entries_by_date: dict[str, list[OverlayEntry]] = {
-        date_str: [
+        day.isoformat(): [
             {
                 "kind": "reviews_due",
-                "label": claims[0]["label"],
-                "priority": claims[0]["priority"],
-                "meta": {"count": due_by_date[date_cls.fromisoformat(date_str)]},
+                "label": _reviews_label(count),
+                "priority": _reviews_priority(day, today),
+                "meta": {"count": count},
             }
         ]
-        for date_str, claims in claims_by_date.items()
+        for day, count in sorted(due_by_date.items())
+        if count > 0
     }
 
     dates_written, total_entries, claim_result, complete = await finish_contribution(
@@ -2010,6 +2022,7 @@ async def run_education_calendar_overlay_contribution(
         claims_by_date=claims_by_date,
         complete=complete,
         window_start=day_start_utc(today, zone),
+        zone=zone,
     )
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
 
