@@ -34744,6 +34744,8 @@ export interface components {
         };
         /** PolicyUpdate */
         PolicyUpdate: {
+            /** Expected Version */
+            expected_version: number;
             /** Position */
             position?: number | null;
             /** Predicates */
