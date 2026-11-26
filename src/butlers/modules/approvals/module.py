@@ -27,7 +27,7 @@ import html
 import json
 import logging
 import uuid
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Collection, Coroutine, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -325,12 +325,16 @@ class ApprovalsModule(Module):
         """
         self._tool_executor = executor
 
-    async def execute_approved_card(self, action_id: uuid.UUID) -> bool:
+    async def execute_approved_card(
+        self, action_id: uuid.UUID, *, tool_names: Collection[str]
+    ) -> bool:
         """Re-run one card the owner already approved and that has not yet executed.
 
         The same executor path as Retry: it takes the per-action lock and the row lock, refuses
         anything not still ``approved``, and runs the card's stored call unchanged. Returns whether
-        a run was attempted. Used by a module to re-run a step it deferred, never to approve.
+        a run was attempted. The caller names the tools it owns and a card for any other tool is
+        refused, so a module can only re-run its own approved cards.
+        Used by a module to re-run a step it deferred, never to approve.
         """
         if self._tool_executor is None:
             return False
@@ -338,6 +342,8 @@ class ApprovalsModule(Module):
         if row is None:
             return False
         action = PendingAction.from_row(row)
+        if action.tool_name not in tool_names:
+            return False
         if action.status != ActionStatus.APPROVED or action.execution_result is not None:
             return False
         if is_goal_effect(row):

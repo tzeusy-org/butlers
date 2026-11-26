@@ -282,12 +282,13 @@ def card_outcome(
     how a move whose ``calendar_update_event`` returned an error ends) reads off its audit
     ``failure_reason``: a deferral (``dependency_pending``) is ``pending``, never a failure; a
     refusal that ends the card (``dependency_not_applied``, ``unbound``, ``changed_since_check``,
-    ``changed_since_move``) is ``declined`` with that code; anything else is ``uncertain`` with the
-    closed reason ``execution_failed``, never the error text. The executor still allows a retry, so
-    the card is neither applied nor finally declined: ``uncertain`` is the honest read, a later
-    success flips it to ``applied``, and dependents fail closed meanwhile (only ``applied``
-    counts). Anything else, including an execution that failed or reports no status, is
-    ``uncertain``: never ``applied``.
+    ``changed_since_move``) is ``declined`` with that code (nothing re-runs these on its own, and a
+    manual Retry that later succeeds reads ``applied``, which is then true); anything else is
+    ``uncertain`` with the closed reason ``execution_failed``, never the error text. The executor
+    still allows a retry, so such a card is neither applied nor finally declined: ``uncertain`` is
+    the honest read, a later success flips it to ``applied``, and dependents fail closed meanwhile
+    (only ``applied`` counts). Anything else, including an execution that failed or reports no
+    status, is ``uncertain``: never ``applied``.
     """
     if status == "approved" and not _object(execution_result) and command is not None:
         settled = _command_outcome(command)

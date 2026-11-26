@@ -178,6 +178,10 @@ from .tools import register_proposal_tools, register_read_tools, register_sync_t
 _CALENDAR_REDISCOVERY_MIN_INTERVAL_S = 300.0
 
 
+#: The approved tools this module may re-run when it defers a plan step (never another module's).
+_OWN_APPROVED_TOOLS = frozenset({"calendar_update_event", "calendar_respond"})
+
+
 class CalendarModule(
     MutationsMixin,
     InternalProjectionMixin,
@@ -864,7 +868,7 @@ class CalendarModule(
         )
 
     def set_approved_card_executor(self, execute: Any) -> None:
-        """Wire the approvals executor's retry: ``await execute(card_id) -> bool``."""
+        """Wire the approvals retry: ``await execute(card_id, tool_names=...) -> bool``."""
         self._execute_approved_card = execute
 
     async def _sweep_deferred_plan_steps(self, *, after: str | None = None) -> int:
@@ -874,7 +878,13 @@ class CalendarModule(
             return 0
         from .resolution_move import release_deferred
 
-        return await release_deferred(pool, self._execute_approved_card, after=after)
+        execute = self._execute_approved_card
+
+        async def execute_own(card_id: Any) -> bool:
+            # Only this module's own move and respond cards: never another module's approval.
+            return await execute(card_id, tool_names=_OWN_APPROVED_TOOLS)
+
+        return await release_deferred(pool, execute_own, after=after)
 
     def schedule_dependent_release(self, card_id: Any) -> None:
         """Soon after a plan step's write, release the steps that were waiting for it.

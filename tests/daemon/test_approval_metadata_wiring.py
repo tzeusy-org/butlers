@@ -51,7 +51,7 @@ class _ApprovalsModuleProbe:
     def set_tool_executor(self, executor: object) -> None:
         self.tool_executor = executor
 
-    async def execute_approved_card(self, action_id: object) -> bool:
+    async def execute_approved_card(self, action_id: object, *, tool_names: object) -> bool:
         return True
 
 

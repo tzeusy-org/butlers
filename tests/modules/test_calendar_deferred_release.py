@@ -37,7 +37,12 @@ async def test_the_sweep_hands_the_wired_executor_to_the_release():
         return_value=2,
     ) as release:
         assert await module._sweep_deferred_plan_steps(after="card") == 2
-    release.assert_awaited_once_with(module._db.pool, execute, after="card")
+    (pool, run), kwargs = release.await_args
+    assert pool is module._db.pool and kwargs == {"after": "card"}
+    await run("card-id")  # the module re-runs only the tools it owns
+    execute.assert_awaited_once_with(
+        "card-id", tool_names=frozenset({"calendar_update_event", "calendar_respond"})
+    )
 
 
 async def test_a_write_schedules_a_release_of_its_own_dependents_only():
