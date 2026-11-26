@@ -13,6 +13,8 @@ import type {
 import { buildNeedsYouQueue } from "@/pages/calendar/needs-you-queue";
 
 interface Read<T> {
+  /** Not read in this view (not a failure). */
+  notRead?: boolean;
   /** `undefined` while the read has not produced rows yet. */
   rows: readonly T[] | undefined;
   /** The read finished and its rows are the whole set. */
@@ -33,13 +35,17 @@ export function useNeedsYouQueue({ invitations, conflicts, proposals, debriefs }
     () =>
       buildNeedsYouQueue({
         invitations: { rows: invitations.rows ?? NONE, complete: invitations.complete && invitations.rows !== undefined },
-        conflicts: { rows: conflicts.rows ?? NONE, complete: conflicts.complete && conflicts.rows !== undefined },
+        conflicts: {
+          rows: conflicts.rows ?? NONE,
+          complete: conflicts.complete && conflicts.rows !== undefined,
+          notRead: conflicts.notRead,
+        },
         proposals: { rows: proposals.rows ?? NONE, complete: proposals.complete && proposals.rows !== undefined },
         debriefs: { rows: debriefs.rows ?? NONE, complete: debriefs.complete && debriefs.rows !== undefined },
       }),
     [
       invitations.rows, invitations.complete,
-      conflicts.rows, conflicts.complete,
+      conflicts.rows, conflicts.complete, conflicts.notRead,
       proposals.rows, proposals.complete,
       debriefs.rows, debriefs.complete,
     ],

@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { respondToCalendarInvitation } from "@/api/index";
 import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
 import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
+import { useCalendarCommands } from "@/pages/calendar/use-calendar-commands";
 import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 import { ShortcutRegistryProvider, useShortcutHintEntries } from "@/hooks/use-register-shortcut";
@@ -30,7 +31,23 @@ const receipt: CalendarResponseReceipt = {
   projection_available: false, reason: null,
 };
 
-function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) {
+const today = vi.fn();
+function PageKeys() {
+  // The page's own bindings (t = jump to today, arrows, c, search), exactly as /calendar registers them.
+  useCalendarCommands({
+    view: "butler", range: "week", anchor: new Date("2026-11-30T00:00:00Z"),
+    updateQuery: today, openButlerCreateDialog: () => {}, openSearch: () => {},
+  });
+  return null;
+}
+
+function Harness({
+  proposalsComplete = true,
+  conflictsNotRead = false,
+}: {
+  proposalsComplete?: boolean;
+  conflictsNotRead?: boolean;
+}) {
   const responses = useInvitationResponses({ entries: [invitation], unavailable: false });
   const queue = buildNeedsYouQueue({
     invitations: { rows: [invitation], complete: true },
@@ -38,7 +55,8 @@ function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) 
       rows: [{ kind: "overlap", date: "2026-11-30", summary: "Planning overlaps lunch", severity: "warning",
         proposal_ids: [], events: [{ entry_id: "c-1", title: "Lunch", start_at: "2026-11-30T11:00:00Z",
           end_at: "2026-11-30T12:00:00Z", timezone: "UTC", status: "confirmed" }] }],
-      complete: true,
+      complete: !conflictsNotRead,
+      notRead: conflictsNotRead,
     },
     proposals: {
       rows: [{ entry_id: "prop-1", title: "Dinner", start_at: "2026-11-30T18:00:00Z" } as never],
@@ -60,6 +78,7 @@ function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) 
 }
 
 const sheetHolder = { current: [] as string[] };
+const keysHolder = { current: [] as string[] };
 const paletteHolder = { current: [] as string[] };
 function HintReader() {
   const entries = useShortcutHintEntries();
@@ -67,6 +86,7 @@ function HintReader() {
   useEffect(() => {
     paletteHolder.current = commands.map((command) => command.label);
     sheetHolder.current = entries.map((binding) => binding.description);
+    keysHolder.current = entries.map((binding) => binding.key);
   });
   return null;
 }
@@ -76,6 +96,7 @@ const view = (props = {}) =>
     <CommandRegistryProvider>
       <ShortcutRegistryProvider>
         <Harness {...props} />
+        <PageKeys />
         <HintReader />
       </ShortcutRegistryProvider>
     </CommandRegistryProvider>,
@@ -135,7 +156,7 @@ it("every bound key reaches the ? sheet, and a key that does not apply is not li
   expect(sheetHolder.current).toEqual(
     expect.arrayContaining([
       "Next item", "Previous item", "Open evidence",
-      "Accept invitation", "Decline invitation", "Tentative invitation",
+      "Accept invitation", "Decline invitation", "Tentative (unsure) invitation",
     ]),
   );
   expect(sheetHolder.current).not.toContain("Accept proposal");
@@ -159,11 +180,33 @@ it("every bound key has its palette form", async () => {
       "Needs you: open evidence",
       "Needs you: accept invitation",
       "Needs you: decline invitation",
-      "Needs you: tentative invitation",
+      "Needs you: tentative (unsure) invitation",
     ]),
   );
   await user.keyboard("jjj");
   expect(paletteHolder.current).toEqual(
     expect.arrayContaining(["Needs you: accept proposal", "Needs you: dismiss proposal"]),
   );
+});
+
+it("t stays the page's jump to today: it sends no reply, and no key is bound twice", async () => {
+  vi.mocked(respondToCalendarInvitation).mockResolvedValue({ data: receipt, meta: {} });
+  view();
+  const user = userEvent.setup();
+  await user.keyboard("j"); // an invitation is selected
+  await user.keyboard("t");
+  expect(today).toHaveBeenCalledTimes(1);
+  expect(respondToCalendarInvitation).not.toHaveBeenCalled();
+  // page + queue together: every registered key is unique
+  expect(new Set(keysHolder.current).size).toBe(keysHolder.current.length);
+  await user.keyboard("u");
+  expect(vi.mocked(respondToCalendarInvitation).mock.calls[0][0]).toMatchObject({
+    response_status: "tentative",
+  });
+});
+
+it("in month view overlaps are not read: a fixed line, no unknown kind", () => {
+  view({ conflictsNotRead: true });
+  expect(screen.getByText("Overlaps are checked in day and week views.")).toBeTruthy();
+  expect(screen.queryByRole("status")).toBeNull();
 });

@@ -48,7 +48,10 @@ export function useEntrySelection({
     openDetailPanel(null);
   }
 
-  async function openInvitation(entryId: string): Promise<UnifiedCalendarEntry | null> {
+  async function openInvitation(
+    entryId: string,
+    label = "Invitation details",
+  ): Promise<UnifiedCalendarEntry | null> {
     const requestId = ++latestRequestRef.current;
     const isLatest = () => requestId === latestRequestRef.current;
     setInvitationDetailLoading(true);
@@ -62,7 +65,7 @@ export function useEntrySelection({
       setSelectedEntry(response.data);
       return response.data;
     } catch {
-      if (isLatest()) toast.error("Invitation details unavailable. Try again shortly.");
+      if (isLatest()) toast.error(`${label} unavailable. Try again shortly.`);
       return null;
     } finally {
       if (isLatest()) setInvitationDetailLoading(false);

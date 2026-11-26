@@ -40,7 +40,7 @@ export interface NeedsYouQueueProps {
   queue: Queue;
   invitations: readonly CalendarInvitationEntry[];
   responses: InvitationResponses;
-  onOpenEntry: (entryId: string) => void;
+  onOpenEntry: (entryId: string, kind: NeedsYouItem["kind"]) => void;
   onAcceptProposal: (proposalId: string) => void;
   onDismissProposal: (proposalId: string) => void;
 }
@@ -72,7 +72,7 @@ export function NeedsYouQueue({
       list.push({
         key: "Enter",
         description: "Open evidence",
-        handler: () => onOpenEntry(entryId),
+        handler: () => onOpenEntry(entryId, selected.kind),
         command: { id: "needs-you-open", label: "Needs you: open evidence" },
       });
     }
@@ -84,7 +84,8 @@ export function NeedsYouQueue({
         const choices = [
           { key: "a", value: "accepted", label: "Accept" },
           { key: "d", value: "declined", label: "Decline" },
-          { key: "t", value: "tentative", label: "Tentative" },
+          // Not "t": the page binds t to "jump to today" and a mis-fired key here would send a real reply.
+          { key: "u", value: "tentative", label: "Tentative (unsure)" },
         ] as const;
         for (const choice of choices) {
           list.push({
@@ -142,6 +143,9 @@ export function NeedsYouQueue({
         </p>
       ) : null}
       <p className="text-xs text-muted-foreground">Moved-under-you changes are not tracked yet.</p>
+      {queue.overlapsNotRead ? (
+        <p className="text-xs text-muted-foreground">Overlaps are checked in day and week views.</p>
+      ) : null}
       <ul className="mt-2 space-y-1">
         {queue.items.map((item) => {
           const receipt = receiptText(

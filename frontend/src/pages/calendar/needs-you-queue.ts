@@ -37,6 +37,8 @@ export interface NeedsYouItem {
 export interface NeedsYouSource<T> {
   rows: readonly T[];
   complete: boolean;
+  /** The kind is not read in this view at all (not a failed read): no "+", a fixed line instead. */
+  notRead?: boolean;
 }
 
 export interface NeedsYouInputs {
@@ -50,6 +52,8 @@ export interface NeedsYouQueue {
   items: NeedsYouItem[];
   /** Counted kinds whose read failed or is partial. */
   unknownKinds: NeedsYouKind[];
+  /** Overlaps are only checked in the day and week views; the panel says so. */
+  overlapsNotRead: boolean;
 }
 
 function ms(iso: string | null): number {
@@ -130,11 +134,13 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
 
   const unknownKinds: NeedsYouKind[] = [];
   if (!inputs.invitations.complete) unknownKinds.push("invitation");
-  if (!inputs.conflicts.complete) unknownKinds.push("conflict");
+  if (!inputs.conflicts.complete && inputs.conflicts.notRead !== true) {
+    unknownKinds.push("conflict");
+  }
   if (!inputs.proposals.complete) unknownKinds.push("proposal");
   if (!inputs.debriefs.complete) unknownKinds.push("debrief");
   // The changes feed (N3) is not a counted kind yet: the panel states that, and no "+" is owed to it.
-  return { items, unknownKinds };
+  return { items, unknownKinds, overlapsNotRead: inputs.conflicts.notRead === true };
 }
 
 /** "3 need you", "3+ need you" or "0+ need you" while a kind is unknown; `null` for a complete, empty queue. */

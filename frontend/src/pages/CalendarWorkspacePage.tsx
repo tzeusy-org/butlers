@@ -177,6 +177,7 @@ export default function CalendarWorkspacePage() {
     conflicts: {
       rows: context.conflictIssues,
       complete: context.radarEnabled && !context.conflictsQuery.isError && context.conflictsAvailable,
+      notRead: !context.radarEnabled,
     },
     proposals: { rows: panels.proposalRows, complete: !panels.proposalsError },
     debriefs: {
@@ -269,8 +270,8 @@ export default function CalendarWorkspacePage() {
         queue={needsYou}
         invitations={context.invitations ?? []}
         responses={responses}
-        onOpenEntry={(entryId) => {
-          void selection.openInvitation(entryId);
+        onOpenEntry={(entryId, kind) => {
+          void selection.openInvitation(entryId, kind === "invitation" ? "Invitation details" : "Event details");
         }}
         onAcceptProposal={(proposalId) => panels.acceptProposalMutation.mutate({ proposalId })}
         onDismissProposal={(proposalId) => panels.dismissProposalMutation.mutate({ proposalId })}
