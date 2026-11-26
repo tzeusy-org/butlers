@@ -57,7 +57,7 @@ it("an unreadable kind is unknown and the count is a lower bound, never zero", (
   });
   expect(queue.items).toEqual([]);
   expect(queue.unknownKinds).toContain("invitation");
-  expect(needsYouCountText(queue)).toBeNull();
+  expect(needsYouCountText(queue)).toBe("0+ need you");
   const withOne = buildNeedsYouQueue({
     invitations: none,
     conflicts: none,
@@ -67,7 +67,7 @@ it("an unreadable kind is unknown and the count is a lower bound, never zero", (
   expect(needsYouCountText(withOne)).toBe("1+ need you");
 });
 
-it("the changes feed is unknown until it exists, and back-to-back is not a decision", () => {
+it("the changes feed is not a counted kind, and back-to-back is not a decision", () => {
   const queue = buildNeedsYouQueue({
     invitations: none,
     conflicts: { rows: [{ ...overlap("x", "2026-11-30T08:00:00Z"), kind: "back_to_back" }], ...complete },
@@ -75,5 +75,6 @@ it("the changes feed is unknown until it exists, and back-to-back is not a decis
     debriefs: none,
   });
   expect(queue.items).toEqual([]);
-  expect(queue.unknownKinds).toEqual(["changes"]);
+  expect(queue.unknownKinds).toEqual([]);
+  expect(needsYouCountText(queue)).toBeNull();
 });

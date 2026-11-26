@@ -9,7 +9,7 @@ import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/typ
 import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
 import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { CommandRegistryProvider } from "@/lib/command-registry";
-import { ShortcutRegistryProvider } from "@/hooks/use-register-shortcut";
+import { ShortcutRegistryProvider, useShortcutHintEntries } from "@/hooks/use-register-shortcut";
 import { buildNeedsYouQueue } from "@/pages/calendar/needs-you-queue";
 
 vi.mock("@/api/index", () => ({ respondToCalendarInvitation: vi.fn() }));
@@ -58,11 +58,18 @@ function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) 
   );
 }
 
+let sheet: string[] = [];
+function HintReader() {
+  sheet = useShortcutHintEntries().map((binding) => binding.description);
+  return null;
+}
+
 const view = (props = {}) =>
   render(
     <CommandRegistryProvider>
       <ShortcutRegistryProvider>
         <Harness {...props} />
+        <HintReader />
       </ShortcutRegistryProvider>
     </CommandRegistryProvider>,
   );
@@ -112,4 +119,26 @@ it("an unknown kind is named and the count is a lower bound", () => {
   view({ proposalsComplete: false });
   expect(screen.getByRole("heading", { name: "4+ need you" })).toBeTruthy();
   expect(screen.getByRole("status").textContent).toContain("proposals");
+});
+
+it("every bound key reaches the ? sheet, and a key that does not apply is not listed", async () => {
+  view();
+  const user = userEvent.setup();
+  await user.keyboard("j");
+  expect(sheet).toEqual(
+    expect.arrayContaining([
+      "Next item", "Previous item", "Open evidence",
+      "Accept invitation", "Decline invitation", "Tentative invitation",
+    ]),
+  );
+  expect(sheet).not.toContain("Accept proposal");
+  await user.keyboard("jjj");
+  expect(sheet).toEqual(expect.arrayContaining(["Accept proposal", "Dismiss proposal"]));
+  expect(sheet).not.toContain("Decline invitation");
+});
+
+it("says moved-under-you changes are not tracked and still says nothing is unknown", () => {
+  view();
+  expect(screen.getByText("Moved-under-you changes are not tracked yet.")).toBeTruthy();
+  expect(screen.queryByRole("status")).toBeNull();
 });

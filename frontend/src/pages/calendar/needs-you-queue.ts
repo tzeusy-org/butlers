@@ -11,14 +11,13 @@ import type {
   UnifiedCalendarEntry,
 } from "@/api/types";
 
-export type NeedsYouKind = "invitation" | "conflict" | "proposal" | "debrief" | "changes";
+export type NeedsYouKind = "invitation" | "conflict" | "proposal" | "debrief";
 
 export const KIND_LABEL: Record<NeedsYouKind, string> = {
   invitation: "invitations",
   conflict: "overlaps",
   proposal: "proposals",
   debrief: "debriefs",
-  changes: "changes",
 };
 
 export interface NeedsYouItem {
@@ -49,7 +48,7 @@ export interface NeedsYouInputs {
 
 export interface NeedsYouQueue {
   items: NeedsYouItem[];
-  /** Kinds whose read failed, is partial or does not exist yet. */
+  /** Counted kinds whose read failed or is partial. */
   unknownKinds: NeedsYouKind[];
 }
 
@@ -134,15 +133,14 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
   if (!inputs.conflicts.complete) unknownKinds.push("conflict");
   if (!inputs.proposals.complete) unknownKinds.push("proposal");
   if (!inputs.debriefs.complete) unknownKinds.push("debrief");
-  // The changes feed (N3) does not exist yet: that kind is unknown, never empty.
-  unknownKinds.push("changes");
+  // The changes feed (N3) is not a counted kind yet: the panel states that, and no "+" is owed to it.
   return { items, unknownKinds };
 }
 
-/** "3 need you", or "3+ need you" while a kind is unknown; `null` when there is nothing to say. */
+/** "3 need you", "3+ need you" or "0+ need you" while a kind is unknown; `null` for a complete, empty queue. */
 export function needsYouCountText(queue: NeedsYouQueue): string | null {
   const count = queue.items.length;
   const partial = queue.unknownKinds.length > 0;
-  if (count === 0) return null;
+  if (count === 0 && !partial) return null;
   return `${count}${partial ? "+" : ""} need you`;
 }

@@ -16,7 +16,6 @@ const KIND_NAME: Record<NeedsYouItem["kind"], string> = {
   conflict: "Overlap",
   proposal: "Proposal",
   debrief: "Debrief",
-  changes: "Change",
 };
 
 function receiptText(status: string | undefined): string | null {
@@ -136,9 +135,10 @@ export function NeedsYouQueue({
       <h2 className="text-sm font-medium">{count ?? (nothingKnown ? "Nothing needs you" : "Needs you")}</h2>
       {unknown.length > 0 ? (
         <p role="status" className="text-xs text-muted-foreground">
-          Unknown: {unknown.join(", ")}. This list may be longer than shown.
+          {unknown.join(", ")} unknown. This list may be longer than shown.
         </p>
       ) : null}
+      <p className="text-xs text-muted-foreground">Moved-under-you changes are not tracked yet.</p>
       <ul className="mt-2 space-y-1">
         {queue.items.map((item) => {
           const receipt = receiptText(
