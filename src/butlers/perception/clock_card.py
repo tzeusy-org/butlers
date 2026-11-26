@@ -8,11 +8,12 @@ only on the card, never in logs.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from butlers.perception.clock import ClockValue
 from butlers.perception.clock_reanchor import ReanchorPlan
@@ -34,12 +35,28 @@ class TransitionCard:
 
 
 def _place(zone: str) -> str:
+    """A short place name. ``Etc/GMT-5`` is POSIX-inverted (UTC+5), so it renders as the offset."""
+    etc = re.fullmatch(r"Etc/GMT([+-])(\d{1,2})", zone)
+    if etc:
+        return f"UTC{'+' if etc[1] == '-' else '-'}{int(etc[2])}"
+    if zone in {"Etc/GMT", "Etc/UTC", "UTC"}:
+        return "UTC"
     return zone.rsplit("/", 1)[-1].replace("_", " ")
 
 
 def _clock_time(instant: datetime, zone: str) -> str:
     """``19:00`` in ``zone`` (a place name, since modern tzdata has no abbreviation for most)."""
     return f"{instant.astimezone(ZoneInfo(zone)):%H:%M}"
+
+
+def _kept_line(item: Any, here: str) -> str:
+    """One kept item. A pinned zone that no longer resolves shows the title alone, never raises."""
+    try:
+        there = _clock_time(item.next_run_at, item.zone)
+        local = _clock_time(item.next_run_at, here)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return item.title
+    return f"{item.title} {there} {_place(item.zone)} ({local} here)"
 
 
 def _capped(lines: list[str]) -> str:
@@ -82,11 +99,7 @@ def compose_transition_card(
         noun = "item" if count == 1 else "items"
         parts.append(f"Moved to {_place(new_clock.zone)} time: {count} {noun}.")
     if kept:
-        lines = [
-            f"{item.title} {_clock_time(item.next_run_at, item.zone)} {_place(item.zone)} "
-            f"({_clock_time(item.next_run_at, new_clock.zone)} here)"
-            for _, item in kept
-        ]
+        lines = [_kept_line(item, new_clock.zone) for _, item in kept]
         parts.append(f"Kept: {_capped(lines)}.")
     if approvals:
         parts.append(f"Needs OK: {_capped(approvals)}.")

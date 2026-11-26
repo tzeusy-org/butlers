@@ -81,3 +81,33 @@ def test_an_incomplete_run_names_the_unread_schema_and_never_claims_done():
 def test_nothing_to_say_composes_no_card_and_a_dark_run_none_at_all():
     assert compose({"g": ReanchorPlan()}) is None
     assert card.compose_transition_card({"live": False}, old_clock=HOME, new_clock=TOKYO) is None
+
+
+def test_a_pinned_zone_that_cannot_resolve_shows_the_title_and_does_not_raise():
+    bad = Kept("x", "Call Mum", "Europe/Londn", AT)
+    out = compose({"g": ReanchorPlan(moves=(move(),), kept=(bad,))})
+    assert "Kept: Call Mum." in out.text and any(d.name == "x" for d in out.doors)
+
+
+@pytest.mark.parametrize(
+    ("day", "tokyo"),
+    [
+        (datetime(2026, 10, 24, 8, 0, tzinfo=UTC), "17:00"),
+        (datetime(2026, 10, 26, 9, 0, tzinfo=UTC), "18:00"),
+    ],
+)
+def test_a_london_pin_across_the_dst_change_shows_the_right_tokyo_time(day, tokyo):
+    # 24 Oct is still BST (09:00 London = 08:00 UTC = 17:00 Tokyo); 26 Oct is GMT (09:00 = 09:00 UTC).
+    kept = Kept("lon", "Standup", "Europe/London", day)
+    out = compose({"g": ReanchorPlan(moves=(move(),), kept=(kept,))})
+    assert f"Standup 09:00 London ({tokyo} here)" in out.text
+
+
+def test_etc_gmt_zones_render_as_the_sign_correct_utc_offset():
+    kept = Kept("e", "Sync", "Etc/GMT-5", AT)
+    assert (
+        "Sync 16:00 UTC+5 (20:00 here)"
+        in compose({"g": ReanchorPlan(moves=(move(),), kept=(kept,))}).text
+    )
+    kept = Kept("e", "Sync", "Etc/GMT+5", AT)
+    assert "UTC-5" in compose({"g": ReanchorPlan(moves=(move(),), kept=(kept,))}).text

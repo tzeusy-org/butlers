@@ -183,7 +183,12 @@ def plan_reanchor(
         if not is_owner_local(row):
             pinned += 1
             zone = (row.get("timezone") or "").strip()
-            if row.get("cron") and zone and row.get("next_run_at") is not None:
+            if (
+                (row.get("task_type") or "cron") == "cron"
+                and row.get("cron")
+                and zone
+                and row.get("next_run_at") is not None
+            ):
                 kept.append(Kept(row["name"], _title(row), zone, row["next_run_at"]))
             continue
         current = row["next_run_at"]
