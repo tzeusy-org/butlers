@@ -32,6 +32,7 @@ from butlers.core.temporal.resolution_rows import (
     resolution_event,
 )
 from butlers.modules.calendar.constants import SOURCE_KIND_PROVIDER, projection_staleness_threshold
+from butlers.modules.calendar.source_staleness import source_is_stale
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +70,14 @@ async def any_provider_source_stale(db: Any, now: datetime) -> bool:
 
 
 def _source_stale(source: Any, now: datetime, threshold: timedelta) -> bool:
-    """One source's own verdict. The poll interval is butler config and is not stored per source,
-    so the default threshold applies; the source's own state still counts: a source that needs a
-    full resync, or whose latest attempt failed after its last success, is stale at once.
-    """
-    ok = source.last_success_at
-    if ok is None or now - ok > threshold or source.full_sync_required:
-        return True
-    failed_at = source.last_error_at
-    return failed_at is not None and failed_at > ok
+    """One source's own verdict (see ``source_is_stale``)."""
+    return source_is_stale(
+        last_success_at=source.last_success_at,
+        last_error_at=source.last_error_at,
+        full_sync_required=source.full_sync_required,
+        now=now,
+        threshold=threshold,
+    )
 
 
 async def owner_zone(db: Any) -> tzinfo | None:
