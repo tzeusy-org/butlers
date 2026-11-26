@@ -33,7 +33,7 @@ The queue SHALL track, per kind, whether its read is complete. A kind whose read
 unavailable, or came back partial (a dropped row or a degraded source) SHALL be named as unknown in
 the queue, and the count SHALL then be shown as a lower bound ("3+ need you") and SHALL never drop to
 zero because of it. Only when every kind is complete and holds nothing SHALL the queue say that
-nothing needs the owner. The `changes` kind SHALL be reported unknown until its feed exists.
+nothing needs the owner. The `changes` kind (provider moves, cancellations and location changes) is not a counted kind until its feed exists: the queue SHALL show a fixed line that moved-under-you changes are not tracked yet, and the "+" and the unknown list SHALL name only a kind whose read failed.
 
 #### Scenario: A failing proposals read does not empty the queue
 
@@ -78,12 +78,18 @@ ID: REQ-calendar-needs-you-queue-004
 Source: bu-5ii4gj.11 track N, slice N2
 Scope: v1-mandatory
 
-The queue's heading SHALL state its count ("3 need you"), in the lower-bound form of requirement
-002 when a kind is unknown, and SHALL say nothing needs the owner only when every kind is complete
-and empty. The verdict's own per-kind clauses already count each kind and SHALL stay as they are; the
+The queue's heading SHALL state its count ("3 need you"), in the lower-bound form ("3+ need you")
+when a counted kind failed to read. A complete, empty queue SHALL say nothing needs the owner and add
+no clause; an empty queue with an unknown kind SHALL read "0+ need you" and name the kind ("proposals
+unknown"). The verdict's own per-kind clauses already count each kind and SHALL stay as they are; the
 queue adds no second verdict clause.
 
 #### Scenario: The count is stated
 
-- **WHEN** three items wait and a kind is unknown
+- **WHEN** three items wait and a kind failed to read
 - **THEN** the heading SHALL read "3+ need you"
+
+#### Scenario: An empty queue with an unknown kind
+
+- **WHEN** no item waits and the proposals read failed
+- **THEN** the heading SHALL read "0+ need you" and name proposals as unknown
