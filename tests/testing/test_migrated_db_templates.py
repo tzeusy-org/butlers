@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from textwrap import dedent
 from urllib.parse import urlparse
@@ -305,6 +306,7 @@ async def test_chronicler_preparation_is_reused_by_independent_real_clones(
     db, fresh_db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from butlers import migrations
+    from butlers.chronicler.editorial import record_coverage_witness
     from tests.chronicler import _private_memory_setup as setup
 
     monkeypatch.delenv(migration._TEMPLATES_ENV, raising=False)
@@ -318,13 +320,22 @@ async def test_chronicler_preparation_is_reused_by_independent_real_clones(
     monkeypatch.setattr(migrations, "run_migrations", track_preparation)
     monkeypatch.setattr(setup, "run_migrations", track_preparation)
     first = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
-    await first.execute("CREATE TABLE chronicler.prepared_clone_probe (id integer)")
+    probe_day = date(2026, 5, 1)
+    witness = (
+        "SELECT origin FROM chronicler.covered_local_days WHERE local_date = $1 AND timezone = $2"
+    )
+    await record_coverage_witness(first, probe_day, "UTC")
+    assert await first.fetchval(witness, probe_day, "UTC") == "day_close_success"
     second = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
 
     assert await first.fetchval("SELECT current_database()") != await second.fetchval(
         "SELECT current_database()"
     )
-    assert await second.fetchval("SELECT to_regclass('chronicler.prepared_clone_probe') IS NULL")
+    assert await second.fetchval(witness, probe_day, "UTC") is None
+    second_probe_day = date(2026, 5, 2)
+    await record_coverage_witness(second, second_probe_day, "UTC")
+    assert await second.fetchval(witness, second_probe_day, "UTC") == "day_close_success"
+    assert await first.fetchval(witness, second_probe_day, "UTC") is None
     for pool in (first, second):
         assert await pool.fetchval(
             "SELECT to_regclass('chronicler.covered_local_days') IS NOT NULL"
@@ -342,7 +353,8 @@ async def test_chronicler_preparation_is_reused_by_independent_real_clones(
     fresh = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
     assert await fresh.fetchval("SELECT to_regclass('chronicler.covered_local_days') IS NOT NULL")
     assert await fresh.fetchval("SELECT to_regclass('chronicler_mem.facts') IS NOT NULL")
-    assert await fresh.fetchval("SELECT to_regclass('chronicler.prepared_clone_probe') IS NULL")
+    assert await fresh.fetchval(witness, probe_day, "UTC") is None
+    assert await fresh.fetchval(witness, second_probe_day, "UTC") is None
     assert prepared_steps == expected * 2
 
 
