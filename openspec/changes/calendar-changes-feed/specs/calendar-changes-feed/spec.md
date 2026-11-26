@@ -101,7 +101,7 @@ ID: REQ-calendar-changes-feed-004
 Source: bu-5ii4gj.11 track N, slice N3
 Scope: v1-mandatory
 
-When the journal read fails, the route SHALL answer with `changes_available: false` and no items, and a result cut at the cap SHALL carry `truncated: true`, and an unreadable list of the owner's account addresses `owners_complete: false`, which the queue SHALL treat as a lower bound ("+"),
+When the journal read fails, the route SHALL answer with `changes_available: false` and no items, and a result cut at the cap SHALL carry `truncated: true`, and an unreadable list of the owner's account addresses `owners_complete: false`; a cut result is a lower bound the queue shows with "+", while an unreadable address list is an upper bound (the list may include the owner's own edits), which the queue SHALL say in words and SHALL NOT mark with "+",
 and the Needs-you queue SHALL then name `changes` as unknown and show its count as a lower bound; it
 SHALL NOT read the failure as no changes. A change item SHALL show its before and after, SHALL open
 the event as its evidence, and SHALL NOT bind an accept or decline key.
