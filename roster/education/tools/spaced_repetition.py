@@ -15,8 +15,11 @@ import warnings
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
+
+from butlers.core.general_settings import resolve_general_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,27 @@ def sm2_update(
 # ---------------------------------------------------------------------------
 # Cron helper
 # ---------------------------------------------------------------------------
+
+
+def _now() -> datetime:
+    """The review clock, one seam so a test can fix the instant."""
+    return datetime.now(tz=UTC)
+
+
+async def _review_zone(pool: asyncpg.Pool) -> tuple[ZoneInfo, str]:
+    """The zone a review's cron is written in, and the name to store with the schedule.
+
+    The owner's general timezone (the same source the scheduler follows), so the stored cron and
+    every later reader of it agree on the instant. The name is stored explicitly: the scheduler
+    reads a literal ``'UTC'`` as "follow the owner", which would re-read a UTC cron in another zone,
+    so a UTC owner's reviews are pinned as ``Etc/UTC``.
+    """
+    name = await resolve_general_timezone(pool)
+    try:
+        zone = ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone, name = ZoneInfo("UTC"), "UTC"
+    return zone, ("Etc/UTC" if name.upper() == "UTC" else name)
 
 
 def _datetime_to_cron(dt: datetime) -> str:
@@ -222,7 +246,7 @@ async def spaced_repetition_record_response(
             interval_days = sm2["interval_days"]
 
             # 3. Compute next_review_at
-            now = datetime.now(tz=UTC)
+            now = _now()
             next_review_at = now + timedelta(days=interval_days)
 
             # 4. Determine mastery_status transition (if any)
@@ -262,11 +286,14 @@ async def spaced_repetition_record_response(
     # 7. Delete prior schedule for this node (any rep number)
     await _delete_node_schedules(pool, node_id, schedule_delete)
 
-    # 8. Create new schedule (individual or batch)
+    # 8. Create new schedule (individual or batch). The cron is the review instant read on the
+    # owner's clock and is stored with that zone, so it fires at, and reads back as, that instant.
+    review_zone, review_zone_name = await _review_zone(pool)
+    local_review = next_review_at.astimezone(review_zone)
     if schedule_count >= _BATCH_CAP:
         # Batch schedule: single review for the whole map
         batch_name = f"{_REVIEW_SCHEDULE_PREFIX}{mind_map_id}-batch"
-        cron = _datetime_to_cron(next_review_at)
+        cron = _datetime_to_cron(local_review)
         until_at = next_review_at + timedelta(hours=24)
         await schedule_create(
             name=batch_name,
@@ -281,11 +308,12 @@ async def spaced_repetition_record_response(
                 "message=<your_question>). Follow the review-session skill protocol."
             ),
             until_at=until_at,
+            timezone=review_zone_name,
         )
     else:
         # Individual schedule for this specific node
         schedule_name = f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep{new_reps}"
-        cron = _datetime_to_cron(next_review_at)
+        cron = _datetime_to_cron(local_review)
         until_at = next_review_at + timedelta(hours=24)
         await schedule_create(
             name=schedule_name,
@@ -300,6 +328,7 @@ async def spaced_repetition_record_response(
                 "message=<your_question>). Follow the review-session skill protocol."
             ),
             until_at=until_at,
+            timezone=review_zone_name,
         )
 
     return {
