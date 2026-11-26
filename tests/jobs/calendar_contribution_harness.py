@@ -9,6 +9,7 @@ SQL filtering and ordering are proven against real Postgres where they matter.
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date
@@ -49,13 +50,15 @@ class ContributionStateStore:
 @contextmanager
 def patch_state(module: str, state: ContributionStateStore) -> Iterator[None]:
     """Route *module*'s state-store helpers to *state*."""
-    with patch.multiple(
-        module,
-        state_set=state.state_set,
-        state_get=state.state_get,
-        state_list=state.state_list,
-        state_delete=state.state_delete,
-    ):
+    patches = {
+        "state_set": state.state_set,
+        "state_list": state.state_list,
+        "state_delete": state.state_delete,
+    }
+    # Only modules that import ``state_get`` have one to route (the prep jobs do not).
+    if hasattr(importlib.import_module(module), "state_get"):
+        patches["state_get"] = state.state_get
+    with patch.multiple(module, **patches):
         yield
 
 

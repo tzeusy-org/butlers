@@ -47,7 +47,7 @@ import asyncpg
 from butlers.core.entity_posture import ACTIVE, MEMORIAL
 from butlers.core.state import state_delete, state_get, state_list, state_set
 from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION, clip_label
-from butlers.jobs.briefing import SGT, briefing_day, day_start_utc
+from butlers.jobs.briefing import briefing_day, day_start_utc
 
 logger = logging.getLogger(__name__)
 
@@ -272,11 +272,19 @@ def _row_id(row: Any) -> str | None:
 
 
 def _zone_name(zone: tzinfo) -> str:
-    """The IANA name a claim carries for ``zone`` (SGT, the no-zone fallback, is Singapore)."""
+    """The IANA name a claim carries for ``zone``.
+
+    A resolved ``ZoneInfo`` carries its own key. A fixed-offset fallback (no owner zone saved) has
+    none, so it is named by its whole-hour offset as an ``Etc/GMT`` zone (no DST).
+    """
     key = getattr(zone, "key", None)
     if isinstance(key, str):
         return key
-    return "Asia/Singapore" if zone is SGT else "UTC"
+    offset = zone.utcoffset(None)
+    if offset is None or offset.total_seconds() % 3600:
+        return "UTC"
+    hours = int(offset.total_seconds() // 3600)
+    return "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
 
 
 def _claim(
@@ -494,8 +502,12 @@ async def settle_claims(
     if complete and "error" not in claim_result:
         # An invalid claim, or a retraction that did not run (the projection tables are absent),
         # means the calendar was not fully reconciled: the run is partial.
-        if claim_result.get("invalid") or not claim_result.get("retraction_ran"):
+        if claim_result.get("invalid"):
             claim_result = {**claim_result, "error": "invalid_claims"}
+        elif not claim_result.get("retraction_ran"):
+            # Nothing was wrong with the claims, but retraction could not run (for example the
+            # projection tables are absent): the calendar is not fully reconciled.
+            claim_result = {**claim_result, "error": "retraction_skipped"}
     if "error" in claim_result and complete:
         await mark_overlay_envelopes_incomplete(pool, today=today, lookahead_days=lookahead_days)
         complete = False

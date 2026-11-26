@@ -365,14 +365,14 @@ async def test_a_130_char_payee_is_clipped_and_retraction_still_runs(db, monkeyp
 
 
 @e2e
-async def test_an_invalid_claim_or_absent_tables_make_the_run_partial(db, monkeypatch):
+async def test_absent_projection_tables_make_the_run_partial_as_retraction_skipped(db, monkeypatch):
     pool, mod = await _world(db, monkeypatch)
     await _add_bill(pool, due=date(2030, 3, 10))
     mod._projection_tables_available_cache = False  # retraction cannot run
 
     result = await job.run_finance_calendar_overlay_contribution(pool, None)
 
-    assert result["claims"]["error"] == "invalid_claims" and result["complete"] is False
+    assert result["claims"]["error"] == "retraction_skipped" and result["complete"] is False
 
 
 @e2e
