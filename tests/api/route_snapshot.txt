@@ -524,6 +524,7 @@ OP POST /api/calendar/sources 826a2a3474a4
 OP POST /api/calendar/sources/role 1592dbfae1d6
 OP POST /api/calendar/workspace/butler-events fd45e6adb5e5
 OP POST /api/calendar/workspace/butler-events/preview 3bc6419a8ea8
+OP POST /api/calendar/workspace/conflicts/resolve 17b992cda8a4
 OP POST /api/calendar/workspace/organizer-decision 3b8795a8ac97
 OP POST /api/calendar/workspace/parse-quick-add 51365e18b667
 OP POST /api/calendar/workspace/proposals/{proposal_id}/accept 1ab95b13dccc
@@ -1242,6 +1243,7 @@ ROUTE APIRoute POST '/api/calendar/sources' name=toggle_calendar_source op=toggl
 ROUTE APIRoute POST '/api/calendar/sources/role' name=set_calendar_source_role op=set_calendar_source_role_api_calendar_sources_role_post tags=calendar,accounts schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/butler-events' name=mutate_butler_event op=mutate_butler_event_api_calendar_workspace_butler_events_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/butler-events/preview' name=preview_butler_event_recurrence op=preview_butler_event_recurrence_api_calendar_workspace_butler_events_preview_post tags=calendar,workspace schema=True
+ROUTE APIRoute POST '/api/calendar/workspace/conflicts/resolve' name=resolve_workspace_conflict op=resolve_workspace_conflict_api_calendar_workspace_conflicts_resolve_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/organizer-decision' name=decide_organizer op=decide_organizer_api_calendar_workspace_organizer_decision_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/parse-quick-add' name=parse_quick_add_event op=parse_quick_add_event_api_calendar_workspace_parse_quick_add_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/proposals/{proposal_id}/accept' name=accept_proposal op=accept_proposal_api_calendar_workspace_proposals__proposal_id__accept_post tags=calendar,workspace schema=True
@@ -1537,6 +1539,7 @@ SCHEMA ApiResponse_CliReauthorizeResponse_ d8dcce414a63
 SCHEMA ApiResponse_CliRevokeResult_ 993fbb21802a
 SCHEMA ApiResponse_CliRotateResult_ 24643b4a1767
 SCHEMA ApiResponse_ConditionsFacts_ f690648d441d
+SCHEMA ApiResponse_ConflictResolveResponse_ f3e2a8b3193e
 SCHEMA ApiResponse_ConflictScanResponse_ 7ee8f3abefdf
 SCHEMA ApiResponse_ConnectivityResult_ 7f895c44adfa
 SCHEMA ApiResponse_ConnectorDetailEntry_ f9219133abdb
@@ -1936,6 +1939,8 @@ SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
 SCHEMA ConflictIssue 8e9ee35ebc7e
+SCHEMA ConflictResolveRequest 98b5611fe9d0
+SCHEMA ConflictResolveResponse 0788317396b5
 SCHEMA ConflictScanResponse 92f9148f7a01
 SCHEMA ConflictScanWindow 6af1a276ab4b
 SCHEMA ConnectionModel 89d5a5b90eaf
