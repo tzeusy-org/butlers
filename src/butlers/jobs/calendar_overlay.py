@@ -1276,6 +1276,7 @@ async def run_travel_calendar_overlay_contribution(
         butler="travel",
         claims=[c for day in claims_by_date.values() for c in day],
         complete=complete,
+        window_start=window_start,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)

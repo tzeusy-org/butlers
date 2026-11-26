@@ -232,3 +232,21 @@ async def test_a_failed_source_read_retracts_nothing_and_keeps_the_envelopes(db,
     after = await state_get(pool, job.overlay_key("2030-03-10"))
     assert after["complete"] is False and after["claims"] == before["claims"]
     assert after["entries"] == before["entries"]
+
+
+@e2e
+async def test_a_flight_that_has_landed_keeps_its_rows_as_history(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    await _flight(pool)
+    await job.run_travel_calendar_overlay_contribution(pool, None)
+    await mod._push_internal_events_to_provider()
+
+    # Two days after landing the window starts after the flight; the job no longer lists it.
+    later = ARR + timedelta(days=2)
+    monkeypatch.setattr("butlers.jobs.briefing._now", lambda: later)
+    monkeypatch.setattr(job, "_utcnow", lambda: later)
+    result = await job.run_travel_calendar_overlay_contribution(pool, None)
+    await mod._push_internal_events_to_provider()
+
+    assert result["claims"]["retracted"] == 0 and not mod._provider.delete_calls
+    assert {r["status"] for r in await _rows(pool)} == {"confirmed"}
