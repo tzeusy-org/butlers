@@ -72,6 +72,7 @@ JOB_SPECS = {
         JobSpec("calendar_sync_deadman", "periodic", 1800),
         JobSpec("calendar_overcommitment", "periodic", 1800),
         JobSpec("calendar_agreement_drift", "periodic", 600),
+        JobSpec("calendar_rsvp_docket", "periodic", 900),
         JobSpec("day_sheet_push", "periodic", 300),
         JobSpec("backup_facts_snapshot", "periodic", 600),
         JobSpec("external_deadman", "periodic", 600),
