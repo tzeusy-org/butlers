@@ -20,6 +20,7 @@ _TABLE = "calendar_rsvp_policies"
 _ALLOWED = {
     "src/butlers/db_authority/grants.py",
     "src/butlers/core/temporal/rsvp_policy.py",
+    "src/butlers/jobs/calendar_rsvp_docket.py",
     "src/butlers/api/router_registry.py",  # the route module shares the table's name
 }
 
@@ -36,7 +37,9 @@ def test_only_the_grants_manifest_and_the_policy_module_name_the_table() -> None
     assert offenders == []
 
 
-def test_no_runtime_role_holds_a_privilege_on_the_table() -> None:
+def test_only_the_docket_butler_reads_the_table_and_no_runtime_role_writes_it() -> None:
     grant = PUBLIC_RELATIONS[_TABLE]
     assert grant.fleet == frozenset()
-    assert all(not grant.privileges(role) for role in runtime_roles())
+    for role in runtime_roles():
+        expected = {"SELECT"} if role == "butler_relationship_rw" else set()
+        assert set(grant.privileges(role)) == expected, role

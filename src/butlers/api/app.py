@@ -90,6 +90,10 @@ from butlers.jobs.calendar_overcommitment import (
     resolve_lookahead_days as resolve_calendar_overcommitment_lookahead_days,
 )
 from butlers.jobs.calendar_overcommitment import run_calendar_overcommitment_loop
+from butlers.jobs.calendar_rsvp_docket import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_CALENDAR_RSVP_DOCKET_INTERVAL_S,
+)
+from butlers.jobs.calendar_rsvp_docket import docket_live, run_calendar_rsvp_docket_loop
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
@@ -224,6 +228,7 @@ async def lifespan(app: FastAPI):
     calendar_deadman_task: asyncio.Task | None = None
     calendar_overcommitment_task: asyncio.Task | None = None
     calendar_agreement_drift_task: asyncio.Task | None = None
+    calendar_rsvp_docket_task: asyncio.Task | None = None
     day_sheet_push_task: asyncio.Task | None = None
     backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
@@ -556,6 +561,29 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
 
+        # Invitation docket (bu-5ii4gj.9 S3): owner policies prepare exact answers, parked as
+        # approvals cards. Dark until BUTLERS_CALENDAR_RSVP_DOCKET=1. See
+        # butlers.jobs.calendar_rsvp_docket.
+        if docket_live():
+            try:
+                calendar_rsvp_docket_task = _track_background_task(
+                    supervise_lifespan_loop(
+                        "calendar_rsvp_docket",
+                        lambda: run_calendar_rsvp_docket_loop(
+                            get_db_manager(),
+                            get_mcp_manager,
+                            interval_s=DEFAULT_CALENDAR_RSVP_DOCKET_INTERVAL_S,
+                        ),
+                        health=job_health.recorder(
+                            "calendar_rsvp_docket",
+                            "periodic",
+                            DEFAULT_CALENDAR_RSVP_DOCKET_INTERVAL_S,
+                        ),
+                    )
+                )
+            except Exception:
+                logger.warning("Failed to start calendar-rsvp-docket loop", exc_info=True)
+
         # Changed since you said yes (bu-5ii4gj.10 A-S2): accepted occurrences compared with the
         # calendar and the connector journal, reconciled into the owner condition ledger. See
         # butlers.jobs.calendar_agreement_drift.
@@ -711,6 +739,10 @@ async def lifespan(app: FastAPI):
         calendar_overcommitment_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_overcommitment_task
+    if calendar_rsvp_docket_task is not None:
+        calendar_rsvp_docket_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_rsvp_docket_task
     if calendar_agreement_drift_task is not None:
         calendar_agreement_drift_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
