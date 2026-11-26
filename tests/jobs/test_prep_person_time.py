@@ -10,6 +10,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -325,8 +326,10 @@ def test_last_met_fields_prefer_the_ledger_and_label_the_interim_rule():
     assert _last_met_fields(None, None)["last_met_basis"] is None
 
 
-def test_the_cards_time_note_follows_the_basis():
-    note = card._time_note
+def test_the_cards_time_note_follows_the_basis_in_the_owners_zone():
+    def note(prep, zone=UTC):
+        return card._time_note(prep, zone)
+
     assert note({"last_met": "2026-08-03T05:00:00+00:00"}) == " (last met 3 Aug)"
     assert (
         note({"last_met": "2026-08-03T05:00:00+00:00", "last_met_basis": "interim"})
@@ -336,3 +339,7 @@ def test_the_cards_time_note_follows_the_basis():
         " (last scheduled 4 Aug)"
     )
     assert note({}) == ""
+    # The day is read in the owner's zone: 20:00 UTC is already the next day in Singapore.
+    late = {"last_met": "2026-08-03T20:00:00+00:00"}
+    assert note(late) == " (last met 3 Aug)"
+    assert note(late, ZoneInfo("Asia/Singapore")) == " (last met 4 Aug)"
