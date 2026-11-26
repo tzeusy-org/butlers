@@ -24,7 +24,7 @@ Only ``home_assumed`` and ``confirmed_booking`` carry a zone; every other basis 
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -98,3 +98,25 @@ def projected_owner_zone(
     if zone is None:
         return ProjectedZone(None, "unmapped_place")
     return ProjectedZone(zone, "confirmed_booking")
+
+
+def leg_is_confirmed(
+    *,
+    confirmation_number: str | None,
+    trip_status: str | None,
+    trip_metadata: Mapping[str, object] | None = None,
+) -> bool:
+    """Whether a stored Travel leg counts as an owner-confirmed booking.
+
+    Travel's rows do not record the owner's confirmation, so this is the one named rule that
+    stands in for it: the leg carries a provider ``confirmation_number`` (a booking the owner
+    made, not an itinerary that was merely parsed) and its trip is not cancelled or tentative.
+    It is isolated here so it can be replaced by the owner clock's ``OwnerConfirm`` evidence
+    (RFC 0038 S1, bu-dhloi1.21) in one place.
+    """
+    if not (confirmation_number or "").strip():
+        return False
+    if (trip_status or "").strip().lower() in {"cancelled", "canceled", "tentative"}:
+        return False
+    meta = trip_metadata or {}
+    return not (meta.get("tentative") is True or str(meta.get("status", "")).lower() == "tentative")

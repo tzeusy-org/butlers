@@ -309,6 +309,14 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/jobs/calendar_overcommitment.py",
+        "travel.legs",
+    ): "sanctioned:REQ-module-calendar-060: read-only, bu-5ii4gj.5 P4b reads confirmed trip legs to project the owner's zone for the off-hours check; fan-out over the travel butler only, no write.",
+    (
+        "src/butlers/jobs/calendar_overcommitment.py",
+        "travel.trips",
+    ): "sanctioned:REQ-module-calendar-060: read-only, bu-5ii4gj.5 P4b joins trip status to legs for the confirmed-booking rule; fan-out over the travel butler only, no write.",
+    (
         "src/butlers/capability_host/projection.py",
         "<dynamic:{state_view}>",
     ): "dynamic-local: RFC0039 D17 host precondition read of the replicated manifest digest from the mcp_read view butlers.knowledge_read.core.published() derives from the packaged manifest entry for mcp_surface.manifest_state; never a caller-supplied or discovered relation.",

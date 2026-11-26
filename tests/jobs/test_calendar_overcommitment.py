@@ -10,7 +10,7 @@ faked fan-out (task 1.1), and the check's completeness rules. The ledger semanti
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -347,3 +347,145 @@ def test_lookahead_days_is_bounded_with_a_safe_default(monkeypatch, raw, expecte
         monkeypatch.setenv(job.LOOKAHEAD_DAYS_ENV, raw)
 
     assert job.resolve_lookahead_days() == expected
+
+
+# -- off-hours in the zone the owner will be in (bu-5ii4gj.5) ---------------------------------
+
+from butlers.core.temporal.projected_zone import TripLeg  # noqa: E402
+
+_HOME = "Asia/Singapore"
+
+
+def _event(entry_id: str, start: datetime, hours: float = 1.0) -> ConflictEventRef:
+    return ConflictEventRef(
+        entry_id=entry_id,
+        title="Private title",
+        start_at=start,
+        end_at=start + timedelta(hours=hours),
+        timezone=_HOME,
+        status="confirmed",
+    )
+
+
+def _london_trip(confirmed: bool = True, trip_end: date | None = None) -> list[job.DatedLeg]:
+    out = datetime(2026, 1, 10, 1, tzinfo=UTC)
+    return [
+        job.DatedLeg(TripLeg(out, out + timedelta(hours=14), "LHR", "London", confirmed), trip_end)
+    ]
+
+
+def _off_hours(events, legs):
+    return job.build_off_hours_observations(
+        events,
+        legs,
+        home_zone=_HOME,
+        identity_keys={e.entry_id: f"origin:{e.entry_id}" for e in events},
+    )
+
+
+def test_a_nine_oclock_home_meeting_during_a_confirmed_london_trip_is_an_off_hours_night():
+    # 09:00 SGT is 01:00 in London (GMT in January).
+    meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))
+    [obs] = _off_hours([meeting], _london_trip())
+
+    assert obs.metadata["kind"] == "off_hours_in_local_zone"
+    assert obs.metadata["zone"] == "Europe/London" and obs.metadata["basis"] == "confirmed_booking"
+    assert obs.metadata["local_start"] == "01:00" and obs.metadata["date"] == "2026-01-15"
+    assert "Private title" not in obs.summary and "Private title" not in str(obs.metadata)
+
+
+@pytest.mark.parametrize(
+    ("label", "legs", "start_hour"),
+    [
+        ("no trip", [], 1),
+        ("daytime in the travel zone", _london_trip(), 10),
+        ("unconfirmed booking", _london_trip(confirmed=False), 1),
+    ],
+)
+def test_nothing_is_flagged_without_a_confirmed_night(label, legs, start_hour):
+    meeting = _event("m", datetime(2026, 1, 15, start_hour, 0, tzinfo=UTC))
+    assert _off_hours([meeting], legs) == [], label
+
+
+def test_a_meeting_during_the_flight_is_unknown_and_flags_nothing():
+    meeting = _event("m", datetime(2026, 1, 10, 5, 0, tzinfo=UTC))
+    assert _off_hours([meeting], _london_trip()) == []
+
+
+def test_a_meeting_that_runs_into_the_local_night_is_flagged_and_identity_is_stable():
+    # 22:30 to 23:30 London: it ends inside the night.
+    late = _event("m", datetime(2026, 1, 15, 22, 30, tzinfo=UTC))
+    [first] = _off_hours([late], _london_trip())
+    [again] = _off_hours([late], _london_trip())
+    assert first.fingerprint == again.fingerprint
+
+
+async def test_the_off_hours_check_is_dark_until_the_owner_clock_is_live(
+    check, monkeypatch
+) -> None:
+    legs = AsyncMock(return_value=([], True))
+    monkeypatch.setattr(job, "read_trip_legs", legs)
+
+    await job.run_calendar_overcommitment_check(db_manager({"switchboard": object()}))
+
+    legs.assert_not_awaited()
+    assert check["reconcile"].await_args.kwargs["snapshot_complete"] is True
+
+
+async def test_an_unreadable_trip_schema_never_resolves_an_open_off_hours_episode(
+    check, monkeypatch
+) -> None:
+    monkeypatch.setattr(job.flags, "OWNER_CLOCK_LIVE", True)
+    monkeypatch.setattr(job, "read_trip_legs", AsyncMock(return_value=([], False)))
+
+    await job.run_calendar_overcommitment_check(db_manager({"switchboard": object()}))
+
+    kwargs = check["reconcile"].await_args.kwargs
+    assert kwargs["snapshot_complete"] is False  # absence of legs is not "the owner is home"
+    assert len(kwargs["observations"]) == 1  # the overlap is still reported
+
+
+def test_a_return_leg_into_the_home_city_reads_as_home_and_flags_nothing():
+    out = datetime(2026, 1, 10, 1, tzinfo=UTC)
+    back = datetime(2026, 1, 12, 1, tzinfo=UTC)
+    legs = [
+        job.DatedLeg(TripLeg(out, out + timedelta(hours=14), "LHR", "London", True), None),
+        # Singapore is deliberately not named by airport, so only home_city can place it.
+        job.DatedLeg(TripLeg(back, back + timedelta(hours=13), None, "Singapore", True), None),
+    ]
+    meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))  # 09:00 at home
+    assert (
+        job.build_off_hours_observations(
+            [meeting], legs, home_zone=_HOME, home_city="Singapore", identity_keys={}
+        )
+        == []
+    )
+
+
+def test_a_trip_that_ended_before_the_meeting_day_is_dropped_per_meeting():
+    # One-way trip, no stored return: the 15 Jan meeting is after the trip's 12 Jan end.
+    meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))
+    assert _off_hours([meeting], _london_trip(trip_end=date(2026, 1, 12))) == []
+    assert _off_hours([meeting], _london_trip(trip_end=date(2026, 1, 15)))  # still on the trip
+
+
+async def test_read_trip_legs_is_incomplete_when_the_read_raises_or_a_schema_fails():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=7)
+
+    boom = MagicMock(spec=DatabaseManager)
+    boom.fan_out_with_status = AsyncMock(side_effect=OSError("down"))
+    assert await job.read_trip_legs(boom, start=start, end=end) == ([], False)
+
+    failed = MagicMock(spec=DatabaseManager)
+    failed.fan_out_with_status = AsyncMock(return_value=({"travel": []}, ["travel"]))
+    assert await job.read_trip_legs(failed, start=start, end=end) == ([], False)
+
+    absent = MagicMock(spec=DatabaseManager)
+    absent.fan_out_with_status = AsyncMock(return_value=({}, []))
+    assert await job.read_trip_legs(absent, start=start, end=end) == ([], False)
+
+    ok = MagicMock(spec=DatabaseManager)
+    ok.fan_out_with_status = AsyncMock(return_value=({"travel": []}, []))
+    assert await job.read_trip_legs(ok, start=start, end=end) == ([], True)
+    assert ok.fan_out_with_status.await_args.kwargs["deadline_seconds"] == job._TRIP_READ_DEADLINE_S

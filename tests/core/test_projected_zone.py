@@ -13,7 +13,7 @@ from butlers.core.temporal.city_zones import (
     normalise_place,
     zone_for_place,
 )
-from butlers.core.temporal.projected_zone import TripLeg, projected_owner_zone
+from butlers.core.temporal.projected_zone import TripLeg, leg_is_confirmed, projected_owner_zone
 
 pytestmark = pytest.mark.unit
 
@@ -178,3 +178,25 @@ class TestPinnedTable:
         assert zone_for_place(None, "  São   Paulo ") == "America/Sao_Paulo"
         assert zone_for_place(None, "New York, NY") is None  # not a pinned spelling: unknown
         assert zone_for_place(None, None) is None
+
+
+class TestLegIsConfirmed:
+    """The named stand-in for owner confirmation (to be replaced by OwnerConfirm evidence)."""
+
+    def test_a_provider_confirmation_number_on_a_live_trip_counts(self):
+        assert leg_is_confirmed(confirmation_number="ABC123", trip_status="planned")
+        assert leg_is_confirmed(confirmation_number=" X1 ", trip_status="active")
+
+    @pytest.mark.parametrize("number", [None, "", "   "])
+    def test_a_parsed_itinerary_with_no_confirmation_number_stays_unknown(self, number):
+        assert not leg_is_confirmed(confirmation_number=number, trip_status="planned")
+
+    @pytest.mark.parametrize("status", ["cancelled", "Cancelled", "tentative"])
+    def test_a_cancelled_or_tentative_trip_never_counts(self, status):
+        assert not leg_is_confirmed(confirmation_number="ABC123", trip_status=status)
+
+    @pytest.mark.parametrize("meta", [{"tentative": True}, {"status": "Tentative"}])
+    def test_trip_metadata_can_mark_a_trip_tentative(self, meta):
+        assert not leg_is_confirmed(
+            confirmation_number="ABC123", trip_status="planned", trip_metadata=meta
+        )
