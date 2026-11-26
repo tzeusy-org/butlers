@@ -23,7 +23,7 @@ term that produced it, for the owner to sign.
 - **A docket to sign.** A dashboard docket lists every parked answer with its exact call; one submit
   approves each card individually through the existing approve path. A card that changed since it
   was shown is refused and named.
-- **Per-policy agreement ledger.** Approved as prepared, rejected by the owner or answered elsewhere, shown beside each
+- **Per-policy agreement ledger.** Approved as prepared, rejected by the owner or answered outside the card, shown beside each
   policy. It never feeds autonomy promotion and never creates a rule.
 
 ## Out of scope

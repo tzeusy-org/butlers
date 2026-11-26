@@ -15,7 +15,7 @@ outside declared working hours, recurring, attendee count and lead time. An even
 description SHALL NOT be a predicate input, and a predicate outside the vocabulary SHALL be refused
 on write. A policy SHALL be created, edited, reordered and revoked only by the owner through a
 dashboard route, and only through SECURITY DEFINER functions owned by a NOLOGIN role whose EXECUTE is
-granted to the dashboard's role alone (the `core_350` pattern). No `butler_*_rw` role SHALL hold
+granted to the dashboard's role alone (the `core_350` pattern). The dashboard SHALL read policies and ledger counts through SECURITY DEFINER read functions with the same EXECUTE grant, so the catalog test and the route agree. No `butler_*_rw` role SHALL hold
 INSERT, UPDATE or DELETE on the table, and SELECT SHALL be granted only to the one butler role that
 runs the docket job. No MCP tool and no prompt or session context SHALL present a policy to a model.
 An edit SHALL increment the policy's `version`; a revoked policy SHALL match nothing. A policy
@@ -93,11 +93,15 @@ In the same run that parks a replacement card, or finds no match, the job SHALL 
 open docket card and reject each one that is no longer current through the existing system reject,
 with a closed reason and its receipt kept: `stale_event` (the event changed), `policy_changed` (the
 policy's version changed), `policy_revoked`, or `policy_no_longer_matches`. A system rejection SHALL
-never be sent as an answer and SHALL NOT count toward the agreement ledger.
+never be sent as an answer and SHALL NOT count toward the agreement ledger, with one exception: when a card is rejected `stale_event` because the owner's own response status changed, the job SHALL record `answered_same` (counted as agreement) when the new status equals the card's verdict, and `answered_elsewhere` otherwise.
 
 #### Scenario: A changed event rejects its card
 - **WHEN** the event's etag changes while its card is open
 - **THEN** the card is rejected `stale_event` and, if a policy still matches, a fresh card is parked
+
+#### Scenario: The owner answers the invitation themself
+- **WHEN** the owner's response status changes to the card's verdict while its card is open
+- **THEN** the card is rejected `stale_event` and the ledger records `answered_same`; a different status records `answered_elsewhere`
 
 #### Scenario: A policy edit, revocation or lost match rejects its card
 - **WHEN** a policy is edited, revoked, or the invitation stops matching it
@@ -116,7 +120,7 @@ re-run the pure evaluator for each selected card and approve it individually thr
 approve path, so each card keeps its own audit trail and no bypass is added. A card whose event etag
 or policy version changed since it was displayed, or that no longer matches its policy, SHALL be
 refused and named in the result, and the rest SHALL still be applied. The docket SHALL NOT be a
-goal-runtime decision set.
+goal-runtime decision set. A card the owner does not tick SHALL stay pending for the owner, untouched.
 
 #### Scenario: A changed card is refused and named
 - **WHEN** the owner submits a batch and one event changed after display
@@ -132,9 +136,10 @@ ID: REQ-calendar-invitation-docket-006
 Source: bu-5ii4gj.9 (invitation docket)
 Scope: v1-mandatory
 
-The system SHALL record, per policy and version, how the owner dealt with each prepared answer:
-`approved_as_prepared`, `owner_rejected`, or `answered_elsewhere` (the owner answered the invitation
-differently outside the card). There SHALL be no "edited" outcome. System rejections SHALL be
+The system SHALL record, in `public.calendar_rsvp_ledger`, per policy and version, how the owner dealt with each prepared answer:
+`approved_as_prepared`, `owner_rejected`, `answered_same` (the owner answered outside the card with
+the card's own verdict; counted as agreement) or `answered_elsewhere` (the owner answered
+differently). There SHALL be no "edited" outcome. System rejections SHALL be
 excluded. The counts SHALL be shown beside the policy. The ledger SHALL be informational: nothing
 SHALL read it to widen autonomy, auto-approve, promote or create a policy, and a contract test SHALL
 pin that only the dashboard read model and the ledger writer reference the ledger table.
@@ -144,7 +149,7 @@ pin that only the dashboard read model and the ledger writer reference the ledge
 - **THEN** its cards still park for approval and no rule is created
 
 #### Scenario: A system rejection is not counted
-- **WHEN** a card is rejected `stale_event`
+- **WHEN** a card is rejected `stale_event` or `policy_changed` with no change to the owner's own answer
 - **THEN** no ledger outcome is recorded for it
 
 ### Requirement: An Outage Is Never A Clean Docket
