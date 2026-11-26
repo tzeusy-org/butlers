@@ -15,6 +15,7 @@ import pytest
 
 from butlers.core.state import state_get
 from butlers.jobs import calendar_overlay as job
+from tests.jobs.calendar_contribution_harness import save_owner_zone
 
 pytestmark = [
     pytest.mark.integration,
@@ -73,6 +74,7 @@ async def _world(db, monkeypatch):
         "core", "memory", schemas={"core": "health", "memory": "health"}, schema="health"
     )
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
+    save_owner_zone(monkeypatch, "Asia/Singapore")
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     for table in ("calendar_sources", "calendar_events"):
         await pool.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
@@ -120,3 +122,17 @@ async def test_a_rescheduled_appointment_moves_its_entry_and_keeps_its_claim_key
     new = await state_get(pool, job.overlay_key("2030-03-06"))
     assert old["entries"] == [] and old["claims"] == []
     assert [c["claim_key"] for c in new["claims"]] == [f"health:visit:{booked}"]
+
+
+async def test_no_saved_owner_zone_writes_the_entry_but_claims_nothing(db, monkeypatch):
+    pool = await _world(db, monkeypatch)
+    health = await _source(pool, butler="health", specific=True)
+    await _event(pool, health, title="Dental", booked=True)
+    save_owner_zone(monkeypatch, None)
+
+    result = await job.run_health_calendar_overlay_contribution(pool, None)
+
+    envelope = await state_get(pool, job.overlay_key("2030-03-04"))
+    assert [e["label"] for e in envelope["entries"]] == ["Dental"]
+    assert envelope["claims"] == []
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"} and result["complete"] is True

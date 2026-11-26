@@ -42,13 +42,13 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _owner_zone_is_sgt():
-    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+def _owner_zone_is_singapore():
+    """Scripted fake pools have no settings table: the owner zone is Singapore, not read from them."""
     from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
 
-    from butlers.jobs.briefing import SGT
-
-    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+    zone = ZoneInfo("Asia/Singapore")
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)):
         yield
 
 
@@ -378,3 +378,19 @@ async def test_a_failed_follow_up_read_flags_the_envelopes_incomplete_and_keeps_
 
     assert result["complete"] is False
     assert state.store[key]["complete"] is False and state.store[key]["claims"] == []
+
+
+async def test_no_saved_owner_zone_shows_the_date_but_claims_nothing():
+    from unittest.mock import AsyncMock, patch
+
+    dates = [_with_ids(_date("Alex", "Birthday", date(1990, 6, 23)), date_id="d-1")]
+    # The harness resolves the owner zone through briefing_day: "never saved" yields the fixed
+    # display fallback, which has no IANA name to claim in.
+    from butlers.jobs.briefing import SGT
+
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+        result, cap, _ = await _run(dates=dates)
+
+    env = cap.store[overlay_key("2026-06-23")]
+    assert [e["kind"] for e in env["entries"]] == ["birthday"] and env["claims"] == []
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"}

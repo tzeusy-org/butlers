@@ -1414,7 +1414,7 @@ def _add_relationship_claim(
     door to it. The person-posture filter has already decided the row is shown.
     """
     ref = _row_id(row, column)
-    if ref is None:
+    if ref is None or owner_zone_key(zone) is None:
         return
     claims_by_date.setdefault(date_str, []).append(
         _day_claim(
@@ -1677,6 +1677,7 @@ async def run_relationship_calendar_overlay_contribution(
         claims_by_date=claims_by_date,
         complete=complete,
         window_start=day_start_utc(today, zone),
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -1831,21 +1832,22 @@ async def run_health_calendar_overlay_contribution(
         )
         # The visit already is a calendar event: its claim owns no row of its own (overlay
         # presence), so the workspace can show it once and offer a door to the record.
-        claims_by_date.setdefault(date_str, []).append(
-            _timed_claim(
-                key=f"health:visit:{event_id}",
-                version=_version(starts_at.isoformat(), ends_at.isoformat(), title),
-                kind="appointment",
-                label=title,
-                priority=priority,
-                presence="overlay",
-                start=starts_at,
-                end=ends_at,
-                zone=zone,
-                ref=event_id,
-                route="/health",
+        if owner_zone_key(zone) is not None:
+            claims_by_date.setdefault(date_str, []).append(
+                _timed_claim(
+                    key=f"health:visit:{event_id}",
+                    version=_version(starts_at.isoformat(), ends_at.isoformat(), title),
+                    kind="appointment",
+                    label=title,
+                    priority=priority,
+                    presence="overlay",
+                    start=starts_at,
+                    end=ends_at,
+                    zone=zone,
+                    ref=event_id,
+                    route="/health",
+                )
             )
-        )
         appointment_count += 1
 
     # Medication reminders recur daily across the whole window.
@@ -1879,6 +1881,7 @@ async def run_health_calendar_overlay_contribution(
         claims_by_date=claims_by_date,
         complete=complete,
         window_start=day_start_utc(today, zone),
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)

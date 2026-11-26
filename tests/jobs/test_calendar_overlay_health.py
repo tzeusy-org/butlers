@@ -35,13 +35,13 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _owner_zone_is_sgt():
-    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+def _owner_zone_is_singapore():
+    """Scripted fake pools have no settings table: the owner zone is Singapore, not read from them."""
     from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
 
-    from butlers.jobs.briefing import SGT
-
-    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+    zone = ZoneInfo("Asia/Singapore")
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)):
         yield
 
 
