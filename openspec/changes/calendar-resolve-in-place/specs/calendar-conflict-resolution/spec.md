@@ -31,7 +31,7 @@ within one grid step give equal digests.
 #### Scenario: A recurring event is only ever resolved per occurrence
 
 - **WHEN** one of the overlapping events is a recurring instance
-- **THEN** every option SHALL carry that occurrence's scope and none SHALL edit the series
+- **THEN** every option SHALL act on that one occurrence by the provider's own instance id (never the series id, never a series-scoped edit), so the write carries the occurrence's own etag
 
 #### Scenario: A stale source offers nothing
 
