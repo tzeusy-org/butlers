@@ -1577,7 +1577,7 @@ async def test_describe_reports_switches_freshness_and_the_replicated_digest(
     assert {d: s for d, s in described["domains"].items() if d != "health"} == {
         d: "enabled" for d in described["domains"] if d != "health"
     }
-    assert described["tools"] == list(TOOLS) and len(TOOLS) == 19
+    assert described["tools"] == list(TOOLS) and len(TOOLS) == 20
     assert "publish_key" not in described["columns"]["public.entity_graph_edges"]
     assert "deleted" not in described["columns"]["public.entities"]
     assert (await _refused(describe(reader, context, {"x": 1}))).code == "invalid_argument"
