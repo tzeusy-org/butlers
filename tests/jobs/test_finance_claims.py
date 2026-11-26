@@ -333,3 +333,65 @@ def test_a_renewal_outside_the_window_or_in_the_past_claims_nothing():
     # Their cancel_by dates still claim.
     assert "finance:subscription_cancel_by:far" in claims
     assert "finance:subscription_cancel_by:past" in claims
+
+
+@pytest.mark.parametrize(
+    ("text", "days"),
+    [("2 weeks before", 14), ("1 week", 7), ("10 weeks", 30), ("3 wks", 21)],
+)
+def test_a_reminder_preference_in_weeks_is_seven_times_the_number_capped(text, days):
+    assert job.parse_reminder_days(text) == days
+
+
+@e2e
+async def test_a_130_char_payee_is_clipped_and_retraction_still_runs(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    long = await pool.fetchval(
+        "INSERT INTO bills (payee, amount, currency, due_date, frequency, status) "
+        "VALUES ($1, 10, 'SGD', '2030-03-10', 'one_time', 'pending') RETURNING id",
+        "P" * 130,
+    )
+    gone = await _add_bill(pool, due=date(2030, 3, 11))
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+    await pool.execute("UPDATE bills SET status = 'paid' WHERE id = $1", gone)
+
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    rows = {r["origin_ref"]: r for r in await _rows(pool)}
+    assert result["claims"]["invalid"] == 0 and result["claims"]["retraction_ran"] is True
+    assert rows[f"claim:finance:bill:{long}"]["status"] == "confirmed"
+    assert rows[f"claim:finance:bill:{gone}"]["status"] == "cancelled"
+    assert result["complete"] is True
+
+
+@e2e
+async def test_an_invalid_claim_or_absent_tables_make_the_run_partial(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    mod._projection_tables_available_cache = False  # retraction cannot run
+
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert result["claims"]["error"] == "invalid_claims" and result["complete"] is False
+
+
+@e2e
+async def test_a_failed_preference_read_leaves_the_bill_rows_alone(db, monkeypatch):
+    pool, mod = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    await pool.execute(
+        "INSERT INTO facts (subject, predicate, content, scope, validity) "
+        "VALUES ('user', 'bill_reminder_preference', '5 days before due date', 'global', 'active')"
+    )
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+    assert (await _rows(pool))[0]["starts_at"] == datetime(2030, 3, 5, 9, tzinfo=SGT)
+
+    await pool.execute("ALTER TABLE facts RENAME COLUMN content TO content_gone")
+    try:
+        result = await job.run_finance_calendar_overlay_contribution(pool, None)
+    finally:
+        await pool.execute("ALTER TABLE facts RENAME COLUMN content_gone TO content")
+
+    # Not reconciled with the 3-day default: the row keeps the owner's 5-day moment.
+    assert result["complete"] is False
+    assert (await _rows(pool))[0]["starts_at"] == datetime(2030, 3, 5, 9, tzinfo=SGT)

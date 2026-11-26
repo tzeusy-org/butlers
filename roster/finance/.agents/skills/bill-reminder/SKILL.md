@@ -124,7 +124,7 @@ If user selects "Mark as paid":
 #### Action: Set a Reminder
 
 If user selects "Set a reminder": every pending bill already gets an automatic calendar reminder from the daily overlay job, at the owner's `bill_reminder_preference` (3 days before the due date when none is stored). Do not create a calendar event for it: that would duplicate the reminder. Say so, then:
-1. If the owner wants different timing, ask: "How many days before the due date? [1 / 3 / 7]?"
+1. If the owner wants different timing, ask: "How many days before the due date? [1 / 3 / 7]?" and store the number of days ("<N> days before due date"), converting weeks to days
 2. Store it with `memory_store_fact(subject="user", predicate="bill_reminder_preference", content="<N> days before due date", permanence="stable", importance=8.0, tags=["bill", "preference", "reminder"])`; the reminder moves on the next overlay refresh (the next morning).
 3. Confirm: "📅 Your bill reminders will come [N] days before the due date, from tomorrow's refresh."
 
@@ -216,7 +216,7 @@ Generate a summary at the end:
 
 **Actions Taken**:
 - Marked as paid: [N]
-- Reminders set: [N]
+- Reminder timing changed: [yes/no]
 - Snoozed: [N]
 
 **Next Check**: [Suggested next review date based on nearest due date]

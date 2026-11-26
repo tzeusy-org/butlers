@@ -46,7 +46,7 @@ import asyncpg
 
 from butlers.core.entity_posture import ACTIVE, MEMORIAL
 from butlers.core.state import state_delete, state_get, state_list, state_set
-from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION
+from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION, clip_label
 from butlers.jobs.briefing import SGT, briefing_day, day_start_utc
 
 logger = logging.getLogger(__name__)
@@ -305,7 +305,7 @@ def _claim(
         "claim_key": key,
         "record_version": version,
         "kind": kind,
-        "label": label,
+        "label": clip_label(label),
         "priority": priority,
         "presence": presence,
         "span": span,
@@ -319,12 +319,17 @@ MAX_REMINDER_DAYS = 30
 
 
 def parse_reminder_days(content: Any) -> int | None:
-    """Days from a ``bill_reminder_preference`` fact ("5 days before due date"); None if none.
+    """Days from a ``bill_reminder_preference`` fact; None if none is stated.
 
-    The preference is free text the owner's words were stored as, so the first number is read and
-    anything outside ``0..MAX_REMINDER_DAYS`` is ignored (the default applies).
+    The preference is free text the owner's words were stored as: "5 days before due date" is 5,
+    "2 weeks" is 14 (``7*N``, capped at ``MAX_REMINDER_DAYS``). A bare number of days beyond the cap
+    is ignored (the default applies).
     """
-    match = re.search(r"\d+", str(content or ""))
+    text = str(content or "")
+    weeks = re.search(r"(\d+)\s*(?:weeks?|wks?)\b", text, re.IGNORECASE)
+    if weeks is not None:
+        return min(7 * int(weeks.group(1)), MAX_REMINDER_DAYS)
+    match = re.search(r"\d+", text)
     if match is None:
         return None
     days = int(match.group())
@@ -462,6 +467,8 @@ async def reconcile_claims_in_process(
         "revived": len(result.revived),
         "retracted": len(result.retracted),
         "unchanged": len(result.unchanged),
+        "invalid": len(result.invalid),
+        "retraction_ran": result.retraction_ran,
     }
 
 
@@ -484,6 +491,11 @@ async def settle_claims(
     claim_result = await reconcile_claims_in_process(
         pool, butler=butler, claims=claims, complete=complete, window_start=window_start
     )
+    if complete and "error" not in claim_result:
+        # An invalid claim, or a retraction that did not run (the projection tables are absent),
+        # means the calendar was not fully reconciled: the run is partial.
+        if claim_result.get("invalid") or not claim_result.get("retraction_ran"):
+            claim_result = {**claim_result, "error": "invalid_claims"}
     if "error" in claim_result and complete:
         await mark_overlay_envelopes_incomplete(pool, today=today, lookahead_days=lookahead_days)
         complete = False
@@ -557,6 +569,7 @@ async def run_finance_calendar_overlay_contribution(
 
     # --- The owner's reminder preference (days before due); the default applies when unset ---
     bill_days = BILL_REMINDER_DAYS
+    preference_failed = False
     try:
         pref = await pool.fetch(
             """
@@ -576,6 +589,7 @@ async def run_finance_calendar_overlay_contribution(
             "finance overlay: reminder preference read failed; run is partial", exc_info=True
         )
         complete = False
+        preference_failed = True
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
 
@@ -630,6 +644,13 @@ async def run_finance_calendar_overlay_contribution(
         horizon=horizon,
         bill_days=bill_days,
     )
+    if preference_failed:
+        # The bill reminder's lead time is unknown this run: leave the bill rows as they are
+        # rather than reconciling them with the default.
+        claims_by_date = {
+            day: [c for c in claims if not c["claim_key"].startswith("finance:bill:")]
+            for day, claims in claims_by_date.items()
+        }
     for row in sub_rows:
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
         if cancel_by is not None and today <= cancel_by <= horizon:
