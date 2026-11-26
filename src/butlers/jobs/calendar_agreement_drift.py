@@ -172,7 +172,8 @@ def _freshest(items: Iterable[Agreed]) -> dict[tuple[str, datetime], Agreed]:
 
 def resolution_causes(items: Iterable[Agreed], heads: Mapping[str, Head]) -> dict[str, str]:
     """Why each unchanged occurrence's condition would resolve: ``reverted``, ``declined``,
-    ``cancelled``, ``started`` or ``ended`` (the seat or the source was lost). Only ``reverted`` makes a delivered line wrong.
+    ``cancelled``, ``started`` or ``ended`` (the seat or the source was lost). Only ``reverted``
+    makes a delivered line wrong.
     """
     causes: dict[str, str] = {}
     for (origin_ref, occurrence_start), item in _freshest(items).items():
