@@ -44,6 +44,7 @@ import asyncpg
 
 from butlers.core.entity_posture import ACTIVE, MEMORIAL
 from butlers.core.state import state_delete, state_list, state_set
+from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION
 from butlers.jobs.briefing import briefing_day, day_start_utc
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,9 @@ class OverlayContribution(TypedDict):
     cadence_seconds: NotRequired[int]
     #: ``False`` when the producer could not read all of its records; absent reads as complete.
     complete: NotRequired[bool]
+    #: Schema version 2 only: one claim per domain record (see ``core.temporal.domain_claims``).
+    schema_version: NotRequired[int]
+    claims: NotRequired[list[dict[str, Any]]]
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +173,7 @@ async def write_overlay_envelopes(
     lookahead_days: int,
     entries_by_date: dict[str, list[OverlayEntry]],
     complete: bool = True,
+    claims_by_date: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[int, int]:
     """Upsert one overlay envelope per date in ``[today, today+lookahead_days]``.
 
@@ -196,6 +201,9 @@ async def write_overlay_envelopes(
         }
         if not complete:
             envelope["complete"] = False
+        if claims_by_date is not None:
+            envelope["schema_version"] = CLAIM_SCHEMA_VERSION
+            envelope["claims"] = claims_by_date.get(date_str, [])
         await state_set(pool, overlay_key(date_str), envelope)
         dates_written += 1
         total_entries += len(entries)
