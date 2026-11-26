@@ -1428,7 +1428,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     try:
         cal_rows = await db_pool.fetch(
             """
-            -- quarantine-exempt: filtered in Python by counts_as_owner_time
+            -- quarantine-exempt: asserts_owner_time and is_owner_attending filter it in Python
             SELECT
                 ce.id,
                 ce.title,
