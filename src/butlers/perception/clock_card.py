@@ -87,6 +87,9 @@ def compose_transition_card(
         return TransitionCard(
             f"Clock unknown: schedules stay on {_place(old_clock.zone)} time.", ()
         )
+    # The zone rows actually moved to: the run's target, not the raw clock (a utc_fallback return
+    # moves them to the settings zone, never to "UTC").
+    here = result.get("target_zone") or new_clock.zone
     moved = [(schema, move) for schema, plan in sorted(plans.items()) for move in plan.moves]
     kept = [(schema, item) for schema, plan in sorted(plans.items()) for item in plan.kept]
     approvals = [line for line in needs_ok]
@@ -97,9 +100,9 @@ def compose_transition_card(
     if moved:
         count = len(moved)
         noun = "item" if count == 1 else "items"
-        parts.append(f"Moved to {_place(new_clock.zone)} time: {count} {noun}.")
+        parts.append(f"Moved to {_place(here)} time: {count} {noun}.")
     if kept:
-        lines = [_kept_line(item, new_clock.zone) for _, item in kept]
+        lines = [_kept_line(item, here) for _, item in kept]
         parts.append(f"Kept: {_capped(lines)}.")
     if approvals:
         parts.append(f"Needs OK: {_capped(approvals)}.")

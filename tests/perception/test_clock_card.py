@@ -111,3 +111,16 @@ def test_etc_gmt_zones_render_as_the_sign_correct_utc_offset():
     )
     kept = Kept("e", "Sync", "Etc/GMT+5", AT)
     assert "UTC-5" in compose({"g": ReanchorPlan(moves=(move(),), kept=(kept,))}).text
+
+
+def test_a_utc_fallback_return_names_the_target_zone_not_utc():
+    london = ClockValue("Europe/London", "owner_confirmed_booking")
+    kept = Kept("lon", "Standup", "Europe/London", AT)
+    plan = ReanchorPlan(moves=(move(),), kept=(kept,))
+    out = card.compose_transition_card(
+        result({"g": plan}, target_zone="Asia/Singapore"),
+        old_clock=london,
+        new_clock=ClockValue("UTC", "utc_fallback"),
+    )
+    assert out.text.startswith("Moved to Singapore time: 1 item.")
+    assert "Standup 12:00 London (19:00 here)" in out.text
