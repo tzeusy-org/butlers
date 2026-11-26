@@ -128,7 +128,8 @@ Scope: v1-mandatory
 When the owner snoozes or moves a claim's calendar row, the override SHALL be kept with that row
 (through the existing butler-event tools, so no new write path) and SHALL hold across re-emits of
 the same `record_version`. A changed `record_version` that moves the claim's time SHALL drop the
-override. An in-place update SHALL keep the owner's override fields unless the claim's span changed.
+override. A claim whose time or title changes SHALL change its `record_version`; the next version writes the
+row from the claim again.
 
 #### Scenario: Snooze survives an unchanged record
 
