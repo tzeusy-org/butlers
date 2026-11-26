@@ -20,7 +20,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
 
-_PREVIOUS = "core_384"
+_PREVIOUS = "core_383"
 _REVISION = "core_386"
 _SIGNATURE = "public.read_calendar_event_changes(timestamptz, integer, text[])"
 
