@@ -69,8 +69,9 @@ complete set of claims for its window, and reconciles the calendar rows for them
 quiet or no-contact, SHALL be emitted with its settled or cancelled status or omitted, and its
 calendar row SHALL be retracted in that run. A record whose `record_version`, presence and span signature are unchanged SHALL cause no write. A run that fails, reads a source only partially, or fails to reconcile its claims SHALL keep the
 previous claims, mark the envelope incomplete, report the error in its result, and retract nothing.
-A run in which any claim is invalid, or in which retraction did not run (for example the projection
-tables are absent), SHALL likewise be partial, with the error code `invalid_claims`. A run that cannot
+A run in which any claim is invalid SHALL likewise be partial, with the error code `invalid_claims`,
+and a run in which retraction did not run (for example the projection tables are absent) SHALL be
+partial with the error code `retraction_skipped`. A run that cannot
 read the owner's bill reminder preference SHALL leave the bill claims as they are for that run, not
 reconcile them with the default.
 
@@ -118,14 +119,23 @@ ID: REQ-calendar-overlay-aggregation-011
 Source: bu-5ii4gj.13 (run 26 move 13), slice S6
 Scope: v1-mandatory
 
-The workspace SHALL deduplicate the overlay lane and the butler lane on `claim_key`, so one record
-renders once (the calendar row when one exists, else the overlay entry). An item that came from a
-claim SHALL offer a door to its record through the claim's `door`.
+The workspace SHALL deduplicate the overlay lane and the butler lane on `claim_key` for each day
+the calendar row covers, so one record renders once on a day (the calendar row when one exists,
+else the overlay entry); a record's overlay marker on a day its row does not cover stays, so a bill's
+reminder row three days ahead hides nothing on the due date. An item that came from a claim SHALL
+offer a door through the claim's `door`: a route the dashboard declares, with the record reference as
+`?ref=<id>`. A producer whose domain has no page that can select a record gets a door to its domain
+page, and every producer's door route SHALL resolve to a declared dashboard route.
 
 #### Scenario: No duplicate between lanes
 
-- **WHEN** a claim has presence `block` and also appears in the overlay
-- **THEN** the workspace renders one item for its `claim_key`
+- **WHEN** a claim has presence `block` and also appears in the overlay on a day the block covers
+- **THEN** the workspace renders one item for its `claim_key` on that day
+
+#### Scenario: A reminder row does not hide the due-date marker
+
+- **WHEN** a bill reminder row sits three days before the due date and the due-date marker shares its `claim_key`
+- **THEN** a week view shows both
 
 ### Requirement: An owner override survives a re-emit until the record changes
 
