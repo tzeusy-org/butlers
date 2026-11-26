@@ -13,10 +13,12 @@ asks for one owner verb to compile a multi-event plan, one decision to apply it 
   no provider call, no randomness.
 - **`calendar_plan_change` (read-only).** Returns `{plan_id, plan_digest, steps, skipped}`. It
   writes nothing and parks nothing.
-- **Apply with receipts (P2).** `calendar_apply_plan(plan_id, plan_digest)` parks every step that
-  reaches another person as one decision set, then runs the rest in order, each step bound to the
-  etag the plan was compiled against and sent once, with a per-step receipt.
-- **One composite undo (P2).** `calendar_undo_plan(plan_id)` is offered as one approvals card.
+- **Apply with receipts (P2).** `calendar_apply_plan(plan_id, plan_digest)` parks
+  every step that touches an owner's event as its own approvals card (only Butlers blocks run
+  directly), each bound to the etag the plan was compiled against and sent once, with a per-step
+  receipt; dependent steps are skipped when their dependency is declined. It returns `pending`.
+  After the RFC 0038 goal cutover the cards become one decision set.
+- **One composite undo (P2).** `calendar_undo_plan(plan_id)` offers one approvals card per reversal, each bound to the step's recorded `etag_after`.
 
 ## Out of scope
 
