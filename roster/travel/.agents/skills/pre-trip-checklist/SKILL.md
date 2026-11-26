@@ -6,7 +6,6 @@ tools_required:
   - upcoming_travel
   - trip_summary
   - add_document
-  - calendar_create_event
   - memory_recall
   - memory_store_fact
 ---
@@ -387,7 +386,7 @@ Closing message and ongoing support offer.
 
 ### Automated Reminder Schedule
 
-Use calendar events to trigger reminders at these key times:
+The flight check-in reminder (24 hours before departure) and the visa and insurance expiry reminders are claimed on the calendar by the daily overlay job; do not create calendar events for them. Send the other reminders below as notifications (`notify`) at these key times:
 
 | Days Before | Reminder Type | Action |
 | --- | --- | --- |

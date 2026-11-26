@@ -432,7 +432,7 @@ def finance_claims(
 
 
 async def _read_source(
-    pool: asyncpg.Pool, name: str, sql: str, *args: Any
+    pool: asyncpg.Pool, name: str, sql: str, *args: Any, butler: str
 ) -> tuple[list[Any], bool]:
     """Read one domain source; a failure is reported (``ok=False``) rather than raised.
 
@@ -441,7 +441,7 @@ async def _read_source(
     try:
         return list(await pool.fetch(sql, *args)), True
     except Exception:
-        logger.warning("%s overlay: %s read failed; run is partial", "travel", name, exc_info=True)
+        logger.warning("%s overlay: %s read failed; run is partial", butler, name, exc_info=True)
         return [], False
 
 
@@ -781,7 +781,6 @@ def _checkin_priority(days_until: int) -> str:
 CHECKIN_REMINDER_HOURS = 24
 #: Days before a visa or insurance expiry that its reminder fires.
 DOCUMENT_EXPIRY_REMINDER_DAYS = 30
-#: How far past the overlay window a document's expiry is still claimed (the reminder lead time).
 _RESERVATION_MINUTES = {"restaurant": 90, "car_rental": 60, "activity": 120, "tour": 120}
 _EXPIRING_DOCUMENT_TYPES = ("visa", "insurance")
 
@@ -948,7 +947,8 @@ def travel_claims(
                     priority=_checkin_priority((day - today).days)
                     if which == "check_in"
                     else "low",
-                    presence="block",
+                    # An all-day marker: a hotel day must not read as busy all day.
+                    presence="overlay",
                     day=day,
                     zone=zone,
                     ref=ref,
@@ -1078,6 +1078,7 @@ async def run_travel_calendar_overlay_contribution(
         window_start,
         window_end,
         list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
     )
 
     # --- Accommodations checking in or out within the window ---
@@ -1100,6 +1101,7 @@ async def run_travel_calendar_overlay_contribution(
         window_start,
         window_end,
         list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
     )
     complete &= ok
 
@@ -1117,6 +1119,7 @@ async def run_travel_calendar_overlay_contribution(
         window_start,
         window_end,
         list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
     )
     complete &= ok
     document_rows, ok = await _read_source(
@@ -1135,6 +1138,7 @@ async def run_travel_calendar_overlay_contribution(
         today + timedelta(days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS + DOCUMENT_EXPIRY_REMINDER_DAYS),
         list(_TRAVEL_ACTIVE_STATUSES),
         list(_EXPIRING_DOCUMENT_TYPES),
+        butler="travel",
     )
     complete &= ok
 
@@ -1271,12 +1275,14 @@ async def run_travel_calendar_overlay_contribution(
             pool, today=today, lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS
         )
         total_entries = 0
-    claim_result = await reconcile_claims_in_process(
+    claim_result, complete = await settle_claims(
         pool,
         butler="travel",
         claims=[c for day in claims_by_date.values() for c in day],
         complete=complete,
         window_start=window_start,
+        today=today,
+        lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)

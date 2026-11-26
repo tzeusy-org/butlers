@@ -9,8 +9,6 @@ tools_required:
   - trip_summary
   - upcoming_travel
   - add_document
-  - calendar_create_event
-  - calendar_update_event
   - memory_recall
   - notify
 ---
@@ -116,7 +114,7 @@ Choose the appropriate response mode based on the message type and action taken:
 1. Match trip by PNR or source message sender
 2. `update_itinerary(trip_id=<id>, patch={"leg_id": "<original_leg_id>", "arrival": "ORD", "arrival_at": "2026-03-15T19:55:00-06:00"}, reason="UA rebooking email: new routing via ORD")`
 3. `record_booking(payload={"provider": "United Airlines", "type": "leg", "departure": "ORD", "arrival": "NRT", "departure_at": "2026-03-15T22:10:00-06:00", "arrival_at": "2026-03-16T18:55:00+09:00", "source_message_id": "<email_id>"})`
-4. `notify(channel="telegram", message="Itinerary changed for your Tokyo trip.\n\nPreviously: SFO → NRT direct (10:15)\nNow: SFO → ORD (13:40) → NRT (arrives March 16 18:55)\n\nCalendar updated. Confirm this is correct?", intent="reply", request_context=...)`
+4. `notify(channel="telegram", message="Itinerary changed for your Tokyo trip.\n\nPreviously: SFO → NRT direct (10:15)\nNow: SFO → ORD (13:40) → NRT (arrives March 16 18:55)\n\nYour calendar follows on the next refresh. Confirm this is correct?", intent="reply", request_context=...)`
 
 ---
 

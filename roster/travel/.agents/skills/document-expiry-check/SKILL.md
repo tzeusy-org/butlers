@@ -1,6 +1,6 @@
 ---
 name: document-expiry-check
-description: Scheduled task companion skill for the weekly Monday 09:00 travel document expiry scan. Checks all travel documents for expiry within 90 days, creates calendar reminders for <30 days, and sends an alert via notify(intent="send").
+description: Scheduled task companion skill for the weekly Monday 09:00 travel document expiry scan. Checks all travel documents for expiry within 90 days and sends an alert via notify(intent="send").
 version: 1.0.0
 tools_required:
   - list_trips
@@ -12,7 +12,7 @@ tools_required:
 
 ## Purpose
 
-This skill is the companion for the weekly `trip-document-expiry` scheduled task (cron: `0 9 * * 1`). It scans all planned trips for travel documents expiring within 90 days, creates calendar reminders for those expiring within 30 days, and sends a proactive alert if anything is approaching expiry. If all documents are current (> 90 days), no notification is sent.
+This skill is the companion for the weekly `trip-document-expiry` scheduled task (cron: `0 9 * * 1`). It scans all planned trips for travel documents expiring within 90 days and sends a proactive alert if anything is approaching expiry. If all documents are current (> 90 days), no notification is sent.
 
 ## Trigger Context
 

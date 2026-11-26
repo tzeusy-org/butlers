@@ -66,7 +66,7 @@ def test_no_check_in_reminder_once_its_moment_has_passed_and_a_bad_window_is_ove
 
 
 @pytest.mark.unit
-def test_a_stay_claims_an_all_day_block_for_check_in_and_for_check_out():
+def test_a_stay_claims_an_all_day_marker_for_check_in_and_for_check_out_not_a_block():
     stay = {
         "id": "a1",
         "type": "hotel",
@@ -78,7 +78,8 @@ def test_a_stay_claims_an_all_day_block_for_check_in_and_for_check_out():
 
     assert flat["travel:accommodation_check_in:a1"]["span"]["date"] == "2030-03-10"
     assert flat["travel:accommodation_check_out:a1"]["span"]["date"] == "2030-03-14"
-    assert {c["presence"] for c in flat.values()} == {"block"}
+    # Overlay markers, not blocks: a hotel day must not read as busy all day.
+    assert {c["presence"] for c in flat.values()} == {"overlay"}
 
 
 @pytest.mark.unit
@@ -250,3 +251,20 @@ async def test_a_flight_that_has_landed_keeps_its_rows_as_history(db, monkeypatc
 
     assert result["claims"]["retracted"] == 0 and not mod._provider.delete_calls
     assert {r["status"] for r in await _rows(pool)} == {"confirmed"}
+
+
+@e2e
+async def test_a_reconcile_error_makes_the_travel_run_partial_and_names_the_error(db, monkeypatch):
+    pool, _ = await _world(db, monkeypatch)
+    await _flight(pool)
+    await job.run_travel_calendar_overlay_contribution(pool, None)
+
+    async def boom(self, *args, **kwargs):
+        raise TypeError("signature drift")
+
+    from butlers.modules.calendar import CalendarModule
+
+    monkeypatch.setattr(CalendarModule, "reconcile_domain_claims", boom)
+    result = await job.run_travel_calendar_overlay_contribution(pool, None)
+
+    assert result["claims"] == {"error": "TypeError"} and result["complete"] is False
