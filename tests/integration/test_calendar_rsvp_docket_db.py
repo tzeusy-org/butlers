@@ -7,6 +7,8 @@ the production core and approvals migrations; the rest of the job is faked in
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import shutil
 import uuid
@@ -108,5 +110,24 @@ async def test_the_single_flight_lock_admits_one_tick_at_a_time(db) -> None:
         assert first is True
         async with job._single_flight(pool) as second:
             assert second is False
+    async with job._single_flight(pool) as again:
+        assert again is True
+
+
+async def test_a_cancelled_tick_releases_the_lock_for_the_next_one(db) -> None:
+    pool = await db("core")
+    started = asyncio.Event()
+
+    async def tick():
+        async with job._single_flight(pool) as got:
+            assert got is True
+            started.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(tick())
+    await started.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
     async with job._single_flight(pool) as again:
         assert again is True

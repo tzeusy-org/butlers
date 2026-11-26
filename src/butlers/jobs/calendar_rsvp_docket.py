@@ -428,19 +428,18 @@ async def _park(mgr: Any, arguments: dict[str, Any], dossier: dict[str, Any]) ->
 
 @contextlib.asynccontextmanager
 async def _single_flight(pool: Any) -> AsyncIterator[bool]:
-    """Hold the docket's session advisory lock for one tick; ``False`` when another tick has it.
+    """Hold the docket's transaction advisory lock for one tick; ``False`` when another has it.
 
-    The lock lives on one connection of the docket butler's pool, so it spans every dashboard
-    process and a restart overlap. It is released when the tick ends, and by Postgres if the
-    connection dies.
+    The lock is transaction-scoped on one pooled connection, so it spans every dashboard process
+    and a restart overlap, and a cancelled or failed tick rolls back and releases it: a session
+    lock could stay held on a connection the pool hands back.
     """
     async with pool.acquire() as conn:
-        got = await conn.fetchval("SELECT pg_try_advisory_lock(hashtextextended($1, 0))", _LOCK_KEY)
-        try:
+        async with conn.transaction():
+            got = await conn.fetchval(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))", _LOCK_KEY
+            )
             yield bool(got)
-        finally:
-            if got:
-                await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", _LOCK_KEY)
 
 
 async def run_calendar_rsvp_docket(
