@@ -58,7 +58,8 @@ Scope: v1-mandatory
 `issue_digest` over both events' provider etags and the option set. `POST
 /api/calendar/workspace/conflicts/resolve` SHALL accept a pair id (the provider-identity pair),
 an option id and the digest, SHALL recompute the issue server side, and SHALL return 409
-`issue_changed` with no write when the issue is gone or its digest does not match. `keep_both`
+`issue_changed` with no write when the issue is gone or its digest does not match, unless an
+acknowledgement at that digest already exists (an idempotent repeat). `keep_both`
 SHALL be recorded locally with no provider write. Every option that writes to a provider SHALL
 be parked as an approvals card bound by its arguments digest and approved by the owner in the
 existing approvals surface, and the route SHALL NOT write the provider itself (the owner's
@@ -91,10 +92,13 @@ Source: bu-5ii4gj.11 slice R2; design "Resolve, not Fix"
 Scope: v1-mandatory
 
 `public.calendar_conflict_acknowledgements` SHALL record, for an overlap, the pair identity, the
-issue digest the owner saw (which covers both events' etags), the option and when it was
-acknowledged. A pair acknowledged at its current digest SHALL NOT appear as a radar issue and SHALL
-NOT count in the verdict or the overcommitment producer. A change to either event's etag, time or
-attendees SHALL move the digest, void the acknowledgement and make the issue reappear. The
+issue digest the owner saw (kept only as the resolve route's 409 binding), an events-only state
+digest, the option and when it was acknowledged. The state digest covers the pair identity and
+both events' provider etags, starts and ends, and nothing else: it SHALL NOT include the option
+set, so the passage of time and an unrelated calendar change do not move it. A pair acknowledged
+at its current state digest SHALL NOT appear as a radar issue and SHALL NOT count in the verdict or
+the overcommitment producer. A change to either event's etag or time SHALL move the state digest,
+void the acknowledgement and make the issue reappear. The
 dashboard's session-local dismiss SHALL be replaced by this persisted decision and SHALL write a
 receipt. A repeat of an applied acknowledgement SHALL be an idempotent success.
 
@@ -107,6 +111,12 @@ receipt. A repeat of an applied acknowledgement SHALL be an idempotent success.
 
 - **WHEN** one of the acknowledged events' etags changes
 - **THEN** the issue and its owner condition SHALL both reappear
+
+#### Scenario: An unrelated calendar change or the passage of time does not void keep both
+
+- **GIVEN** an overlap acknowledged with `keep_both`
+- **WHEN** the clock moves past a slot-grid step, or an unrelated event lands in a free window
+- **THEN** the issue SHALL stay suppressed, because neither event changed
 
 ### Requirement: Options that reach other people are parked per event
 
