@@ -83,7 +83,9 @@ DEFAULT_LOOKAHEAD_DAYS = 14
 DOCKET_ACTOR = "system:rsvp_docket"
 PARK_TIMEOUT_S = 30.0
 INVITATION_LIMIT = 500
-_DECIDED_REPLAYS = frozenset({"approved", "rejected", "executed", "abandoned", "expired"})
+# What ``calendar_respond`` returns for a replayed request id whose command already settled (the
+# statuses of calendar_response.py other than a freshly parked ``pending_approval``).
+_DECIDED_REPLAYS = frozenset({"approved", "rejected", "applied", "noop", "failed", "uncertain"})
 _LOCK_KEY = "butlers:calendar_rsvp_docket"
 MARKER_PREFIX = "rsvp-docket:"
 REJECT_REASONS = ("stale_event", "policy_changed", "policy_revoked", "policy_no_longer_matches")

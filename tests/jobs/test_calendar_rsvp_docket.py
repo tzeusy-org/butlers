@@ -580,8 +580,24 @@ async def test_an_exception_in_the_run_is_run_failed_not_lock_unavailable(monkey
     assert (await env.run())["status"] == "lock_unavailable"
 
 
-async def test_a_replay_of_a_settled_card_is_owner_decided_not_already_parked(monkeypatch) -> None:
+@pytest.mark.parametrize("status", sorted(job._DECIDED_REPLAYS))
+async def test_a_replay_of_a_settled_card_is_owner_decided_not_already_parked(
+    monkeypatch, status
+) -> None:
     env = _Env(monkeypatch, policies=[_policy()], rows=[_row()])
-    env.park.return_value = {"status": "approved"}
+    env.park.return_value = {"status": status}
     summary = await env.run()
     assert (summary["owner_decided"], summary["already_parked"], summary["prepared"]) == (1, 0, 0)
+
+
+def test_the_replay_set_is_exactly_what_calendar_respond_can_return() -> None:
+    """Pinned to the literals in calendar_response.py, so a new status cannot slip past."""
+    import re
+    from pathlib import Path
+
+    source = (Path(job.__file__).parents[1] / "modules/calendar_response.py").read_text()
+    returned = set(re.findall(r'"status": "([a-z_]+)"', source)) | set(
+        re.findall(r'^\s+status = "(failed)" if known', source, re.M)
+    )
+    assert "pending_approval" in returned
+    assert job._DECIDED_REPLAYS == returned - {"pending_approval"}
