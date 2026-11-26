@@ -311,11 +311,11 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "src/butlers/jobs/calendar_overcommitment.py",
         "travel.legs",
-    ): "sanctioned:REQ-module-calendar-057: read-only, bu-5ii4gj.5 P4b reads confirmed trip legs to project the owner's zone for the off-hours check; fan-out over the travel butler only, no write.",
+    ): "sanctioned:REQ-module-calendar-060: read-only, bu-5ii4gj.5 P4b reads confirmed trip legs to project the owner's zone for the off-hours check; fan-out over the travel butler only, no write.",
     (
         "src/butlers/jobs/calendar_overcommitment.py",
         "travel.trips",
-    ): "sanctioned:REQ-module-calendar-057: read-only, bu-5ii4gj.5 P4b joins trip status to legs for the confirmed-booking rule; fan-out over the travel butler only, no write.",
+    ): "sanctioned:REQ-module-calendar-060: read-only, bu-5ii4gj.5 P4b joins trip status to legs for the confirmed-booking rule; fan-out over the travel butler only, no write.",
     (
         "src/butlers/capability_host/projection.py",
         "<dynamic:{state_view}>",
