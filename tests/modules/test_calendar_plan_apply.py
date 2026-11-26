@@ -15,7 +15,7 @@ from butlers.modules.calendar.plan_apply import apply_plan, step_outcome
 from butlers.modules.calendar.plan_tools import CompiledPlan
 from butlers.modules.calendar.resolution_move import (
     check_resolution_binding,
-    dependencies_applied,
+    dependency_state,
 )
 
 pytestmark = pytest.mark.unit
@@ -200,9 +200,14 @@ async def test_a_steps_outcome_is_read_off_its_card(row, expected):
     assert await step_outcome(pool, {"action_id": card}) == expected
 
 
-async def test_dependencies_applied_fails_closed():
+async def test_dependency_state_separates_waiting_from_failed_and_fails_closed():
     ok = {"status": "executed", "execution_result": {"success": True, "result": {}}}
     waiting = {"status": "pending", "execution_result": None}
+    rejected = {"status": "rejected", "execution_result": None}
+    declined = {
+        "status": "executed",
+        "execution_result": {"success": True, "result": {"status": "resolution_declined"}},
+    }
 
     class P:
         def __init__(self, rows):
@@ -212,13 +217,22 @@ async def test_dependencies_applied_fails_closed():
             return self.rows
 
     one = [str(uuid.uuid4())]
-    assert await dependencies_applied(P([ok]), one) is True
-    assert await dependencies_applied(P([waiting]), one) is False
-    assert await dependencies_applied(P([]), one) is False  # card missing
-    assert await dependencies_applied(P([ok]), []) is True
+    assert await dependency_state(P([ok]), one) == "applied"
+    assert await dependency_state(P([waiting]), one) == "pending"
+    assert await dependency_state(P([rejected]), one) == "failed"
+    assert await dependency_state(P([declined]), one) == "failed"
+    assert await dependency_state(P([]), one) == "failed"  # card missing
+    assert await dependency_state(P([ok]), []) == "applied"
+    two = one + [str(uuid.uuid4())]
+    assert await dependency_state(P([ok, waiting]), two) == "pending"
+    assert await dependency_state(P([waiting, rejected]), two) == "failed"
 
 
-async def test_an_approved_step_declines_when_its_dependency_was_not_applied():
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [("failed", "dependency_not_applied"), ("pending", "dependency_pending")],
+)
+async def test_an_approved_step_declines_when_its_dependency_is_not_applied(state, reason):
     import asyncio
 
     from butlers.modules.approvals.execution_context import (
@@ -248,8 +262,8 @@ async def test_an_approved_step_declines_when_its_dependency_was_not_applied():
                 AsyncMock(return_value=offer),
             ),
             patch(
-                "butlers.modules.calendar.resolution_move.dependencies_applied",
-                AsyncMock(return_value=False),
+                "butlers.modules.calendar.resolution_move.dependency_state",
+                AsyncMock(return_value=state),
             ),
         ):
             check = await check_resolution_binding(
@@ -262,4 +276,4 @@ async def test_an_approved_step_declines_when_its_dependency_was_not_applied():
     finally:
         reset_approval_execution_context(token)
 
-    assert check.refusal == "dependency_not_applied" and check.bound
+    assert check.refusal == reason and check.bound

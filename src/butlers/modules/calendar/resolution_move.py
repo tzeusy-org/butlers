@@ -49,6 +49,10 @@ RESOLUTION_DECLINED_TEXT = (
 #: approvals executor record a failed execution, so the card never reads as executed.
 RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
     "changed_since_check": RESOLUTION_DECLINED_TEXT,
+    "dependency_pending": (
+        "Move not applied: an earlier step of this plan that frees this slot has not been "
+        "decided yet. Decide it first, then apply the plan again."
+    ),
     "dependency_not_applied": (
         "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
         "nothing was moved."
@@ -195,14 +199,15 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
     return result
 
 
-async def dependencies_applied(pool: Any, action_ids: Sequence[str]) -> bool:
-    """True only when every named card was approved and its move really wrote.
+async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
+    """``applied``, ``pending`` or ``failed`` for the cards a step depends on.
 
-    Fails closed: an unreadable card, one still pending, rejected, expired, or executed without
-    success (a declined or failed move) all count as not applied.
+    ``applied`` only when every card was approved and its move really wrote. ``pending`` when
+    none failed but some are still waiting for the owner. Anything unreadable, rejected, expired
+    or executed without a write is ``failed``: it fails closed.
     """
     if not action_ids:
-        return True
+        return "applied"
     try:
         ids = [uuid.UUID(a) for a in action_ids]
         rows = await pool.fetch(
@@ -210,16 +215,20 @@ async def dependencies_applied(pool: Any, action_ids: Sequence[str]) -> bool:
         )
     except Exception:
         logger.warning("resolution move: dependencies could not be read", exc_info=True)
-        return False
+        return "failed"
     if len(rows) != len(ids):
-        return False
+        return "failed"
+    waiting = False
     for row in rows:
+        if row["status"] in ("pending", "approved"):
+            waiting = True
+            continue
         result = row["execution_result"]
         if isinstance(result, str):
             try:
                 result = json.loads(result)
             except ValueError:
-                return False
+                return "failed"
         inner = result.get("result") if isinstance(result, dict) else None
         wrote = (
             row["status"] == "executed"
@@ -228,8 +237,8 @@ async def dependencies_applied(pool: Any, action_ids: Sequence[str]) -> bool:
             and not (isinstance(inner, dict) and inner.get("status") == RESOLUTION_DECLINED)
         )
         if not wrote:
-            return False
-    return True
+            return "failed"
+    return "pending" if waiting else "applied"
 
 
 def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | None:
@@ -281,8 +290,13 @@ async def check_resolution_binding(
         marked = isinstance(request_id, str) and request_id.startswith(RESOLUTION_REQUEST_PREFIX)
         return ResolutionCheck(refusal="unbound" if marked else None)
     depends = offer.get("depends_on")
-    if isinstance(depends, list) and not await dependencies_applied(pool, depends):
-        return ResolutionCheck(bound=True, refusal="dependency_not_applied")
+    if isinstance(depends, list):
+        state = await dependency_state(pool, depends)
+        if state != "applied":
+            # Approved before the step it waits for was decided: nothing is written, and the
+            # owner re-applies the plan once the earlier card is settled.
+            reason = "dependency_pending" if state == "pending" else "dependency_not_applied"
+            return ResolutionCheck(bound=True, refusal=reason)
     series_id = offer.get("series_event_id")
     if isinstance(series_id, str) and series_id:
         series: CalendarEvent | None
