@@ -16,14 +16,14 @@ term that produced it, for the owner to sign.
   is ever a predicate input; no model writes or edits a policy.
 - **Deterministic evaluation.** A pure function picks the first matching policy for an invitation
   from verified facts. No model, no provider call.
-- **Prepared answers.** A deterministic `calendar_rsvp_docket` job, in the butler that holds the
+- **Prepared answers.** A deterministic `calendar_rsvp_docket` job (calendar-module logic), in the one butler that holds the
   calendar module and its response fence, parks one per-event approvals card per matched
   invitation through the existing `prepare_and_park`, with a server-built dossier citing the policy
   id, its version and the matched facts.
 - **A docket to sign.** A dashboard docket lists every parked answer with its exact call; one submit
   approves each card individually through the existing approve path. A card that changed since it
   was shown is refused and named.
-- **Per-policy agreement ledger.** Approved as prepared, edited or rejected, shown beside each
+- **Per-policy agreement ledger.** Approved as prepared, rejected by the owner or answered elsewhere, shown beside each
   policy. It never feeds autonomy promotion and never creates a rule.
 
 ## Out of scope
@@ -32,6 +32,6 @@ No standing rule, auto-approval or promotion for `calendar_respond`: a policy ca
 answer, never send one. No learned or model-written policy, no series-root answers (the response
 snapshot already refuses them), no counter-proposal of new times and no decline note template (that
 would extend `calendar_respond`'s public arguments and the custody fence to content-bearing
-egress). The goal-runtime decision set is not used; the docket is a dashboard batch whose submit is
+egress). The goal-runtime decision set is not used; the docket is a dashboard batch whose submit re-evaluates each card and is
 the owner's own on the owner surface. The declared-hours flag is a separate change
 (`calendar-declared-hours-guard`).
