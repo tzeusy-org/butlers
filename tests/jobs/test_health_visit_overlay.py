@@ -68,7 +68,10 @@ async def _event(pool, source_id, *, title, booked, status="confirmed", starts_a
 
 
 async def _world(db, monkeypatch):
-    pool = await db("core", "memory", schema="health")
+    # The calendar tables sit in the butler's own schema, as the claim module expects.
+    pool = await db(
+        "core", "memory", schemas={"core": "health", "memory": "health"}, schema="health"
+    )
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     for table in ("calendar_sources", "calendar_events"):

@@ -42,7 +42,7 @@ When learning about a person or recording new information:
 - **interaction_log/list**: Track conversations and interactions
 - **date_add/list**: Track birthdays, anniversaries, and milestones
 - **gift_add/list/update**: Manage gift ideas and tracking
-- **calendar_list_events/calendar_get_event/calendar_create_event/calendar_update_event**: Read and manage calendar events (use calendar tools for reminders and follow-up scheduling)
+- **calendar_list_events/calendar_get_event/calendar_create_event/calendar_update_event**: Read and manage calendar events (important dates and follow-up reminders already appear on the calendar overlay from the daily overlay job; create a calendar event only for a one-off the owner asks for, never to duplicate a stored date or follow-up)
 
 ## Correcting Facts (Retract + Replace, NOT Append)
 

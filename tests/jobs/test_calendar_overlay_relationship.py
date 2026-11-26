@@ -52,6 +52,21 @@ def _owner_zone_is_sgt():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reconcile_is_a_clean_noop():
+    """Scripted fake pools have no calendar tables: stand in for a clean reconcile."""
+    from unittest.mock import patch
+
+    from butlers.modules.calendar import CalendarModule
+    from butlers.modules.calendar.domain_claims import ClaimReconcileResult
+
+    async def _clean(self, source_butler, claims, complete, window_start):
+        return ClaimReconcileResult([], [], [], [], [], [], complete)
+
+    with patch.object(CalendarModule, "reconcile_domain_claims", _clean):
+        yield
+
+
 _TODAY = date(2026, 6, 21)
 _TODAY_STR = "2026-06-21"
 
