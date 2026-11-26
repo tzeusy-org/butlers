@@ -58,3 +58,8 @@ bu-dhloi1.21) in that one place.
 
 - **WHEN** the leg has no confirmation number
 - **THEN** no off-hours condition is raised
+
+#### Scenario: A trip that ended before the meeting is not read
+
+- **WHEN** the only confirmed trip ended before the meeting day
+- **THEN** its legs are not passed to the projection and no off-hours condition is raised

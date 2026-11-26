@@ -441,3 +441,20 @@ async def test_an_unreadable_trip_schema_never_resolves_an_open_off_hours_episod
     kwargs = check["reconcile"].await_args.kwargs
     assert kwargs["snapshot_complete"] is False  # absence of legs is not "the owner is home"
     assert len(kwargs["observations"]) == 1  # the overlap is still reported
+
+
+def test_a_return_leg_into_the_home_city_reads_as_home_and_flags_nothing():
+    out = datetime(2026, 1, 10, 1, tzinfo=UTC)
+    back = datetime(2026, 1, 12, 1, tzinfo=UTC)
+    legs = [
+        TripLeg(out, out + timedelta(hours=14), "LHR", "London", True),
+        # Singapore is deliberately not named by airport, so only home_city can place it.
+        TripLeg(back, back + timedelta(hours=13), None, "Singapore", True),
+    ]
+    meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))  # 09:00 at home
+    assert (
+        job.build_off_hours_observations(
+            [meeting], legs, home_zone=_HOME, home_city="Singapore", identity_keys={}
+        )
+        == []
+    )

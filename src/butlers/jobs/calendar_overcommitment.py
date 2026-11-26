@@ -182,6 +182,7 @@ _TRIP_LEGS_SQL = """
            l.confirmation_number, t.status AS trip_status, t.metadata AS trip_metadata
     FROM travel.legs l JOIN travel.trips t ON t.id = l.trip_id
     WHERE l.departure_at < $2 AND l.arrival_at >= $1 AND t.status <> 'cancelled'
+      AND (t.end_date IS NULL OR t.end_date >= $3)
 """
 
 
@@ -195,7 +196,9 @@ async def read_trip_legs(
     """
     try:
         results, failed = await db.fan_out_with_status(
-            _TRIP_LEGS_SQL, (start - _LEG_LOOKBACK, end), butler_names=["travel"]
+            _TRIP_LEGS_SQL,
+            (start - _LEG_LOOKBACK, end, start.date()),  # current or future trips only
+            butler_names=["travel"],
         )
     except Exception:
         logger.warning("calendar overcommitment: trip legs unreadable", exc_info=True)
@@ -241,6 +244,7 @@ def build_off_hours_observations(
     legs: list[TripLeg],
     *,
     home_zone: str,
+    home_city: str | None = None,
     identity_keys: dict[str, str],
 ) -> list[Observation]:
     """One title-free observation per meeting that falls in a travel-zone night.
@@ -251,7 +255,9 @@ def build_off_hours_observations(
     """
     observations: list[Observation] = []
     for event in events:
-        projected = projected_owner_zone(event.start_at, legs=legs, home_zone=home_zone)
+        projected = projected_owner_zone(
+            event.start_at, legs=legs, home_zone=home_zone, home_city=home_city
+        )
         if projected.zone is None or projected.zone == home_zone:
             continue
         zone = ZoneInfo(projected.zone)
@@ -322,7 +328,11 @@ async def run_calendar_overcommitment_check(
         legs, legs_complete = await read_trip_legs(db, start=start, end=end)
         if legs_complete:
             observations += build_off_hours_observations(
-                scan.owner_events, legs, home_zone=tz.key, identity_keys=scan.entry_identity_keys
+                scan.owner_events,
+                legs,
+                home_zone=tz.key,
+                home_city=tz.key.rsplit("/", 1)[-1].replace("_", " "),
+                identity_keys=scan.entry_identity_keys,
             )
         else:
             complete = False

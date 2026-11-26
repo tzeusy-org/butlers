@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -113,10 +113,13 @@ async def test_concurrent_scans_of_one_calendar_keep_one_active_episode(
     assert await _episodes(pool) == [(1, "open")]
 
 
-async def _seed_london_trip(pool: asyncpg.Pool, *, confirmation: str | None) -> None:
+async def _seed_london_trip(
+    pool: asyncpg.Pool, *, confirmation: str | None, end_date: str = "2026-07-20"
+) -> None:
     trip = await pool.fetchval(
         "INSERT INTO travel.trips (name, destination, start_date, end_date, status) "
-        "VALUES ('London', 'London', '2026-07-10', '2026-07-20', 'planned') RETURNING id"
+        "VALUES ('London', 'London', '2026-07-10', $1::date, 'planned') RETURNING id",
+        date.fromisoformat(end_date),
     )
     await pool.execute(
         "INSERT INTO travel.legs (trip_id, type, arrival_airport_station, arrival_city, "
@@ -197,6 +200,32 @@ async def test_a_booking_without_a_confirmation_number_raises_nothing(db, monkey
         ),
     )
     await _seed_london_trip(pool, confirmation=None)
+
+    result = await job.run_calendar_overcommitment_check(
+        db_manager({"switchboard": pool, "travel": pool}),
+        now=datetime(2026, 7, 14, 20, 0, tzinfo=UTC),
+    )
+
+    assert result["transitions"] == [] and await _off_hours_rows(pool) == []
+
+
+async def test_a_trip_that_ended_before_the_window_is_not_read(db, monkeypatch) -> None:
+    pool = await db("core", "travel")
+    monkeypatch.setattr(
+        job, "load_general_settings", AsyncMock(return_value={"timezone": "Asia/Singapore"})
+    )
+    monkeypatch.setattr(job.flags, "OWNER_CLOCK_LIVE", True)
+    monkeypatch.setattr(
+        job,
+        "query_calendar_conflicts",
+        AsyncMock(
+            return_value=CalendarConflictScan(
+                issues=[], owner_events=[_nine_am_singapore_meeting()]
+            )
+        ),
+    )
+    # The trip ended on 12 July; the meeting is on 15 July, so the owner is no longer there.
+    await _seed_london_trip(pool, confirmation="PNR123", end_date="2026-07-12")
 
     result = await job.run_calendar_overcommitment_check(
         db_manager({"switchboard": pool, "travel": pool}),
