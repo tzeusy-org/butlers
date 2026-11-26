@@ -39,6 +39,7 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
   );
 
   // Proposals lane: butler-extracted candidate events awaiting accept/dismiss.
+  // Cost: one extra proposals read per poll interval while the page is open (it was open-gated).
   // Always read, so the verdict can count what is waiting without the panel being open; the
   // panel lists the entries only while it is open. Accept/dismiss mutations reconcile the
   // optimistic lane state inside the panel.
@@ -49,6 +50,12 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
   );
   const acceptProposalMutation = useAcceptCalendarProposal();
   const dismissProposalMutation = useDismissCalendarProposal();
+
+  // A dropped row means the lane is partial: its count could be short, so it is unknown, not low.
+  const proposalsPartial =
+    proposalsQuery.isError ||
+    proposalsQuery.data?.data.proposals_available === false ||
+    (proposalsQuery.data?.data.proposals_dropped_rows ?? 0) > 0;
 
   return {
     activityOpen,
@@ -61,12 +68,10 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
     proposalEntries,
     /** How many proposals wait in the window; `null` when the read failed or is unavailable. */
     proposalCount:
-      proposalsQuery.isError || proposalsQuery.data?.data.proposals_available === false
-        ? null
+      proposalsPartial ? null
         : (proposalsQuery.data?.data.entries.length ?? null),
     proposalsLoading: proposalsQuery.isLoading,
-    proposalsError:
-      proposalsQuery.isError || proposalsQuery.data?.data.proposals_available === false,
+    proposalsError: proposalsPartial,
     proposalsUnavailable: proposalsOpen && proposalsQuery.data?.data.proposals_available === false,
     proposalsDroppedRows: proposalsOpen ? proposalsQuery.data?.data.proposals_dropped_rows : undefined,
     acceptProposalMutation,

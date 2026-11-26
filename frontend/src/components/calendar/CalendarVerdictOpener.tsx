@@ -45,7 +45,7 @@ export interface CalendarVerdictOpenerProps {
   proposalCount?: number | null;
   proposalsLoading?: boolean;
   proposalsError?: boolean;
-  /** Prompted, unanswered meeting debriefs. */
+  /** Prompted, unanswered meeting debriefs: global, not scoped to the viewed window. */
   debriefCount?: number | null;
   debriefsLoading?: boolean;
   debriefsError?: boolean;

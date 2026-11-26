@@ -317,3 +317,10 @@ describe("CalendarVerdictOpener waiting counts (bu-5ii4gj.11 N1)", () => {
     expect(html).not.toContain("calendar-verdict-all-clear");
   });
 });
+
+describe("proposals dropped rows (bu-5ii4gj.11 N1)", () => {
+  it("a partial proposals lane blocks the all-clear", () => {
+    const html = render({ proposalCount: null, proposalsError: true });
+    expect(html).not.toContain("calendar-verdict-all-clear");
+  });
+});
