@@ -36,6 +36,18 @@ class TestReconcileSnapshotValidation:
             )
         pool.acquire.assert_not_called()
 
+    async def test_the_resolution_cause_a_closer_stamps_is_reserved_too(self):
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="resolution_cause"):
+            await reconcile_snapshot(
+                pool,
+                source="calendar:changed_since_accepted",
+                observations=[Observation(fingerprint="x", metadata={"resolution_cause": "x"})],
+                snapshot_complete=False,
+                initial_grace_seconds=60,
+            )
+        pool.acquire.assert_not_called()
+
     async def test_rejects_negative_grace(self):
         pool = AsyncMock()
         with pytest.raises(ValueError, match="initial_grace_seconds"):

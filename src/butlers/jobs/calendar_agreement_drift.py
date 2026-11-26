@@ -66,10 +66,17 @@ SELECT a.occurrence_start, a.agreed_starts_at, a.agreed_ends_at, a.location_dige
        a.attendees_digest, a.current_starts_at, a.current_ends_at, a.current_location_digest,
        a.current_attendees_digest, a.current_observed_at, ce.id AS event_id, ce.origin_ref,
        ce.title,
-       (SELECT max(c.last_synced_at) FROM calendar_sync_cursors c
+       (SELECT max(c.last_success_at) FROM calendar_sync_cursors c
          WHERE c.source_id = ce.source_id) AS synced_at,
        CASE WHEN ce.status = 'cancelled' THEN 'cancelled'
-            WHEN a.ended_at IS NOT NULL THEN 'declined'
+            WHEN a.ended_at IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(ce.metadata -> 'attendees') = 'array'
+                             THEN ce.metadata -> 'attendees' ELSE '[]'::jsonb END) att
+                  WHERE att ->> 'self' = 'true'
+                    AND COALESCE(att ->> 'response_status', att ->> 'responseStatus') = 'declined'
+            ) THEN 'declined'
+            WHEN a.ended_at IS NOT NULL THEN 'ended'
             WHEN GREATEST(a.agreed_starts_at, a.current_starts_at) <= now() THEN 'started'
             ELSE 'active' END AS state
   FROM calendar_owner_agreements a
@@ -165,7 +172,7 @@ def _freshest(items: Iterable[Agreed]) -> dict[tuple[str, datetime], Agreed]:
 
 def resolution_causes(items: Iterable[Agreed], heads: Mapping[str, Head]) -> dict[str, str]:
     """Why each unchanged occurrence's condition would resolve: ``reverted``, ``declined``,
-    ``cancelled`` or ``started``. Only ``reverted`` makes a delivered line wrong.
+    ``cancelled``, ``started`` or ``ended`` (the seat or the source was lost). Only ``reverted`` makes a delivered line wrong.
     """
     causes: dict[str, str] = {}
     for (origin_ref, occurrence_start), item in _freshest(items).items():

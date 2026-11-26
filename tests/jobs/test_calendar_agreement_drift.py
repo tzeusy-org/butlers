@@ -267,6 +267,37 @@ async def test_a_declined_occurrence_is_not_read_as_an_agreement(db) -> None:
     assert [r["state"] for r in await pool.fetch(job._AGREEMENTS_SQL)] == ["declined"]
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_a_lost_seat_is_ended_not_declined_and_the_cursor_is_the_last_success(db) -> None:
+    from tests.modules.test_calendar_owner_agreements import _attendees, _world
+    from tests.modules.test_calendar_participants import _event, _module, _project
+
+    pool, source = await _world(db)
+    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
+    event = _event(attendees=_attendees()).model_copy(
+        update={"start_at": start, "end_at": start + timedelta(hours=1)}
+    )
+    await _project(_module(pool), source, event)
+    # Attempts keep advancing (auth failures); the last success is two days old.
+    await pool.execute(
+        "INSERT INTO calendar_sync_cursors (source_id, last_synced_at, last_success_at) "
+        "VALUES ($1, now(), now() - interval '2 days') ON CONFLICT (source_id, cursor_name) "
+        "DO UPDATE SET last_synced_at = EXCLUDED.last_synced_at, "
+        "last_success_at = EXCLUDED.last_success_at",
+        source,
+    )
+
+    (row,) = await pool.fetch(job._AGREEMENTS_SQL)
+    assert datetime.now(UTC) - row["synced_at"] > timedelta(days=1)
+
+    # The owner is dropped from the guest list: the seat is lost, which is not a decline.
+    await _project(_module(pool), source, event.model_copy(update={"attendees": []}))
+
+    assert [r["state"] for r in await pool.fetch(job._AGREEMENTS_SQL)] == ["ended"]
+
+
 def test_the_freshest_copy_is_reported_then_the_butler_name() -> None:
     later = _OBS + timedelta(hours=1)
     moved = {"current_start": _T0 + timedelta(hours=1)}

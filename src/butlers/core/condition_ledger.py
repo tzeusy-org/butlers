@@ -117,7 +117,9 @@ SUPERSEDED_BY_IDENTITY_VERSION_BUMP = "superseded_by_identity_version_bump"
 #: because the ledger writes ``resolution_reason`` for BOTH tables now: the
 #: supersede path resolves infra episodes too, so refusing the key only at the
 #: owner boundary would leave the infra terminal reason silently droppable.
-RESOLUTION_METADATA_KEYS: frozenset[str] = frozenset({"resolution_reason", "evidence_closed"})
+RESOLUTION_METADATA_KEYS: frozenset[str] = frozenset(
+    {"resolution_reason", "evidence_closed", "resolution_cause"}
+)
 
 TransitionKind = Literal[
     "opened",
