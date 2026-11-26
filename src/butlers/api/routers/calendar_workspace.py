@@ -123,6 +123,7 @@ from butlers.api.read_models.calendar_workspace import (
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
+from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.liveness import derive_liveness
 from butlers.core.temporal.day_sheet import render_day_sheet_text
 from butlers.core.temporal.household_context import SUBJECT_ROLES, HouseholdEvent
@@ -210,10 +211,11 @@ _WORKSPACE_SOURCE_TYPE_FACETS = frozenset(
     {"provider_event", "scheduled_task", "butler_reminder", "manual_butler_event"}
 )
 
-# Overlay contributions carry SGT calendar dates (the contribution jobs bucket
-# every domain event onto its Asia/Singapore date). When no display timezone is
-# requested, overlay entries are anchored at SGT midnight so they land on the
-# same calendar day the specialist computed.
+# Overlay contributions carry the owner's calendar dates (the contribution jobs bucket every
+# domain event onto the owner-zone date, SGT when no zone was ever saved). The day-briefing read
+# defaults to the owner zone when no display timezone is requested (``_overlay_owner_zone``); the
+# SGT default below is only the read-side fallback when the owner zone cannot be read, and the
+# anchor for the other overlay reads that take no owner zone.
 _OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
 # Namespace for deterministic, stable overlay entry IDs. Overlay entries have no
 # natural DB id (they live inside a JSONB envelope), so the entry_id is derived
@@ -1265,6 +1267,22 @@ async def get_meeting_prep(
     return ApiResponse[CalendarPrepResponse](data=data)
 
 
+async def _overlay_owner_zone(db: DatabaseManager) -> ZoneInfo:
+    """The owner's saved zone (what the briefing jobs key by); SGT when none was ever saved.
+
+    Fails open to the SGT default: this is a read of cached contributions, never a 500.
+    """
+    pool = _calendar_accounts_shared_pool(db)
+    if pool is None:  # an empty fleet has no settings to read
+        return _OVERLAY_DEFAULT_TZ
+    try:
+        name = await load_configured_general_timezone(pool)
+        return ZoneInfo(name) if name is not None else _OVERLAY_DEFAULT_TZ
+    except Exception:
+        logger.warning("calendar day-briefing: owner zone unreadable; using SGT", exc_info=True)
+        return _OVERLAY_DEFAULT_TZ
+
+
 @router.get("/day-briefing", response_model=ApiResponse[CalendarDayBriefingResponse])
 async def get_day_briefing(
     date: datetime = Query(
@@ -1297,10 +1315,11 @@ async def get_day_briefing(
         except ZoneInfoNotFoundError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
 
-    # Anchor the day window in the same timezone the overlay projection uses so
-    # the date's contributions land in range (SGT default — matches the jobs'
-    # bucketing).
-    tz = display_tz or _OVERLAY_DEFAULT_TZ
+    # Anchor the day window in the timezone the contribution jobs bucketed the date in: the
+    # requested one, else the owner's (the same zone ``briefing_day`` keys with).
+    if display_tz is None:
+        display_tz = await _overlay_owner_zone(db)
+    tz = display_tz
     target_date = date.date()
     start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
     end_at = start_at + timedelta(days=1)

@@ -101,7 +101,6 @@ async def _run(pool: asyncpg.Pool) -> tuple[dict, dict[str, int]]:
 
     recording = _RecordingPool(pool)
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DAY),
         patch("butlers.jobs.briefing.datetime", _Frozen),
         patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=_ZONE)),
         patch("butlers.jobs.briefing._write_contribution", AsyncMock()),

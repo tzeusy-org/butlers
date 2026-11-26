@@ -1242,6 +1242,40 @@ async def test_day_briefing_groups_by_butler_and_kind(app):
     mock_mgr.get_client.assert_not_called()
 
 
+async def test_day_briefing_defaults_to_the_owner_zone_when_no_timezone_is_passed(app, monkeypatch):
+    """An LA owner's overlay date is anchored at LA midnight, not Singapore midnight."""
+    row = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}],
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [row]}, calendar_butlers=["finance"])
+    monkeypatch.setattr(
+        _cw, "load_configured_general_timezone", AsyncMock(return_value="America/Los_Angeles")
+    )
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    assert resp.status_code == 200
+    [entry] = resp.json()["data"]["entries"]
+    assert datetime.fromisoformat(entry["start_at"]) == datetime(2026, 2, 22, 8, 0, tzinfo=UTC)
+
+
+async def test_day_briefing_falls_back_to_singapore_when_no_zone_was_ever_saved(app, monkeypatch):
+    row = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}],
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [row]}, calendar_butlers=["finance"])
+    monkeypatch.setattr(_cw, "load_configured_general_timezone", AsyncMock(return_value=None))
+
+    resp = await _get_day_briefing(app, date="2026-02-22")
+
+    [entry] = resp.json()["data"]["entries"]
+    assert datetime.fromisoformat(entry["start_at"]) == datetime(2026, 2, 21, 16, 0, tzinfo=UTC)
+
+
 async def test_day_briefing_honest_empty_state_when_no_contribution(app):
     """No specialist contributed for the date → has_domain_context false, empty groups."""
     app, _, _ = _build_app(app, overlay_rows={}, calendar_butlers=["finance", "health"])

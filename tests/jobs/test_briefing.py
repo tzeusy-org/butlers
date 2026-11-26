@@ -16,6 +16,7 @@ import pytest
 from butlers.config import ButlerConfig, ButlerType
 from butlers.jobs.briefing import (
     _LIFESTYLE_DURABLE_PREDICATES,
+    SGT,
     SPECIALIST_BUTLERS,
     _get_butler_typed_specialist_butlers,
     collect_briefing_contributions,
@@ -30,6 +31,7 @@ from butlers.jobs.briefing import (
     validate_contribution,
 )
 from butlers.jobs.home import HASourceUnmeasurableError
+from butlers.testing.briefing_clock import sgt_noon
 from butlers.testing.fake_pool import AsyncCtx, fake_pool
 
 # Existing relationship-briefing tests (birthday highlight coverage etc.) do
@@ -39,6 +41,14 @@ from butlers.testing.fake_pool import AsyncCtx, fake_pool
 _NO_QUALIFYING_BIRTHDAY_ASK = {"status": "no_qualifying_birthday", "target_date": "2099-01-01"}
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _owner_zone_is_sgt():
+    """These pools are scripted fakes with no settings table: the owner zone is SGT, not read."""
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+        yield
+
 
 _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
@@ -68,7 +78,9 @@ async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlight
     write = AsyncMock()
 
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
+        # The zone read would otherwise consume this pool's scripted fetchval answers.
+        patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):
         result = await run_lifestyle_briefing_contribution(pool, None)
@@ -220,7 +232,7 @@ async def test_collect_briefing_contributions_counts():
     ]
     pool = fake_pool(fetch=rows)
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result = await collect_briefing_contributions(pool, None)
@@ -233,7 +245,7 @@ async def test_collect_briefing_contributions_counts():
     rows2 = [_make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in present]
     pool2 = fake_pool(fetch=rows2)
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result2 = await collect_briefing_contributions(pool2, None)
@@ -255,7 +267,7 @@ async def test_collect_briefing_contributions_malformed_skipped():
     ]
     pool = fake_pool(fetch=rows)
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result = await collect_briefing_contributions(pool, None)
@@ -267,7 +279,7 @@ async def test_collect_briefing_contributions_db_error_propagates():
     pool = fake_pool(fetch=[], fetchrow=None)
     pool.fetch = AsyncMock(side_effect=Exception("database error"))
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
     ):
         with pytest.raises(Exception, match="database error"):
             await collect_briefing_contributions(pool, None)
@@ -289,7 +301,7 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
 
     pool = _RecordingPool()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
     ):
         result = await run_finance_briefing_contribution(pool, None)
@@ -329,7 +341,7 @@ async def test_run_home_briefing_contribution_unmeasurable_during_ha_outage():
     """
     pool = _RecordingPool()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
         patch(
             "butlers.jobs.briefing._require_ha_source_healthy",
@@ -348,7 +360,7 @@ async def test_run_home_briefing_contribution_healthy_queries_snapshot():
     """A healthy HA source still runs the normal device/temperature scan."""
     pool = _RecordingPool()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
         patch(
             "butlers.jobs.briefing._require_ha_source_healthy",
@@ -415,7 +427,7 @@ async def test_run_health_briefing_weight_from_facts(
     pool = fake_pool(fetch=[], fetchrow=weight_fact, fetchval=1)
     mock_write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
     ):
         result = await run_health_briefing_contribution(pool, None)
@@ -447,7 +459,7 @@ async def test_run_health_briefing_missed_doses_read_from_facts_not_relational()
     """
     pool = fake_pool(fetch=[], fetchrow=None, fetchval=1)
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
     ):
         await run_health_briefing_contribution(pool, None)
@@ -485,7 +497,7 @@ async def test_run_health_briefing_missed_doses_positive_case_from_facts():
     pool.fetchrow = AsyncMock(return_value=None)
     mock_write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
     ):
         result = await run_health_briefing_contribution(pool, None)
@@ -518,7 +530,7 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
     pool = fake_pool(fetch=[])
     mock_write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
         patch(
             "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
@@ -569,7 +581,7 @@ async def test_run_relationship_briefing_birthday_highlight(name, year):
     pool.fetch = AsyncMock(side_effect=[[birthday_row], [], []])
     mock_write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
         patch(
             "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
@@ -590,7 +602,7 @@ async def test_run_relationship_briefing_no_birthdays():
     pool = fake_pool(fetch=[])
     mock_write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
         patch(
             "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
@@ -723,7 +735,7 @@ class TestRelationshipFinanceBirthdayGiftAskSeed:
             AsyncMock(return_value={"status": "error", "target_date": "2099-01-01"}),
         )
         with (
-            patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+            patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DATE_2026_03_25)),
             patch("butlers.jobs.briefing._write_contribution", mock_write),
         ):
             result = await run_relationship_briefing_contribution(pool, None)

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from butlers.jobs.briefing import run_health_briefing_contribution
+from butlers.testing.briefing_clock import sgt_noon
 
 SGT = timezone(timedelta(hours=8))
 _DAY = date(2026, 3, 25)  # Wednesday
@@ -23,7 +24,8 @@ async def _run(rows):
     pool.fetchrow = AsyncMock(return_value=None)
     write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DAY),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DAY)),
+        patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)),
         patch("butlers.jobs.briefing.datetime", _FrozenDatetime),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):
