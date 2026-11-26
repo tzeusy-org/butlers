@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { installCalendarPageHarness } from "@/test/calendar-page/harness";
+import { installCalendarPageHarness, openDetailPanel } from "@/test/calendar-page/harness";
 import { setWorkspaceMetaState, setWorkspaceState } from "@/test/calendar-page/state";
 
 vi.mock("@/hooks/use-meeting-debriefs", async () =>
@@ -73,9 +73,48 @@ describe("CalendarWorkspacePage zone-honest times", () => {
       "09:00 London",
     );
     expect(london?.textContent).toContain("18:00");
+    expect(london?.textContent).toContain("09:00 London time, the event's own zone");
+    expect(london?.getAttribute("title")).toContain("09:00 London time");
     expect(sydney).not.toBeNull();
     expect(sydney?.querySelector('[data-testid="source-zone-time"]')).toBeNull();
     // An unknown zone adds no label in the grid: it is never guessed.
     expect(unknown?.querySelector('[data-testid="source-zone-time"]')).toBeNull();
+  });
+
+  async function openOne(sourceTz: string | null, sourceType: "provider_event" | "scheduled_task") {
+    setWorkspaceMetaState(undefined, { defaultTimezone: "Australia/Sydney" });
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [
+            {
+              ...entry("only", "Event", "2026-03-02T12:00:00+11:00", "2026-03-02T13:00:00+11:00", sourceTz),
+              source_type: sourceType,
+            },
+          ],
+          source_freshness: [],
+          lanes: [],
+          next_cursor: null,
+          has_more: false,
+        },
+        meta: {},
+      },
+    });
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await openDetailPanel();
+    return document.querySelector('[data-testid="entry-detail-panel"]');
+  }
+
+  it("says the zone is unknown for a provider event without one, and nothing for an internal event", async () => {
+    const provider = await openOne(null, "provider_event");
+    expect(provider?.querySelector('[data-testid="source-zone-unknown"]')?.textContent).toContain(
+      "zone unknown",
+    );
+  });
+
+  it("shows nothing about a zone on an internal event", async () => {
+    const internal = await openOne(null, "scheduled_task");
+    expect(internal?.querySelector('[data-testid="source-zone-unknown"]')).toBeNull();
+    expect(internal?.querySelector('[data-testid="source-zone-time"]')).toBeNull();
   });
 });

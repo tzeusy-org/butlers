@@ -126,9 +126,15 @@ export function AgendaList({
                         <Mono
                           muted
                           data-testid="source-zone-time"
+                          title={`${zoneTime.time} ${zoneTime.place} time`}
                           className="shrink-0 text-[11px] tabular-nums"
                         >
-                          {zoneTime.time} {zoneTime.place}
+                          <span aria-hidden="true">
+                            {zoneTime.time} {zoneTime.place}
+                          </span>
+                          <span className="sr-only">
+                            {zoneTime.time} {zoneTime.place} time, the event's own zone
+                          </span>
                         </Mono>
                       ) : null}
                       {isCancelledEntry(entry) ? (

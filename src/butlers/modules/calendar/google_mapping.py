@@ -350,6 +350,10 @@ def _google_event_to_calendar_event(
         end_at=end_at,
         timezone=timezone,
         all_day=all_day,
+        zone_from_payload=any(
+            isinstance(b.get("timeZone"), str) and b["timeZone"].strip()
+            for b in (start_payload, end_payload)
+        ),
         description=description_text,
         body=description_text,
         location=_normalize_optional_text(payload.get("location")),

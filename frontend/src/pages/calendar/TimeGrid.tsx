@@ -213,7 +213,7 @@ export function TimeGrid({
                       left: `calc(${(seg.column / seg.columns) * 100}% + 2px)`,
                       width: `calc(${100 / seg.columns}% - 4px)`,
                     }}
-                    title={`${formatEventTime(s, defaultTimezone, "HH:mm")}–${formatEventTime(e, defaultTimezone, "HH:mm")} · ${entry.title}`}
+                    title={`${formatEventTime(s, defaultTimezone, "HH:mm")}–${formatEventTime(e, defaultTimezone, "HH:mm")}${zoneTime ? ` (${zoneTime.time} ${zoneTime.place} time)` : ""} · ${entry.title}`}
                     onClick={() => onOpenDetail(entry)}
                   >
                     <span className="block truncate text-[11px] font-medium leading-tight text-fg">
@@ -231,7 +231,12 @@ export function TimeGrid({
                         {formatEventTime(e, defaultTimezone, "HH:mm")}
                         {zoneTime ? (
                           <span data-testid="source-zone-time" className="ml-1">
-                            ({zoneTime.time} {zoneTime.place})
+                            <span aria-hidden="true">
+                              ({zoneTime.time} {zoneTime.place})
+                            </span>
+                            <span className="sr-only">
+                              {zoneTime.time} {zoneTime.place} time, the event's own zone
+                            </span>
                           </span>
                         ) : null}
                       </span>

@@ -29,7 +29,7 @@ def _row(**overrides):
         "instance_ends_at": datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
         "instance_timezone": "Europe/London",
         "event_timezone": "Europe/London",
-        "event_metadata": {},
+        "event_metadata": {"source_type": "provider_event", "source_zone_from_payload": True},
         "instance_metadata": {},
         "source_metadata": {},
     }
@@ -63,3 +63,52 @@ def test_a_missing_or_invalid_zone_is_unknown_never_guessed(bad):
         display_tz=ZoneInfo("Australia/Sydney"),
     )
     assert entry.source_timezone is None
+
+
+def test_an_invalid_instance_zone_falls_through_to_the_event_zone():
+    entry = _normalize_entry(
+        _row(instance_timezone="Not/AZone", event_timezone="Europe/London"),
+        view="user",
+        display_tz=ZoneInfo("UTC"),
+    )
+    assert entry.source_timezone == "Europe/London"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"source_type": "provider_event"},  # the provider sent no zone: timezone is a default
+        {"source_type": "provider_event", "source_zone_from_payload": False},
+        {"source_type": "internal_scheduler", "source_zone_from_payload": True},
+        {},
+    ],
+)
+def test_a_write_time_default_zone_is_not_the_events_zone(metadata):
+    # The scheduler stores the 'UTC' follow-the-owner sentinel; provider events with no
+    # timeZone take the module config zone. Neither says where the event was authored.
+    entry = _normalize_entry(
+        _row(instance_timezone="UTC", event_timezone="UTC", event_metadata=metadata),
+        view="user",
+        display_tz=ZoneInfo("Asia/Singapore"),
+    )
+    assert entry.source_timezone is None
+
+
+def _mapped(start: dict, end: dict):
+    from butlers.modules.calendar.google_mapping import _google_event_to_calendar_event
+
+    return _google_event_to_calendar_event(
+        {"id": "evt1", "summary": "Call", "start": start, "end": end}, fallback_timezone="UTC"
+    )
+
+
+def test_the_real_google_mapping_records_whether_the_payload_carried_a_zone():
+    with_zone = _mapped(
+        {"dateTime": "2026-07-01T09:00:00+01:00", "timeZone": "Europe/London"},
+        {"dateTime": "2026-07-01T10:00:00+01:00", "timeZone": "Europe/London"},
+    )
+    without = _mapped(
+        {"dateTime": "2026-07-01T09:00:00+01:00"}, {"dateTime": "2026-07-01T10:00:00+01:00"}
+    )
+    assert with_zone.zone_from_payload is True and with_zone.timezone == "Europe/London"
+    assert without.zone_from_payload is False and without.timezone == "UTC"

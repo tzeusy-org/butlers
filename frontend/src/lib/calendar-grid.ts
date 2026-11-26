@@ -61,6 +61,20 @@ export function formatEventTime(
   }
 }
 
+/**
+ * A short name for an IANA zone. `Etc/GMT-5` is POSIX-inverted (it is UTC+5), so those render
+ * as the real offset rather than "GMT-5".
+ */
+export function zonePlace(zone: string): string {
+  const etc = /^Etc\/GMT([+-])(\d{1,2})$/.exec(zone);
+  if (etc) {
+    const sign = etc[1] === "-" ? "+" : "-";
+    return `UTC${sign}${Number(etc[2])}`;
+  }
+  if (zone === "Etc/GMT" || zone === "Etc/UTC" || zone === "UTC") return "UTC";
+  return (zone.split("/").pop() ?? zone).replace(/_/g, " ");
+}
+
 /** The event's own clock when it was authored in another zone than the one displayed. */
 export interface SourceZoneTime {
   /** `HH:mm` in the event's own zone. */
@@ -88,7 +102,7 @@ export function sourceZoneTime(
     }
     return {
       time: formatInTimeZone(date, source, "HH:mm"),
-      place: (source.split("/").pop() ?? source).replace(/_/g, " "),
+      place: zonePlace(source),
     };
   } catch {
     return null; // not a zone this runtime knows

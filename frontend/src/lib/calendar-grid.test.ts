@@ -295,4 +295,14 @@ describe("sourceZoneTime", () => {
       sourceZoneTime({ start_at: "2026-01-06T09:00:00Z", source_timezone: "Europe/London" }, "UTC"),
     ).toBeNull();
   });
+
+  it("renders POSIX-inverted Etc/GMT zones as the real UTC offset", () => {
+    // Etc/GMT-5 is UTC+5, so 08:00Z is 13:00 there.
+    expect(
+      sourceZoneTime({ start_at: "2026-07-06T08:00:00Z", source_timezone: "Etc/GMT-5" }, "UTC"),
+    ).toEqual({ time: "13:00", place: "UTC+5" });
+    expect(
+      sourceZoneTime({ start_at: "2026-07-06T08:00:00Z", source_timezone: "Etc/GMT+5" }, "UTC"),
+    ).toEqual({ time: "03:00", place: "UTC-5" });
+  });
 });

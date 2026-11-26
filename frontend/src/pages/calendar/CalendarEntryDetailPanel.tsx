@@ -241,7 +241,7 @@ export function CalendarEntryDetailPanel({
         <Mono muted>{entry.timezone}</Mono>
         {zoneTime ? (
           <Mono muted data-testid="source-zone-time">
-            {zoneTime.time} in {entry.source_timezone} (the event's own zone)
+            {zoneTime.time} in {zoneTime.place} (the event's own zone)
           </Mono>
         ) : null}
         {!entry.all_day &&
