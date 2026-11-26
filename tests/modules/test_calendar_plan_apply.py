@@ -56,15 +56,18 @@ def _shift_plan(events, minutes):
 
 
 class _Pool:
-    def __init__(self, receipts=(), cards=None):
+    def __init__(self, receipts=(), cards=None, commands=None):
         self.receipts = [{"action_payload": r} for r in receipts]
         self.cards = cards or {}
+        self.commands = commands or {}
         self.inserted: list[tuple] = []
 
     async def fetch(self, sql, *args):
         return self.receipts
 
     async def fetchrow(self, sql, *args):
+        if "calendar_action_log" in sql:
+            return self.commands.get(args[0])
         return self.cards.get(args[0])
 
     async def execute(self, sql, *args):
@@ -238,13 +241,6 @@ async def test_reapplying_replays_receipts_and_parks_only_the_missing_steps():
         ),
         (
             {
-                "status": "failed",
-                "execution_result": {"success": False, "error": "response_version_changed"},
-            },
-            ("declined", "response_version_changed"),
-        ),
-        (
-            {
                 "status": "executed",
                 "execution_result": {"success": False, "result": {"status": "uncertain"}},
             },
@@ -353,3 +349,73 @@ async def test_a_response_that_cannot_be_parked_is_skipped_with_the_reason_not_d
 
     assert result["steps"][0]["outcome"] == "skipped"
     assert result["steps"][0]["reason"] == "response_capability_unavailable"
+
+
+def _approved_card(command):
+    """The real shape of a response whose handler raised: card ``approved``, no execution result,
+    and the coordinator's own command row holding how it ended."""
+    card = uuid.uuid4()
+    pool = _Pool(
+        cards={card: {"status": "approved", "execution_result": None}},
+        commands={card: command} if command is not None else {},
+    )
+    return card, pool
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            {
+                "action_status": "failed",
+                "action_result": {"status": "failed", "reason": "response_version_changed"},
+                "phase": "terminal",
+            },
+            ("declined", "response_version_changed"),
+        ),
+        (
+            {
+                "action_status": "failed",
+                "action_result": {"status": "failed", "reason": "response_provider_rejected"},
+                "phase": "terminal",
+            },
+            ("declined", "response_provider_rejected"),
+        ),
+        (
+            {"action_status": "noop", "action_result": {"status": "noop"}, "phase": "terminal"},
+            ("applied", None),
+        ),
+        (
+            {"action_status": "pending", "action_result": None, "phase": "uncertain"},
+            ("uncertain", "response_uncertain"),
+        ),
+        (
+            {"action_status": "pending", "action_result": None, "phase": "egress_started"},
+            ("pending", None),
+        ),
+        (None, ("pending", None)),
+    ],
+)
+async def test_an_approved_response_the_handler_never_finished_is_read_off_its_command_row(
+    command, expected
+):
+    card, pool = _approved_card(command)
+
+    assert await step_outcome(pool, {"action_id": str(card)}) == expected
+
+
+async def test_a_dependency_on_a_failed_response_command_is_failed_not_pending():
+    card, pool = _approved_card(
+        {
+            "action_status": "failed",
+            "action_result": {"status": "failed", "reason": "response_version_changed"},
+            "phase": "terminal",
+        }
+    )
+
+    class P(_Pool):
+        async def fetch(self, sql, *args):
+            return [{"id": card, **self.cards[card]}]
+
+    pool.__class__ = P
+    assert await dependency_state(pool, [str(card)]) == "failed"

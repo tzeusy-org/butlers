@@ -219,7 +219,29 @@ def _object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | None]:
+def _command_outcome(command: Any) -> tuple[str, str | None] | None:
+    """The settled outcome of a response's coordinator command row, or ``None`` while in flight.
+
+    ``command`` is ``{"action_status", "action_result", "phase"}``. The approvals executor leaves a
+    card ``approved`` with no ``execution_result`` when the handler raised, so the command row,
+    which the response coordinator finishes itself, is the only record of how that response ended.
+    """
+    row = _object(command)
+    result = _object(row.get("action_result"))
+    reported = result.get("status") or row.get("action_status")
+    if reported in ("applied", "noop"):
+        return "applied", None
+    if reported == "failed":
+        reason = result.get("reason")
+        return "declined", reason if isinstance(reason, str) else "response_failed"
+    if reported == "uncertain" or row.get("phase") == "uncertain":
+        return "uncertain", "response_uncertain"
+    return None
+
+
+def card_outcome(
+    status: str | None, execution_result: Any, command: Any = None
+) -> tuple[str, str | None]:
     """``(outcome, reason)`` of one approved card: ``applied``, ``pending``, ``declined`` or
     ``uncertain``.
 
@@ -228,16 +250,21 @@ def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | 
     or that expired, a move that declined (``resolution_declined``) and a move onto a busy slot
     (``conflict``, the card's own ``fail`` policy), a response the provider rejected (``failed``)
     and one whose event changed under it (``response_version_changed``) are ``declined`` with the
-    reason; ``noop`` (the response already stood) counts as ``applied``. Anything else,
+    reason; ``noop`` (the response already stood) counts as ``applied``. An ``approved`` card the
+    executor never finished (its handler raised) is read off ``command``, the response's own
+    action-log row: failed is ``declined`` with its reason, uncertain stays ``uncertain`` and
+    anything unsettled is ``pending``. Anything else,
     including an execution that failed or reports no status, is ``uncertain``: never ``applied``.
     """
+    if status == "approved" and not _object(execution_result) and command is not None:
+        settled = _command_outcome(command)
+        if settled is not None:
+            return settled
     if status in ("pending", "approved"):
         return "pending", None
     if status in ("rejected", "expired", "cancelled", "abandoned"):
         return "declined", f"card_{status}"
     result = _object(execution_result)
-    if status == "failed" and "version_changed" in str(result.get("error") or ""):
-        return "declined", "response_version_changed"
     if status != "executed":
         return "uncertain", "card_state_unknown"
     inner = _object(result.get("result"))
@@ -255,6 +282,26 @@ def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | 
     return "uncertain", "execution_not_confirmed"
 
 
+async def command_row_of(pool: Any, card_id: Any) -> dict[str, Any] | None:
+    """The response coordinator's action-log row for an approved card (same id), or ``None``."""
+    try:
+        row = await pool.fetchrow(
+            "SELECT action_status, action_result, action_payload->>'phase' AS phase "
+            "FROM calendar_action_log WHERE id = $1",
+            card_id if isinstance(card_id, uuid.UUID) else uuid.UUID(str(card_id)),
+        )
+    except Exception:
+        logger.warning("resolution move: command row unreadable", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return {
+        "action_status": row["action_status"],
+        "action_result": row["action_result"],
+        "phase": row["phase"],
+    }
+
+
 async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     """``applied``, ``pending`` or ``failed`` for the cards a step depends on.
 
@@ -267,7 +314,8 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     try:
         ids = [uuid.UUID(a) for a in action_ids]
         rows = await pool.fetch(
-            "SELECT status, execution_result FROM pending_actions WHERE id = ANY($1::uuid[])", ids
+            "SELECT id, status, execution_result FROM pending_actions WHERE id = ANY($1::uuid[])",
+            ids,
         )
     except Exception:
         logger.warning("resolution move: dependencies could not be read", exc_info=True)
@@ -276,7 +324,10 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
         return "failed"
     waiting = False
     for row in rows:
-        outcome, _reason = card_outcome(row["status"], row["execution_result"])
+        command = None
+        if row["status"] == "approved" and row.get("id") is not None:
+            command = await command_row_of(pool, row["id"])
+        outcome, _reason = card_outcome(row["status"], row["execution_result"], command)
         if outcome == "pending":
             waiting = True
         elif outcome != "applied":
