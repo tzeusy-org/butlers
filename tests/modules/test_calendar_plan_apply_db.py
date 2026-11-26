@@ -142,6 +142,30 @@ async def test_dependency_state_reads_real_card_statuses(db) -> None:
     assert await dependency_state(pool, [str(dep)]) == "applied"
 
 
+async def test_a_move_the_executor_failed_on_reads_declined_from_the_real_audit_row(db) -> None:
+    from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+    from butlers.modules.calendar.plan_apply import step_outcome
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    card = UUID(result["steps"][0]["approval_id"])
+    await pool.execute("UPDATE pending_actions SET status = 'approved' WHERE id = $1", card)
+    receipt = {"action_id": str(card)}
+    assert await step_outcome(pool, receipt) == ("pending", None)
+
+    await record_approval_event(
+        pool,
+        ApprovalEventType.ACTION_EXECUTION_FAILED,
+        actor="system:executor",
+        action_id=card,
+        reason="calendar_update_event failed",
+        metadata={"tool_name": "calendar_update_event"},
+    )
+
+    assert await step_outcome(pool, receipt) == ("declined", "execution_failed")
+    assert await dependency_state(pool, [str(card)]) == "failed"
+
+
 async def test_undo_parks_one_bound_card_per_applied_step_only(db) -> None:
     pool = await db("core", "approvals")
     plan = _shift_plan()

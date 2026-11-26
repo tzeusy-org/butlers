@@ -60,10 +60,14 @@ class _Pool:
         self.receipts = [{"action_payload": r} for r in receipts]
         self.cards = cards or {}
         self.commands = commands or {}
+        self.failures: set = set()
         self.inserted: list[tuple] = []
 
     async def fetch(self, sql, *args):
         return self.receipts
+
+    async def fetchval(self, sql, *args):
+        return 1 if args[0] in self.failures else None
 
     async def fetchrow(self, sql, *args):
         if "calendar_action_log" in sql:
@@ -419,3 +423,27 @@ async def test_a_dependency_on_a_failed_response_command_is_failed_not_pending()
 
     pool.__class__ = P
     assert await dependency_state(pool, [str(card)]) == "failed"
+
+
+async def test_an_approved_move_whose_handler_errored_is_declined_not_pending_forever():
+    # calendar_update_event returned an error dict: the executor leaves the card approved with no
+    # result and audits action_execution_failed; a move has no coordinator command row.
+    card = uuid.uuid4()
+    pool = _Pool(cards={card: {"status": "approved", "execution_result": None}})
+    pool.failures.add(card)
+
+    assert await step_outcome(pool, {"action_id": str(card)}) == ("declined", "execution_failed")
+
+    class P(_Pool):
+        async def fetch(self, sql, *args):
+            return [{"id": card, **self.cards[card]}]
+
+    pool.__class__ = P
+    assert await dependency_state(pool, [str(card)]) == "failed"
+
+
+async def test_an_approved_move_with_no_failure_audit_stays_pending():
+    card = uuid.uuid4()
+    pool = _Pool(cards={card: {"status": "approved", "execution_result": None}})
+
+    assert await step_outcome(pool, {"action_id": str(card)}) == ("pending", None)

@@ -75,7 +75,7 @@ it for the current names and signatures. The families:
   one approvals card per move step, each bound to the etag the plan saw and sent once; a step that
   uses a slot another step vacates declines `dependency_not_applied` unless that step applied. It
   returns `pending` with one receipt per step (outcome read off its card: `applied`, `pending`,
-  `declined`, `uncertain`, `skipped`) and records `plan` and `plan_step` rows in
+  `declined`, `uncertain`, `skipped`; a move whose write the executor failed on reads `declined` with reason `execution_failed`, though a later retry that succeeds reads `applied`) and records `plan` and `plan_step` rows in
   `calendar_action_log`; re-applying the same plan replays the receipts (only until a card executes; after that plan the change again) and parks only what has
   none. A step whose dependency is still undecided declines `dependency_pending` and the owner
   re-applies after deciding it. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
