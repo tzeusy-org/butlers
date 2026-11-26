@@ -13,7 +13,7 @@
 
 - [ ] 3.1 Finance: bills, subscriptions, cancel_by; drop the reminder clause from the finance instructions
 - [ ] 3.2 Travel: legs, accommodations, reservations, check-in, document expiry; drop the travel clauses
-- [ ] 3.3 Health (absorbs bu-rx0tyg), Relationship, Education (daily review-due aggregate)
+- [ ] 3.3 Health (absorbs bu-rx0tyg), Relationship (S5); Education daily review-due aggregate with its overlay-view migration (S5b)
 
 ## 4. Workspace (S6)
 

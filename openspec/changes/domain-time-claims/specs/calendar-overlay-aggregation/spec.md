@@ -67,9 +67,16 @@ The producing job SHALL be the one that reconciles: it reads its own domain tabl
 complete set of claims for its window, and reconciles the calendar rows for them in the same run
 (REQ-module-calendar-061). A claim whose record is settled, cancelled or gone, or whose person is
 quiet or no-contact, SHALL be emitted with its settled or cancelled status or omitted, and its
-calendar row SHALL be retracted in that run. A record whose `record_version` is unchanged SHALL cause
-no write. A run that fails, reads a source only partially, or fails to reconcile its claims SHALL keep the
+calendar row SHALL be retracted in that run. A record whose `record_version`, presence and span signature are unchanged SHALL cause no write. A run that fails, reads a source only partially, or fails to reconcile its claims SHALL keep the
 previous claims, mark the envelope incomplete, report the error in its result, and retract nothing.
+A run in which any claim is invalid, or in which retraction did not run (for example the projection
+tables are absent), SHALL likewise be partial, with the error code `invalid_claims`. A run that cannot
+read the owner's bill reminder preference SHALL leave the bill claims as they are for that run, not
+reconcile them with the default.
+
+A bill's reminder SHALL fall at the owner's `bill_reminder_preference` days before the due date (a number
+of days, or N weeks as 7N days, at most 30), and 3 days before when none is stored; an auto-renewing
+subscription's reminder falls 7 days before it renews and a `cancel_by` reminder 3 days before.
 
 #### Scenario: A settled bill is retracted
 
@@ -89,7 +96,7 @@ previous claims, mark the envelope incomplete, report the error in its result, a
 ### Requirement: Claim producers
 
 ID: REQ-calendar-overlay-aggregation-010
-Source: bu-5ii4gj.13 (run 26 move 13), slices S3 to S5
+Source: bu-5ii4gj.13 (run 26 move 13), slices S3 to S5b
 Scope: v1-mandatory
 
 The producers SHALL be the butlers that own the record: finance (bills, subscription renewals,
