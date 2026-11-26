@@ -2,6 +2,10 @@
 
 ### Requirement: ConflictScanResponse Model
 
+ID: REQ-calendar-conflict-overcommitment-radar-005
+Source: bu-5ii4gj.11 slice R1; design "Resolve, not Fix"
+Scope: v1-mandatory
+
 The response envelope MUST conform to the following schema, with all fields
 present. `issues_available` SHALL be `false` in degraded mode, which includes
 BOTH a total fan-out failure AND a partial per-schema failure (any targeted
@@ -39,10 +43,6 @@ ConflictEventRef {
 `proposal_ids` is removed: nothing produces the create-only proposals it referenced, and the
 resolution options replace the Fix card.
 
-ID: REQ-calendar-conflict-overcommitment-radar-005
-Source: bu-5ii4gj.11 slice R1; design "Resolve, not Fix"
-Scope: v1-mandatory
-
 #### Scenario: Overlap issues carry options and a digest
 
 - **WHEN** `GET /api/calendar/workspace/conflicts` is called for a window containing an overlap
@@ -64,6 +64,10 @@ Scope: v1-mandatory
 
 ### Requirement: FE Radar Banner
 
+ID: REQ-calendar-conflict-overcommitment-radar-006
+Source: bu-5ii4gj.11 slice R3; design "Resolve, not Fix"
+Scope: v1-mandatory
+
 The week/day view SHALL fetch `GET /api/calendar/workspace/conflicts` for the
 visible window and MUST render a radar banner above the calendar grid when
 `issues_available: true` and `issues` is non-empty.
@@ -76,10 +80,6 @@ The banner MUST:
 - Replace the session-local dismiss with a persisted "keep both" decision that
   writes a receipt and clears the issue until either event changes.
 - Not render at all when `issues_available: false`; degraded mode SHALL be silent.
-
-ID: REQ-calendar-conflict-overcommitment-radar-006
-Source: bu-5ii4gj.11 slice R3; design "Resolve, not Fix"
-Scope: v1-mandatory
 
 #### Scenario: Banner rendered with overlap issue
 
@@ -102,6 +102,6 @@ Scope: v1-mandatory
 
 #### Scenario: Fix card without proposal (LLM session not yet run)
 
-- **GIVEN** an overlap issue whose options are empty because a source is stale
+- **GIVEN** an overlap issue with no options because a source is stale
 - **WHEN** the card is shown
 - **THEN** it is informational only, and states that the options are unavailable because a source is stale
