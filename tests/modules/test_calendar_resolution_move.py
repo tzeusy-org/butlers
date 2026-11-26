@@ -232,8 +232,8 @@ class _SeriesProvider(_MovingProvider):
 
 def _radar_option_for_a_series_occurrence():
     """What the radar compiles for an owner-organised series' occurrence, through the real adapter."""
-    from butlers.core.temporal.resolution_rows import resolution_event
     from butlers.core.temporal import conflict_resolution as cr
+    from butlers.core.temporal.resolution_rows import resolution_event
 
     start = datetime(2026, 2, 20, 9, 0, tzinfo=UTC)
     row = {
