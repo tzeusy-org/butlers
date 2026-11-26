@@ -6,6 +6,7 @@ never retries a send. Suppression drops the message rather than deferring it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -61,6 +62,21 @@ async def test_suppressed_send_is_dropped_and_recorded(boundary):
     boundary["client"].call_tool.assert_not_awaited()
     row = _only_ledger_row(boundary)
     assert (row["outcome"], row["reason"]) == ("suppressed", "quiet_hours")
+
+
+async def test_the_callers_instant_reaches_the_quiet_hours_check(boundary):
+    # A job with an injected clock must be judged at that instant, not the wall clock.
+    at = datetime(2026, 11, 23, 14, 40, tzinfo=UTC)
+
+    await _send(now=at)
+
+    assert boundary["suppression"].await_args.kwargs["now"] == at
+
+
+async def test_without_an_instant_the_check_keeps_its_wall_clock_default(boundary):
+    await _send()
+
+    assert "now" not in boundary["suppression"].await_args.kwargs
 
 
 async def test_missing_recipient_fails_without_delivery(boundary):
