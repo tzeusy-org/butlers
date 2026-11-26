@@ -2675,7 +2675,7 @@ SCHEMA TriggerRequest dfa589770c42
 SCHEMA TriggerResponse 4d3683429e13
 SCHEMA TripModel c42e45698f67
 SCHEMA TripSummaryModel 1ee246d624d7
-SCHEMA UnifiedCalendarEntry 869f3fe37337
+SCHEMA UnifiedCalendarEntry 05bc5c10cd7d
 SCHEMA UnpinnedDefinerEntry 0ccb7772960e
 SCHEMA UnpricedModelUsage 641c158c0b68
 SCHEMA UnroutableAttentionItem 0e72e51779a9

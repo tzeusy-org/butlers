@@ -7,7 +7,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
 import { Row } from "@/components/ui/Row";
 import { Voice } from "@/components/ui/Voice";
-import { formatEventTime, tzDayKey } from "@/lib/calendar-grid";
+import { formatEventTime, sourceZoneTime, tzDayKey } from "@/lib/calendar-grid";
 import { cn } from "@/lib/utils";
 import { KindTag, PillButton } from "@/pages/calendar/atoms";
 import { isCancelledEntry } from "@/pages/calendar/workspace-model";
@@ -81,6 +81,7 @@ export function AgendaList({
             </div>
             <div role="list">
               {group.items.map((entry) => {
+                const zoneTime = sourceZoneTime(entry, defaultTimezone);
                 return (
                   <Row
                     key={entry.entry_id}
@@ -121,6 +122,15 @@ export function AgendaList({
                       >
                         {entry.title}
                       </span>
+                      {zoneTime ? (
+                        <Mono
+                          muted
+                          data-testid="source-zone-time"
+                          className="shrink-0 text-[11px] tabular-nums"
+                        >
+                          {zoneTime.time} {zoneTime.place}
+                        </Mono>
+                      ) : null}
                       {isCancelledEntry(entry) ? (
                         <KindTag
                           data-testid="entry-cancelled-tag"

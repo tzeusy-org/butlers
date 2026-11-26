@@ -696,6 +696,19 @@ async def _fetch_flattened_workspace_rows(
     return flattened, failed
 
 
+def _source_zone_name(row: Mapping[str, Any]) -> str | None:
+    """The row's authoring zone when it is a real IANA zone, else ``None`` (never a guess)."""
+    for key in ("instance_timezone", "event_timezone"):
+        name = row.get(key)
+        if isinstance(name, str) and name.strip():
+            try:
+                ZoneInfo(name.strip())
+            except (ZoneInfoNotFoundError, ValueError):
+                return None
+            return name.strip()
+    return None
+
+
 def _normalize_entry(
     row: Mapping[str, Any],
     *,
@@ -767,6 +780,7 @@ def _normalize_entry(
         start_at=start_at,
         end_at=end_at,
         timezone=timezone_name,
+        source_timezone=_source_zone_name(row),
         all_day=bool(row.get("all_day") or False),
         calendar_id=row.get("calendar_id"),
         provider_event_id=provider_event_id,

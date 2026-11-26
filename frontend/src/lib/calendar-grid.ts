@@ -61,6 +61,40 @@ export function formatEventTime(
   }
 }
 
+/** The event's own clock when it was authored in another zone than the one displayed. */
+export interface SourceZoneTime {
+  /** `HH:mm` in the event's own zone. */
+  time: string;
+  /** A short place name for the zone ("London"), from its IANA id. */
+  place: string;
+}
+
+/**
+ * The start time in the event's own zone, to show beside the displayed one, or `null` when
+ * there is nothing to add: all-day, no known source zone, the same zone, or a different zone
+ * on the same clock offset at that instant. An unknown zone is never guessed.
+ */
+export function sourceZoneTime(
+  entry: { start_at: string; all_day?: boolean; source_timezone?: string | null },
+  displayTz: string,
+): SourceZoneTime | null {
+  const source = entry.source_timezone;
+  if (!source || entry.all_day || source === displayTz) return null;
+  const date = toDate(entry.start_at);
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    if (formatInTimeZone(date, source, "xxx") === formatInTimeZone(date, displayTz, "xxx")) {
+      return null;
+    }
+    return {
+      time: formatInTimeZone(date, source, "HH:mm"),
+      place: (source.split("/").pop() ?? source).replace(/_/g, " "),
+    };
+  } catch {
+    return null; // not a zone this runtime knows
+  }
+}
+
 /**
  * Format an instant as a `yyyy-MM-dd'T'HH:mm` value for a `datetime-local`
  * input, rendered in `tz` (the workspace wall clock). Returns `fallback` when

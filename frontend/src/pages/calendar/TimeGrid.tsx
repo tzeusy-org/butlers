@@ -14,6 +14,7 @@ import { Tip } from "@/components/ui/tip";
 import {
   AVATAR_MIN_BLOCK_HEIGHT_PX,
   formatEventTime,
+  sourceZoneTime,
   HOUR_HEIGHT_PX,
 } from "@/lib/calendar-grid";
 import {
@@ -183,6 +184,7 @@ export function TimeGrid({
                 const topPx = (seg.startMin / 60) * HOUR_HEIGHT_PX;
                 const heightPx = (durationMin / 60) * HOUR_HEIGHT_PX;
                 const overlaps = overlapEntryIds.has(entry.entry_id);
+                const zoneTime = sourceZoneTime(entry, defaultTimezone);
                 return (
                   <button
                     key={entry.entry_id}
@@ -227,6 +229,11 @@ export function TimeGrid({
                       <span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--mfg)]">
                         {formatEventTime(s, defaultTimezone, "HH:mm")}–
                         {formatEventTime(e, defaultTimezone, "HH:mm")}
+                        {zoneTime ? (
+                          <span data-testid="source-zone-time" className="ml-1">
+                            ({zoneTime.time} {zoneTime.place})
+                          </span>
+                        ) : null}
                       </span>
                     ) : null}
                     {/* Linked-people avatars (bu-01qmd), gated by block height
