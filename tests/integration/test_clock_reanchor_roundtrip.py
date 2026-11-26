@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from butlers.core.scheduler.dispatch import tick
 from butlers.core.scheduler.timing import _next_run
 from butlers.perception import clock_reanchor as ra
 from butlers.perception import flags
@@ -21,7 +22,7 @@ pytestmark = [
 
 HOME = ClockValue("Asia/Singapore", "home")
 TOKYO = ClockValue("Asia/Tokyo", "owner_confirmed_booking")
-NOW = datetime(2026, 7, 1, 6, 0, tzinfo=UTC)
+NOW = datetime.now(UTC)  # real clock: the dispatcher in the fire-once test uses it too
 AGO = NOW - timedelta(hours=1)
 
 
@@ -61,7 +62,8 @@ async def test_only_owner_local_rows_move(pool, monkeypatch) -> None:
 
     summary = await _run(pool)
 
-    assert summary["moved"] == 1 and summary["kept_pinned"] == 1 and summary["failed"] == []
+    assert summary["complete"] and summary["failed"] == []
+    assert summary["per_schema"]["general"] == {"moved": 1, "kept_pinned": 1, "skipped": 0}
     moved = await _next(pool, "owner_local")
     assert moved != local_before
     assert moved.astimezone(ZoneInfo("Asia/Tokyo")).hour == 9
@@ -91,5 +93,81 @@ async def test_dark_until_the_owner_clock_is_live_and_unknown_moves_nothing(
     assert await _run(pool) == {"live": False}
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     summary = await _run(pool, new_clock=None)
-    assert summary["moved"] == 0 and summary["reason"] == "clock_unknown"
+    assert summary["per_schema"]["general"]["moved"] == 0 and summary["reason"] == "clock_unknown"
     assert await _next(pool, "idle") == before
+
+
+async def _fire_once(pool, name, **tick_kwargs) -> datetime:
+    """Make the occurrence due, tick once, and return the recomputed ``next_run_at``."""
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = now() - interval '1 second' WHERE name = $1",
+        name,
+    )
+    fired = []
+
+    async def dispatch(**kwargs):
+        fired.append(kwargs)
+
+    await tick(pool, dispatch, default_timezone=HOME.zone, **tick_kwargs)
+    assert fired, "the due occurrence should have fired"
+    return await _next(pool, name)
+
+
+def _hour(value: datetime, zone: str) -> int:
+    return value.astimezone(ZoneInfo(zone)).hour
+
+
+async def test_a_reanchored_row_stays_on_the_travel_zone_after_it_fires(pool, monkeypatch) -> None:
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    real_now = NOW
+    await _seed(pool, "brief")
+    await _run(pool, now=real_now, transition_at=real_now - timedelta(hours=1))
+    assert _hour(await _next(pool, "brief"), TOKYO.zone) == 9
+
+    async def read_clock():
+        return TOKYO
+
+    after = await _fire_once(pool, "brief", owner_zone_resolver=ra.owner_zone_resolver(read_clock))
+
+    assert _hour(after, TOKYO.zone) == 9  # still 09:00 Tokyo after one firing
+
+
+async def test_without_the_shared_resolver_the_row_would_snap_back_home(pool, monkeypatch) -> None:
+    # The control: the dispatcher's own default is the settings zone, which is why the resolver exists.
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    real_now = NOW
+    await _seed(pool, "brief")
+    await _run(pool, now=real_now, transition_at=real_now - timedelta(hours=1))
+
+    after = await _fire_once(pool, "brief")
+
+    assert _hour(after, HOME.zone) == 9 and _hour(after, TOKYO.zone) != 9
+
+
+async def test_an_unreadable_or_missing_schema_makes_the_run_incomplete(pool, monkeypatch) -> None:
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    await _seed(pool, "present")
+
+    summary = await _run(pool, expected=["general", "travel"])  # no pool for travel
+
+    assert summary["complete"] is False and summary["failed"] == ["travel"]
+    assert summary["per_schema"]["general"]["moved"] == 1  # readable schemas still move, per schema
+
+
+async def test_the_resolver_ignores_home_and_unknown_clocks(monkeypatch) -> None:
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+
+    async def home():
+        return HOME
+
+    async def unknown():
+        return None
+
+    assert await ra.owner_zone_resolver(home)("Asia/Singapore") == "Asia/Singapore"
+    assert await ra.owner_zone_resolver(unknown)("Asia/Singapore") == "Asia/Singapore"
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", False)
+
+    async def tokyo():
+        return TOKYO
+
+    assert await ra.owner_zone_resolver(tokyo)("Asia/Singapore") == "Asia/Singapore"  # dark

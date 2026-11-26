@@ -20,6 +20,12 @@ SHALL only ask once. Until the anchor-kind migration, owner-local is the sentine
 replaces the predicate and the owner-confirm evidence (bu-dhloi1.21) replaces the stand-in rule, each
 in one place.
 
+The scheduler SHALL take the owner zone its sentinel rows follow from one resolver shared with the
+re-anchor: the live clock zone when `OWNER_CLOCK_LIVE` is on and the clock is confirmed, else the
+settings zone. A re-anchored row that fires SHALL recompute its next run in that same zone and not
+snap back to the home zone. The re-anchor SHALL walk every butler schema; a schema that cannot be read
+makes the run incomplete (never reported as done) and counts are per schema.
+
 #### Scenario: A confirmed trip re-anchors the morning brief
 
 - **WHEN** the clock moves from Singapore to Tokyo and a 09:00 owner-local schedule is not yet due
@@ -29,3 +35,13 @@ in one place.
 
 - **WHEN** the dispatcher claims the occurrence between the read and the write
 - **THEN** the write does not apply and the row keeps the claimed anchor
+
+#### Scenario: A re-anchored row fires
+
+- **WHEN** a re-anchored 09:00 owner-local schedule fires once with the clock on Tokyo time
+- **THEN** its next run is again 09:00 Tokyo
+
+#### Scenario: A schema cannot be read
+
+- **WHEN** one butler schema has no readable pool
+- **THEN** the run reports `complete: false` and names that schema, and counts are per schema

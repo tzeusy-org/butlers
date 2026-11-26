@@ -60,6 +60,7 @@ async def tick(
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    owner_zone_resolver: Callable[[str], Awaitable[str]] | None = None,
     stopping: asyncio.Event | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
@@ -269,6 +270,15 @@ async def tick(
         span.set_attribute("tasks_due", tasks_due)
 
         dispatched = 0
+        if owner_zone_resolver is not None and rows:
+            # One source for the owner zone sentinel rows follow: the same one the owner-clock
+            # re-anchor uses, so a re-anchored row does not snap back after its first firing.
+            try:
+                default_timezone = await owner_zone_resolver(default_timezone)
+            except Exception:
+                logger.warning(
+                    "Scheduler: owner zone resolver failed; using default", exc_info=True
+                )
         for row in rows:
             task_id = row["id"]
             original_next_run_at = row["next_run_at"]

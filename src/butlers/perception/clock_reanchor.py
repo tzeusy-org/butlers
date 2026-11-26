@@ -22,7 +22,7 @@ compare-and-set on the old ``next_run_at``, so a claim that wins the race is not
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -209,25 +209,29 @@ async def run_clock_transition(
     new_clock: ClockValue | None,
     transition_at: datetime,
     now: datetime,
+    expected: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Re-anchor every butler's owner-local schedules after the clock moved to ``new_clock``.
+    """Re-anchor every butler schema's owner-local schedules after the clock moved.
 
-    Dark: does nothing until ``OWNER_CLOCK_LIVE``. ``new_clock`` is ``None`` when the clock is
-    unknown or stale, which moves nothing. Returns counts for the owner card (a later slice).
-    One butler's failure is counted and never stops the others.
+    ``scheduled_tasks`` is per butler schema, so this walks every one in ``expected`` (default:
+    the pools given). A schema with no pool or that cannot be read is listed in ``failed`` and
+    makes the run ``complete: False``; the readable schemas are still re-anchored (the write is
+    idempotent, so a retry finishes the rest) but the run is never reported as done. Counts are
+    per schema. Dark: does nothing until ``OWNER_CLOCK_LIVE``. ``new_clock`` is ``None`` when the
+    clock is unknown or stale, which moves nothing.
     """
     if not flags.OWNER_CLOCK_LIVE:
         return {"live": False}
-    summary: dict[str, Any] = {
-        "live": True,
-        "moved": 0,
-        "kept_pinned": 0,
-        "skipped": 0,
-        "failed": [],
-        "reason": None,
-    }
+    names = sorted(set(expected) if expected is not None else set(pools))
+    per_schema: dict[str, dict[str, int]] = {}
+    failed: list[str] = []
+    reason: str | None = None
     new_zone = new_clock.zone if new_clock is not None else None
-    for butler, pool in sorted(pools.items()):
+    for butler in names:
+        pool = pools.get(butler)
+        if pool is None:
+            failed.append(butler)
+            continue
         try:
             rows = [dict(r) for r in await pool.fetch(_ROWS_SQL)]
             plan = plan_reanchor(
@@ -238,12 +242,45 @@ async def run_clock_transition(
                 now=now,
                 stagger_key=butler,
             )
-            summary["reason"] = plan.reason
-            if plan.reason is None:
-                summary["moved"] += await apply_reanchor(pool, plan)
-            summary["kept_pinned"] += plan.kept_pinned
-            summary["skipped"] += plan.skipped
+            reason = plan.reason
+            moved = await apply_reanchor(pool, plan) if plan.reason is None else 0
+            per_schema[butler] = {
+                "moved": moved,
+                "kept_pinned": plan.kept_pinned,
+                "skipped": plan.skipped,
+            }
         except Exception:
             logger.warning("clock re-anchor failed for %s", butler, exc_info=True)
-            summary["failed"].append(butler)
-    return summary
+            failed.append(butler)
+    return {
+        "live": True,
+        "complete": not failed,
+        "failed": failed,
+        "reason": reason,
+        "per_schema": per_schema,
+    }
+
+
+# -- one owner-zone source for the scheduler --------------------------------------------
+
+#: Clock bases that are the owner's own word or a confirmed place, not the home fallback.
+_CONFIRMED_BASES = frozenset({"owner", "owner_confirmed_booking", "phone"})
+
+
+def owner_zone_resolver(read_clock: Callable[[], Awaitable[ClockValue | None]]):
+    """The scheduler's owner zone: the live clock zone when confirmed, else the settings zone.
+
+    ``read_clock`` returns the current clock, or ``None`` when it is unknown or stale. While
+    ``OWNER_CLOCK_LIVE`` is off, or the clock is home or unconfirmed, the settings zone wins, so a
+    sentinel row recomputed after a firing lands in the same zone the re-anchor moved it to.
+    """
+
+    async def resolve(settings_zone: str) -> str:
+        if not flags.OWNER_CLOCK_LIVE:
+            return settings_zone
+        clock = await read_clock()
+        if clock is not None and clock.basis in _CONFIRMED_BASES:
+            return clock.zone
+        return settings_zone
+
+    return resolve
