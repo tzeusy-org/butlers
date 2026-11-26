@@ -65,7 +65,7 @@
         "sha256": "1cca53ebf4d8398d39237e62870616a59aa395ac4ddc8f3fc8cead4b887eb72b"
       },
       "deploy/runtime-clis/codex/compiler-inputs.json": {
-        "sha256": "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412"
+        "sha256": "0f754ef16ca0390b678ef22862d40b73d51198cc924111b425bb178fc62dbfbf"
       },
       "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch": {
         "sha256": "4b11961badcef24e56dc509a0fe2518afb4dfb9255593b19ed065440e718ef49"
@@ -86,7 +86,7 @@
         "sha256": "f5a4343a0a27f7f864f9abcf2aca54dae77ce5b4cdd5e4a80b1a3e6681fb5d85"
       },
       "deploy/runtime-clis/debian-system-inputs.json": {
-        "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28"
+        "sha256": "1e0a3db74712795457cc4c6f73544a2f77012a9ba3822aa42a5283ee09c0042b"
       },
       "deploy/runtime-clis/default-plugin-artifacts/build-inputs.json": {
         "sha256": "16f855d08bb6b1d28ed15f9ebe4ecbe78d72b988429fb0b854aca3afb3ca9883"

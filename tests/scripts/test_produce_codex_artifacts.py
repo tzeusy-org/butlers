@@ -174,10 +174,11 @@ def test_compiler_supplement_keeps_original_profiles_separate():
     assert producer.digest(predecessor) == supplemental["predecessor"]["sha256"]
     assert set(supplemental["profiles"]) == {"compiler"}
     assert {x["package"]: x["version"] for x in supplemental["debs"]} == {
-        "libssl-dev": "3.5.7-1~deb13u3",
-        "libssl3t64": "3.5.7-1~deb13u3",
-        "openssl-provider-legacy": "3.5.7-1~deb13u3",
-        "patch": "2.8-2",
+        "libssl-dev": "3.5.9-1~deb13u1",
+        "libssl3t64": "3.5.9-1~deb13u1",
+        "openssl": "3.5.9-1~deb13u1",
+        "openssl-provider-legacy": "3.5.9-1~deb13u1",
+        "patch": "2.8-2+deb13u1",
     }
 
 
