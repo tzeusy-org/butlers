@@ -16,9 +16,10 @@ card text names no event title: the event may be a third party's.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -48,6 +49,10 @@ RESOLUTION_DECLINED_TEXT = (
 #: approvals executor record a failed execution, so the card never reads as executed.
 RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
     "changed_since_check": RESOLUTION_DECLINED_TEXT,
+    "dependency_not_applied": (
+        "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
+        "nothing was moved."
+    ),
     "unbound": (
         "Move not applied: this request has no recorded check against the calendar, so nothing "
         "was moved."
@@ -123,6 +128,7 @@ async def park_resolution_move(
     authority: str,
     zone: tzinfo | None = None,
     series_event_id: str | None = None,
+    depends_on: Sequence[uuid.UUID] = (),
 ) -> tuple[uuid.UUID, bool]:
     """Park the move's card and bind it to ``etag``; returns ``(action_id, created)``.
 
@@ -159,6 +165,8 @@ async def park_resolution_move(
                 "etag": etag,
                 # Set for one occurrence of a series: ``etag`` is then the series' etag.
                 **({"series_event_id": series_event_id} if series_event_id else {}),
+                # A plan step that uses a slot another step vacates runs only if those applied.
+                **({"depends_on": [str(a) for a in depends_on]} if depends_on else {}),
             },
         )
         return admission.action_id, not admission.duplicate
@@ -174,8 +182,6 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
         )
         result = row["action_result"] if row is not None else None
         if isinstance(result, str):
-            import json
-
             result = json.loads(result)
     except asyncpg.UndefinedTableError:
         return None
@@ -187,6 +193,43 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
     if not isinstance(result, dict) or result.get("action_id") != str(action_id):
         return None
     return result
+
+
+async def dependencies_applied(pool: Any, action_ids: Sequence[str]) -> bool:
+    """True only when every named card was approved and its move really wrote.
+
+    Fails closed: an unreadable card, one still pending, rejected, expired, or executed without
+    success (a declined or failed move) all count as not applied.
+    """
+    if not action_ids:
+        return True
+    try:
+        ids = [uuid.UUID(a) for a in action_ids]
+        rows = await pool.fetch(
+            "SELECT status, execution_result FROM pending_actions WHERE id = ANY($1::uuid[])", ids
+        )
+    except Exception:
+        logger.warning("resolution move: dependencies could not be read", exc_info=True)
+        return False
+    if len(rows) != len(ids):
+        return False
+    for row in rows:
+        result = row["execution_result"]
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                return False
+        inner = result.get("result") if isinstance(result, dict) else None
+        wrote = (
+            row["status"] == "executed"
+            and isinstance(result, dict)
+            and result.get("success") is True
+            and not (isinstance(inner, dict) and inner.get("status") == RESOLUTION_DECLINED)
+        )
+        if not wrote:
+            return False
+    return True
 
 
 def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | None:
@@ -237,6 +280,9 @@ async def check_resolution_binding(
     if offer is None:
         marked = isinstance(request_id, str) and request_id.startswith(RESOLUTION_REQUEST_PREFIX)
         return ResolutionCheck(refusal="unbound" if marked else None)
+    depends = offer.get("depends_on")
+    if isinstance(depends, list) and not await dependencies_applied(pool, depends):
+        return ResolutionCheck(bound=True, refusal="dependency_not_applied")
     series_id = offer.get("series_event_id")
     if isinstance(series_id, str) and series_id:
         series: CalendarEvent | None

@@ -2651,6 +2651,29 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "calendar",
         "core",
+        "calendar_apply_plan",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=(),
+        alias_resolvers={},
+        selection_bound={},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(
+            "calendar_action_log",
+            "calendar_event_instances",
+            "calendar_sources",
+            "pending_actions",
+        ),
+        write_stores=("calendar_action_log", "pending_actions"),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "calendar",
+        "core",
         "calendar_force_sync",
         effect_class="administer",
         output_trust="untrusted",
@@ -11080,7 +11103,7 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "external:calendar": StoreWriters(
-            record_capabilities=("calendar_propose_event",),
+            record_capabilities=("calendar_apply_plan", "calendar_propose_event"),
             native_writers=(
                 "butlers.modules.calendar.sync.SyncMixin._run_sync_poller",
                 "butlers.modules.calendar.sync.SyncMixin._sync_calendar",
@@ -11308,7 +11331,7 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "calendar_action_log": StoreWriters(
-            record_capabilities=(),
+            record_capabilities=("calendar_apply_plan",),
             native_writers=(
                 "butlers.modules.calendar.sync_queue.SyncQueueMixin._claim_next_force_sync_command",
                 "butlers.modules.calendar.sync_queue.SyncQueueMixin._finalize_force_sync_command",
@@ -11973,7 +11996,7 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "pending_actions": StoreWriters(
-            record_capabilities=("record_booking", "update_itinerary"),
+            record_capabilities=("calendar_apply_plan", "record_booking", "update_itinerary"),
             native_writers=(
                 "butlers.api.routers.approvals.approve_owning_action",
                 "butlers.modules.approvals.delivery_lifecycle.defer_pending_action",

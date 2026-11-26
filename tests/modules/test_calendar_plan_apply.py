@@ -1,0 +1,265 @@
+"""``calendar_apply_plan`` parks one card per move step and records receipts (bu-5ii4gj.11 P2a)."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from butlers.core.temporal.change_plans import BusyInterval, compile_plan
+from butlers.core.temporal.conflict_resolution import ResolutionEvent
+from butlers.modules.calendar.plan_apply import apply_plan, step_outcome
+from butlers.modules.calendar.plan_tools import CompiledPlan
+from butlers.modules.calendar.resolution_move import (
+    check_resolution_binding,
+    dependencies_applied,
+)
+
+pytestmark = pytest.mark.unit
+
+DAY = datetime(2026, 3, 10, 0, 0, tzinfo=UTC)
+NOW = DAY - timedelta(days=1)
+WINDOW = (DAY, DAY + timedelta(days=1))
+AFTER = [(DAY + timedelta(days=1), DAY + timedelta(days=1, hours=12))]
+
+
+def _ev(entry, cls, hour, **kw):
+    start = DAY + timedelta(hours=hour)
+    base = dict(
+        entry_id=entry,
+        provider_event_id=f"prov-{entry}",
+        calendar_id="primary",
+        start_at=start,
+        end_at=start + timedelta(hours=1),
+        etag=f"etag-{entry}",
+        event_class=cls,
+    )
+    return ResolutionEvent(**{**base, **kw})
+
+
+def _clear_plan(events):
+    return compile_plan("clear_window", WINDOW, events, now=NOW, free_slots=AFTER)
+
+
+def _shift_plan(events, minutes):
+    return compile_plan(
+        "shift_window",
+        WINDOW,
+        events,
+        now=NOW,
+        delta=timedelta(minutes=minutes),
+        busy=[BusyInterval(e.entry_id, e.start_at, e.end_at) for e in events],
+    )
+
+
+class _Pool:
+    def __init__(self, receipts=(), cards=None):
+        self.receipts = [{"action_payload": r} for r in receipts]
+        self.cards = cards or {}
+        self.inserted: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        return self.receipts
+
+    async def fetchrow(self, sql, *args):
+        return self.cards.get(args[0])
+
+    async def execute(self, sql, *args):
+        self.inserted.append(args)
+
+
+def _run(plan, pool, **overrides):
+    kind = plan.kind
+    compiled = CompiledPlan(plan, WINDOW, "UTC")
+    parked: list[dict] = []
+
+    async def park(pool_, **kw):
+        parked.append(kw)
+        card = uuid.uuid4()
+        pool.cards[card] = {"status": "pending", "execution_result": None}
+        return card, True
+
+    async def go():
+        with (
+            patch(
+                "butlers.modules.calendar.plan_apply.compile_for_window",
+                AsyncMock(return_value=compiled),
+            ),
+            patch("butlers.modules.calendar.plan_apply.pool_of", return_value=pool),
+            patch("butlers.modules.calendar.plan_apply.park_resolution_move", park),
+        ):
+            return await apply_plan(
+                SimpleNamespace(),
+                "general",
+                plan_id=overrides.get("plan_id", plan.plan_id),
+                plan_digest=overrides.get("plan_digest", plan.plan_digest),
+                kind=kind,
+                window_start=WINDOW[0],
+                window_end=WINDOW[1],
+                shift_minutes=45 if kind == "shift_window" else None,
+            )
+
+    return go, parked
+
+
+async def test_a_changed_plan_applies_nothing():
+    plan = _clear_plan([_ev("solo", "owner_organized", 10)])
+    pool = _Pool()
+    go, parked = _run(plan, pool, plan_digest="stale")
+
+    result = await go()
+
+    assert result["status"] == "refused" and result["reason"] == "plan_changed"
+    assert parked == [] and pool.inserted == []
+
+
+async def test_every_move_parks_a_card_bound_to_the_planned_etag_and_returns_pending():
+    plan = _clear_plan(
+        [
+            _ev("block", "butlers_block", 9),
+            _ev("solo", "owner_organized", 10),
+            _ev("mtg", "invited", 11, owner_response="accepted"),
+        ]
+    )
+    pool = _Pool()
+    go, parked = _run(plan, pool)
+
+    result = await go()
+
+    assert result["status"] == "pending"
+    assert [p["etag"] for p in parked] == ["etag-block", "etag-solo"]
+    assert [p["authority"] for p in parked] == ["no_park_undo", "owner_submit"]
+    assert all("request_id" not in p["call_args"] for p in parked)
+    by_ref = {s["event_ref"]: s for s in result["steps"]}
+    assert by_ref["mtg"]["outcome"] == "skipped"
+    assert by_ref["mtg"]["reason"] == "response_step_not_supported"
+    # one plan row and one receipt per step
+    assert len(pool.inserted) == 1 + len(plan.steps)
+
+
+async def test_a_dependent_step_carries_the_card_it_depends_on():
+    plan = _shift_plan(
+        [_ev("a", "owner_organized", 9), _ev("b", "owner_organized", 10)], minutes=60
+    )
+    go, parked = _run(plan, _Pool())
+
+    await go()
+
+    assert parked[0]["depends_on"] == []
+    assert len(parked[1]["depends_on"]) == 1  # a lands on b's old slot, so a waits for b's card
+
+
+async def test_reapplying_replays_receipts_and_parks_only_the_missing_steps():
+    plan = _clear_plan([_ev("block", "butlers_block", 9), _ev("solo", "owner_organized", 10)])
+    done = {
+        "plan_id": plan.plan_id,
+        "index": 0,
+        "event_ref": "block",
+        "action": "move",
+        "action_id": str(uuid.uuid4()),
+    }
+    pool = _Pool(receipts=[done])
+    go, parked = _run(plan, pool)
+
+    result = await go()
+
+    assert [p["etag"] for p in parked] == ["etag-solo"]
+    assert result["steps"][0]["approval_id"] == done["action_id"]
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"status": "pending", "execution_result": None}, ("pending", None)),
+        ({"status": "rejected", "execution_result": None}, ("declined", "card_rejected")),
+        ({"status": "expired", "execution_result": None}, ("declined", "card_expired")),
+        (
+            {"status": "executed", "execution_result": {"success": True, "result": {}}},
+            ("applied", None),
+        ),
+        (
+            {
+                "status": "executed",
+                "execution_result": {
+                    "success": False,
+                    "result": {"status": "resolution_declined", "reason": "changed_since_check"},
+                },
+            },
+            ("declined", "changed_since_check"),
+        ),
+        (None, ("uncertain", "card_missing")),
+    ],
+)
+async def test_a_steps_outcome_is_read_off_its_card(row, expected):
+    card = str(uuid.uuid4())
+    pool = _Pool(cards={uuid.UUID(card): row} if row is not None else {})
+
+    assert await step_outcome(pool, {"action_id": card}) == expected
+
+
+async def test_dependencies_applied_fails_closed():
+    ok = {"status": "executed", "execution_result": {"success": True, "result": {}}}
+    waiting = {"status": "pending", "execution_result": None}
+
+    class P:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def fetch(self, sql, ids):
+            return self.rows
+
+    one = [str(uuid.uuid4())]
+    assert await dependencies_applied(P([ok]), one) is True
+    assert await dependencies_applied(P([waiting]), one) is False
+    assert await dependencies_applied(P([]), one) is False  # card missing
+    assert await dependencies_applied(P([ok]), []) is True
+
+
+async def test_an_approved_step_declines_when_its_dependency_was_not_applied():
+    import asyncio
+
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    args = {"event_id": "evt", "request_id": "resolve:abc"}
+    dep = str(uuid.uuid4())
+    offer = {"action_id": "x", "etag": "e1", "depends_on": [dep]}
+    module = SimpleNamespace(_db=SimpleNamespace(pool=SimpleNamespace()))
+    context = ApprovalExecutionContext(
+        action_id=uuid.uuid4(),
+        session_id=None,
+        actor="owner",
+        tool_name="calendar_update_event",
+        tool_args_digest=approval_tool_args_digest(args),
+        authorized_task=asyncio.current_task(),  # type: ignore[arg-type]
+    )
+    token = set_approval_execution_context(context)
+    try:
+        with (
+            patch(
+                "butlers.modules.calendar.resolution_move.offer_for_card",
+                AsyncMock(return_value=offer),
+            ),
+            patch(
+                "butlers.modules.calendar.resolution_move.dependencies_applied",
+                AsyncMock(return_value=False),
+            ),
+        ):
+            check = await check_resolution_binding(
+                module,
+                tool_name="calendar_update_event",
+                tool_args=args,
+                request_id="resolve:abc",
+                event=SimpleNamespace(etag="e1"),  # type: ignore[arg-type]
+            )
+    finally:
+        reset_approval_execution_context(token)
+
+    assert check.refusal == "dependency_not_applied" and check.bound
