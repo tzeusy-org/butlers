@@ -636,8 +636,8 @@ async def test_an_owner_decision_is_recorded_and_a_system_rejection_is_not(monke
     marker = await _open_card_for(monkeypatch, _row())
     env = _Env(monkeypatch, policies=[_policy()], rows=[])
     env.decided = [
-        {"id": uuid4(), "marker": marker, "status": "approved", "by": "dashboard:rest-api"},
-        {"id": uuid4(), "marker": marker, "status": "rejected", "by": "dashboard:rest-api"},
+        {"id": uuid4(), "marker": marker, "status": "approved", "by": "human:dashboard:rest-api"},
+        {"id": uuid4(), "marker": marker, "status": "rejected", "by": "human:dashboard:rest-api"},
         {"id": uuid4(), "marker": marker, "status": "rejected", "by": job.DOCKET_ACTOR},
     ]
     summary = await env.run()
@@ -691,7 +691,7 @@ async def test_a_ledger_outage_is_counted_and_never_makes_a_clean_run(monkeypatc
     marker = await _open_card_for(monkeypatch, _row())
     env = _Env(monkeypatch, policies=[_policy()], rows=[])
     env.decided = [
-        {"id": uuid4(), "marker": marker, "status": "approved", "by": "dashboard:rest-api"}
+        {"id": uuid4(), "marker": marker, "status": "approved", "by": "human:dashboard:rest-api"}
     ]
     env.record.side_effect = job.ledger.LedgerUnavailable
     summary = await env.run()

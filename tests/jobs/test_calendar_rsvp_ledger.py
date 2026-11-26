@@ -17,15 +17,18 @@ MARKER = {"policy_id": str(uuid4()), "policy_version": 3, "verdict": "declined"}
 @pytest.mark.parametrize(
     ("status", "by", "outcome"),
     [
-        ("approved", "dashboard:rest-api", "approved_as_prepared"),
-        ("executed", "dashboard:rest-api", "approved_as_prepared"),
-        ("rejected", "dashboard:rest-api", "owner_rejected"),
+        ("approved", "human:dashboard:rest-api", "approved_as_prepared"),
+        ("executed", "human:dashboard:rest-api", "approved_as_prepared"),
+        ("rejected", "human:dashboard:rest-api", "owner_rejected"),
         ("rejected", "system:rsvp_docket", None),
         ("rejected", "system:expiry", None),
         ("approved", None, None),
-        ("rejected", "owner@telegram", "owner_rejected"),
+        ("rejected", "human:owner@telegram", "owner_rejected"),
         ("rejected", "someone-else", None),
-        ("pending", "dashboard:rest-api", None),
+        ("rejected", "dashboard:rest-api", None),
+        ("rejected", "human:dashboard:rest-api (reason: wrong day)", "owner_rejected"),
+        ("rejected", "human:someone-else", None),
+        ("pending", "human:dashboard:rest-api", None),
         ("expired", "system:expiry", None),
     ],
 )
@@ -118,3 +121,15 @@ async def test_an_action_already_recorded_by_this_process_skips_the_write() -> N
     )
     assert (first, again) == (True, False)
     assert pool.fetchval.await_count == 1
+
+
+def test_the_owner_actors_are_the_ones_the_approve_paths_write() -> None:
+    """Pinned to the approvals code: the actor names and the ``human:<actor>`` decided_by format."""
+    from pathlib import Path
+
+    from butlers.api.routers import approvals as router
+    from butlers.modules.approvals import operations
+
+    assert ledger.OWNER_ACTORS == {router._ACTOR_DASHBOARD, router._TELEGRAM_CALLBACK_ACTOR}
+    source = Path(operations.__file__).read_text()
+    assert source.count('decided_by = f"human:{actor_id}"') >= 2  # approve and reject

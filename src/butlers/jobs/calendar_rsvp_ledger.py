@@ -25,17 +25,20 @@ _APPROVED = frozenset({"approved", "executed"})
 _ANSWER_FOR_VERDICT = {"accepted": "accepted", "declined": "declined", "tentative": "tentative"}
 
 
-# The actors the approvals path records for the owner's own decision: the dashboard's approve route
-# and the owner's Telegram card. Anything else (``system:*`` sweeps, expiry, this job) is not the
-# owner, and an unknown actor is never counted as one.
+# The owner actors the approvals path knows (the dashboard approve route and the owner's Telegram
+# card). operations.py records a decision as ``decided_by = "human:<actor>"``, and a rejection
+# reason is appended as `` (reason: ...)``. Anything else (``system:*`` sweeps, expiry, this job) is
+# not the owner, and an unknown actor is never counted as one.
 OWNER_ACTORS = frozenset({"dashboard:rest-api", "owner@telegram"})
+_OWNER_DECIDERS = tuple(f"human:{actor}" for actor in sorted(OWNER_ACTORS))
 _RECORDED_LIMIT = 4096
 _recorded: dict[str, None] = {}
 
 
 def decided_outcome(status: str | None, decided_by: str | None) -> str | None:
     """The outcome of a card the owner decided, or ``None`` for anything else."""
-    if decided_by not in OWNER_ACTORS:
+    text = str(decided_by or "")
+    if not any(text == who or text.startswith(who + " (reason:") for who in _OWNER_DECIDERS):
         return None
     if status in _APPROVED:
         return "approved_as_prepared"
