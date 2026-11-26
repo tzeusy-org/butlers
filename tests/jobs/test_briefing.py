@@ -42,6 +42,14 @@ _NO_QUALIFYING_BIRTHDAY_ASK = {"status": "no_qualifying_birthday", "target_date"
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _owner_zone_is_sgt():
+    """These pools are scripted fakes with no settings table: the owner zone is SGT, not read."""
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+        yield
+
+
 _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
 

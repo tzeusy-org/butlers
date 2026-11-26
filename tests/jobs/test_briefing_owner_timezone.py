@@ -95,10 +95,19 @@ async def test_missed_and_due_later_split_uses_owner_local_time():
     }
 
 
+async def test_an_invalid_stored_zone_skips_the_run_instead_of_keying_under_sgt():
+    pool = _pool({"timezone": "Not/AZone"})
+
+    with pytest.raises(Exception, match="Not"):
+        await _run(pool)
+
+    pool.fetch.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "stored",
-    [None, {}, {"timezone": ""}, {"timezone": "Not/AZone"}, "garbage"],
-    ids=["unset", "empty-settings", "blank", "invalid-zone", "wrong-shape"],
+    [None, {}, {"timezone": ""}, "garbage"],
+    ids=["unset", "empty-settings", "blank", "wrong-shape"],
 )
 async def test_falls_back_to_sgt_when_no_usable_owner_timezone(stored):
     pool = _pool(stored)

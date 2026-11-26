@@ -7,7 +7,7 @@ Singapore) every key must stay exactly what the fixed reading produced.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -45,23 +45,37 @@ async def test_the_day_follows_the_owners_zone():
 
 async def test_an_sgt_owner_keys_every_day_exactly_as_the_fixed_reading_did():
     """The cutover is a no-op for an SGT owner: same date at every hour across a month."""
+    singapore = ZoneInfo("Asia/Singapore")  # the real saved zone, not the fixed-offset fallback
+    fixed = timezone(timedelta(hours=8))  # what the briefing used to read
     start = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
     for hours in range(0, 24 * 31, 5):
         instant = start + timedelta(hours=hours)
-        with patch("butlers.jobs.briefing._now", return_value=instant), _zone(SGT):
+        with patch("butlers.jobs.briefing._now", return_value=instant), _zone(singapore):
             day, _ = await briefing_day(object())
-        assert day == instant.astimezone(SGT).date(), instant
+        assert day == instant.astimezone(fixed).date(), instant
 
 
-async def test_an_unreadable_zone_falls_back_to_the_sgt_date():
+async def test_no_saved_zone_falls_back_to_the_sgt_date():
     pool = AsyncMock()
-    pool.fetchval.side_effect = OSError("settings down")
+    pool.fetchval.return_value = None  # the owner never saved settings
     with patch("butlers.jobs.briefing._now", return_value=INSTANT):
         day, zone = await briefing_day(pool)
     assert zone is SGT and day == date(2026, 3, 25)
     with patch("butlers.jobs.briefing.datetime") as clock:
         clock.now.return_value = INSTANT
         assert today_sgt() == date(2026, 3, 25)
+
+
+async def test_a_failed_or_invalid_zone_read_skips_the_run_instead_of_keying_under_sgt():
+    failing = AsyncMock()
+    failing.fetchval.side_effect = OSError("settings down")
+    invalid = AsyncMock()
+    invalid.fetchval.return_value = {"timezone": "Mars/Olympus"}
+    with patch("butlers.jobs.briefing._now", return_value=INSTANT):
+        with pytest.raises(OSError):
+            await briefing_day(failing)
+        with pytest.raises(Exception, match="Mars"):
+            await briefing_day(invalid)
 
 
 def test_local_midnight_is_dst_correct():

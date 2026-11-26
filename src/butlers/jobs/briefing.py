@@ -119,21 +119,27 @@ def _now() -> datetime:
     return datetime.now(tz=UTC)
 
 
-async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
+async def owner_briefing_zone(pool: asyncpg.Pool, *, strict: bool = False) -> tzinfo:
     """Return the owner's configured timezone for day-window math, else SGT.
 
     Reads the shared ``settings.general`` timezone from ``public.state`` (the single source the
     scheduler, the dashboard and the session filters use), schema-qualified because the
-    job's pool resolves an unqualified ``state`` to ``health.state``.  The documented fallback
-    is SGT: it applies when the owner never saved a timezone, when the shared settings cannot be
-    read, and when the stored name is not a valid IANA zone, so the briefing keeps its
-    historical day window instead of silently switching to UTC.
+    job's pool resolves an unqualified ``state`` to ``health.state``.  SGT is the documented
+    fallback when the owner never saved a timezone, so the briefing keeps its historical day
+    window instead of silently switching to UTC.
+
+    A zone that cannot be *read* or is not a valid IANA name is a different thing from "never
+    saved": by default (window math for display) it still falls back to SGT, but with
+    ``strict=True`` it raises, so a caller that keys state by the day (``briefing_day``) skips the
+    run instead of writing under a date that may be the wrong one.
     """
     try:
         name = await load_configured_general_timezone(pool)
         if name is not None:
             return ZoneInfo(name)
     except Exception:
+        if strict:
+            raise
         logger.warning("Could not resolve owner timezone for briefing; using SGT", exc_info=True)
     return SGT
 
@@ -142,10 +148,11 @@ async def briefing_day(pool: asyncpg.Pool) -> tuple[date_cls, tzinfo]:
     """The owner's current calendar day and the zone it is read in (one resolution per run).
 
     The date keys ``briefing/daily/<date>`` and the combined payload, so every job resolves it the
-    same way: the owner's configured zone, else the SGT fallback. For an SGT owner the key is the
-    one the fixed UTC+8 reading produced.
+    same way: the owner's configured zone, else SGT when none was ever saved. A failed or invalid
+    zone read raises (the run is skipped) rather than keying the day under SGT. For an SGT owner
+    the key is the one the fixed UTC+8 reading produced.
     """
-    zone = await owner_briefing_zone(pool)
+    zone = await owner_briefing_zone(pool, strict=True)
     return _now().astimezone(zone).date(), zone
 
 
@@ -307,7 +314,7 @@ async def run_health_briefing_contribution(
 
     # The contribution key/date, the dose day window and the missed / due-later split all follow
     # the owner's zone, resolved once (every reader of ``briefing/daily/<date>`` does the same).
-    owner_zone = await owner_briefing_zone(pool)
+    owner_zone = await owner_briefing_zone(pool, strict=True)
     now_local = _now().astimezone(owner_zone)
     today_str = now_local.date().isoformat()
     # Owner-local day boundaries (midnight -> next midnight) converted to UTC.

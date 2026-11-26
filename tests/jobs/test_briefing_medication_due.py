@@ -25,6 +25,7 @@ async def _run(rows):
     write = AsyncMock()
     with (
         patch("butlers.jobs.briefing._now", return_value=sgt_noon(_DAY)),
+        patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)),
         patch("butlers.jobs.briefing.datetime", _FrozenDatetime),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):

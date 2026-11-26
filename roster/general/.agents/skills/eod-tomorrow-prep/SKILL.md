@@ -16,7 +16,7 @@ is sent at the end of the day to prepare the user for the day ahead. Frame it as
 Do not call it an "end-of-day briefing".
 
 The specialist highlights come from the `collect_briefing_contributions` job (cron
-`58 6 * * *`, which is 14:58 SGT), which aggregates each specialist butler's daily
+`58 6 * * *`, which is 06:58 owner-local), which aggregates each specialist butler's daily
 contribution into a combined payload under `briefing/combined/<today>` earlier
 the same day. This skill reads that payload and surfaces the domains that have
 updates. When no payload exists, it degrades gracefully to a calendar-only summary.
@@ -46,7 +46,7 @@ date in `YYYY-MM-DD` format (owner-local). This returns a JSON payload with a
 - `summary`: a pre-rendered one-line summary string for direct inclusion
 
 ```python
-combined = state_get(f"briefing/combined/{today_sgt}")
+combined = state_get(f"briefing/combined/{today}")
 contributions = (combined or {}).get("contributions", [])
 ```
 
