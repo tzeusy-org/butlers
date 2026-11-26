@@ -13,7 +13,7 @@ It answers one boolean and never a time, a digest or an address:
   differ from what the owner accepted;
 * ``false`` -- the row matches again, or the agreement ended (declined, cancelled, no seat);
 * ``NULL``  -- unknown: no row for the event, no butler named, a name that is not a schema
-  holding the table, no id, or the event's calendar source has not synced within ``p_max_age``
+  holding the table, no id, or the event's calendar source has not synced successfully (``last_success_at``, which a failed sync never advances) within ``p_max_age``
   (the caller passes the sync deadman's staleness threshold), so a stalled sync never reports
   "changed".
 
@@ -61,7 +61,7 @@ BEGIN
         RETURN NULL;
     END IF;
     EXECUTE pg_catalog.format(
-        'SELECT max(c.last_synced_at) FROM %I.calendar_events e'
+        'SELECT max(c.last_success_at) FROM %I.calendar_events e'
         ' JOIN %I.calendar_sync_cursors c ON c.source_id = e.source_id WHERE e.id = $1',
         p_butler, p_butler)
         INTO v_synced USING p_event_id;
@@ -116,6 +116,9 @@ def _installation_count() -> int:
 
 def upgrade() -> None:
     op.execute(_LOCK)
+    # A database that ran the first draft of this revision holds a 3-argument overload that
+    # never checked staleness; drop it so the 4-argument function is the only one callable.
+    op.execute("DROP FUNCTION IF EXISTS public.resolve_calendar_occurrence(text, uuid, timestamptz)")
     op.execute(CREATE_FUNCTION)
     op.execute(f"REVOKE ALL ON FUNCTION {_FUNCTION} FROM PUBLIC")
     op.execute(

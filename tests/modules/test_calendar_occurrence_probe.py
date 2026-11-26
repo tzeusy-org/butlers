@@ -39,13 +39,16 @@ async def _check(pool, event_id, start, butler=_SCHEMA):
     )
 
 
-async def _synced(pool, source, age=timedelta(0)):
+async def _synced(pool, source, age=timedelta(0), success_age=None):
+    """A sync cursor: ``age`` since the last attempt, ``success_age`` since the last success."""
     await pool.execute(
-        "INSERT INTO calendar_sync_cursors (source_id, last_synced_at) "
-        "VALUES ($1, now() - $2::interval) ON CONFLICT (source_id, cursor_name) "
-        "DO UPDATE SET last_synced_at = EXCLUDED.last_synced_at",
+        "INSERT INTO calendar_sync_cursors (source_id, last_synced_at, last_success_at) "
+        "VALUES ($1, now() - $2::interval, now() - $3::interval) "
+        "ON CONFLICT (source_id, cursor_name) DO UPDATE "
+        "SET last_synced_at = EXCLUDED.last_synced_at, last_success_at = EXCLUDED.last_success_at",
         source,
         age,
+        age if success_age is None else success_age,
     )
 
 
@@ -66,6 +69,15 @@ def test_the_probe_is_registered_and_the_migration_extends_the_chain():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert (module.revision, module.down_revision) == ("core_379", "core_378")
+
+    statements: list[str] = []
+    module.op = type("Op", (), {"execute": staticmethod(statements.append)})
+    module.upgrade()
+    drop = next(i for i, s in enumerate(statements) if "DROP FUNCTION IF EXISTS" in s)
+    create = next(i for i, s in enumerate(statements) if "CREATE OR REPLACE FUNCTION" in s)
+    # An old three-argument overload (no staleness check) must go before the new one lands.
+    assert drop < create and "timestamptz)" in statements[drop]
+    assert "(text, uuid, timestamptz)" in statements[drop]
 
 
 @pytest.mark.integration
@@ -196,6 +208,25 @@ async def test_a_stalled_sync_is_unknown_never_changed(db):
 
     await _synced(pool, source)
     assert await _check(pool, event_id, start) is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_failing_syncs_do_not_make_an_old_success_fresh(db):
+    pool, source, event, event_id, start = await _accepted(db)
+    moved = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(hours=1),
+            "end_at": event.end_at + timedelta(hours=1),
+        }
+    )
+    await _project(_module(pool), source, moved)
+
+    # Attempts keep advancing (auth failures), but the last success is a day old.
+    await _synced(pool, source, age=timedelta(0), success_age=timedelta(days=1))
+
+    assert await _check(pool, event_id, start) is None
 
 
 @pytest.mark.integration
