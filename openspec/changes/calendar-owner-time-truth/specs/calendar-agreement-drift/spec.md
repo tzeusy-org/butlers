@@ -63,8 +63,10 @@ SHALL fall back to the digest lane and never call notify directly. Timed candida
 producer SHALL count against the timed lane's per-day cap of six, shared with every other timed
 producer, so a burst of moved meetings cannot exceed it. A change that reverts before
 delivery SHALL withdraw the candidate with reason `premise_false`; a revert after delivery SHALL
-amend the delivered message in place, struck through, once. A replayed cycle SHALL change nothing a
-second time. Title, location and attendee text SHALL reach the card only through the inert-text and
+amend the delivered message in place, struck through, once. Every resolution SHALL record its cause
+(`reverted`, `declined`, `cancelled` or `started`) and only `reverted` SHALL amend a delivered
+message, because the delivered line was true when it was sent. A replayed cycle SHALL change nothing
+a second time. Title, location and attendee text SHALL reach the card only through the inert-text and
 delivery-defang helpers, and description text SHALL never reach it.
 
 ID: REQ-calendar-agreement-drift-003
@@ -80,3 +82,8 @@ Scope: v1-mandatory
 
 - **WHEN** the event moves back after the card was delivered
 - **THEN** one amendment SHALL exist and the message SHALL be edited with a strike-through, and a replay SHALL make no second edit
+
+#### Scenario: Ended for another reason after delivery
+
+- **WHEN** the owner declines the event, the event is cancelled, or the occurrence starts after the card was delivered
+- **THEN** the condition SHALL resolve with `resolution_cause` `declined`, `cancelled` or `started` and the delivered message SHALL NOT be amended

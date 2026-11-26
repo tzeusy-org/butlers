@@ -9,7 +9,9 @@ anchor naming an occurrence that is not in this schema's projection SHALL be ref
 anchored occurrence moves, the reminder SHALL be rebased in the same transaction with one
 `reminder_rebased` receipt, idempotent on the anchor's revision. When the occurrence is cancelled
 or the owner declines it, the reminder SHALL be cancelled with reason `anchor_cancelled`. A
-recurring anchor SHALL follow one occurrence by original start and leave the others alone. While
+recurring anchor SHALL name one occurrence by its original start and leave the others alone; it is
+rechecked at fire time (REQ-module-calendar-058) but the projection does not yet rebase or retire
+it, which is a follow-up. While
 the calendar source is stale, no rebase SHALL happen. A rebase or a retirement SHALL produce exactly
 one insight candidate through the broker, never a direct notify: a digest line, or a timed line when
 the reminder's new time is under 2 hours away. That candidate SHALL carry no premise, because
