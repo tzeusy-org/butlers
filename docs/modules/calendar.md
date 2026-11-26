@@ -76,7 +76,7 @@ it for the current names and signatures. The families:
   uses a slot another step vacates declines `dependency_not_applied` unless that step applied. It
   returns `pending` with one receipt per step (outcome read off its card: `applied`, `pending`,
   `declined`, `uncertain`, `skipped`) and records `plan` and `plan_step` rows in
-  `calendar_action_log`; re-applying the same plan replays the receipts and parks only what has
+  `calendar_action_log`; re-applying the same plan replays the receipts (only until a card executes; after that plan the change again) and parks only what has
   none. A step whose dependency is still undecided declines `dependency_pending` and the owner
   re-applies after deciding it. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
   response preparer (`response_park.park_response`), so no MCP round trip and no second

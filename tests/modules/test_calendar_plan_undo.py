@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -16,7 +17,17 @@ from butlers.modules.calendar.resolution_move import (
 
 pytestmark = pytest.mark.unit
 
-APPLIED = {"status": "executed", "execution_result": {"success": True, "result": {}}}
+APPLIED = {
+    "status": "executed",
+    "execution_result": {"success": True, "result": {"status": "updated"}},
+}
+DECLINED = {
+    "status": "executed",
+    "execution_result": {
+        "success": False,
+        "result": {"status": "resolution_declined", "reason": "changed_since_check"},
+    },
+}
 PENDING = {"status": "pending", "execution_result": None}
 
 
@@ -80,7 +91,9 @@ async def _run(pool):
             AsyncMock(return_value="UTC"),
         ),
     ):
-        result = await undo_plan(SimpleNamespace(), "general", plan_id="plan_x")
+        result = await undo_plan(
+            SimpleNamespace(), "general", plan_id="plan_x", now=datetime(2026, 3, 1, tzinfo=UTC)
+        )
     return result, parked
 
 
@@ -100,9 +113,10 @@ async def test_only_applied_steps_are_reversed_each_bound_to_its_recorded_etag()
     result, parked = await _run(pool)
 
     assert result["status"] == "pending"
-    assert [p["etag"] for p in parked] == ["e1", "e9"]
+    # highest step first, so a reversal's dependencies are parked before it
+    assert [p["etag"] for p in parked] == ["e9", "e1"]
     assert all(p["stale_reason"] == "changed_since_move" for p in parked)
-    assert parked[0]["call_args"] == {
+    assert parked[1]["call_args"] == {
         "event_id": "evt-0",
         "calendar_id": "primary",
         "start_at": GOOD["pre_start"],
@@ -164,3 +178,62 @@ async def test_recording_is_best_effort_and_skipped_without_an_etag():
     silent = SimpleNamespace(execute=AsyncMock())
     await record_applied_move(silent, uuid.uuid4(), etag_after=None, pre_start="s", pre_end="e")
     silent.execute.assert_not_awaited()
+
+
+def _shift_world(a_state, b_state, *, depends=True):
+    """The A/B shift +60 plan: b (index 0) moved first, a (index 1) landed on b's old slot."""
+    pool = _world((0, b_state, GOOD), (1, a_state, {**GOOD, "etag_after": "e2"}))
+    if depends:
+        pool.receipts[1]["depends_on"] = [0]
+    pool.receipts[0]["event_ref"], pool.receipts[1]["event_ref"] = "b", "a"
+    return pool
+
+
+async def test_a_reversal_into_a_slot_another_step_occupies_waits_for_that_reversal():
+    pool = _shift_world(APPLIED, APPLIED)
+
+    result, parked = await _run(pool)
+
+    # a (index 1) is reversed first; b's reversal returns into the slot a held, so it waits for it.
+    assert [p["etag"] for p in parked] == ["e2", "e1"]
+    assert parked[0]["depends_on"] == []
+    by_ref = {r["event_ref"]: r for r in result["reversals"]}
+    assert by_ref["a"]["depends_on"] == [] and by_ref["b"]["depends_on"] == [1]
+    assert len(parked[1]["depends_on"]) == 1
+
+
+async def test_a_reversal_does_not_wait_for_a_step_that_never_applied():
+    result, parked = await _run(_shift_world(DECLINED, APPLIED))
+
+    assert len(parked) == 1 and parked[0]["depends_on"] == []
+    by_ref = {r["event_ref"]: r for r in result["reversals"]}
+    assert by_ref["a"]["reason"] == "step_declined" and by_ref["b"]["approval_id"]
+
+
+async def test_a_reversal_blocked_by_an_unreversible_dependent_is_not_offered():
+    pool = _shift_world(APPLIED, APPLIED)
+    pool.bindings = {k: v for k, v in pool.bindings.items() if v["etag_after"] != "e2"}
+
+    result, parked = await _run(pool)
+
+    assert parked == []
+    reasons = {r["event_ref"]: r["reason"] for r in result["reversals"]}
+    assert reasons == {"a": "no_recorded_result", "b": "blocked_by_step_1"}
+
+
+async def test_a_declined_card_is_never_reversed():
+    result, parked = await _run(_world((0, DECLINED, GOOD)))
+
+    assert parked == [] and result["reversals"][0]["reason"] == "step_declined"
+
+
+async def test_a_reversal_into_the_past_is_refused_with_a_reason():
+    late = {
+        **GOOD,
+        "pre_start": "2020-01-01T09:00:00+00:00",
+        "pre_end": "2020-01-01T10:00:00+00:00",
+    }
+
+    result, parked = await _run(_world((0, APPLIED, late)))
+
+    assert parked == [] and result["reversals"][0]["reason"] == "in_the_past"

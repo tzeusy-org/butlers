@@ -28,7 +28,7 @@ from butlers.core.temporal.change_plans import Plan, PlanStep
 
 from .invitation_guard import pool_of
 from .plan_tools import compile_for_window
-from .resolution_move import park_resolution_move
+from .resolution_move import card_outcome, park_resolution_move
 from .response_park import park_response
 
 if TYPE_CHECKING:
@@ -65,9 +65,8 @@ def _obj(value: Any) -> dict[str, Any]:
 async def step_outcome(pool: Any, receipt: dict[str, Any]) -> tuple[str, str | None]:
     """``(outcome, reason)`` of one recorded step, read off its card.
 
-    ``applied`` only when the approved move really wrote; a card still waiting is ``pending``;
-    a rejected or expired card, or an approved move that declined, is ``declined``; anything
-    unreadable is ``uncertain``, never ``applied``.
+    See ``card_outcome``: ``applied`` only when the approved call reports that it wrote; anything
+    unreadable or unconfirmed is ``uncertain``, never ``applied``.
     """
     if receipt.get("outcome") == "skipped":
         return "skipped", receipt.get("reason")
@@ -81,21 +80,7 @@ async def step_outcome(pool: Any, receipt: dict[str, Any]) -> tuple[str, str | N
         return "uncertain", "card_unreadable"
     if row is None:
         return "uncertain", "card_missing"
-    status = row["status"]
-    if status in ("pending", "approved"):
-        return "pending", None
-    if status in ("rejected", "expired", "cancelled", "abandoned"):
-        return "declined", f"card_{status}"
-    result = _obj(row["execution_result"])
-    inner = _obj(result.get("result"))
-    if (
-        status == "executed"
-        and result.get("success") is True
-        and inner.get("status") != ("resolution_declined")
-    ):
-        return "applied", None
-    reason = inner.get("reason") if isinstance(inner.get("reason"), str) else None
-    return "declined", reason or "move_not_applied"
+    return card_outcome(row["status"], row["execution_result"])
 
 
 def _call_args(step: PlanStep) -> dict[str, Any]:

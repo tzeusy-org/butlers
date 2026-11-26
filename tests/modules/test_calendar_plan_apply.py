@@ -192,7 +192,10 @@ async def test_reapplying_replays_receipts_and_parks_only_the_missing_steps():
         ({"status": "rejected", "execution_result": None}, ("declined", "card_rejected")),
         ({"status": "expired", "execution_result": None}, ("declined", "card_expired")),
         (
-            {"status": "executed", "execution_result": {"success": True, "result": {}}},
+            {
+                "status": "executed",
+                "execution_result": {"success": True, "result": {"status": "updated"}},
+            },
             ("applied", None),
         ),
         (
@@ -206,6 +209,27 @@ async def test_reapplying_replays_receipts_and_parks_only_the_missing_steps():
             ("declined", "changed_since_check"),
         ),
         (None, ("uncertain", "card_missing")),
+        (
+            {
+                "status": "executed",
+                "execution_result": {
+                    "success": True,
+                    "result": {"status": "conflict", "conflicts": [{}]},
+                },
+            },
+            ("declined", "destination_busy"),
+        ),
+        (
+            {
+                "status": "executed",
+                "execution_result": {"success": False, "result": {"status": "failed"}},
+            },
+            ("uncertain", "execution_not_confirmed"),
+        ),
+        (
+            {"status": "executed", "execution_result": {"success": True, "result": {}}},
+            ("uncertain", "execution_not_confirmed"),
+        ),
     ],
 )
 async def test_a_steps_outcome_is_read_off_its_card(row, expected):
@@ -216,7 +240,10 @@ async def test_a_steps_outcome_is_read_off_its_card(row, expected):
 
 
 async def test_dependency_state_separates_waiting_from_failed_and_fails_closed():
-    ok = {"status": "executed", "execution_result": {"success": True, "result": {}}}
+    ok = {
+        "status": "executed",
+        "execution_result": {"success": True, "result": {"status": "updated"}},
+    }
     waiting = {"status": "pending", "execution_result": None}
     rejected = {"status": "rejected", "execution_result": None}
     declined = {

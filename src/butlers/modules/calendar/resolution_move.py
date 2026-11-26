@@ -51,7 +51,7 @@ RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
     "changed_since_check": RESOLUTION_DECLINED_TEXT,
     "dependency_pending": (
         "Move not applied: an earlier step of this plan that frees this slot has not been "
-        "decided yet. Decide it first, then apply the plan again."
+        "decided yet. Decide it first, then plan the change again."
     ),
     "dependency_not_applied": (
         "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
@@ -206,12 +206,54 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
     return result
 
 
+#: The ``result.status`` of an approved update or response that really changed the calendar.
+_WROTE_STATUSES = frozenset({"updated", "applied"})
+
+
+def _object(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def card_outcome(status: str | None, execution_result: Any) -> tuple[str, str | None]:
+    """``(outcome, reason)`` of one approved card: ``applied``, ``pending``, ``declined`` or
+    ``uncertain``.
+
+    ``applied`` only when the executor ran it, succeeded, and the call itself reports that it
+    wrote (``updated`` or ``applied``). A card still waiting is ``pending``; one the owner rejected
+    or that expired, a move that declined (``resolution_declined``) and a move onto a busy slot
+    (``conflict``, the card's own ``fail`` policy) are ``declined`` with the reason. Anything else,
+    including an execution that failed or reports no status, is ``uncertain``: never ``applied``.
+    """
+    if status in ("pending", "approved"):
+        return "pending", None
+    if status in ("rejected", "expired", "cancelled", "abandoned"):
+        return "declined", f"card_{status}"
+    if status != "executed":
+        return "uncertain", "card_state_unknown"
+    result = _object(execution_result)
+    inner = _object(result.get("result"))
+    reported = inner.get("status")
+    if result.get("success") is True and reported in _WROTE_STATUSES:
+        return "applied", None
+    if reported == RESOLUTION_DECLINED:
+        reason = inner.get("reason")
+        return "declined", reason if isinstance(reason, str) else "move_not_applied"
+    if reported == "conflict":
+        return "declined", "destination_busy"
+    return "uncertain", "execution_not_confirmed"
+
+
 async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     """``applied``, ``pending`` or ``failed`` for the cards a step depends on.
 
-    ``applied`` only when every card was approved and its move really wrote. ``pending`` when
-    none failed but some are still waiting for the owner. Anything unreadable, rejected, expired
-    or executed without a write is ``failed``: it fails closed.
+    ``applied`` only when every card was approved and really wrote. ``pending`` when none failed
+    but some are still waiting for the owner. Anything unreadable, declined, uncertain, rejected
+    or expired is ``failed``: it fails closed.
     """
     if not action_ids:
         return "applied"
@@ -227,23 +269,10 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
         return "failed"
     waiting = False
     for row in rows:
-        if row["status"] in ("pending", "approved"):
+        outcome, _reason = card_outcome(row["status"], row["execution_result"])
+        if outcome == "pending":
             waiting = True
-            continue
-        result = row["execution_result"]
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except ValueError:
-                return "failed"
-        inner = result.get("result") if isinstance(result, dict) else None
-        wrote = (
-            row["status"] == "executed"
-            and isinstance(result, dict)
-            and result.get("success") is True
-            and not (isinstance(inner, dict) and inner.get("status") == RESOLUTION_DECLINED)
-        )
-        if not wrote:
+        elif outcome != "applied":
             return "failed"
     return "pending" if waiting else "applied"
 
@@ -323,7 +352,7 @@ async def check_resolution_binding(
         state = await dependency_state(pool, depends)
         if state != "applied":
             # Approved before the step it waits for was decided: nothing is written, and the
-            # owner re-applies the plan once the earlier card is settled.
+            # owner plans the change again once the earlier card is settled.
             reason = "dependency_pending" if state == "pending" else "dependency_not_applied"
             return ResolutionCheck(bound=True, refusal=reason)
     series_id = offer.get("series_event_id")

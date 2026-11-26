@@ -168,8 +168,8 @@ async def test_undo_parks_one_bound_card_per_applied_step_only(db) -> None:
             AsyncMock(return_value="UTC"),
         ),
     ):
-        undone = await undo_plan(SimpleNamespace(), "general", plan_id=plan.plan_id)
-        again = await undo_plan(SimpleNamespace(), "general", plan_id=plan.plan_id)
+        undone = await undo_plan(SimpleNamespace(), "general", plan_id=plan.plan_id, now=NOW)
+        again = await undo_plan(SimpleNamespace(), "general", plan_id=plan.plan_id, now=NOW)
 
     by_index = {r["index"]: r for r in undone["reversals"]}
     assert by_index[0]["approval_id"] and by_index[1]["reason"] == "step_pending"

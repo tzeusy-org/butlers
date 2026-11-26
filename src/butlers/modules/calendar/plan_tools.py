@@ -283,7 +283,9 @@ def register_plan_apply_tools(
         The plan is compiled again and refused (``plan_changed``, nothing written) unless its id and
         digest still match. Nothing runs until the owner approves each card, and a card declines if
         its event changed since the plan or a step it depends on was not applied. Re-applying the
-        same plan replays the recorded receipts and parks only the steps that have none. An invited
+        same plan replays the recorded receipts and parks only the steps that have none. This resume
+        works only until a card executes: an executed move changes the events, so the plan then
+        compiles differently (``plan_changed``) and the change is planned again. An invited
         meeting's decline parks ``calendar_respond`` for the owner like any other response.
         """
         return await apply_plan(

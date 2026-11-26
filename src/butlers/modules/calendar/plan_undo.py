@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -56,8 +56,13 @@ def _undo_args(card: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any] 
 async def undo_plan(
     module: CalendarModule, butler_name: str, *, plan_id: str, now: datetime | None = None
 ) -> dict[str, Any]:
-    """Park one reversal card per applied step; returns ``pending`` receipts."""
-    del now
+    """Park one reversal card per applied step; returns ``pending`` receipts.
+
+    Reversals mirror the apply order. A step that used a slot another step vacated is reversed
+    first: the vacating step's reversal depends on it, so undo can never put two events in one
+    slot. Highest step first, so a reversal's dependencies are parked before it.
+    """
+    moment = now or datetime.now(UTC)
     pool = pool_of(module)
     if pool is None:
         return {"status": "refused", "reason": "database_unavailable"}
@@ -73,18 +78,37 @@ async def undo_plan(
     digest = str(_obj(plan_row["action_payload"]).get("plan_digest") or "")
     zone = ZoneInfo(str(zone_name)) if zone_name else None
 
-    reversals: list[dict[str, Any]] = []
-    for receipt in receipts:
-        entry: dict[str, Any] = {"index": receipt["index"], "event_ref": receipt.get("event_ref")}
-        outcome, _reason = await step_outcome(pool, receipt)
+    outcomes = {r["index"]: (await step_outcome(pool, r))[0] for r in receipts}
+    cards: dict[int, str] = {}
+    by_index: dict[int, dict[str, Any]] = {}
+    for receipt in sorted(receipts, key=lambda r: -int(r["index"])):
+        index = int(receipt["index"])
+        entry: dict[str, Any] = {"index": index, "event_ref": receipt.get("event_ref")}
+        outcome = outcomes[index]
         if receipt.get("action") == "decline" and outcome == "applied":
             # A response reversal is the dashboard's server-bound inverse flow, not a move.
-            reversals.append(
-                {**entry, "undone": False, "reason": "response_reversal_not_supported"}
-            )
+            by_index[index] = {
+                **entry,
+                "undone": False,
+                "reason": "response_reversal_not_supported",
+            }
             continue
         if outcome != "applied":
-            reversals.append({**entry, "undone": False, "reason": f"step_{outcome}"})
+            by_index[index] = {**entry, "undone": False, "reason": f"step_{outcome}"}
+            continue
+        # Reversals this one must wait for: applied steps that moved into the slot this event left.
+        waits = [
+            int(r["index"])
+            for r in receipts
+            if index in (r.get("depends_on") or []) and outcomes[int(r["index"])] == "applied"
+        ]
+        unparked = [j for j in waits if j not in cards]
+        if unparked:
+            by_index[index] = {
+                **entry,
+                "undone": False,
+                "reason": f"blocked_by_step_{unparked[0]}",
+            }
             continue
         try:
             action_id = uuid.UUID(str(receipt["action_id"]))
@@ -96,20 +120,23 @@ async def undo_plan(
             )
         except Exception:
             logger.warning("calendar_undo_plan: step unreadable", exc_info=True)
-            reversals.append({**entry, "undone": False, "reason": "step_unreadable"})
+            by_index[index] = {**entry, "undone": False, "reason": "step_unreadable"}
             continue
         card = _obj(card_row["tool_args"]) if card_row is not None else {}
         call = _undo_args(card, binding)
         etag_after = binding.get("etag_after")
         if call is None or not etag_after:
             # Nothing to bind the reversal to: it is never offered unbound.
-            reversals.append({**entry, "undone": False, "reason": "no_recorded_result"})
+            by_index[index] = {**entry, "undone": False, "reason": "no_recorded_result"}
+            continue
+        if datetime.fromisoformat(call["start_at"]) < moment:
+            by_index[index] = {**entry, "undone": False, "reason": "in_the_past"}
             continue
         undo_id, _created = await park_resolution_move(
             pool,
             butler_name=butler_name,
             pair_id=f"undo:{plan_id}",
-            option_id=f"step:{receipt['index']}",
+            option_id=f"step:{index}",
             issue_digest=digest,
             call_args=call,
             etag=str(etag_after),
@@ -117,8 +144,17 @@ async def undo_plan(
             zone=zone,
             stale_reason="changed_since_move",
             summary=UNDO_SUMMARY,
+            depends_on=[uuid.UUID(cards[j]) for j in waits],
         )
-        reversals.append({**entry, "undone": None, "approval_id": str(undo_id), "reason": None})
+        cards[index] = str(undo_id)
+        by_index[index] = {
+            **entry,
+            "undone": None,
+            "approval_id": str(undo_id),
+            "depends_on": sorted(waits),
+            "reason": None,
+        }
+    reversals = [by_index[i] for i in sorted(by_index)]
     return {"status": "pending", "plan_id": plan_id, "reversals": reversals}
 
 
