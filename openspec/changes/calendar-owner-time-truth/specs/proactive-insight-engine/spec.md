@@ -2,8 +2,8 @@
 
 ### Requirement: The calendar occurrence probe
 
-The engine SHALL register the premise probe `('calendar', 'occurrence_current')`, backed by
-`public.resolve_calendar_occurrence(provider_identity, original_start)`, a SECURITY DEFINER function
+The engine SHALL register the premise probe `('calendar', 'occurrence_still_changed')`, backed by
+`public.resolve_calendar_occurrence(butler, event_id, original_start)`, a SECURITY DEFINER function
 that answers true while the occurrence still differs from what the owner accepted, false when it
 matches again or no longer applies, and unknown when it cannot tell. Unknown SHALL deliver the
 candidate stamped "as of", as for every probe.
