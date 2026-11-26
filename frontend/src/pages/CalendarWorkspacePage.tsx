@@ -288,6 +288,7 @@ export default function CalendarWorkspacePage() {
             error={dayBriefingQuery.error instanceof Error ? dayBriefingQuery.error : null}
             groups={dayBriefing?.groups ?? []}
             unavailable={dayBriefing?.overlays_available === false}
+            freshness={dayBriefing?.overlay_freshness ?? []}
             hasDomainContext={dayBriefing?.has_domain_context ?? false}
             hasEntries={dayBriefing?.has_entries ?? false}
             onSelectEntry={selection.handleBriefingSelect}

@@ -21,7 +21,7 @@
  *   domains" (coverage ran).
  */
 
-import type { UnifiedCalendarEntry } from "@/api/types.ts";
+import type { OverlayFreshness, UnifiedCalendarEntry } from "@/api/types.ts";
 import {
   overlayAmountBadge,
   overlayButlerAccent,
@@ -119,6 +119,8 @@ export interface DayBriefingCardProps {
   groups: import("@/api/types.ts").DayBriefingButlerGroup[];
   /** The overlay view could not be read; this is not the same as "no domain context". */
   unavailable?: boolean;
+  /** Per butler freshness; a stale butler gets a plaque and is never shown as current. */
+  freshness?: OverlayFreshness[];
   /** Whether at least one specialist contributed for the date. */
   hasDomainContext: boolean;
   /** Whether any overlay entry exists for the date. */
@@ -140,10 +142,12 @@ export function DayBriefingCard({
   error = null,
   groups,
   unavailable = false,
+  freshness = [],
   hasDomainContext,
   hasEntries,
   onSelectEntry,
 }: DayBriefingCardProps) {
+  const stale = freshness.filter((item) => item.state === "stale");
   const content = (
     <section
       data-testid="day-briefing-card"
@@ -156,6 +160,26 @@ export function DayBriefingCard({
         </h2>
         <span className="truncate font-mono text-[11px] text-fg">{heading}</span>
       </header>
+
+      {!isLoading && !isError && stale.length > 0 ? (
+        <p
+          data-testid="day-briefing-stale"
+          role="status"
+          className="mb-2 font-mono text-[11px] text-[var(--red-text)]"
+        >
+          {stale
+            .map(
+              (item) =>
+                `${titleizeToken(item.butler)} context ${
+                  item.stale_since
+                    ? `stale since ${item.stale_since.slice(0, 16).replace("T", " ")} UTC`
+                    : "has no freshness stamp"
+                }`,
+            )
+            .join("; ")}
+          . It may not reflect recent changes.
+        </p>
+      ) : null}
 
       {isLoading ? (
         <p className="font-mono text-[11px] text-[var(--dim)]">Loading…</p>
