@@ -1372,6 +1372,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "burn-down: direct education/travel tables; RFC-0010 sanctions contribution views, not these raw reads",
     (
         "src/butlers/jobs/calendar_overlay.py",
+        "education.mind_map_nodes",
+    ): "burn-down: direct education overlay tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/calendar_overlay.py",
+        "education.mind_maps",
+    ): "burn-down: direct education overlay tables; RFC-0010 sanctions contribution views, not these raw reads",
+    (
+        "src/butlers/jobs/calendar_overlay.py",
         "travel.accommodations",
     ): "burn-down: direct travel overlay tables; RFC-0020 sanctions the contribution view, not these direct reads",
     (
