@@ -237,3 +237,37 @@ async def test_calendar_changes_function_is_not_public(db) -> None:
         "SELECT has_function_privilege('public', "
         "'public.read_calendar_event_changes(timestamptz, integer, text[])', 'EXECUTE')"
     )
+
+
+async def test_calendar_changes_function_is_executable_by_the_switchboard_role(db) -> None:
+    pool = await db("core", schema="relationship")
+    signature = "public.read_calendar_event_changes(timestamptz, integer, text[])"
+
+    if not await pool.fetchval("SELECT 1 FROM pg_roles WHERE rolname = 'butler_switchboard_rw'"):
+        pytest.skip("per-butler roles are not provisioned in this test database")
+    assert await pool.fetchval(
+        "SELECT has_function_privilege('butler_switchboard_rw', $1, 'EXECUTE')", signature
+    )
+
+
+async def test_a_readable_to_blocked_flip_is_not_a_location_change(db) -> None:
+    pool = await db("core", schema="relationship")
+    ref = f"evt-{uuid.uuid4()}"
+    await _revision(
+        pool, ref, "e1", minutes=300, raw=_raw(location="Room 1"), observation="baseline"
+    )
+    # the same event later arrives policy-blocked: no raw, so no location to compare
+    await _revision(pool, ref, "e2", minutes=60, start_hours=1, raw=None, blocked=True)
+    ref2 = f"evt-{uuid.uuid4()}"
+    await _revision(pool, ref2, "e1", minutes=300, raw=None, blocked=True, observation="baseline")
+    await _revision(pool, ref2, "e2", minutes=60, start_hours=1, raw=_raw(location="Room 9"))
+
+    rows = {r["event_id"]: r for r in await _changes(pool)}
+
+    for item in (rows[ref], rows[ref2]):
+        assert item["prior_location"] is None and item["new_location"] is None
+    # and a flip that changes only the location never appears
+    ref3 = f"evt-{uuid.uuid4()}"
+    await _revision(pool, ref3, "e1", minutes=300, raw=_raw(location="A"), observation="baseline")
+    await _revision(pool, ref3, "e2", minutes=60, raw=None, blocked=True)
+    assert ref3 not in {r["event_id"] for r in await _changes(pool)}

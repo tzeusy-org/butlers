@@ -114,7 +114,7 @@ OP GET /api/butlers/{name}/state/{key} 3274c3eb0d57
 OP GET /api/calendar/accounts 27d1cf4a2b27
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
-OP GET /api/calendar/workspace/changes 9a00ecb23415
+OP GET /api/calendar/workspace/changes e80cf9893620
 OP GET /api/calendar/workspace/conflicts 6e4f58219019
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
@@ -1848,7 +1848,7 @@ SCHEMA CalendarAuditResponse bdd2cdba856d
 SCHEMA CalendarButlerEventPreviewRequest b5e1880e194c
 SCHEMA CalendarButlerEventPreviewResponse 70865507f5c1
 SCHEMA CalendarChange 3e4f7018682a
-SCHEMA CalendarChangesResponse 3240d75f67cb
+SCHEMA CalendarChangesResponse 59b2e565e5ab
 SCHEMA CalendarConflictEntry cc439ab2fa5a
 SCHEMA CalendarDayBriefingResponse ea57a7a52c1e
 SCHEMA CalendarInvitationEntry 7154fadc8eb3

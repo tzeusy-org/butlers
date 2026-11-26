@@ -719,6 +719,8 @@ class CalendarChangesResponse(BaseModel):
     changes_available: bool = True
     #: ``True`` when more changes exist than were returned.
     truncated: bool = False
+    #: ``False`` when the owner's account addresses could not be read (a lower bound, not exact).
+    owners_complete: bool = True
     since: datetime
 
 

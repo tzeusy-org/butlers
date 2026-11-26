@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 #: The journal reader clamps to the same bounds; the route refuses a window past them.
 CHANGES_MAX_AGE = timedelta(days=14)
+#: Clock skew a client's cursor may carry: a future ``since`` reads as now, an age a few minutes
+#: past the bound is still served (the reader clamps to 14 days).
+CHANGES_SKEW = timedelta(minutes=5)
 CHANGES_LIMIT = 200
 
 _READ_SQL = "SELECT * FROM public.read_calendar_event_changes($1, $2, $3::text[])"
@@ -79,6 +82,9 @@ class ChangesRead:
     available: bool
     #: ``True`` when more changes exist than the cap returned.
     truncated: bool = False
+    #: ``False`` when the owner's account addresses could not be read: an owner edit made through
+    #: another account may then appear, so the list is a lower bound, not exact.
+    owners_complete: bool = True
 
 
 def _change(row: Any) -> Change:
@@ -88,10 +94,13 @@ def _change(row: Any) -> Change:
 async def query_calendar_changes(db: DatabaseManager, *, since: datetime) -> ChangesRead:
     """Changes observed after ``since``, newest first; titles are best effort, never required."""
     owner_emails: list[str] = []
+    owners_complete = True
     try:
         found_emails, _failed = await db.fan_out_with_status(_OWNER_EMAILS_SQL)
         owner_emails = sorted({r["email"] for rows_of in found_emails.values() for r in rows_of})
+        owners_complete = not _failed
     except Exception:
+        owners_complete = False
         # Without the address list an owner edit made through another account can look like an
         # organizer change; the provider's own organizer.self still excludes the common case.
         logger.warning("calendar changes: owner addresses unavailable", exc_info=True)
@@ -103,13 +112,15 @@ async def query_calendar_changes(db: DatabaseManager, *, since: datetime) -> Cha
     truncated = len(rows) > CHANGES_LIMIT
     changes = [_change(r) for r in rows[:CHANGES_LIMIT]]
     if not changes:
-        return ChangesRead(changes=[], available=True)
+        return ChangesRead(changes=[], available=True, owners_complete=owners_complete)
     refs = sorted({c.event_id for c in changes})
     try:
         found, _failed = await db.fan_out_with_status(_TITLES_SQL, (refs,))
     except Exception:
         logger.warning("calendar changes: titles unavailable", exc_info=True)
-        return ChangesRead(changes=changes, available=True, truncated=truncated)
+        return ChangesRead(
+            changes=changes, available=True, truncated=truncated, owners_complete=owners_complete
+        )
     by_ref: dict[str, list[Any]] = {}
     for rows_of in found.values():
         for r in rows_of:
@@ -130,4 +141,6 @@ async def query_calendar_changes(db: DatabaseManager, *, since: datetime) -> Cha
             # No projection row to vouch for the event: no third-party text (location) either.
             values["prior_location"] = values["new_location"] = None
         enriched.append(Change(**values))
-    return ChangesRead(changes=enriched, available=True, truncated=truncated)
+    return ChangesRead(
+        changes=enriched, available=True, truncated=truncated, owners_complete=owners_complete
+    )

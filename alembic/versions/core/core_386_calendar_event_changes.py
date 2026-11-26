@@ -73,7 +73,10 @@ AS $fn$
                p.starts_at AS prior_start, r.starts_at AS new_start,
                p.ends_at AS prior_end, r.ends_at AS new_end,
                p.status AS prior_status, r.status AS new_status,
-               p.raw ->> 'location' AS prior_location, r.raw ->> 'location' AS new_location,
+               CASE WHEN p.raw IS NOT NULL AND r.raw IS NOT NULL
+                    THEN p.raw ->> 'location' END AS prior_location,
+               CASE WHEN p.raw IS NOT NULL AND r.raw IS NOT NULL
+                    THEN r.raw ->> 'location' END AS new_location,
                CASE WHEN r.raw IS NULL THEN NULL
                     ELSE COALESCE((r.raw -> 'organizer' ->> 'self') = 'true', false)
                          OR pg_catalog.lower(r.raw -> 'organizer' ->> 'email') = ANY (

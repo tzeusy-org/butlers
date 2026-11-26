@@ -148,7 +148,6 @@ async def test_calendar_changes_truncation_is_reported(app):
 @pytest.mark.parametrize(
     "since",
     [
-        (_NOW + timedelta(hours=1)).isoformat(),
         (_NOW - timedelta(days=15)).isoformat(),
         "2026-01-01T00:00:00",
     ],
@@ -207,3 +206,29 @@ async def test_calendar_changes_without_the_owners_addresses_still_answers(app):
     resp = await _get(app, _since())
 
     assert resp.status_code == 200 and len(resp.json()["data"]["changes"]) == 1
+
+
+async def test_calendar_changes_a_cursor_from_a_clock_ahead_reads_as_now(app):
+    app, _, switchboard = _build(app, journal=[])
+
+    resp = await _get(app, (datetime.now(UTC) + timedelta(hours=2)).isoformat())
+
+    assert resp.status_code == 200
+    assert switchboard.fetch.await_args.args[1] <= datetime.now(UTC)
+
+
+async def test_calendar_changes_serves_an_age_a_few_minutes_past_the_bound(app):
+    app, _, _ = _build(app, journal=[])
+
+    resp = await _get(app, (datetime.now(UTC) - timedelta(days=14, minutes=3)).isoformat())
+
+    assert resp.status_code == 200
+
+
+async def test_calendar_changes_unreadable_owner_addresses_make_the_result_a_lower_bound(app):
+    app, db, _ = _build(app, journal=[_journal_row()])
+    db.fan_out_with_status = AsyncMock(return_value=({}, ["general"]))
+
+    data = (await _get(app, _since())).json()["data"]
+
+    assert data["owners_complete"] is False and len(data["changes"]) == 1

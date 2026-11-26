@@ -99,7 +99,11 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
-from butlers.api.read_models.calendar_changes import CHANGES_MAX_AGE, query_calendar_changes
+from butlers.api.read_models.calendar_changes import (
+    CHANGES_MAX_AGE,
+    CHANGES_SKEW,
+    query_calendar_changes,
+)
 from butlers.api.read_models.calendar_day_sheet import (
     query_calendar_day_sheet,
     query_calendar_day_verdict,
@@ -1990,19 +1994,19 @@ async def get_workspace_changes(
     Read from the connector's revision journal through a narrow reader; the owner's own edits and
     events the owner declined are not returned. A failed read answers ``changes_available=false``
     with no items (never an empty "no changes"). ``since`` defaults to seven days ago; if given it
-    must carry a timezone, must not be in the future and must be at most 14 days old (HTTP 400
-    otherwise): the window is never shortened silently. Only events still ahead are returned, one
-    item per organizer change across the owner's calendars, never a baseline or a new invitation;
-    ``truncated`` says more exist than the cap.
+    must carry a timezone and be at most 14 days (plus five minutes of clock skew) old (HTTP 400
+    otherwise); a future value reads as now. The window is never shortened silently. Only events
+    still ahead are returned, one item per organizer change across the owner's calendars, never a
+    baseline or a new invitation; ``truncated`` says more exist than the cap, and
+    ``owners_complete=false`` that the owner's account addresses were unreadable (a lower bound).
     """
     now = datetime.now(UTC)
     if since is None:
         since = now - timedelta(days=7)
     if since.tzinfo is None:
         raise HTTPException(status_code=400, detail="since must include a timezone")
-    if since > now:
-        raise HTTPException(status_code=400, detail="since must not be in the future")
-    if now - since > CHANGES_MAX_AGE:
+    since = min(since, now)  # a client clock ahead of the server reads as now, not an error
+    if now - since > CHANGES_MAX_AGE + CHANGES_SKEW:
         raise HTTPException(status_code=400, detail="since is older than 14 days")
     read = await query_calendar_changes(db, since=since)
     return ApiResponse[CalendarChangesResponse](
@@ -2031,6 +2035,7 @@ async def get_workspace_changes(
             ],
             changes_available=read.available,
             truncated=read.truncated,
+            owners_complete=read.owners_complete,
             since=since,
         )
     )
