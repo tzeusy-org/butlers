@@ -933,6 +933,33 @@ async def _fetch_proposal_entries(
     return entries, scan.available, dropped
 
 
+def _envelope_claims_by_key(value: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """The envelope's v2 claims by ``claim_key`` (empty for a v1 envelope)."""
+    raw = value.get("claims")
+    if not isinstance(raw, list):
+        return {}
+    return {str(c["claim_key"]): c for c in raw if isinstance(c, Mapping) and c.get("claim_key")}
+
+
+def _claim_link(claim_key: Any, claims_by_key: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The claim fields an overlay entry carries so the workspace can show a record once.
+
+    ``claim_key`` and ``claim_presence`` let the grid hide this entry when the claim's own calendar
+    row (presence ``block`` or ``reminder``) is already shown; ``claim_door`` is the producing
+    butler's link to the record. Empty when the entry has no claim.
+    """
+    if not isinstance(claim_key, str) or not claim_key:
+        return {}
+    claim = claims_by_key.get(claim_key)
+    link: dict[str, Any] = {"claim_key": claim_key}
+    if claim is not None:
+        link["claim_presence"] = claim.get("presence")
+        door = claim.get("door")
+        if isinstance(door, Mapping):
+            link["claim_door"] = dict(door)
+    return link
+
+
 def _normalize_overlay_envelope(
     overlay: CalendarOverlayRow,
     *,
@@ -1001,6 +1028,8 @@ def _normalize_overlay_envelope(
     if not isinstance(raw_entries, list):
         return [], True
 
+    claims_by_key = _envelope_claims_by_key(value)
+
     entries: list[UnifiedCalendarEntry] = []
     for index, raw_entry in enumerate(raw_entries):
         if not isinstance(raw_entry, Mapping):
@@ -1037,6 +1066,7 @@ def _normalize_overlay_envelope(
                     "source_butler": envelope_butler,
                     "meta": dict(meta),
                     "date": target_date.isoformat(),
+                    **_claim_link(raw_entry.get("claim_key"), claims_by_key),
                 },
                 source_butler=envelope_butler,
             )

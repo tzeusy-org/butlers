@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from butlers.core.state import state_get
 from butlers.jobs import calendar_overlay as job
 from tests.jobs.calendar_contribution_harness import save_owner_zone
 from tests.modules.test_calendar_reminder_integration import (
@@ -191,6 +192,10 @@ async def test_a_flight_owns_a_block_and_a_check_in_reminder_that_move_with_it(d
     assert rows[f"claim:travel:leg:{leg}"]["starts_at"] == DEP
     assert rows[f"claim:travel:leg:{leg}"]["ends_at"] == ARR
     assert first["claims"]["created"] == 2 and again["claims"]["unchanged"] == 2
+    departure = await state_get(pool, job.overlay_key("2030-03-10"))
+    assert [e["claim_key"] for e in departure["entries"] if e["kind"] == "departure"] == [
+        f"travel:leg:{leg}"
+    ]
     assert len(mod._provider.create_calls) == 2
 
     # Rebooked three hours later: the same rows move, the provider gets patches, no new events.

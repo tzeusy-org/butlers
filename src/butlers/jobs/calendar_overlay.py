@@ -120,6 +120,17 @@ class OverlayEntry(_OverlayEntryRequired, total=False):
     """
 
     meta: dict[str, Any]
+    #: The domain time claim this entry shows (``<domain>:<kind>:<id>``), so the workspace can show
+    #: a record once when its claim also owns a calendar row, and offer a door to the record.
+    claim_key: str
+
+
+def _with_claim(entry: OverlayEntry, key: str, row: Any) -> OverlayEntry:
+    """``entry`` tagged with the claim ``key`` built from the row's id (untagged without an id)."""
+    ref = _row_id(row)
+    if ref is not None:
+        entry["claim_key"] = f"{key}:{ref}"
+    return entry
 
 
 class OverlayContribution(TypedDict):
@@ -706,7 +717,7 @@ async def run_finance_calendar_overlay_contribution(
                 "payment_method": row["payment_method"],
             },
         }
-        entries_by_date.setdefault(date_str, []).append(entry)
+        entries_by_date.setdefault(date_str, []).append(_with_claim(entry, "finance:bill", row))
 
     for row in sub_rows:
         renew = row["next_renewal"]
@@ -726,7 +737,9 @@ async def run_finance_calendar_overlay_contribution(
                 "frequency": row["frequency"],
             },
         }
-        entries_by_date.setdefault(date_str, []).append(entry)
+        entries_by_date.setdefault(date_str, []).append(
+            _with_claim(entry, "finance:subscription", row)
+        )
 
     claims_by_date = (
         finance_claims(
@@ -752,12 +765,16 @@ async def run_finance_calendar_overlay_contribution(
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
         if cancel_by is not None and today <= cancel_by <= horizon:
             entries_by_date.setdefault(cancel_by.isoformat(), []).append(
-                {
-                    "kind": "subscription_cancel_by",
-                    "label": f"Cancel {row['service']}",
-                    "priority": "high",
-                    "meta": {},
-                }
+                _with_claim(
+                    {
+                        "kind": "subscription_cancel_by",
+                        "label": f"Cancel {row['service']}",
+                        "priority": "high",
+                        "meta": {},
+                    },
+                    "finance:subscription_cancel_by",
+                    row,
+                )
             )
 
     dates_written, total_entries, claim_result, complete = await finish_contribution(
@@ -1192,7 +1209,9 @@ async def run_travel_calendar_overlay_contribution(
     entries_by_date: dict[str, list[OverlayEntry]] = {}
     departure_count = arrival_count = check_in_count = check_out_count = 0
 
-    def _add(date_str: str, entry: OverlayEntry) -> None:
+    def _add(date_str: str, entry: OverlayEntry, *, leg: Any = None) -> None:
+        if leg is not None:
+            _with_claim(entry, "travel:leg", leg)
         entries_by_date.setdefault(date_str, []).append(entry)
 
     def _in_window(ts: datetime | None) -> bool:
@@ -1227,6 +1246,7 @@ async def run_travel_calendar_overlay_contribution(
                         "confirmation_number": row["confirmation_number"],
                     },
                 },
+                leg=row,
             )
             departure_count += 1
 
@@ -1250,6 +1270,7 @@ async def run_travel_calendar_overlay_contribution(
                         "pnr": row["pnr"],
                     },
                 },
+                leg=row,
             )
             arrival_count += 1
 
@@ -1828,6 +1849,7 @@ async def run_health_calendar_overlay_contribution(
                 "label": title,
                 "priority": priority,
                 "meta": {"appointment_id": event_id, "starts_at": starts_at.isoformat()},
+                "claim_key": f"health:visit:{event_id}",
             },
         )
         # The visit already is a calendar event: its claim owns no row of its own (overlay

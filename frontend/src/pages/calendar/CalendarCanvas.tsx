@@ -3,11 +3,13 @@
  * layout (butler lanes, month matrix, week/day time grid or agenda list).
  */
 
+import { useMemo } from "react";
 import type { ReactNode, RefObject } from "react";
 
 import type { CalendarWorkspaceView, UnifiedCalendarEntry } from "@/api/types.ts";
 import { DebriefCard } from "@/components/calendar/DebriefCard";
 import { FetchingDim } from "@/components/ui/fetching-dim";
+import { dedupOverlaysAgainstRows, overlaysByDay } from "@/lib/calendar-overlays";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
@@ -65,6 +67,11 @@ export function CalendarCanvas({
 }: CalendarCanvasProps) {
   const { workspaceQuery, defaultTimezone } = data;
   const { overlaysQuery } = context;
+  // A record whose claim also owns a calendar row shows once, as its row.
+  const overlaysByDayMap = useMemo(
+    () => overlaysByDay(dedupOverlaysAgainstRows(context.overlayEntries, data.entries)),
+    [context.overlayEntries, data.entries],
+  );
 
   let layout: ReactNode;
   if (view === "butler") {
@@ -88,7 +95,7 @@ export function CalendarCanvas({
         start={data.start}
         entriesByDay={data.entriesByDay}
         overlaysEnabled={overlaysEnabled}
-        overlaysByDayMap={context.overlaysByDayMap}
+        overlaysByDayMap={overlaysByDayMap}
         defaultTimezone={defaultTimezone}
         onOpenDetail={onOpenDetail}
         updateQuery={updateQuery}
@@ -103,7 +110,7 @@ export function CalendarCanvas({
           weekDays={data.weekDays}
           entriesByDay={data.entriesByDay}
           overlaysEnabled={overlaysEnabled}
-          overlaysByDayMap={context.overlaysByDayMap}
+          overlaysByDayMap={overlaysByDayMap}
           overlapEntryIds={context.overlapEntryIds}
           defaultTimezone={defaultTimezone}
           timeGridRef={timeGridRef}
