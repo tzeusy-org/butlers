@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from butlers.jobs import calendar_overlay as job
 
@@ -32,7 +33,7 @@ def test_every_producer_door_route_is_a_declared_dashboard_route():
 
 
 def test_the_claims_the_producers_build_use_those_routes():
-    zone = UTC
+    zone = ZoneInfo("Asia/Singapore")
     day = date(2030, 3, 4)
     at = datetime(2030, 3, 4, 9, tzinfo=UTC)
     claims = [
