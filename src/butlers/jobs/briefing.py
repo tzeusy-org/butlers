@@ -114,6 +114,11 @@ def today_sgt() -> date_cls:
     return datetime.now(tz=SGT).date()
 
 
+def _now() -> datetime:
+    """The instant every briefing job reads (a seam: tests pin it)."""
+    return datetime.now(tz=UTC)
+
+
 async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
     """Return the owner's configured timezone for day-window math, else SGT.
 
@@ -131,6 +136,22 @@ async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
     except Exception:
         logger.warning("Could not resolve owner timezone for briefing; using SGT", exc_info=True)
     return SGT
+
+
+async def briefing_day(pool: asyncpg.Pool) -> tuple[date_cls, tzinfo]:
+    """The owner's current calendar day and the zone it is read in (one resolution per run).
+
+    The date keys ``briefing/daily/<date>`` and the combined payload, so every job resolves it the
+    same way: the owner's configured zone, else the SGT fallback. For an SGT owner the key is the
+    one the fixed UTC+8 reading produced.
+    """
+    zone = await owner_briefing_zone(pool)
+    return _now().astimezone(zone).date(), zone
+
+
+def day_start_utc(day: date_cls, zone: tzinfo) -> datetime:
+    """Local midnight of ``day`` in ``zone``, as a UTC instant."""
+    return datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(UTC)
 
 
 def contribution_key(date: str) -> str:
@@ -284,12 +305,11 @@ async def run_health_briefing_contribution(
     """
     del job_args
 
-    # The contribution key/date stays on the fleet-wide SGT briefing date (every reader
-    # of ``briefing/daily/<date>`` keys on it); only the dose day window and the
-    # missed / due-later split follow the owner's configured timezone.
-    today_str = today_sgt().isoformat()
+    # The contribution key/date, the dose day window and the missed / due-later split all follow
+    # the owner's zone, resolved once (every reader of ``briefing/daily/<date>`` does the same).
     owner_zone = await owner_briefing_zone(pool)
-    now_local = datetime.now(tz=owner_zone)
+    now_local = _now().astimezone(owner_zone)
+    today_str = now_local.date().isoformat()
     # Owner-local day boundaries (midnight -> next midnight) converted to UTC.
     local_midnight = datetime(now_local.year, now_local.month, now_local.day, tzinfo=owner_zone)
     today_start = local_midnight.astimezone(UTC)
@@ -470,7 +490,7 @@ async def run_finance_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
+    today_dt, _zone = await briefing_day(pool)
     today_str = today_dt.isoformat()
     now_utc = datetime.now(tz=UTC)
     cutoff_48h = today_dt + timedelta(days=2)
@@ -761,7 +781,7 @@ async def run_relationship_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
+    today_dt, _zone = await briefing_day(pool)
     today_str = today_dt.isoformat()
     now_utc = datetime.now(tz=UTC)
 
@@ -995,7 +1015,8 @@ async def run_travel_briefing_contribution(
     """
     del job_args
 
-    today_str = today_sgt().isoformat()
+    today_dt, _zone = await briefing_day(pool)
+    today_str = today_dt.isoformat()
     now_utc = datetime.now(tz=UTC)
     cutoff_48h = now_utc + timedelta(hours=48)
 
@@ -1134,12 +1155,11 @@ async def run_education_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
+    today_dt, zone = await briefing_day(pool)
     today_str = today_dt.isoformat()
     now_utc = datetime.now(tz=UTC)
-    # Compute SGT midnight boundary and convert to UTC for timestamp comparisons
-    today_start_sgt = datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=SGT)
-    today_start = today_start_sgt.astimezone(UTC)
+    # Owner-local midnight, as a UTC instant for timestamp comparisons
+    today_start = day_start_utc(today_dt, zone)
 
     highlights: list[BriefingHighlight] = []
 
@@ -1287,7 +1307,8 @@ async def run_home_briefing_contribution(
     """
     del job_args
 
-    today_str = today_sgt().isoformat()
+    today_dt, _zone = await briefing_day(pool)
+    today_str = today_dt.isoformat()
 
     highlights: list[BriefingHighlight] = []
 
@@ -1484,7 +1505,7 @@ async def collect_briefing_contributions(
     """Aggregate specialist briefing contributions into a combined payload.
 
     Steps:
-    1. Determine today's date in SGT.
+    1. Determine today's date in the owner's zone.
     2. Build the expected set of butler-typed specialist agents (excludes staffers).
     3. Query ``general.v_briefing_contributions`` for today's date.
     4. Validate each contribution; log warnings for malformed entries.
@@ -1501,7 +1522,8 @@ async def collect_briefing_contributions(
     """
     del job_args  # reserved for future parameterisation
 
-    date_str = today_sgt().isoformat()
+    today_dt, _zone = await briefing_day(pool)
+    date_str = today_dt.isoformat()
     contribution_state_key = contribution_key(date_str)
 
     # ---------------------------------------------------------------------------
@@ -1671,10 +1693,9 @@ async def run_lifestyle_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
+    today_dt, zone = await briefing_day(pool)
     today_str = today_dt.isoformat()
-    sgt_midnight = datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=SGT)
-    today_start = sgt_midnight.astimezone(UTC)
+    today_start = day_start_utc(today_dt, zone)
 
     highlights: list[BriefingHighlight] = []
 

@@ -39,7 +39,6 @@ async def _run(pool, instant=_INSTANT):
 
     write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DAY),
         patch("butlers.jobs.briefing.datetime", _Frozen),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):

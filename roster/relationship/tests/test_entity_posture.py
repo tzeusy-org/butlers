@@ -24,6 +24,7 @@ import pytest
 
 from butlers.jobs.briefing import _count_birthdays_on, run_relationship_briefing_contribution
 from butlers.jobs.calendar_overlay import run_relationship_calendar_overlay_contribution
+from butlers.testing.briefing_clock import sgt_noon
 from butlers.testing.migration import migration_bootstrap_db_url
 from butlers.tools.relationship.posture import entity_set_posture
 
@@ -185,7 +186,7 @@ async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
 
     write = AsyncMock()
     with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_TODAY),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
         patch("butlers.jobs.briefing._write_contribution", new=write),
         patch(
             "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
@@ -213,7 +214,7 @@ async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(rel_pool: as
         return 1
 
     with (
-        patch("butlers.jobs.calendar_overlay.today_sgt", return_value=_TODAY),
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
         patch("butlers.jobs.calendar_overlay.state_set", new=_state_set),
         patch("butlers.jobs.calendar_overlay.state_list", new=AsyncMock(return_value=[])),
         patch("butlers.jobs.calendar_overlay.state_delete", new=AsyncMock()),
