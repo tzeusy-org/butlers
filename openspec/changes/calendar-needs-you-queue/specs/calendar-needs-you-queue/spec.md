@@ -33,7 +33,7 @@ The queue SHALL track, per kind, whether its read is complete. A kind whose read
 unavailable, or came back partial (a dropped row or a degraded source) SHALL be named as unknown in
 the queue, and the count SHALL then be shown as a lower bound ("3+ need you") and SHALL never drop to
 zero because of it. Only when every counted kind is complete and holds nothing SHALL the queue say that
-nothing needs the owner. The `changes` kind (provider moves, cancellations and location changes) is not a counted kind until its feed exists: the queue SHALL show a fixed line that moved-under-you changes are not tracked yet, and the "+" and the unknown list SHALL name only a kind whose read failed.
+nothing needs the owner. The `changes` kind (provider moves, cancellations and location changes) is counted once the changes feed (`calendar-changes-feed`) is read: a failed or truncated read then makes it unknown like any other kind. Until that read exists the queue SHALL show a fixed line that moved-under-you changes are not tracked yet, and the "+" and the unknown list SHALL name only a kind whose read failed. Overlaps are read only in the day and week views: in any other view the queue SHALL show a fixed line saying so and SHALL NOT mark overlaps unknown.
 
 #### Scenario: A failing proposals read does not empty the queue
 
@@ -56,9 +56,9 @@ The queue SHALL register its keys through the shared list-triage hook and so the
 panel it concerns), and the verbs of the selected item's kind SHALL be bound to plain keys. Keys
 SHALL be suspended while focus is in an editable field or an open dialog, SHALL appear in the `?` help
 sheet and the footer hint, and SHALL each have a command-palette form acting on the same selected
-item. For an invitation `a`, `d` and `t` SHALL accept, decline and tentatively accept it through the
+item. For an invitation `a`, `d` and `u` (unsure) SHALL accept, decline and tentatively accept it through the
 existing invitation response path and show its receipt; for a proposal `a` SHALL accept and `d`
-SHALL dismiss it through the existing proposal mutations. A key whose action is not available for the
+SHALL dismiss it through the existing proposal mutations. No key the queue binds SHALL shadow a key the calendar page already binds (`t` jumps to today, the arrows step the range, `c` and the search key keep their meaning), and no key SHALL be registered twice on the page. A key whose action is not available for the
 selected item SHALL be unbound, not a silent no-op. A response to an invitation that reaches another
 person SHALL keep the existing approval behaviour: the queue never sends one itself.
 
@@ -66,6 +66,11 @@ person SHALL keep the existing approval behaviour: the queue never sends one its
 
 - **WHEN** the owner presses `j` to select an invitation and then `d`
 - **THEN** the existing decline path SHALL be called once for that invitation and its receipt SHALL show in the queue
+
+#### Scenario: The page's keys keep their meaning
+
+- **WHEN** an invitation is selected and `t` is pressed
+- **THEN** the page SHALL jump to today and no response SHALL be sent
 
 #### Scenario: A verb that does not apply is not bound
 
