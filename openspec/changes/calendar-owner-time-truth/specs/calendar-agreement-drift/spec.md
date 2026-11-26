@@ -59,7 +59,9 @@ Scope: v1-mandatory
 
 Each open condition SHALL yield one insight candidate whose premise is the condition, in the timed
 lane when the occurrence starts within 24 hours and the digest lane otherwise; a dark timed lane
-SHALL fall back to the digest lane and never call notify directly. A change that reverts before
+SHALL fall back to the digest lane and never call notify directly. Timed candidates from this
+producer SHALL count against the timed lane's per-day cap of six, shared with every other timed
+producer, so a burst of moved meetings cannot exceed it. A change that reverts before
 delivery SHALL withdraw the candidate with reason `premise_false`; a revert after delivery SHALL
 amend the delivered message in place, struck through, once. A replayed cycle SHALL change nothing a
 second time. Title, location and attendee text SHALL reach the card only through the inert-text and

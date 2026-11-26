@@ -10,7 +10,11 @@ anchored occurrence moves, the reminder SHALL be rebased in the same transaction
 `reminder_rebased` receipt, idempotent on the anchor's revision. When the occurrence is cancelled
 or the owner declines it, the reminder SHALL be cancelled with reason `anchor_cancelled`. A
 recurring anchor SHALL follow one occurrence by original start and leave the others alone. While
-the calendar source is stale, no rebase SHALL happen.
+the calendar source is stale, no rebase SHALL happen. A rebase or a retirement SHALL produce exactly
+one insight candidate through the broker, never a direct notify: a digest line, or a timed line when
+the reminder's new time is under 2 hours away. That candidate SHALL carry no premise, because
+`occurrence_still_changed` answers a different question (whether an accepted occurrence still
+differs from what the owner agreed to), not whether this reminder's time is still right.
 
 ID: REQ-module-calendar-057
 Source: bu-5ii4gj.10 slices R-S1, R-S2; design "Reminders that follow their event"
@@ -20,6 +24,11 @@ Scope: v1-mandatory
 
 - **WHEN** a reminder anchored 60 minutes before a 15:00 event is synced after the event moved to 17:00
 - **THEN** its time SHALL be 16:00, one `reminder_rebased` receipt SHALL exist, and a second unchanged sync SHALL add none
+
+#### Scenario: A rebase tells the owner once
+
+- **WHEN** an anchored reminder is rebased, and the same sync is replayed
+- **THEN** exactly one insight candidate SHALL exist for it, in the digest lane (or the timed lane when under 2 hours away), carrying no premise, and the replay SHALL add none
 
 #### Scenario: The reminder retires with its event
 
@@ -84,3 +93,8 @@ Scope: v1-mandatory
 - **THEN** they must use butler MCP tools (`calendar_update_butler_event`, `calendar_update_event` with the event ID)
 - **AND** the butler updates both its local state and the Google Calendar event atomically
 - **AND** a direct Google Calendar edit is reverted on the next sync cycle with a receipt, never silently
+
+#### Scenario: A revert tells the owner once
+
+- **WHEN** an edit on Google to a butler-owned event is reverted
+- **THEN** one receipt row SHALL exist and exactly one insight candidate SHALL be proposed through the broker (the same line as a reminder rebase: digest lane, or timed when the event is under 2 hours away), and a replayed push SHALL add neither

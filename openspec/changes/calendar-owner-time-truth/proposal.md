@@ -34,6 +34,9 @@ pursuit run 26 move 10).
 - Gesture: S1 push-loop honesty is already on main (calendar-mirror-truth, core_377); S2 revert-with-receipt
   (adoption, If-Match and the recurring question wait on the owner decision).
 
+Note: main's Dual-Lane requirement carries no id; REQ-module-calendar-059 is its MODIFIED form (the
+existing scenario names are kept).
+
 ## Open owner decision (parked, not specified here)
 
 Whether an owner's own drag or delete of a Butlers-owned one-off in Google should be adopted as an

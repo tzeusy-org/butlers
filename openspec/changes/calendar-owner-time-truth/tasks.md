@@ -20,5 +20,5 @@
 ## 3. The owner's gesture is an instruction
 
 - [x] 3.1 Push-loop honesty: already on main (calendar-mirror-truth).
-- [ ] 3.2 Revert with a receipt row and an owner-visible notice when a butler-owned event is edited on Google.
+- [ ] 3.2 Revert with a receipt row and one broker insight line (digest, or timed when under 2 hours) when a butler-owned event is edited on Google.
 - [ ] 3.3 Adoption, undo, If-Match and the recurring question: parked on the owner decision, not built.

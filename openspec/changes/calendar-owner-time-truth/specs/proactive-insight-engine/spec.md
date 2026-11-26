@@ -5,7 +5,8 @@
 The engine SHALL register the premise probe `('calendar', 'occurrence_still_changed')`, backed by
 `public.resolve_calendar_occurrence(butler, event_id, original_start)`, a SECURITY DEFINER function
 that answers true while the occurrence still differs from what the owner accepted, false when it
-matches again or no longer applies, and unknown when it cannot tell. Unknown SHALL deliver the
+matches again or the agreement ended (the owner declined or cleared their answer, or the event was
+cancelled), and unknown when there is no agreement row or it cannot tell. Unknown SHALL deliver the
 candidate stamped "as of", as for every probe.
 
 ID: REQ-proactive-insight-engine-040
@@ -15,6 +16,11 @@ Scope: v1-mandatory
 #### Scenario: A reverted change reads false
 
 - **WHEN** an occurrence's current terms match the agreed terms
+- **THEN** the probe SHALL answer false
+
+#### Scenario: A declined or cancelled occurrence reads false
+
+- **WHEN** the owner declined the occurrence or it was cancelled after they accepted it
 - **THEN** the probe SHALL answer false
 
 #### Scenario: A missing occurrence reads unknown
