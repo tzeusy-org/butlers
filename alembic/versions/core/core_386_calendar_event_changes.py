@@ -1,7 +1,7 @@
 """read_calendar_event_changes: organizer-made changes from the revision journal (bu-5ii4gj.11 N3).
 
 Revision ID: core_386
-Revises: core_383
+Revises: core_385
 Create Date: 2026-11-27 09:00:00.000000
 
 ``connectors.calendar_event_revisions`` (core_369) keeps titles, attendees and raw payloads, so no
@@ -35,7 +35,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_386"
-down_revision = "core_383"
+down_revision = "core_385"
 branch_labels = None
 depends_on = None
 
