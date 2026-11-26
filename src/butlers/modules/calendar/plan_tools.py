@@ -175,6 +175,9 @@ async def plan_change(
             hi,
             ZoneInfo(str(zone_name)),
         )
+    hours = None
+    if kind == "shift_window" and zone_name:
+        hours = cr.free_windows([], lo, hi, ZoneInfo(str(zone_name)))
     plan = compile_plan(
         kind,
         window,
@@ -185,6 +188,7 @@ async def plan_change(
         delta=delta,
         all_day_entry_ids=frozenset(str(r["instance_id"]) for r in busy_rows if r.get("all_day")),
         stale_source=_sources_stale(sources, moment),
+        working_hours=hours,
     )
     return plan_payload(plan, window)
 

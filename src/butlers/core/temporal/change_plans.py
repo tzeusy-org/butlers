@@ -222,6 +222,7 @@ def compile_plan(
     delta: timedelta | None = None,
     all_day_entry_ids: frozenset[str] = frozenset(),
     stale_source: bool = False,
+    working_hours: Sequence[tuple[datetime, datetime]] | None = None,
 ) -> Plan:
     """Compile one verb over ``window`` into steps and skipped events. Pure.
 
@@ -230,6 +231,7 @@ def compile_plan(
     windows free on every owner-busy calendar. ``busy`` (shift) holds every busy interval,
     including the events being shifted: a shifted event's old slot is free only for the steps that
     declare it as a dependency. ``stale_source`` also covers a partial mirror: no plan is compiled.
+    ``working_hours`` (shift) are the owner-zone working-day windows a shifted event must land in.
     """
     start, end = window
     if end <= start:
@@ -276,7 +278,9 @@ def compile_plan(
         for event in movers:
             if event.entry_id not in vacating:
                 continue
-            slot = _destination(kind, event, end, now, delta, free, busy, vacating, taken)
+            slot = _destination(
+                kind, event, end, now, delta, free, busy, vacating, taken, working_hours
+            )
             if isinstance(slot, str):
                 failed[event.entry_id] = slot
             else:
@@ -287,7 +291,7 @@ def compile_plan(
             order, cyclic = _order(movers, deps)
             if not cyclic:
                 break
-            failed = {entry: "dependency_cycle" for entry in cyclic}
+            failed = {entry: "overlaps_another_moving_event" for entry in cyclic}
         vacating -= set(failed)
         skipped.update(failed)
 
@@ -381,6 +385,7 @@ def _destination(
     busy: Sequence[BusyInterval],
     vacating: set[str],
     taken: Sequence[tuple[datetime, datetime]],
+    working_hours: Sequence[tuple[datetime, datetime]] | None = None,
 ) -> tuple[datetime, datetime] | str:
     """Where one movable event goes, or the reason it stays."""
     if kind == "clear_window":
@@ -390,6 +395,10 @@ def _destination(
     begin, finish = event.start_at + delta, event.end_at + delta
     if begin < now:
         return "destination_in_the_past"
+    if working_hours is not None and not any(
+        w0 <= begin and finish <= w1 for w0, w1 in working_hours
+    ):
+        return "destination_outside_working_hours"
     for interval in busy:
         if interval.entry_id == event.entry_id or interval.entry_id in vacating:
             continue  # itself, or an event that really moves: a declared dependency, checked below
@@ -397,5 +406,5 @@ def _destination(
             return "destination_busy"
     for other in taken:
         if _overlaps(begin, finish, other[0], other[1]):
-            return "destination_busy"
+            return "overlaps_another_moving_event"
     return begin, finish

@@ -289,3 +289,32 @@ def test_request_ids_are_uuids_bound_to_the_event_state():
     by_entry = lambda plan: {s.entry_id: s.exact_call["args"]["request_id"] for s in plan.steps}  # noqa: E731
     assert by_entry(first)["block"] != by_entry(changed)["block"]
     assert by_entry(first)["mtg"] == by_entry(changed)["mtg"]
+
+
+def test_a_shift_out_of_working_hours_is_skipped():
+    hours = [(DAY + timedelta(hours=9), DAY + timedelta(hours=17))]
+    event = _ev("late", "owner_organized", 16)
+
+    plan = compile_plan(
+        "shift_window",
+        WINDOW,
+        [event],
+        now=NOW,
+        delta=timedelta(hours=2),
+        busy=[BusyInterval("late", event.start_at, event.end_at)],
+        working_hours=hours,
+    )
+
+    assert plan.steps == []
+    assert [(s.entry_id, s.why) for s in plan.skipped] == [
+        ("late", "destination_outside_working_hours")
+    ]
+
+
+def test_movers_that_overlap_each_other_say_so():
+    a, b = _ev("a", "owner_organized", 9), _ev("b", "owner_organized", 9)
+
+    plan = _shift([a, b], minutes=60)
+
+    assert [s.entry_id for s in plan.steps] == ["a"]
+    assert [(s.entry_id, s.why) for s in plan.skipped] == [("b", "overlaps_another_moving_event")]
