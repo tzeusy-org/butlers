@@ -366,7 +366,17 @@ async def test_the_sweep_never_touches_a_card_the_owner_did_not_approve(db) -> N
             reason=DEFERRED_ERROR,
             metadata={"tool_name": "calendar_update_event"},
         )
+        events_before = await pool.fetchval(
+            "SELECT count(*) FROM approval_events WHERE action_id = $1", dependent
+        )
         assert await release_deferred(pool, execute) == 0
+        # the sweep leaves no trace on a card it does not touch
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM approval_events WHERE action_id = $1", dependent
+            )
+            == events_before
+        )
     assert called == []
 
 

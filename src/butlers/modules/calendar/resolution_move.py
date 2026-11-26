@@ -387,7 +387,7 @@ WHERE p.status = 'approved' AND p.execution_result IS NULL
   AND CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
            THEN jsonb_array_length(l.action_result->'depends_on') ELSE 0 END > 0
   AND ($1::text IS NULL OR l.action_result->'depends_on' ? $1)
-  AND (p.requested_at < now() - interval '48 hours' OR EXISTS (
+  AND (p.requested_at < now() - $2::interval OR EXISTS (
         SELECT 1
           FROM jsonb_array_elements_text(
                  CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
@@ -414,7 +414,7 @@ async def release_deferred(pool: Any, execute: Any, *, after: str | None = None)
     dependents of one card. Returns how many cards were re-run.
     """
     try:
-        rows = await pool.fetch(_DEFERRED_SQL, after)
+        rows = await pool.fetch(_DEFERRED_SQL, after, DEPENDENCY_WAIT)
     except Exception:
         logger.warning("resolution move: deferred cards unreadable", exc_info=True)
         return 0
