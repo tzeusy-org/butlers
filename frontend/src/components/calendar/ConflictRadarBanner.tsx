@@ -82,7 +82,10 @@ function summariseByDay(issues: ConflictIssue[]): string {
     const overlaps = dayIssues.filter((i) => i.kind === "overlap").length;
     const dense = dayIssues.filter((i) => i.kind === "back_to_back").length;
     const overloaded = dayIssues.filter((i) => i.kind === "overloaded_day").length;
-    const outside = dayIssues.filter((i) => i.kind === "outside_declared_hours").length;
+    // An info-level flag (answered, one-off) stays on its entry and out of the day headline.
+    const outside = dayIssues.filter(
+      (i) => i.kind === "outside_declared_hours" && i.severity === "warning",
+    ).length;
     const bits: string[] = [];
     if (overlaps) bits.push(plural(overlaps, "overlap"));
     if (dense) bits.push(plural(dense, "back-to-back run"));

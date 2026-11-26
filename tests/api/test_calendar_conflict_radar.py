@@ -2028,10 +2028,14 @@ def test_the_hours_are_judged_in_the_owners_zone_not_the_events():
     assert detect_conflict_issues([event], preferences=tokyo) == []
 
 
-def _hours_patch(monkeypatch, row):
+def _hours_patch(monkeypatch, row, general_zone=None):
     monkeypatch.setattr(
-        "butlers.api.read_models.calendar_workspace.get_scheduling_preferences",
+        "butlers.core.temporal.scheduling.get_scheduling_preferences",
         AsyncMock(return_value=row),
+    )
+    monkeypatch.setattr(
+        "butlers.core.temporal.scheduling.load_configured_general_timezone",
+        AsyncMock(return_value=general_zone),
     )
 
 
@@ -2102,7 +2106,7 @@ async def test_an_unreadable_hours_store_flags_nothing_and_says_it_could_not_jud
     app, monkeypatch
 ):
     monkeypatch.setattr(
-        "butlers.api.read_models.calendar_workspace.get_scheduling_preferences",
+        "butlers.core.temporal.scheduling.get_scheduling_preferences",
         AsyncMock(side_effect=RuntimeError("store down")),
     )
     early = _ws_row(entry_id="a", title="x", start=datetime(2026, 7, 1, 3, 0, tzinfo=UTC))
@@ -2131,3 +2135,37 @@ async def test_a_quarantined_invitation_outside_the_hours_has_no_flag_and_no_ent
     data = (await _get(app)).json()["data"]
 
     assert data["issues"] == []
+
+
+async def test_a_stored_utc_default_is_judged_in_the_owner_general_zone(app, monkeypatch):
+    # 02:00 UTC is 11:00 in Tokyo: inside 09:00-17:00 once the stored UTC reads as unset.
+    _hours_patch(monkeypatch, _ROW, general_zone="Asia/Tokyo")
+    event = _ws_row(entry_id="a", title="x", start=datetime(2026, 7, 1, 2, 0, tzinfo=UTC))
+    app, mock_db = _build_app(app, workspace_rows={"general": [event]})
+    scan = await query_calendar_conflicts(
+        mock_db, start=datetime(2026, 7, 1, tzinfo=UTC), end=datetime(2026, 7, 2, tzinfo=UTC)
+    )
+    assert [i for i in scan.issues if i.kind == "outside_declared_hours"] == []
+
+
+def test_a_recurring_meeting_outside_the_hours_is_one_flag_on_its_first_occurrence():
+    series = "series\x01origin:1"
+    days = [datetime(2026, 7, d, 7, 30, tzinfo=UTC) for d in (1, 2, 3)]
+    events = [
+        _h(start, entry_id=f"occ{n}", recurring=True, series_key=series)
+        for n, start in enumerate(days)
+    ]
+    issues = detect_conflict_issues(events, preferences=_HOURS)
+    (issue,) = [i for i in issues if i.kind == "outside_declared_hours"]
+    assert issue.events[0].entry_id == "occ0"
+    assert issue.series_key == series and issue.occurrences == 3
+
+
+def test_two_distinct_series_are_two_flags():
+    early = datetime(2026, 7, 1, 7, 30, tzinfo=UTC)
+    events = [
+        _h(early, entry_id="a", recurring=True, series_key="series\x01one"),
+        _h(early + timedelta(days=1), entry_id="b", recurring=True, series_key="series\x01two"),
+    ]
+    issues = detect_conflict_issues(events, preferences=_HOURS)
+    assert len([i for i in issues if i.kind == "outside_declared_hours"]) == 2

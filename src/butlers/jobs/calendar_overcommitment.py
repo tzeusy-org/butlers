@@ -156,7 +156,9 @@ def _overlap_observation(issue: DetectedIssue, identity_keys: dict[str, str]) ->
 
 def _outside_hours_observation(issue: DetectedIssue, identity_keys: dict[str, str]) -> Observation:
     event = issue.events[0]
-    identity = identity_keys.get(event.entry_id, f"instance\x01{event.entry_id}")
+    identity = issue.series_key or identity_keys.get(
+        event.entry_id, f"instance\x01{event.entry_id}"
+    )
     reason = issue.reasons[0] if issue.reasons else "outside_hours"
     return Observation(
         fingerprint=overcommitment_fingerprint(

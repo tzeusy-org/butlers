@@ -76,6 +76,9 @@ class ConflictCandidate:
     #: repeats; both only set the severity of an ``outside_declared_hours`` issue.
     owner_response: str | None = None
     recurring: bool = False
+    #: Provider identity of the series a recurring occurrence belongs to; ``None`` otherwise.
+    #: An ``outside_declared_hours`` flag is one per series, not one per occurrence.
+    series_key: str | None = None
 
 
 @dataclass
@@ -123,6 +126,10 @@ class DetectedIssue:
     #: ``outside_declared_hours`` only: which declared limit the event breaks
     #: (``before_earliest``, ``after_latest``, ``off_day`` or ``no_meeting_block``).
     reasons: list[str] = field(default_factory=list)
+    #: ``outside_declared_hours`` for a recurring event: the series the one flag stands for.
+    series_key: str | None = None
+    #: How many occurrences in the scanned window break the same limit (1 for a single event).
+    occurrences: int = 1
 
 
 def overlap_pair_id(entry_id_a: str, entry_id_b: str) -> UUID:
@@ -352,21 +359,30 @@ def _detect_outside_declared_hours(
     if preferences is None or not preferences.has_constraints:
         return []
     issues: list[DetectedIssue] = []
-    for c in timed:
+    by_series: dict[tuple[str, str], DetectedIssue] = {}
+    for c in sorted(timed, key=lambda e: e.start_at):
         if not c.hours_apply:
             continue
         reason = preferences.outside_reason(c.start_at, c.end_at)
         if reason is None:
             continue
+        if c.series_key is not None:
+            # A repeating meeting is one meeting: one flag on its earliest occurrence in the window.
+            seen = by_series.get((c.series_key, reason))
+            if seen is not None:
+                seen.occurrences += 1
+                continue
         needs_answer = str(c.owner_response or "").strip().lower() == "needsaction"
-        issues.append(
-            DetectedIssue(
-                kind="outside_declared_hours",
-                date=_local_date(c.start_at, display_tz, c.timezone),
-                summary=f"This event {_HOURS_TEXT[reason]}",
-                severity="warning" if needs_answer or c.recurring else "info",
-                events=[_to_ref(c)],
-                reasons=[reason],
-            )
+        issue = DetectedIssue(
+            kind="outside_declared_hours",
+            date=_local_date(c.start_at, display_tz, c.timezone),
+            summary=f"This event {_HOURS_TEXT[reason]}",
+            severity="warning" if needs_answer or c.recurring else "info",
+            events=[_to_ref(c)],
+            reasons=[reason],
+            series_key=c.series_key,
         )
+        if c.series_key is not None:
+            by_series[(c.series_key, reason)] = issue
+        issues.append(issue)
     return issues

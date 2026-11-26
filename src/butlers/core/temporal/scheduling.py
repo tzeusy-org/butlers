@@ -23,18 +23,22 @@ Provides:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.temporal.delivery_db import validate_timezone
 
 # iCal-style weekday codes indexed by Python's ``datetime.weekday()`` (Mon=0).
 _WEEKDAY_CODES: tuple[str, ...] = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 _VALID_WEEKDAYS = frozenset(_WEEKDAY_CODES)
+
+logger = logging.getLogger(__name__)
 
 _TABLE = "public.owner_scheduling_preferences"
 
@@ -197,6 +201,28 @@ class SchedulingPreferences:
                     return "no_meeting_block"
 
         return None
+
+
+async def load_scheduling_preferences(pool: asyncpg.Pool) -> SchedulingPreferences | None:
+    """The owner's declared hours with their zone resolved: the one reader every consumer uses.
+
+    The column defaults to ``UTC`` and a row saved without a zone keeps it, so a stored ``UTC`` (or
+    no zone) is read as "unset" and falls back to the owner's general zone, when one was saved.
+    The slot ranking and the conflict radar both call this, so they judge the same hours in the
+    same zone. Raises on a read failure; the caller decides how to fail.
+    """
+    row = await get_scheduling_preferences(pool)
+    prefs = SchedulingPreferences.from_row(row)
+    if prefs is None or prefs.timezone not in (None, "", "UTC"):
+        return prefs
+    try:
+        name = await load_configured_general_timezone(pool)
+        if name:
+            ZoneInfo(name)
+            return replace(prefs, timezone=name)
+    except Exception:
+        logger.warning("owner general zone unreadable; declared hours keep their stored zone")
+    return prefs
 
 
 async def get_scheduling_preferences(pool: asyncpg.Pool) -> dict[str, Any] | None:

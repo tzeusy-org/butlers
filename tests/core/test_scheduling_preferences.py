@@ -227,3 +227,47 @@ def test_outside_reason_names_the_first_limit_broken_and_agrees_with_allows():
     for start, end, reason in cases:
         assert prefs.outside_reason(start, end) == reason
         assert prefs.allows(start, end) is (reason is None)
+
+
+class TestLoadSchedulingPreferencesZone:
+    """One reader for the radar and the slot ranking: a stored UTC default reads as unset."""
+
+    @staticmethod
+    def _patch(monkeypatch, row, general_zone):
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.get_scheduling_preferences",
+            AsyncMock(return_value=row),
+        )
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.load_configured_general_timezone",
+            AsyncMock(return_value=general_zone),
+        )
+
+    async def test_a_stored_utc_default_takes_the_owner_general_zone(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(
+            monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, "Asia/Tokyo"
+        )
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "Asia/Tokyo"
+
+    async def test_an_explicit_zone_is_kept(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(
+            monkeypatch,
+            {"timezone": "Europe/London", "earliest_meeting_time": "09:00"},
+            "Asia/Tokyo",
+        )
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "Europe/London"
+
+    async def test_no_general_zone_keeps_the_stored_one(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, None)
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "UTC"

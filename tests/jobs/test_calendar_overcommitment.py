@@ -525,3 +525,13 @@ def test_the_hours_fingerprint_follows_the_event_identity_and_the_reason() -> No
     assert one == _fingerprints(_scan(_outside_hours("a"), a="origin:1"))
     assert one != _fingerprints(_scan(_outside_hours("a", reason="off_day"), a="origin:1"))
     assert one != _fingerprints(_scan(_outside_hours("a"), a="origin:2"))
+
+
+def test_a_recurring_meeting_keeps_one_fingerprint_whichever_occurrence_is_flagged() -> None:
+    first = _outside_hours("a")
+    first.series_key = "series\x01origin:9"
+    later = _outside_hours("b")
+    later.series_key = "series\x01origin:9"
+    assert _fingerprints(_scan(first, a="origin:9_1")) == _fingerprints(
+        _scan(later, b="origin:9_2")
+    )

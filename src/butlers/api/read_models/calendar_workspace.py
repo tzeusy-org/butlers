@@ -73,7 +73,7 @@ from butlers.core.temporal.conflicts import (
 )
 from butlers.core.temporal.household_context import HouseholdEvent, household_events
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
-from butlers.core.temporal.scheduling import SchedulingPreferences, get_scheduling_preferences
+from butlers.core.temporal.scheduling import SchedulingPreferences, load_scheduling_preferences
 from butlers.modules.calendar.participants import (
     NAMEABLE_PARTICIPANTS_SQL,
     unavailable_events_sql,
@@ -1782,6 +1782,11 @@ async def query_calendar_conflicts(
             ),
             owner_response=owner_response_status(row.get("event_metadata")),
             recurring=bool(row.get("recurrence_rule")),
+            series_key=(
+                f"series\x01{row['origin_ref']}"
+                if row.get("recurrence_rule") and row.get("origin_ref")
+                else None
+            ),
         )
         for row in deduped
         if is_calendar_analysis_candidate(
@@ -2472,8 +2477,7 @@ async def _read_declared_hours(db: DatabaseManager) -> tuple[SchedulingPreferenc
     if pool is None:
         return None, False
     try:
-        row = await get_scheduling_preferences(pool)
-        return SchedulingPreferences.from_row(row), True
+        return await load_scheduling_preferences(pool), True
     except Exception:
         logger.warning("declared meeting hours unreadable; none are checked", exc_info=True)
         return None, False
