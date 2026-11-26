@@ -110,6 +110,8 @@ describe("overlayButlerAccent / overlayKindGlyph", () => {
     expect(overlayButlerAccent("travel")).toContain("categorical-2");
     expect(overlayButlerAccent("relationship")).toContain("categorical-3");
     expect(overlayButlerAccent("health")).toContain("categorical-4");
+    expect(overlayButlerAccent("education")).toContain("categorical-5");
+    expect(overlayKindGlyph("reviews_due")).toBe("↺");
     expect(overlayButlerAccent(null)).toContain("var(--border)");
     expect(overlayKindGlyph("departure")).toBe("✈");
     expect(overlayKindGlyph("unknown_kind")).toBe("•");
