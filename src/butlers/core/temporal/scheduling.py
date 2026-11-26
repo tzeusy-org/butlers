@@ -163,32 +163,40 @@ class SchedulingPreferences:
         ``meeting_days``, or overlaps any ``no_meeting_blocks`` interval — all
         evaluated in the owner's timezone.
         """
+        return self.outside_reason(start_at, end_at) is None
+
+    def outside_reason(self, start_at: datetime, end_at: datetime) -> str | None:
+        """Why a slot falls outside the declared hours, else ``None`` (the slot is allowed).
+
+        One of ``off_day``, ``before_earliest``, ``after_latest`` or ``no_meeting_block``, checked
+        in that order, in the owner's timezone.
+        """
         start = self._localize(start_at)
         end = self._localize(end_at)
 
         if self.meeting_days is not None:
             if _WEEKDAY_CODES[start.weekday()] not in self.meeting_days:
-                return False
+                return "off_day"
 
         if self.earliest_meeting_time is not None and start.time() < self.earliest_meeting_time:
-            return False
+            return "before_earliest"
 
         if self.latest_meeting_time is not None:
             # The slot must finish within the same local day, on/before latest.
             if end.date() != start.date() or end.time() > self.latest_meeting_time:
-                return False
+                return "after_latest"
 
         if self.no_meeting_blocks:
             if end.date() != start.date():
                 # A slot spanning local midnight cannot be cleanly checked
                 # against a daily block; reject conservatively.
-                return False
+                return "no_meeting_block"
             slot_start, slot_end = start.time(), end.time()
             for block_start, block_end in self.no_meeting_blocks:
                 if slot_start < block_end and block_start < slot_end:
-                    return False
+                    return "no_meeting_block"
 
-        return True
+        return None
 
 
 async def get_scheduling_preferences(pool: asyncpg.Pool) -> dict[str, Any] | None:

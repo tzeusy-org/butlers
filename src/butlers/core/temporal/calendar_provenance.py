@@ -118,6 +118,25 @@ def is_owner_attending(metadata: Any) -> bool:
     return True
 
 
+def owner_response_status(metadata: Any) -> str | None:
+    """The owner's own answer (the ``self`` attendee's), lower-cased, else ``None``.
+
+    Projected metadata spells the field ``response_status`` and raw Google payloads
+    ``responseStatus``; both count. ``None`` when there is no ``self`` attendee or no answer.
+    """
+    metadata_object = _metadata_object(metadata)
+    attendees = metadata_object.get("attendees") if metadata_object is not None else None
+    if not isinstance(attendees, list):
+        return None
+    for attendee in attendees:
+        if not isinstance(attendee, Mapping) or attendee.get("self") is not True:
+            continue
+        raw = attendee.get("response_status", attendee.get("responseStatus"))
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+    return None
+
+
 def is_transparent(metadata: Any) -> bool:
     """Whether the event is marked free (Google ``transparency: transparent``)."""
     metadata_object = _metadata_object(metadata)

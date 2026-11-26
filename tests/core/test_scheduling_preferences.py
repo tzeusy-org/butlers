@@ -202,3 +202,28 @@ class TestSchedulingPreferencesDB:
             )
             is True
         )
+
+
+def test_outside_reason_names_the_first_limit_broken_and_agrees_with_allows():
+    prefs = SchedulingPreferences.from_row(
+        {
+            "timezone": "UTC",
+            "earliest_meeting_time": "09:00",
+            "latest_meeting_time": "17:00",
+            "meeting_days": ["MO", "TU", "WE", "TH", "FR"],
+            "no_meeting_blocks": [{"start": "12:00", "end": "13:00"}],
+        }
+    )
+    cases = [
+        (_dt(2026, 7, 1, 10), _dt(2026, 7, 1, 11), None),
+        (_dt(2026, 7, 1, 8), _dt(2026, 7, 1, 9), "before_earliest"),
+        (_dt(2026, 7, 1, 16), _dt(2026, 7, 1, 18), "after_latest"),
+        (_dt(2026, 7, 1, 16), _dt(2026, 7, 2, 1), "after_latest"),  # past local midnight
+        (_dt(2026, 7, 4, 10), _dt(2026, 7, 4, 11), "off_day"),
+        (_dt(2026, 7, 4, 8), _dt(2026, 7, 4, 9), "off_day"),  # the day is judged first
+        (_dt(2026, 7, 1, 12), _dt(2026, 7, 1, 13), "no_meeting_block"),
+    ]
+    assert prefs is not None
+    for start, end, reason in cases:
+        assert prefs.outside_reason(start, end) == reason
+        assert prefs.allows(start, end) is (reason is None)

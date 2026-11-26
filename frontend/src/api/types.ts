@@ -1556,7 +1556,11 @@ export interface CalendarWorkspaceReadResponse {
 // Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 // ---------------------------------------------------------------------------
 
-export type ConflictKind = "overlap" | "back_to_back" | "overloaded_day";
+export type ConflictKind =
+  | "overlap"
+  | "back_to_back"
+  | "overloaded_day"
+  | "outside_declared_hours";
 export type ConflictSeverity = "info" | "warning";
 
 /** An event contributing to a detected conflict/overcommitment issue. */
@@ -1578,6 +1582,8 @@ export interface ConflictIssue {
   events: ConflictEventRef[];
   /** UUIDs of pending fix proposals (empty until the fix-proposal session runs). */
   proposal_ids: string[];
+  /** `outside_declared_hours` only: before_earliest, after_latest, off_day or no_meeting_block. */
+  reasons?: string[];
   /** Overlap issues only (dark until the resolve route ships): ways to finish it. */
   options?: ResolutionOption[];
   /** The digest a resolve must echo back, so it can never act on a stale read. */

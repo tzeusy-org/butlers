@@ -29,6 +29,8 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
+from .scheduling import SchedulingPreferences
+
 #: UUID5 namespace seed for canonical overlap-pair ids. The LLM fix-proposal
 #: session derives a proposal's ``source_event_id`` from the same value so the
 #: endpoint can re-attach the proposal to its issue (and so re-runs stay
@@ -39,7 +41,12 @@ ConflictKind = str  # "overlap" | "back_to_back" | "overloaded_day"
 ConflictSeverity = str  # "info" | "warning"
 
 # Issue-kind ordering for deterministic output.
-_KIND_ORDER: dict[str, int] = {"overlap": 0, "back_to_back": 1, "overloaded_day": 2}
+_KIND_ORDER: dict[str, int] = {
+    "overlap": 0,
+    "back_to_back": 1,
+    "overloaded_day": 2,
+    "outside_declared_hours": 3,
+}
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,14 @@ class ConflictCandidate:
     #: False only for a declared status (out of office, working location): it still
     #: overlaps and chains back to back, but adds no hours to the overloaded-day sum.
     counts_toward_day_load: bool = True
+    #: Whether the owner's declared meeting hours apply to this event: false for a declared
+    #: status (out of office, focus time, working location), a free (transparent) event and an
+    #: event the owner declined. Set by the read model from provenance, never from the title.
+    hours_apply: bool = False
+    #: The owner's own answer (``needsAction``, ``accepted``, ``tentative``) and whether the event
+    #: repeats; both only set the severity of an ``outside_declared_hours`` issue.
+    owner_response: str | None = None
+    recurring: bool = False
 
 
 @dataclass
@@ -105,6 +120,9 @@ class DetectedIssue:
     #: against (never serialised): the resolve route parks a move bound to exactly these.
     option_context: dict[str, dict[str, Any]] = field(default_factory=dict)
     options_reason: str | None = None
+    #: ``outside_declared_hours`` only: which declared limit the event breaks
+    #: (``before_earliest``, ``after_latest``, ``off_day`` or ``no_meeting_block``).
+    reasons: list[str] = field(default_factory=list)
 
 
 def overlap_pair_id(entry_id_a: str, entry_id_b: str) -> UUID:
@@ -166,8 +184,9 @@ def detect_conflict_issues(
     display_tz: ZoneInfo | None = None,
     back_to_back_gap_minutes: int = 15,
     overloaded_day_hours: float = 6.0,
+    preferences: SchedulingPreferences | None = None,
 ) -> list[DetectedIssue]:
-    """Detect overlap / back-to-back / overloaded-day issues over ``events``.
+    """Detect overlap / back-to-back / overloaded-day / outside-declared-hours issues.
 
     Pure and deterministic. Cancelled and all-day events are ignored. Output is
     ordered by ``(date, kind, earliest start)`` so the response is stable.
@@ -183,6 +202,7 @@ def detect_conflict_issues(
     issues.extend(_detect_overlaps(timed, display_tz))
     issues.extend(_detect_back_to_back(timed, display_tz, max(0, int(back_to_back_gap_minutes))))
     issues.extend(_detect_overloaded_days(timed, display_tz, float(overloaded_day_hours)))
+    issues.extend(_detect_outside_declared_hours(timed, display_tz, preferences))
 
     issues.sort(
         key=lambda i: (
@@ -307,4 +327,46 @@ def _detect_overloaded_days(
                     events=[_to_ref(c) for c in day_events],
                 )
             )
+    return issues
+
+
+_HOURS_TEXT = {
+    "before_earliest": "starts before your earliest meeting time",
+    "after_latest": "ends after your latest meeting time",
+    "off_day": "falls on a day you do not take meetings",
+    "no_meeting_block": "falls in a no-meeting block",
+}
+
+
+def _detect_outside_declared_hours(
+    timed: list[ConflictCandidate],
+    display_tz: ZoneInfo | None,
+    preferences: SchedulingPreferences | None,
+) -> list[DetectedIssue]:
+    """One issue per event that breaks the owner's declared meeting hours or days.
+
+    Only an event the declared hours apply to (``hours_apply``) is checked, in the owner's
+    scheduling-preference zone. It is a warning while the owner has not answered or the event
+    repeats, and information otherwise. No title is read.
+    """
+    if preferences is None or not preferences.has_constraints:
+        return []
+    issues: list[DetectedIssue] = []
+    for c in timed:
+        if not c.hours_apply:
+            continue
+        reason = preferences.outside_reason(c.start_at, c.end_at)
+        if reason is None:
+            continue
+        needs_answer = str(c.owner_response or "").strip().lower() == "needsaction"
+        issues.append(
+            DetectedIssue(
+                kind="outside_declared_hours",
+                date=_local_date(c.start_at, display_tz, c.timezone),
+                summary=f"This event {_HOURS_TEXT[reason]}",
+                severity="warning" if needs_answer or c.recurring else "info",
+                events=[_to_ref(c)],
+                reasons=[reason],
+            )
+        )
     return issues

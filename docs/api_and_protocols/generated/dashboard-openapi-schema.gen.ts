@@ -24221,13 +24221,15 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "overlap" | "back_to_back" | "overloaded_day";
+            kind: "overlap" | "back_to_back" | "overloaded_day" | "outside_declared_hours";
             /** Options */
             options?: components["schemas"]["ResolutionOption"][];
             /** Options Reason */
             options_reason?: string | null;
             /** Proposal Ids */
             proposal_ids?: string[];
+            /** Reasons */
+            reasons?: string[];
             /**
              * Severity
              * @enum {string}

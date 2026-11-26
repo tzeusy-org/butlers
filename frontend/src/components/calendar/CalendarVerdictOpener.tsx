@@ -292,7 +292,7 @@ export function CalendarVerdictOpener({
             ? `Organizer: ${invitation.organizer}${invitation.organizer_source === "attendee" ? " (attendee)" : ""}` : "Organizer unknown"}</span>
           {invitation.conflict_issues.map((issue, index) => <button type="button"
             className={buttonClass} key={`${issue.kind}:${issue.date}:${index}`}
-            onClick={() => setEvidence({ entryId: invitation.entry_id, index })} aria-label={`Show ${issue.kind} conflict for ${invitation.title}`}>Conflict evidence</button>)}
+            onClick={() => setEvidence({ entryId: invitation.entry_id, index })} aria-label={issue.kind === "outside_declared_hours" ? `Show outside-hours flag for ${invitation.title}` : `Show ${issue.kind} conflict for ${invitation.title}`}>{issue.kind === "outside_declared_hours" ? "Outside your hours" : "Conflict evidence"}</button>)}
           {!invitationConflictsAvailable ? <span className="text-sm text-muted-foreground">Conflict availability unknown</span> : null}
         </li>)}
       </ul> : null}

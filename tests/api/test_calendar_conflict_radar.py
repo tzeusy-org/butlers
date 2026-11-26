@@ -31,6 +31,7 @@ from butlers.core.temporal.conflicts import (
     detect_conflict_issues,
     overlap_pair_id,
 )
+from butlers.core.temporal.scheduling import SchedulingPreferences
 
 pytestmark = pytest.mark.unit
 
@@ -1944,3 +1945,189 @@ async def test_a_post_a_few_seconds_after_the_get_still_matches_its_digest(app, 
 
     assert resp.status_code == 200 and resp.json()["data"]["status"] == "acknowledged"
     assert pair in pool.rows
+
+
+# ---------------------------------------------------------------------------
+# Declared meeting hours (bu-5ii4gj.9 S4)
+# ---------------------------------------------------------------------------
+
+_HOURS = SchedulingPreferences.from_row(
+    {
+        "timezone": "UTC",
+        "earliest_meeting_time": "09:00",
+        "latest_meeting_time": "17:00",
+        "meeting_days": ["MO", "TU", "WE", "TH", "FR"],
+        "no_meeting_blocks": [{"start": "12:00", "end": "13:00"}],
+    }
+)
+
+
+def _h(start: datetime, minutes: int = 60, **kw) -> ConflictCandidate:
+    return replace(_c(start=start, minutes=minutes), hours_apply=True, **kw)
+
+
+@pytest.mark.parametrize(
+    ("start", "minutes", "reason"),
+    [
+        (datetime(2026, 7, 1, 7, 30, tzinfo=UTC), 60, "before_earliest"),  # a Wednesday
+        (datetime(2026, 7, 1, 16, 30, tzinfo=UTC), 60, "after_latest"),
+        (datetime(2026, 7, 4, 10, 0, tzinfo=UTC), 60, "off_day"),  # a Saturday
+        (datetime(2026, 7, 1, 12, 30, tzinfo=UTC), 30, "no_meeting_block"),
+    ],
+)
+def test_an_event_breaking_a_declared_limit_names_which(start, minutes, reason):
+    (issue,) = detect_conflict_issues([_h(start, minutes)], preferences=_HOURS)
+
+    assert issue.kind == "outside_declared_hours" and issue.reasons == [reason]
+    assert [e.entry_id for e in issue.events] == [issue.events[0].entry_id]
+
+
+def test_an_event_inside_the_declared_hours_is_clean():
+    assert (
+        detect_conflict_issues([_h(datetime(2026, 7, 1, 10, 0, tzinfo=UTC))], preferences=_HOURS)
+        == []
+    )
+
+
+def test_without_declared_hours_nothing_is_flagged():
+    early = _h(datetime(2026, 7, 1, 5, 0, tzinfo=UTC))
+    assert detect_conflict_issues([early], preferences=None) == []
+    assert detect_conflict_issues([early], preferences=SchedulingPreferences()) == []
+
+
+def test_an_event_the_hours_do_not_apply_to_is_never_flagged():
+    early = _c(start=datetime(2026, 7, 1, 5, 0, tzinfo=UTC))  # hours_apply defaults to False
+    assert detect_conflict_issues([early], preferences=_HOURS) == []
+
+
+@pytest.mark.parametrize(
+    ("owner_response", "recurring", "severity"),
+    [
+        ("needsAction", False, "warning"),
+        ("accepted", True, "warning"),
+        ("accepted", False, "info"),
+        ("tentative", False, "info"),
+    ],
+)
+def test_severity_is_a_warning_for_an_unanswered_or_repeating_event(
+    owner_response, recurring, severity
+):
+    event = _h(
+        datetime(2026, 7, 1, 7, 0, tzinfo=UTC), owner_response=owner_response, recurring=recurring
+    )
+    (issue,) = detect_conflict_issues([event], preferences=_HOURS)
+    assert issue.severity == severity
+
+
+def test_the_hours_are_judged_in_the_owners_zone_not_the_events():
+    # 07:30 UTC is 16:30 in Tokyo: inside the hours when they are Tokyo hours.
+    tokyo = SchedulingPreferences.from_row(
+        {"timezone": "Asia/Tokyo", "earliest_meeting_time": "09:00", "latest_meeting_time": "18:00"}
+    )
+    event = _h(datetime(2026, 7, 1, 7, 30, tzinfo=UTC))
+    assert detect_conflict_issues([event], preferences=tokyo) == []
+
+
+def _hours_patch(monkeypatch, row):
+    monkeypatch.setattr(
+        "butlers.api.read_models.calendar_workspace.get_scheduling_preferences",
+        AsyncMock(return_value=row),
+    )
+
+
+_ROW = {
+    "timezone": "UTC",
+    "earliest_meeting_time": "09:00",
+    "latest_meeting_time": "17:00",
+    "meeting_days": [],
+    "no_meeting_blocks": [],
+}
+
+
+async def test_the_endpoint_flags_an_unanswered_invitation_outside_the_hours(app, monkeypatch):
+    _hours_patch(monkeypatch, _ROW)
+    early = _ws_row(
+        entry_id="a",
+        title="Early sync",
+        start=datetime(2026, 7, 1, 7, 0, tzinfo=UTC),
+        # a trusted organizer: an invitation from an untrusted one is quarantined and holds no time
+        event_metadata={
+            "attendees": [_self_attendee("needsAction")],
+            "organizer_verdict": "known_entity",
+        },
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [early]})
+
+    data = (await _get(app)).json()["data"]
+
+    (issue,) = [i for i in data["issues"] if i["kind"] == "outside_declared_hours"]
+    assert issue["severity"] == "warning" and issue["reasons"] == ["before_earliest"]
+    assert [e["entry_id"] for e in issue["events"]] == ["a"]
+
+
+async def test_the_endpoint_never_flags_declined_free_or_status_events(app, monkeypatch):
+    _hours_patch(monkeypatch, _ROW)
+    when = datetime(2026, 7, 1, 7, 0, tzinfo=UTC)
+    declined = _ws_row(
+        entry_id="d",
+        title="x",
+        start=when,
+        event_metadata={"attendees": [_self_attendee("declined")]},
+    )
+    free = _ws_row(
+        entry_id="f", title="x", start=when, event_metadata={"transparency": "transparent"}
+    )
+    ooo = _ws_row(entry_id="o", title="x", start=when)
+    ooo["event_type"] = "outOfOffice"
+    focus = _ws_row(entry_id="c", title="x", start=when)
+    focus["event_type"] = "focusTime"
+    app, _ = _build_app(app, workspace_rows={"general": [declined, free, ooo, focus]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert [i for i in data["issues"] if i["kind"] == "outside_declared_hours"] == []
+
+
+async def test_no_declared_hours_row_flags_nothing_and_is_a_genuine_read(app, monkeypatch):
+    _hours_patch(monkeypatch, None)
+    early = _ws_row(entry_id="a", title="x", start=datetime(2026, 7, 1, 3, 0, tzinfo=UTC))
+    app, _ = _build_app(app, workspace_rows={"general": [early]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert [i for i in data["issues"] if i["kind"] == "outside_declared_hours"] == []
+
+
+async def test_an_unreadable_hours_store_flags_nothing_and_says_it_could_not_judge(
+    app, monkeypatch
+):
+    monkeypatch.setattr(
+        "butlers.api.read_models.calendar_workspace.get_scheduling_preferences",
+        AsyncMock(side_effect=RuntimeError("store down")),
+    )
+    early = _ws_row(entry_id="a", title="x", start=datetime(2026, 7, 1, 3, 0, tzinfo=UTC))
+    app, mock_db = _build_app(app, workspace_rows={"general": [early]})
+
+    scan = await query_calendar_conflicts(
+        mock_db, start=datetime(2026, 7, 1, tzinfo=UTC), end=datetime(2026, 7, 2, tzinfo=UTC)
+    )
+
+    assert scan.hours_available is False
+    assert [i for i in scan.issues if i.kind == "outside_declared_hours"] == []
+
+
+async def test_a_quarantined_invitation_outside_the_hours_has_no_flag_and_no_entry(
+    app, monkeypatch
+):
+    _hours_patch(monkeypatch, _ROW)
+    stranger = _ws_row(
+        entry_id="q",
+        title="Free prize",
+        start=datetime(2026, 7, 1, 7, 0, tzinfo=UTC),
+        event_metadata={"attendees": [_self_attendee("needsAction")]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [stranger]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues"] == []

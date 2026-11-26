@@ -44,6 +44,7 @@ const KIND_LABEL: Record<ConflictIssue["kind"], string> = {
   overlap: "overlap",
   back_to_back: "back-to-back run",
   overloaded_day: "overloaded day",
+  outside_declared_hours: "outside your meeting hours",
 };
 
 /** Pill geometry shared with the calendar proposal controls (Design Language §4c). */
@@ -81,10 +82,12 @@ function summariseByDay(issues: ConflictIssue[]): string {
     const overlaps = dayIssues.filter((i) => i.kind === "overlap").length;
     const dense = dayIssues.filter((i) => i.kind === "back_to_back").length;
     const overloaded = dayIssues.filter((i) => i.kind === "overloaded_day").length;
+    const outside = dayIssues.filter((i) => i.kind === "outside_declared_hours").length;
     const bits: string[] = [];
     if (overlaps) bits.push(plural(overlaps, "overlap"));
     if (dense) bits.push(plural(dense, "back-to-back run"));
     if (overloaded) bits.push("a packed day");
+    if (outside) bits.push(`${plural(outside, "event")} outside your meeting hours`);
     if (bits.length) parts.push(`${formatDay(date)} has ${bits.join(" · ")}`);
   }
   return parts.join("  ·  ");
