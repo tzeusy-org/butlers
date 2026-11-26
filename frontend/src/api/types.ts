@@ -1657,6 +1657,8 @@ export interface CalendarChangesResponse {
   changes: CalendarChange[];
   changes_available: boolean;
   truncated: boolean;
+  /** `false`: the owner's account addresses were unreadable, so the list is a lower bound. */
+  owners_complete?: boolean;
   since: string;
 }
 

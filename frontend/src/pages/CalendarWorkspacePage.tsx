@@ -189,7 +189,8 @@ export default function CalendarWorkspacePage() {
       complete:
         !changesQuery.isError &&
         changesQuery.data?.data.changes_available === true &&
-        !changesQuery.data.data.truncated,
+        !changesQuery.data.data.truncated &&
+        changesQuery.data.data.owners_complete !== false,
     },
     debriefs: {
       rows: debriefsQuery.data?.debriefs,
