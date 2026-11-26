@@ -261,3 +261,70 @@ async def test_a_home_clock_and_a_utc_fallback_clock_are_the_same_target_zone(
 
     assert summary["reason"] == "same_zone" and summary["target_zone"] == HOME.zone
     assert await _next(pool, "stays") == before
+
+
+async def test_the_summary_carries_what_landed_and_what_was_kept_for_the_card(db, monkeypatch):
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    await _seed(pool, "mover")
+    await _seed(pool, "mum", tz="Asia/Singapore")
+    await pool.execute("UPDATE scheduled_tasks SET display_title = 'Call Mum' WHERE name = 'mum'")
+
+    summary = await _run(pool)
+
+    plan = summary["plans"]["general"]
+    assert [m.name for m in plan.moves] == ["mover"]
+    assert [(k.title, k.zone) for k in plan.kept] == [("Call Mum", "Asia/Singapore")]
+
+
+async def test_a_move_that_lost_the_race_is_not_reported_as_moved(db, monkeypatch) -> None:
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    old = await _seed(pool, "raced")
+    rows = [dict(r) for r in await pool.fetch(ra._ROWS_SQL)]
+    plan = ra.plan_reanchor(
+        rows, old_zone=HOME.zone, new_zone=TOKYO.zone, transition_at=AGO, now=NOW
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $1 WHERE name = 'raced'", old + timedelta(days=1)
+    )
+    assert await ra.apply_moves(pool, plan) == []
+
+
+async def test_a_move_that_loses_the_race_inside_the_run_is_not_on_the_card(
+    db, monkeypatch
+) -> None:
+    from butlers.perception import clock_card
+
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    raced = await _seed(pool, "raced")
+    await _seed(pool, "lands")
+
+    class DispatcherWins:
+        """Reads normally, then a dispatcher claim advances `raced` before the write."""
+
+        async def fetch(self, *a, **k):
+            rows = await pool.fetch(*a, **k)
+            await pool.execute(
+                "UPDATE scheduled_tasks SET next_run_at = $1 WHERE name = 'raced'",
+                raced + timedelta(days=1),
+            )
+            return rows
+
+        async def execute(self, *a, **k):
+            return await pool.execute(*a, **k)
+
+    summary = await ra.run_clock_transition(
+        {"general": DispatcherWins()},
+        old_clock=HOME,
+        new_clock=TOKYO,
+        settings_zone=HOME.zone,
+        transition_at=AGO,
+        now=NOW,
+    )
+
+    assert [m.name for m in summary["plans"]["general"].moves] == ["lands"]
+    assert summary["per_schema"]["general"]["moved"] == 1
+    out = clock_card.compose_transition_card(summary, old_clock=HOME, new_clock=TOKYO)
+    assert [d.name for d in out.doors] == ["lands"] and "1 item." in out.text

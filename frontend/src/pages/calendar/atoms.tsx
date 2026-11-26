@@ -195,22 +195,31 @@ export function OverlayPill({ entry }: { entry: UnifiedCalendarEntry }) {
   const accent = overlayButlerAccent(md.source_butler);
   const title = `${md.source_butler ?? "overlay"} · ${md.kind || "context"}${
     md.priority ? ` (${md.priority})` : ""
-  }: ${entry.title}${badge ? ` (${badge})` : ""}`;
+  }: ${entry.title}${badge ? ` (${badge})` : ""}${
+    md.notCurrent ? ` [${md.notCurrent === "stale" ? "stale" : "incomplete"}, not current]` : ""
+  }`;
   return (
     <div
       data-overlay-entry-id={entry.entry_id}
+      data-overlay-not-current={md.notCurrent ?? undefined}
       data-overlay-kind={md.kind}
       data-overlay-butler={md.source_butler ?? ""}
       title={title}
       className={cn(
         "pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] border border-dashed bg-foreground/[0.02] px-1 py-0.5 text-left text-[10px] leading-none",
         accent,
+        md.notCurrent && "opacity-60",
       )}
     >
       <span aria-hidden className="shrink-0 font-mono">
         {overlayKindGlyph(md.kind)}
       </span>
-      <span className="truncate text-fg">{entry.title}</span>
+      <span className={cn("truncate text-fg", md.notCurrent && "italic")}>{entry.title}</span>
+      {md.notCurrent ? (
+        <span className="shrink-0 font-mono text-[var(--mfg)]">
+          {md.notCurrent === "stale" ? "stale" : "partial"}
+        </span>
+      ) : null}
       {badge ? (
         <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">
           {badge}

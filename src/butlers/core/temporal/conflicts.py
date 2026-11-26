@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
@@ -93,6 +94,12 @@ class DetectedIssue:
     #: UUIDs of ``pending`` fix proposals attached by the read-model's proposal
     #: join. Empty until the LLM fix-proposal session has run for the window.
     proposal_ids: list[str] = field(default_factory=list)
+    #: Resolution options for an overlap and the digest that binds a resolve to them
+    #: (bu-5ii4gj.11). Empty until the read model attaches them; ``options_reason`` says why a
+    #: scan that could not compile any left them empty (``stale_source``).
+    options: list[Any] = field(default_factory=list)
+    issue_digest: str | None = None
+    options_reason: str | None = None
 
 
 def overlap_pair_id(entry_id_a: str, entry_id_b: str) -> UUID:

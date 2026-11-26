@@ -21777,6 +21777,8 @@ export interface components {
              * @default false
              */
             has_entries?: boolean;
+            /** Overlay Freshness */
+            overlay_freshness?: components["schemas"]["OverlayFreshness"][];
             /**
              * Overlays Available
              * @default true
@@ -22415,6 +22417,8 @@ export interface components {
             lanes?: components["schemas"]["CalendarWorkspaceLaneDefinition"][];
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Overlay Freshness */
+            overlay_freshness?: components["schemas"]["OverlayFreshness"][];
             /**
              * Overlays Available
              * @default true
@@ -24181,11 +24185,17 @@ export interface components {
             date: string;
             /** Events */
             events?: components["schemas"]["ConflictEventRef"][];
+            /** Issue Digest */
+            issue_digest?: string | null;
             /**
              * Kind
              * @enum {string}
              */
             kind: "overlap" | "back_to_back" | "overloaded_day";
+            /** Options */
+            options?: components["schemas"]["ResolutionOption"][];
+            /** Options Reason */
+            options_reason?: string | null;
             /** Proposal Ids */
             proposal_ids?: string[];
             /**
@@ -33199,6 +33209,23 @@ export interface components {
             /** Unmeasurable Count */
             unmeasurable_count: number;
         };
+        /**
+         * OverlayFreshness
+         * @description How current one butler's overlay contribution is.
+         */
+        OverlayFreshness: {
+            /** Butler */
+            butler: string;
+            /** Generated At */
+            generated_at?: string | null;
+            /** Stale Since */
+            stale_since?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ok" | "stale" | "partial" | "missing" | "failed";
+        };
         /** OwnerDeliveryActionRequest */
         OwnerDeliveryActionRequest: {
             displayed_call?: components["schemas"]["DisplayedApprovalCall"] | null;
@@ -36750,6 +36777,32 @@ export interface components {
         ResetUsageRequest: {
             /** Window */
             window: string;
+        };
+        /**
+         * ResolutionOption
+         * @description One way to finish an overlap: an exact call and who has to say yes (bu-5ii4gj.11).
+         */
+        ResolutionOption: {
+            /**
+             * Authority
+             * @enum {string}
+             */
+            authority: "no_park_undo" | "owner_submit" | "parked_per_event";
+            /** Exact Call */
+            exact_call: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "move_block" | "move_own" | "decline" | "tentative" | "ask_organizer" | "keep_both";
+            /** Rationale Fields */
+            rationale_fields?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * ResolveGapInterviewRequest

@@ -32,6 +32,18 @@ from tests.jobs.calendar_contribution_harness import ContributionStateStore, run
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _owner_zone_is_sgt():
+    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+    from unittest.mock import AsyncMock, patch
+
+    from butlers.jobs.briefing import SGT
+
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+        yield
+
+
 _TODAY = date(2026, 6, 21)
 _TODAY_STR = "2026-06-21"
 

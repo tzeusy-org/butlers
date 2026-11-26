@@ -21,10 +21,11 @@
  *   domains" (coverage ran).
  */
 
-import type { UnifiedCalendarEntry } from "@/api/types.ts";
+import type { OverlayFreshness, UnifiedCalendarEntry } from "@/api/types.ts";
 import {
   overlayAmountBadge,
   overlayButlerAccent,
+  overlayFreshnessNotes,
   overlayKindGlyph,
   overlayMetadata,
 } from "@/lib/calendar-overlays.ts";
@@ -119,6 +120,10 @@ export interface DayBriefingCardProps {
   groups: import("@/api/types.ts").DayBriefingButlerGroup[];
   /** The overlay view could not be read; this is not the same as "no domain context". */
   unavailable?: boolean;
+  /** Per butler freshness; a stale butler gets a plaque and is never shown as current. */
+  freshness?: OverlayFreshness[];
+  /** The owner's zone, in which stale-since instants render. */
+  timezone?: string;
   /** Whether at least one specialist contributed for the date. */
   hasDomainContext: boolean;
   /** Whether any overlay entry exists for the date. */
@@ -140,10 +145,13 @@ export function DayBriefingCard({
   error = null,
   groups,
   unavailable = false,
+  freshness = [],
+  timezone = "UTC",
   hasDomainContext,
   hasEntries,
   onSelectEntry,
 }: DayBriefingCardProps) {
+  const notes = overlayFreshnessNotes(freshness, timezone);
   const content = (
     <section
       data-testid="day-briefing-card"
@@ -156,6 +164,16 @@ export function DayBriefingCard({
         </h2>
         <span className="truncate font-mono text-[11px] text-fg">{heading}</span>
       </header>
+
+      {!isLoading && !isError && notes.length > 0 ? (
+        <p
+          data-testid="day-briefing-stale"
+          role="status"
+          className="mb-2 font-mono text-[11px] text-[var(--red-text)]"
+        >
+          {notes.join("; ")}. It may not reflect recent changes.
+        </p>
+      ) : null}
 
       {isLoading ? (
         <p className="font-mono text-[11px] text-[var(--dim)]">Loading…</p>

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
+
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 
 from .constants import (
     NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY,
@@ -181,7 +184,8 @@ class RemindersMixin:
         try:
             onetime_rows = await pool.fetch(
                 """
-                SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at
+                SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at,
+                       ce.metadata -> 'anchor' AS anchor, ce.updated_at AS updated_at
                 FROM calendar_events ce
                 JOIN calendar_sources cs ON cs.id = ce.source_id
                 WHERE cs.source_kind = $1
@@ -213,13 +217,34 @@ class RemindersMixin:
             event_id = row["event_id"]
             title = row["title"] or "Reminder"
             starts_at = row["starts_at"]
+            message = f"Reminder: {title}"
+            anchor = _stored_anchor(row.get("anchor"))
+            if anchor is not None:
+                state = await _anchor_state(pool, anchor)
+                if state == "changed":
+                    # The event moved or was cancelled since this reminder was set: its time is
+                    # no longer true. It is neither sent nor marked sent; the rebase or retire
+                    # path owns it.
+                    logger.info(
+                        "CalendarModule.tick: anchored reminder %s held, its event changed",
+                        event_id,
+                    )
+                    continue
+                if state == "unknown":
+                    from butlers.jobs.briefing import owner_briefing_zone
+
+                    # Owner-facing text is in the owner's zone, never UTC.
+                    as_of = (row.get("updated_at") or now).astimezone(
+                        await owner_briefing_zone(pool)
+                    )
+                    message += f" (as of {as_of:%H:%M %Z}; event not rechecked)"
 
             from butlers.jobs.owner_notify import owner_notify_request
 
             envelope = {
                 **owner_notify_request(
                     origin_butler=source_butler,
-                    message=f"Reminder: {title}",
+                    message=message,
                     channel=None,
                 ),
                 "reminder_event_id": str(event_id),
@@ -278,9 +303,11 @@ class RemindersMixin:
         timezone: str,
         recurrence_rule: str | None,
         entity_ids: list[uuid.UUID],
+        metadata_extra: dict[str, Any] | None = None,
     ) -> tuple[uuid.UUID, dict[str, Any]]:
         """Insert a new reminder row into calendar_events and link entity_ids.
 
+        ``metadata_extra`` is merged into the row's metadata beside ``native`` (the anchor).
         Returns (event_id, row_dict).
         """
         from butlers.core.tool_call_capture import get_current_runtime_session_id
@@ -310,7 +337,7 @@ class RemindersMixin:
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, FALSE, 'confirmed', 'default',
-                $10, $11, $12, '{"native": true}'::jsonb
+                $10, $11, $12, ($13::text)::jsonb
             )
             RETURNING id, title, description, body, location, starts_at, ends_at, status,
                       recurrence_rule, source_butler, source_session_id
@@ -327,6 +354,7 @@ class RemindersMixin:
             recurrence_rule,
             resolved_source_butler,
             session_id_str,
+            json.dumps({"native": True, **(metadata_extra or {})}),
         )
         if row is None:
             raise RuntimeError("Failed to insert reminder into calendar_events")
@@ -913,6 +941,128 @@ class RemindersMixin:
         }
 
 
+async def _resolve_reminder_anchor(
+    pool: Any, anchor_event_id: str, original_start: datetime
+) -> tuple[str, datetime]:
+    """The current start of the provider occurrence a reminder is anchored to, from this projection.
+
+    An anchor must name a live (not cancelled, not quarantined) provider occurrence in this
+    schema. Google syncs with ``singleEvents=False``, so a moved occurrence of a recurring event
+    is its own ``calendar_events`` row: ``origin_ref`` ``<master>_<YYYYMMDDTHHMMSSZ>`` (the
+    occurrence's ORIGINAL start, UTC) and no recurrence rule. That row is matched directly and its
+    current start returned, so a moved occurrence is anchored and the others are unaffected. Of a
+    recurring master only the occurrence starting exactly at ``original_start`` can be anchored;
+    other unmoved occurrences are not projected, so they are refused. A one-time event matches on
+    its own start. The exception row, being the most specific, wins; then the owner-role source.
+    A match that is not on an owner-role calendar is refused: only that copy is followed.
+    Returns the matched row's own ``origin_ref`` (the exception's, for a moved occurrence) and
+    its current start, so the anchor names exactly the row it follows.
+    """
+    if pool is None:
+        raise RuntimeError("Database pool is not available")
+    row = await pool.fetchrow(
+        f"""
+        SELECT e.origin_ref, COALESCE(ci.starts_at, e.starts_at) AS starts_at, s.time_role
+        FROM calendar_events e
+        JOIN calendar_sources s ON s.id = e.source_id
+        LEFT JOIN calendar_event_instances ci
+               ON ci.event_id = e.id AND e.recurrence_rule IS NOT NULL AND ci.starts_at = $2
+        WHERE s.lane = 'user'
+          AND e.metadata ->> 'source_type' = 'provider_event'
+          AND COALESCE(e.status, 'confirmed') <> 'cancelled'
+          AND NOT {quarantined_invitation_sql("e")}
+          AND (
+              (e.origin_ref = $1 AND e.recurrence_rule IS NULL AND e.starts_at = $2)
+              OR (e.origin_ref = $1 AND e.recurrence_rule IS NOT NULL AND ci.id IS NOT NULL
+                  AND COALESCE(ci.status, 'confirmed') <> 'cancelled')
+              OR (e.origin_ref = $1 || '_' || to_char($2 AT TIME ZONE 'UTC',
+                                                       'YYYYMMDD"T"HH24MISS"Z"')
+                  AND e.recurrence_rule IS NULL)
+          )
+        ORDER BY (e.origin_ref <> $1) DESC, (s.time_role = 'owner') DESC
+        LIMIT 1
+        """,
+        anchor_event_id,
+        original_start,
+    )
+    if row is None:
+        raise ValueError(
+            "anchor_event_id does not name a live event occurrence at anchor_original_start "
+            "in this butler's calendar"
+        )
+    if row["time_role"] != "owner":
+        # Only the owner's own copy is followed (reminder_follow), so an anchor to any other copy
+        # would silently never rebase or retire.
+        raise ValueError(
+            "anchor_event_id is on a calendar that is not the owner's own; only the owner's own "
+            "copy of an event can be followed"
+        )
+    return row["origin_ref"], row["starts_at"]
+
+
+def _stored_anchor(raw: Any) -> dict[str, Any] | None:
+    """The anchor stored in a reminder's metadata, or None for an absolute reminder."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if (
+        not isinstance(raw, dict)
+        or not raw.get("event_origin_ref")
+        or not raw.get("original_start")
+    ):
+        return None
+    return raw
+
+
+async def _anchor_state(
+    pool: Any, anchor: dict[str, Any]
+) -> Literal["current", "changed", "unknown"]:
+    """Whether an anchored reminder's occurrence is still where the reminder assumed.
+
+    ``current``: the occurrence is live at its original start. ``changed``: its event is cancelled,
+    or the occurrence moved or was cancelled. ``unknown``: no projection row names the event, or
+    the read failed: the reminder then still fires, stamped. Never raises.
+    """
+    try:
+        original = datetime.fromisoformat(str(anchor["original_start"]))
+        row = await pool.fetchrow(
+            f"""
+            SELECT e.status, e.starts_at, e.recurrence_rule,
+                   (SELECT ci.status FROM calendar_event_instances ci
+                     WHERE ci.event_id = e.id AND ci.starts_at = $2 LIMIT 1) AS instance_status,
+                   EXISTS (SELECT 1 FROM calendar_event_instances ci
+                            WHERE ci.event_id = e.id AND ci.starts_at = $2) AS has_instance
+            FROM calendar_events e
+            JOIN calendar_sources s ON s.id = e.source_id
+            WHERE e.origin_ref = $1 AND s.lane = 'user'
+              AND e.metadata ->> 'source_type' = 'provider_event'
+              AND NOT {quarantined_invitation_sql("e")}
+            ORDER BY (s.time_role = 'owner') DESC
+            LIMIT 1
+            """,
+            str(anchor["event_origin_ref"]),
+            original,
+        )
+    except Exception:
+        logger.warning("CalendarModule.tick: anchor recheck failed", exc_info=True)
+        return "unknown"
+    if row is None:
+        return "unknown"
+    if (row["status"] or "confirmed") == "cancelled":
+        return "changed"
+    if row["recurrence_rule"]:
+        live = row["has_instance"] and (row["instance_status"] or "confirmed") != "cancelled"
+    else:
+        live = row["starts_at"] == original
+    return "current" if live else "changed"
+
+
+#: An anchored reminder may sit at most this far from its event (14 days).
+_MAX_ANCHOR_OFFSET_MINUTES = 14 * 24 * 60
+
+
 def register_reminder_tools(
     module: CalendarModule, mcp: Any, _tool: Callable[..., Any], butler_name: str
 ) -> None:
@@ -924,12 +1074,15 @@ def register_reminder_tools(
     @_tool("core")
     async def reminder_create(
         title: str,
-        due_at: datetime,
+        due_at: datetime | None = None,
         body: str | None = None,
         ends_at: datetime | None = None,
         recurrence: str | None = None,
         entity_ids: list[str] | None = None,
         timezone: str | None = None,
+        anchor_event_id: str | None = None,
+        anchor_original_start: datetime | None = None,
+        offset_minutes: int | None = None,
     ) -> dict[str, Any]:
         """Create a reminder as a native calendar event.
 
@@ -943,10 +1096,48 @@ def register_reminder_tools(
 
         ``entity_ids`` links the reminder to zero or more entities via
         the ``calendar_event_entities`` junction table.
+
+        To follow an event, pass ``anchor_event_id`` (the provider's event id),
+        ``anchor_original_start`` (that occurrence's start) and ``offset_minutes`` (negative
+        means before, at most 14 days either way) instead of ``due_at``: the reminder's time is
+        the occurrence's start plus the offset and is stored with the anchor. An anchor that
+        names no live occurrence in this butler's calendar is refused.
         """
         normalized_title = title.strip()
         if not normalized_title:
             raise ValueError("title must be a non-empty string")
+        anchor: dict[str, Any] | None = None
+        if (
+            anchor_event_id is not None
+            or anchor_original_start is not None
+            or (offset_minutes is not None)
+        ):
+            if due_at is not None:
+                raise ValueError("due_at is derived from the anchor; do not pass both")
+            if not (anchor_event_id and anchor_event_id.strip()):
+                raise ValueError("anchor_event_id is required with an anchor")
+            if anchor_original_start is None or anchor_original_start.tzinfo is None:
+                raise ValueError("anchor_original_start must be a timezone-aware datetime")
+            if offset_minutes is None:
+                raise ValueError("offset_minutes is required with an anchor")
+            if abs(offset_minutes) > _MAX_ANCHOR_OFFSET_MINUTES:
+                raise ValueError("offset_minutes must be within 14 days of the event")
+            if recurrence is not None:
+                raise ValueError("an anchored reminder cannot also recur")
+            anchor_ref, occurrence_start = await _resolve_reminder_anchor(
+                getattr(module._db, "pool", None), anchor_event_id.strip(), anchor_original_start
+            )
+            due_at = occurrence_start + timedelta(minutes=offset_minutes)
+            anchor = {
+                "event_origin_ref": anchor_ref,
+                # Despite the key, this is the occurrence's start AS RESOLVED NOW (a moved
+                # occurrence's moved start), not the original start the caller named: it is the
+                # start the offset was applied to, which later rechecks compare against.
+                "original_start": occurrence_start.isoformat(),
+                "offset_minutes": offset_minutes,
+            }
+        if due_at is None:
+            raise ValueError("due_at is required unless the reminder is anchored to an event")
         if due_at.tzinfo is None:
             raise ValueError("due_at must be timezone-aware")
         effective_ends_at = ends_at or (due_at + timedelta(minutes=15))
@@ -989,6 +1180,7 @@ def register_reminder_tools(
             timezone=effective_timezone,
             recurrence_rule=recurrence_rule,
             entity_ids=normalized_entity_ids,
+            metadata_extra={"anchor": anchor} if anchor else None,
         )
         return {
             "status": "created",
@@ -999,6 +1191,7 @@ def register_reminder_tools(
             "recurrence_rule": recurrence_rule,
             "entity_ids": [str(eid) for eid in normalized_entity_ids],
             "source_butler": module._butler_name,
+            "anchor": anchor,
         }
 
     @_tool("core")

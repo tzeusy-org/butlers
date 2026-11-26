@@ -84,9 +84,11 @@ from butlers.api.models.calendar_workspace import (
     HouseholdEventRef,
     HouseholdSubjectGroup,
     HouseholdTimeResponse,
+    OverlayFreshness,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
+    ResolutionOption,
     SetPrimaryCalendarRequest,
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
@@ -103,6 +105,7 @@ from butlers.api.read_models.calendar_workspace import (
     CalendarProposalRow,
     _coerce_datetime,
     _dedup_workspace_rows,
+    compute_overlay_freshness,
     load_dedup_rules,
     load_keep_separate_keys,
     query_calendar_conflicts,
@@ -123,6 +126,7 @@ from butlers.api.read_models.calendar_workspace import (
 )
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
+from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.liveness import derive_liveness
 from butlers.core.temporal.day_sheet import render_day_sheet_text
 from butlers.core.temporal.household_context import SUBJECT_ROLES, HouseholdEvent
@@ -210,11 +214,19 @@ _WORKSPACE_SOURCE_TYPE_FACETS = frozenset(
     {"provider_event", "scheduled_task", "butler_reminder", "manual_butler_event"}
 )
 
-# Overlay contributions carry SGT calendar dates (the contribution jobs bucket
-# every domain event onto its Asia/Singapore date). When no display timezone is
-# requested, overlay entries are anchored at SGT midnight so they land on the
-# same calendar day the specialist computed.
+# Overlay contributions carry the owner's calendar dates (the contribution jobs bucket every
+# domain event onto the owner-zone date, SGT when no zone was ever saved). The day-briefing read
+# defaults to the owner zone when no display timezone is requested (``_overlay_owner_zone``); the
+# SGT default below is only the read-side fallback when the owner zone cannot be read, and the
+# anchor for the other overlay reads that take no owner zone.
 _OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
+
+
+def _overlay_now() -> datetime:
+    """The instant overlay freshness is judged at (a seam: tests pin it)."""
+    return datetime.now(UTC)
+
+
 # Namespace for deterministic, stable overlay entry IDs. Overlay entries have no
 # natural DB id (they live inside a JSONB envelope), so the entry_id is derived
 # from (butler, date, index, kind, label) — stable across reads of the same view.
@@ -1026,11 +1038,11 @@ async def _fetch_overlay_entries(
     end: datetime,
     butlers: list[str] | None,
     display_tz: ZoneInfo | None,
-) -> tuple[list[UnifiedCalendarEntry], bool, bool]:
+) -> tuple[list[UnifiedCalendarEntry], bool, bool, list[OverlayFreshness]]:
     """Fetch + project cached overlay contributions, never raising.
 
-    Returns ``(entries, has_domain_context, available)``; ``available`` is ``False`` when the
-    view could not be read, which is not the same as "no domain context" (bu-5ii4gj.4).
+    Returns ``(entries, has_domain_context, available, freshness)``; ``available`` is ``False``
+    when the view could not be read, which is not the same as "no domain context" (bu-5ii4gj.4).
     ``has_domain_context`` is ``True`` when at least one **valid** contribution envelope exists
     for a date within ``[start, end)`` — even when that envelope has no entries (``has_entries``
     false) — so the FE can distinguish "no domain context for this range" from
@@ -1038,6 +1050,11 @@ async def _fetch_overlay_entries(
     ``state`` table, or any query failure yields ``([], False, False)`` — never a 500.
     """
     overlays, available = await scan_calendar_overlays(db, butlers=butlers)
+    freshness = [
+        OverlayFreshness(**item)
+        for item in compute_overlay_freshness(overlays, available=available, now=_overlay_now())
+    ]
+    not_current = {f.butler: f for f in freshness if f.state in ("stale", "partial")}
 
     entries: list[UnifiedCalendarEntry] = []
     has_domain_context = False
@@ -1053,8 +1070,19 @@ async def _fetch_overlay_entries(
             # A valid in-range envelope signals domain context for the range even
             # when it projects zero entries (has_entries=false → honest empty-state).
             has_domain_context = True
+            for entry in projected_entries:
+                flagged = not_current.get(entry.butler_name or "")
+                if flagged is not None:
+                    # Never wear current-data authority: stale or incomplete producers are named.
+                    entry.metadata = {
+                        **(entry.metadata or {}),
+                        flagged.state: True,
+                        "stale_since": flagged.stale_since.isoformat()
+                        if flagged.stale_since
+                        else None,
+                    }
             entries.extend(projected_entries)
-    return entries, has_domain_context, available
+    return entries, has_domain_context, available, freshness
 
 
 def _group_overlay_entries_by_butler_kind(
@@ -1265,6 +1293,22 @@ async def get_meeting_prep(
     return ApiResponse[CalendarPrepResponse](data=data)
 
 
+async def _overlay_owner_zone(db: DatabaseManager) -> ZoneInfo:
+    """The owner's saved zone (what the briefing jobs key by); SGT when none was ever saved.
+
+    Fails open to the SGT default: this is a read of cached contributions, never a 500.
+    """
+    pool = _calendar_accounts_shared_pool(db)
+    if pool is None:  # an empty fleet has no settings to read
+        return _OVERLAY_DEFAULT_TZ
+    try:
+        name = await load_configured_general_timezone(pool)
+        return ZoneInfo(name) if name is not None else _OVERLAY_DEFAULT_TZ
+    except Exception:
+        logger.warning("calendar day-briefing: owner zone unreadable; using SGT", exc_info=True)
+        return _OVERLAY_DEFAULT_TZ
+
+
 @router.get("/day-briefing", response_model=ApiResponse[CalendarDayBriefingResponse])
 async def get_day_briefing(
     date: datetime = Query(
@@ -1297,15 +1341,21 @@ async def get_day_briefing(
         except ZoneInfoNotFoundError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
 
-    # Anchor the day window in the same timezone the overlay projection uses so
-    # the date's contributions land in range (SGT default — matches the jobs'
-    # bucketing).
-    tz = display_tz or _OVERLAY_DEFAULT_TZ
+    # Anchor the day window in the timezone the contribution jobs bucketed the date in: the
+    # requested one, else the owner's (the same zone ``briefing_day`` keys with).
+    if display_tz is None:
+        display_tz = await _overlay_owner_zone(db)
+    tz = display_tz
     target_date = date.date()
     start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
     end_at = start_at + timedelta(days=1)
 
-    overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
+    (
+        overlay_entries,
+        has_domain_context,
+        overlays_available,
+        freshness,
+    ) = await _fetch_overlay_entries(
         db, start=start_at, end=end_at, butlers=butlers, display_tz=display_tz
     )
 
@@ -1315,6 +1365,7 @@ async def get_day_briefing(
         timezone=tz.key,
         has_domain_context=has_domain_context,
         overlays_available=overlays_available,
+        overlay_freshness=freshness,
         has_entries=bool(overlay_entries),
         groups=groups,
         entries=overlay_entries,
@@ -1400,7 +1451,12 @@ async def get_workspace(
         # empty entries list with ``has_domain_context=false``, never a 500.
         # Overlays are read-only domain context, not provider/butler sources, so
         # freshness/lanes are empty.
-        overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
+        (
+            overlay_entries,
+            has_domain_context,
+            overlays_available,
+            freshness,
+        ) = await _fetch_overlay_entries(
             db, start=start, end=end, butlers=butlers, display_tz=display_tz
         )
         data = CalendarWorkspaceReadResponse(
@@ -1411,6 +1467,7 @@ async def get_workspace(
             has_more=False,
             has_domain_context=has_domain_context,
             overlays_available=overlays_available,
+            overlay_freshness=freshness,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
@@ -1804,6 +1861,18 @@ async def get_workspace_conflicts(
                 for ref in issue.events
             ],
             proposal_ids=list(issue.proposal_ids),
+            options=[
+                ResolutionOption(
+                    id=o.id,
+                    kind=o.kind,
+                    authority=o.authority,
+                    exact_call=o.exact_call,
+                    rationale_fields=o.rationale_fields,
+                )
+                for o in issue.options
+            ],
+            issue_digest=issue.issue_digest,
+            options_reason=issue.options_reason,
         )
         for issue in scan.issues
     ]

@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from butlers.testing.briefing_clock import sgt_noon
 from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import records
 
@@ -75,6 +76,9 @@ async def run_overlay_job(
     module = "butlers.jobs.calendar_overlay"
     pool = source_reads(first or [], second or [])
     state = ContributionStateStore(seed=seed)
-    with patch(f"{module}.today_sgt", return_value=today), patch_state(module, state):
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(today)),
+        patch_state(module, state),
+    ):
         result = await job(pool, None)
     return result, state, pool

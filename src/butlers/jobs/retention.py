@@ -302,7 +302,7 @@ async def prune_filtered_events_partitions(
 # [C] public.insight_candidates — delivered/filtered cleanup
 # ---------------------------------------------------------------------------
 
-_INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS = 90
+INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS = 90
 
 
 async def prune_insight_candidates(
@@ -310,7 +310,7 @@ async def prune_insight_candidates(
     *,
     enabled: bool = False,
     dry_run: bool = True,
-    ttl_days: int = _INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS,
+    ttl_days: int = INSIGHT_CANDIDATES_DEFAULT_TTL_DAYS,
     batch_limit: int = 500,
 ) -> dict[str, Any]:
     """Delete old non-pending rows from ``public.insight_candidates``.

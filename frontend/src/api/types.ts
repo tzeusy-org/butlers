@@ -1524,6 +1524,8 @@ export interface CalendarWorkspaceReadResponse {
    * available).
    */
   overlays_available?: boolean;
+  /** Per contributing butler freshness of the overlay envelopes; empty outside the overlays lane. */
+  overlay_freshness?: OverlayFreshness[];
   /**
    * Proposals lane: `false` when any schema's proposals read failed, so an empty
    * list must render "Proposals unavailable", never "Nothing awaiting your review".
@@ -1576,6 +1578,22 @@ export interface ConflictIssue {
   events: ConflictEventRef[];
   /** UUIDs of pending fix proposals (empty until the fix-proposal session runs). */
   proposal_ids: string[];
+  /** Overlap issues only (dark until the resolve route ships): ways to finish it. */
+  options?: ResolutionOption[];
+  /** The digest a resolve must echo back, so it can never act on a stale read. */
+  issue_digest?: string | null;
+  /** Why `options` is empty (`stale_source`), else null. */
+  options_reason?: string | null;
+}
+
+export interface ResolutionOption {
+  id: string;
+  kind: "move_block" | "move_own" | "decline" | "tentative" | "ask_organizer" | "keep_both";
+  authority: "no_park_undo" | "owner_submit" | "parked_per_event";
+  /** Exactly what the resolve route would run. */
+  exact_call: { tool: string; args: Record<string, unknown> };
+  /** Which fields explain the option (entry ids, the chosen slot); never event text. */
+  rationale_fields: Record<string, unknown>;
 }
 
 /**
@@ -1692,6 +1710,16 @@ export interface DayBriefingButlerGroup {
   kinds: DayBriefingKindGroup[];
 }
 
+/** How current one butler's overlay contribution is. */
+export interface OverlayFreshness {
+  butler: string;
+  state: "ok" | "stale" | "partial" | "missing" | "failed";
+  /** When the butler's job last wrote an envelope; absent when it never did. */
+  generated_at?: string | null;
+  /** For `stale`: when it went stale (the stamp plus twice the cadence). */
+  stale_since?: string | null;
+}
+
 /**
  * Response payload for GET /api/calendar/workspace/day-briefing — the structured
  * "tomorrow at a glance" card assembled from the cached overlay view for a
@@ -1711,6 +1739,7 @@ export interface CalendarDayBriefingResponse {
   has_domain_context: boolean;
   /** `false` when the overlay view could not be read (not the same as no context). */
   overlays_available?: boolean;
+  overlay_freshness?: OverlayFreshness[];
   /** `true` when at least one overlay entry exists for the date. */
   has_entries: boolean;
   groups: DayBriefingButlerGroup[];

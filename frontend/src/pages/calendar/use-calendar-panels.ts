@@ -39,18 +39,24 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
   );
 
   // Proposals lane: butler-extracted candidate events awaiting accept/dismiss.
-  // Fetched only while the panel is open; accept/dismiss mutations reconcile the
+  // Cost: one extra proposals read per poll interval while the page is open (it was open-gated).
+  // Always read, so the verdict can count what is waiting without the panel being open; the
+  // panel lists the entries only while it is open. Accept/dismiss mutations reconcile the
   // optimistic lane state inside the panel.
-  const proposalsQuery = useCalendarProposals(
-    { start: queryStart, end: queryEnd, timezone },
-    { enabled: proposalsOpen },
-  );
+  const proposalsQuery = useCalendarProposals({ start: queryStart, end: queryEnd, timezone });
   const proposalEntries = useMemo(
     () => (proposalsOpen ? (proposalsQuery.data?.data.entries ?? []) : []),
     [proposalsOpen, proposalsQuery.data?.data],
   );
   const acceptProposalMutation = useAcceptCalendarProposal();
   const dismissProposalMutation = useDismissCalendarProposal();
+
+  // A dropped row means the lane is partial: its count could be short, so it is unknown, not low.
+  const droppedRows = proposalsQuery.data?.data.proposals_dropped_rows;
+  const proposalsPartial =
+    proposalsQuery.isError ||
+    proposalsQuery.data?.data.proposals_available === false ||
+    droppedRows !== undefined && droppedRows > 0;
 
   return {
     activityOpen,
@@ -61,6 +67,12 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
     auditQuery,
     proposalsQuery,
     proposalEntries,
+    /** How many proposals wait in the window; `null` when the read failed or is unavailable. */
+    proposalCount:
+      proposalsPartial ? null
+        : (proposalsQuery.data?.data.entries.length ?? null),
+    proposalsLoading: proposalsQuery.isLoading,
+    proposalsError: proposalsPartial,
     proposalsUnavailable: proposalsOpen && proposalsQuery.data?.data.proposals_available === false,
     proposalsDroppedRows: proposalsOpen ? proposalsQuery.data?.data.proposals_dropped_rows : undefined,
     acceptProposalMutation,

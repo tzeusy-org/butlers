@@ -13,7 +13,7 @@ path. This module's envelope shape MUST match what that view's reader expects:
 
     {
         "butler":      "<schema>",       # string literal, matches the view's source col
-        "date":        "YYYY-MM-DD",      # target calendar date (SGT)
+        "date":        "YYYY-MM-DD",      # target calendar date (owner zone)
         "has_entries": <bool>,            # honest empty-state flag
         "entries": [
             {"kind": "<str>", "label": "<str>", "priority": "high|medium|low",
@@ -36,15 +36,15 @@ Design reference: openspec/changes/calendar-cross-domain-overlays/
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from datetime import date as date_cls
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import asyncpg
 
 from butlers.core.entity_posture import ACTIVE, MEMORIAL
 from butlers.core.state import state_delete, state_list, state_set
-from butlers.jobs.briefing import SGT, today_sgt
+from butlers.jobs.briefing import briefing_day, day_start_utc
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,9 @@ FINANCE_OVERLAY_LOOKAHEAD_DAYS = 14
 #: ``today - OVERLAY_RETENTION_DAYS`` are deleted. ``0`` means "prune everything
 #: strictly before today" (a forward-looking overlay has no use for past dates).
 OVERLAY_RETENTION_DAYS = 0
+#: How often every contribution job is scheduled (daily). An envelope older than twice this is
+#: stale.
+OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
 
 #: Priority-descending sort rank. Lower rank sorts first.
 _PRIORITY_RANK: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
@@ -126,6 +129,12 @@ class OverlayContribution(TypedDict):
     date: str  # ISO date YYYY-MM-DD
     has_entries: bool
     entries: list[OverlayEntry]
+    #: When the producing job wrote this envelope (UTC ISO-8601) and how often it runs; envelopes
+    #: written before these existed lack them and read as stale.
+    generated_at: NotRequired[str]
+    cadence_seconds: NotRequired[int]
+    #: ``False`` when the producer could not read all of its records; absent reads as complete.
+    complete: NotRequired[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +156,11 @@ def sort_entries_by_priority(entries: list[OverlayEntry]) -> list[OverlayEntry]:
     return sorted(entries, key=lambda e: _PRIORITY_RANK.get(e["priority"], len(_PRIORITY_RANK)))
 
 
+def _utcnow() -> datetime:
+    """The instant an envelope is stamped with (a seam: tests pin it)."""
+    return datetime.now(UTC)
+
+
 async def write_overlay_envelopes(
     pool: asyncpg.Pool,
     *,
@@ -154,6 +168,7 @@ async def write_overlay_envelopes(
     today: date_cls,
     lookahead_days: int,
     entries_by_date: dict[str, list[OverlayEntry]],
+    complete: bool = True,
 ) -> tuple[int, int]:
     """Upsert one overlay envelope per date in ``[today, today+lookahead_days]``.
 
@@ -161,10 +176,13 @@ async def write_overlay_envelopes(
     so dates with no domain events carry ``has_entries=false`` and ``entries=[]``
     — the honest empty-state contract. Entries are ordered priority-descending.
 
+    ``complete=False`` marks every envelope partial (the producer could not read all its records).
+
     Returns ``(dates_written, total_entries)``.
     """
     dates_written = 0
     total_entries = 0
+    generated_at = _utcnow().isoformat()
     for offset in range(lookahead_days + 1):
         date_str = (today + timedelta(days=offset)).isoformat()
         entries = sort_entries_by_priority(entries_by_date.get(date_str, []))
@@ -173,7 +191,11 @@ async def write_overlay_envelopes(
             "date": date_str,
             "has_entries": len(entries) > 0,
             "entries": entries,
+            "generated_at": generated_at,
+            "cadence_seconds": OVERLAY_CADENCE_SECONDS,
         }
+        if not complete:
+            envelope["complete"] = False
         await state_set(pool, overlay_key(date_str), envelope)
         dates_written += 1
         total_entries += len(entries)
@@ -237,7 +259,7 @@ async def run_finance_calendar_overlay_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    today, _zone = await briefing_day(pool)
     today_str = today.isoformat()
     horizon = today + timedelta(days=FINANCE_OVERLAY_LOOKAHEAD_DAYS)
 
@@ -348,9 +370,9 @@ async def run_finance_calendar_overlay_contribution(
 # ---------------------------------------------------------------------------
 
 
-def _sgt_date_str(ts: datetime) -> str:
-    """Return the SGT calendar date (``YYYY-MM-DD``) a tz-aware timestamp falls on."""
-    return ts.astimezone(SGT).date().isoformat()
+def _local_date_str(ts: datetime, zone: tzinfo) -> str:
+    """Return the owner-zone calendar date (``YYYY-MM-DD``) a tz-aware timestamp falls on."""
+    return ts.astimezone(zone).date().isoformat()
 
 
 def _departure_priority(days_until: int) -> str:
@@ -383,7 +405,7 @@ async def run_travel_calendar_overlay_contribution(
     - ``check_in`` entries for accommodations whose check-in lands in the window.
     - ``check_out`` entries for accommodations whose check-out lands in the window.
 
-    Timestamps are ``TIMESTAMPTZ``; each event is bucketed onto the SGT calendar
+    Timestamps are ``TIMESTAMPTZ``; each event is bucketed onto the owner-zone calendar
     date it falls on. Each date in the window gets an envelope
     (``has_entries=false`` when empty), entries are ordered priority-descending,
     writes upsert via ``state_set``, and stale past-date entries are pruned. No
@@ -391,15 +413,17 @@ async def run_travel_calendar_overlay_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    today, zone = await briefing_day(pool)
     today_str = today.isoformat()
 
-    # SGT-midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
-    # ``window_end`` is the exclusive SGT-midnight after the last lookahead date,
+    # owner-local midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
+    # ``window_end`` is the exclusive owner-local midnight after the last lookahead date,
     # so every in-window timestamp buckets onto a date in [today, today+lookahead].
-    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
-    window_start = sgt_midnight.astimezone(UTC)
-    window_end = (sgt_midnight + timedelta(days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_start = day_start_utc(today, zone)
+    window_end = (local_midnight + timedelta(days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(
+        UTC
+    )
 
     # --- Transport legs departing or arriving within the window ---
     leg_rows = await pool.fetch(
@@ -454,7 +478,7 @@ async def run_travel_calendar_overlay_contribution(
         carrier = row["carrier"] or row["type"]
 
         if _in_window(row["departure_at"]):
-            date_str = _sgt_date_str(row["departure_at"])
+            date_str = _local_date_str(row["departure_at"], zone)
             days_until = (date_cls.fromisoformat(date_str) - today).days
             origin = row["departure_city"] or "?"
             dest = row["arrival_city"] or "?"
@@ -482,7 +506,7 @@ async def run_travel_calendar_overlay_contribution(
             departure_count += 1
 
         if _in_window(row["arrival_at"]):
-            date_str = _sgt_date_str(row["arrival_at"])
+            date_str = _local_date_str(row["arrival_at"], zone)
             days_until = (date_cls.fromisoformat(date_str) - today).days
             dest = row["arrival_city"] or "?"
             _add(
@@ -509,7 +533,7 @@ async def run_travel_calendar_overlay_contribution(
         name = row["name"] or row["type"]
 
         if _in_window(row["check_in"]):
-            date_str = _sgt_date_str(row["check_in"])
+            date_str = _local_date_str(row["check_in"], zone)
             days_until = (date_cls.fromisoformat(date_str) - today).days
             _add(
                 date_str,
@@ -531,7 +555,7 @@ async def run_travel_calendar_overlay_contribution(
             check_in_count += 1
 
         if _in_window(row["check_out"]):
-            date_str = _sgt_date_str(row["check_out"])
+            date_str = _local_date_str(row["check_out"], zone)
             days_until = (date_cls.fromisoformat(date_str) - today).days
             _add(
                 date_str,
@@ -656,7 +680,7 @@ async def run_relationship_calendar_overlay_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    today, zone = await briefing_day(pool)
     today_str = today.isoformat()
     lookahead = RELATIONSHIP_OVERLAY_LOOKAHEAD_DAYS
 
@@ -709,10 +733,10 @@ async def run_relationship_calendar_overlay_contribution(
     # --- Follow-up reminders due within the window (and overdue) ---
     # Reminders are SPO facts (predicate='reminder'); the contact UUID is embedded
     # in the subject key as "contact:{uuid}:reminder:{...}" and resolved to a name
-    # via contact_entity_map → entities. window_end is the exclusive SGT-midnight
+    # via contact_entity_map → entities. window_end is the exclusive owner-local midnight
     # after the last lookahead date, converted to UTC for the TIMESTAMPTZ compare.
-    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
-    window_end = (sgt_midnight + timedelta(days=lookahead + 1)).astimezone(UTC)
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_end = (local_midnight + timedelta(days=lookahead + 1)).astimezone(UTC)
 
     reminder_rows = await pool.fetch(
         """
@@ -790,12 +814,12 @@ async def run_relationship_calendar_overlay_contribution(
 
     for row in reminder_rows:
         trigger = row["trigger_at"]
-        sgt_date = trigger.astimezone(SGT).date()
+        local_date = trigger.astimezone(zone).date()
         # Overdue reminders (trigger before today) clamp onto today as high-priority.
-        landing = today if sgt_date < today else sgt_date
+        landing = today if local_date < today else local_date
         date_str = landing.isoformat()
         days_until = (landing - today).days
-        is_overdue = sgt_date < today
+        is_overdue = local_date < today
         entry = {
             "kind": "follow_up",
             "label": row["label"] or "follow-up",
@@ -871,7 +895,7 @@ async def run_health_calendar_overlay_contribution(
 
     - ``appointment`` entries for appointment temporal facts (``predicate =
       'appointment'``) whose ``valid_at`` falls within the lookahead window,
-      bucketed onto the SGT calendar date they land on.
+      bucketed onto the owner-zone calendar date they land on.
     - ``medication_reminder`` entries for active medication property facts
       (``predicate = 'medication'``, ``metadata->>'active' = true``). Medications
       recur daily, so one reminder is emitted per active medication on **every**
@@ -883,15 +907,17 @@ async def run_health_calendar_overlay_contribution(
     """
     del job_args
 
-    today = today_sgt()
+    today, zone = await briefing_day(pool)
     today_str = today.isoformat()
 
-    # SGT-midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
-    # ``window_end`` is the exclusive SGT-midnight after the last lookahead date,
+    # owner-local midnight window boundaries converted to UTC for TIMESTAMPTZ comparison.
+    # ``window_end`` is the exclusive owner-local midnight after the last lookahead date,
     # so every in-window appointment buckets onto a date in [today, today+lookahead].
-    sgt_midnight = datetime(today.year, today.month, today.day, tzinfo=SGT)
-    window_start = sgt_midnight.astimezone(UTC)
-    window_end = (sgt_midnight + timedelta(days=HEALTH_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(UTC)
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_start = day_start_utc(today, zone)
+    window_end = (local_midnight + timedelta(days=HEALTH_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(
+        UTC
+    )
 
     # --- Appointments: temporal facts whose valid_at lands within the window ---
     appointment_rows = await pool.fetch(
@@ -936,7 +962,7 @@ async def run_health_calendar_overlay_contribution(
         valid_at: datetime = row["valid_at"]
         if valid_at is None or not (window_start <= valid_at < window_end):
             continue
-        date_str = _sgt_date_str(valid_at)
+        date_str = _local_date_str(valid_at, zone)
         days_until = (date_cls.fromisoformat(date_str) - today).days
         meta = dict(row["metadata"] or {})
         title = meta.get("title") or meta.get("name") or row["content"] or "Appointment"

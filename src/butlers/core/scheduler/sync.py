@@ -236,6 +236,8 @@ async def sync_schedules(
                             target_date = $10,
                             lead_time_days = $11,
                             alert_thresholds = $12{_budget_set},
+                            anchor_kind = NULL,
+                            anchor_zone = NULL,
                             updated_at = now()
                         WHERE id = $1
                         """,
@@ -271,6 +273,8 @@ async def sync_schedules(
                             next_run_at = $8,
                             source = 'toml',
                             enabled = true{_budget_set_cron},
+                            anchor_kind = NULL,
+                            anchor_zone = NULL,
                             updated_at = now()
                         WHERE id = $1
                         """,
@@ -282,7 +286,8 @@ async def sync_schedules(
                         continuity,
                     )
                 await pool.execute(
-                    "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                    "UPDATE scheduled_tasks SET timezone = $2, "
+                    "anchor_kind = NULL, anchor_zone = NULL WHERE id = $1",
                     existing["id"],
                     stored_timezone,
                 )
@@ -374,7 +379,8 @@ async def sync_schedules(
                     continuity,
                 )
             await pool.execute(
-                "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                "UPDATE scheduled_tasks SET timezone = $2, anchor_kind = NULL, anchor_zone = NULL "
+                "WHERE id = $1",
                 new_id,
                 stored_timezone,
             )

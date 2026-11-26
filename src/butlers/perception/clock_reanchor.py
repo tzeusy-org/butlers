@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from butlers.core.scheduler.anchor import effective_anchor
 from butlers.core.scheduler.timing import _next_run
 from butlers.core.temporal.city_zones import normalise_place, zone_for_place
 from butlers.core.temporal.projected_zone import TripLeg
@@ -116,6 +117,18 @@ class Move:
     name: str
     old_next_run_at: datetime
     new_next_run_at: datetime
+    #: What the owner reads on the card: the schedule's display title, else its name.
+    title: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Kept:
+    """A pinned cron schedule the transition left alone, with the zone it is pinned to."""
+
+    name: str
+    title: str
+    zone: str
+    next_run_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +136,8 @@ class ReanchorPlan:
     moves: tuple[Move, ...] = ()
     #: Rows left alone because they are not owner-local (pinned, one-shot, no cron).
     kept_pinned: int = 0
+    #: The pinned cron rows among them, for the owner card.
+    kept: tuple[Kept, ...] = ()
     #: Rows left to fire on their old anchor (already due) or already correct.
     skipped: int = 0
     #: Why nothing was planned at all: ``clock_unknown``, ``settling``, ``same_zone``.
@@ -131,13 +146,13 @@ class ReanchorPlan:
     retry_after: datetime | None = None
 
 
+def _title(row: Mapping[str, Any]) -> str:
+    return (row.get("display_title") or row["name"]).strip()
+
+
 def is_owner_local(row: Mapping[str, Any]) -> bool:
-    """Whether a schedule row follows the owner's clock (the ``'UTC'`` sentinel, until P6)."""
-    if not row.get("cron"):
-        return False
-    if (row.get("task_type") or "cron") != "cron":
-        return False
-    return (row.get("timezone") or "").strip().upper() in {"", "UTC"}
+    """Whether a schedule row follows the owner's clock (its effective anchor, see core_384)."""
+    return effective_anchor(row).kind == "owner_local"
 
 
 def plan_reanchor(
@@ -159,10 +174,14 @@ def plan_reanchor(
     if now - transition_at < RETRACTION_WINDOW:
         return ReanchorPlan(reason="settling", retry_after=transition_at + RETRACTION_WINDOW)
     moves: list[Move] = []
+    kept: list[Kept] = []
     pinned = skipped = 0
     for row in rows:
         if not is_owner_local(row):
             pinned += 1
+            anchor = effective_anchor(row)
+            if anchor.kind == "zone_pinned" and anchor.zone and row.get("next_run_at") is not None:
+                kept.append(Kept(row["name"], _title(row), anchor.zone, row["next_run_at"]))
             continue
         current = row["next_run_at"]
         if current is None or current <= now:
@@ -172,17 +191,17 @@ def plan_reanchor(
         if recomputed == current:
             skipped += 1
             continue
-        moves.append(Move(row["id"], row["name"], current, recomputed))
-    return ReanchorPlan(tuple(moves), pinned, skipped)
+        moves.append(Move(row["id"], row["name"], current, recomputed, _title(row)))
+    return ReanchorPlan(tuple(moves), pinned, tuple(kept), skipped)
 
 
-async def apply_reanchor(pool: Any, plan: ReanchorPlan) -> int:
-    """Write the plan with a compare-and-set on the old ``next_run_at``; the count that landed.
+async def apply_moves(pool: Any, plan: ReanchorPlan) -> list[Move]:
+    """Write the plan with a compare-and-set on the old ``next_run_at``; the moves that landed.
 
     A dispatcher claim advances ``next_run_at`` first, so a row it won no longer matches and is
     left on the anchor it fired with.
     """
-    landed = 0
+    landed: list[Move] = []
     for move in plan.moves:
         status = await pool.execute(
             "UPDATE scheduled_tasks SET next_run_at = $3, updated_at = now() "
@@ -193,12 +212,18 @@ async def apply_reanchor(pool: Any, plan: ReanchorPlan) -> int:
             move.new_next_run_at,
         )
         if status.endswith(" 1"):
-            landed += 1
+            landed.append(move)
     return landed
 
 
+async def apply_reanchor(pool: Any, plan: ReanchorPlan) -> int:
+    """How many of the plan's moves landed (see ``apply_moves``)."""
+    return len(await apply_moves(pool, plan))
+
+
 _ROWS_SQL = """
-    SELECT id, name, cron, timezone, next_run_at, COALESCE(task_type, 'cron') AS task_type
+    SELECT id, name, display_title, cron, timezone, next_run_at,
+           COALESCE(task_type, 'cron') AS task_type, until_at, anchor_kind, anchor_zone
     FROM scheduled_tasks
     WHERE enabled = true AND delete_requested_at IS NULL
 """
@@ -245,6 +270,7 @@ async def run_clock_transition(
         return {"live": False}
     names = sorted(set(expected) if expected is not None else set(pools))
     per_schema: dict[str, dict[str, int]] = {}
+    items: dict[str, ReanchorPlan] = {}
     failed: list[str] = []
     reason: str | None = None
     retry_after: datetime | None = None
@@ -267,12 +293,14 @@ async def run_clock_transition(
             )
             reason = plan.reason
             retry_after = plan.retry_after
-            moved = await apply_reanchor(pool, plan) if plan.reason is None else 0
+            landed = await apply_moves(pool, plan) if plan.reason is None else []
+            moved = len(landed)
             per_schema[butler] = {
                 "moved": moved,
                 "kept_pinned": plan.kept_pinned,
                 "skipped": plan.skipped,
             }
+            items[butler] = replace(plan, moves=tuple(landed))
         except Exception:
             logger.warning("clock re-anchor failed for %s", butler, exc_info=True)
             failed.append(butler)
@@ -286,6 +314,8 @@ async def run_clock_transition(
         #: Set when the transition is still settling: re-run this at or after it.
         "retry_after": retry_after,
         "per_schema": per_schema,
+        #: Each schema's plan, for the owner card. Carries schedule titles: never log it.
+        "plans": items,
     }
 
 

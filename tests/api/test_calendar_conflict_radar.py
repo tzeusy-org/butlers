@@ -1423,3 +1423,281 @@ async def test_a_quarantined_invitation_adds_no_conflict_or_load(app):
         response = await client.get("/api/calendar/workspace/conflicts", params=_PARAMS)
     assert response.status_code == 200
     assert response.json()["data"]["issues"] == []
+
+
+# ---------------------------------------------------------------------------
+# Resolution options on overlap issues (bu-5ii4gj.11 R1b)
+# ---------------------------------------------------------------------------
+
+_INVITED = {
+    "source_type": "provider_event",
+    "attendees": [
+        {"email": "me@example.com", "self": True, "responseStatus": "accepted"},
+        {"email": "boss@example.com", "organizer": True, "responseStatus": "accepted"},
+    ],
+}
+
+
+class _Pool:
+    """A butler pool stand-in: the dedup stores are empty and the owner's zone is saved."""
+
+    def __init__(self, zone: str | None = "UTC"):
+        self.zone = zone
+
+    async def fetchrow(self, sql, *args):
+        return None
+
+    async def fetch(self, sql, *args):
+        return []
+
+    async def fetchval(self, sql, *args):
+        return {"timezone": self.zone} if self.zone else None
+
+
+def _options_world(app, **overrides):
+    block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
+    block["event_etag"] = "etag-block"
+    meeting = _ws_row(
+        entry_id="mtg",
+        title="Planning",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata=_INVITED,
+    )
+    meeting["event_etag"] = "etag-mtg"
+    for row in (block, meeting):
+        row.update(overrides)
+    return block, meeting
+
+
+_WINDOW = {"start": _DAY - timedelta(days=30), "end": _DAY + timedelta(hours=15)}
+_NOW = _DAY - timedelta(hours=1)
+
+
+@pytest.fixture
+def live(monkeypatch):
+    monkeypatch.setattr("butlers.core.temporal.conflict_resolution.RESOLUTION_OPTIONS_LIVE", True)
+
+
+async def _scan(app, rows, *, zone="UTC", failed=None, window=None, **extra):
+    _, db = _build_app(app, workspace_rows={"general": rows}, workspace_failed=failed)
+    db.pool = MagicMock(return_value=_Pool(zone))
+    return await query_calendar_conflicts(db, **(window or _WINDOW), now=_NOW, **extra)
+
+
+async def _overlap(app, rows, **kwargs):
+    scan = await _scan(app, rows, **kwargs)
+    (overlap,) = [i for i in scan.issues if i.kind == "overlap"]
+    return overlap
+
+
+def _move_start(overlap):
+    move = next(o for o in overlap.options if o.kind.startswith("move"))
+    return datetime.fromisoformat(move.exact_call["args"]["start_at"])
+
+
+async def test_options_are_absent_while_the_flag_is_dark(app):
+    overlap = await _overlap(app, list(_options_world(app)))
+    assert overlap.options == [] and overlap.issue_digest is None
+
+
+async def test_a_block_against_a_meeting_offers_a_move_into_a_free_window(app, live):
+    overlap = await _overlap(app, list(_options_world(app)))
+
+    kinds = [o.kind for o in overlap.options]
+    assert kinds[0] == "move_block" and kinds[-1] == "keep_both"
+    assert {"decline", "tentative"} <= set(kinds)
+    assert overlap.options[0].authority == "no_park_undo"
+    # Clear of both overlapping events (09:00-10:30) and the 15-minute gap after them.
+    assert _move_start(overlap) == _DAY + timedelta(minutes=105)
+    assert overlap.issue_digest
+
+
+async def test_a_slot_must_be_free_on_every_calendar_not_just_the_two_in_the_overlap(app, live):
+    rows = list(_options_world(app))
+    rows.append(_ws_row(entry_id="late", title="Review", start=_DAY + timedelta(minutes=105)))
+
+    overlap = await _overlap(app, rows)
+
+    assert _move_start(overlap) == _DAY + timedelta(minutes=105 + 60 + 15)
+
+
+async def test_an_unclassified_calendars_attended_event_blocks_the_slot(app, live):
+    rows = list(_options_world(app))
+    rows.append(
+        _ws_row(
+            entry_id="standup",
+            title="Standup",
+            start=_DAY + timedelta(minutes=105),
+            time_role="unclassified",
+            # No accepted seat to assert owner time: only "the owner is not known to decline" holds.
+            event_metadata={"source_type": "provider_event"},
+        )
+    )
+
+    overlap = await _overlap(app, rows)
+
+    assert _move_start(overlap) >= _DAY + timedelta(minutes=105 + 60 + 15)
+
+
+async def test_an_all_day_leave_blocks_every_slot_that_day(app, live):
+    rows = list(_options_world(app))
+    midnight = _DAY.replace(hour=0)
+    leave = _ws_row(entry_id="leave", title="Leave", start=midnight, minutes=24 * 60, all_day=True)
+    leave["last_success_at"] = leave["last_synced_at"] = _NOW  # the source itself is fresh
+    rows.append(leave)
+
+    overlap = await _overlap(app, rows)
+
+    assert not [o for o in overlap.options if o.kind.startswith("move")]
+    assert overlap.options_reason == "no_free_slot"
+    assert overlap.options[-1].kind == "keep_both"
+
+
+async def test_a_partial_fan_out_attaches_no_options(app, live):
+    scan = await _scan(app, list(_options_world(app)), failed=["relationship"])
+
+    (overlap,) = [i for i in scan.issues if i.kind == "overlap"]
+    assert overlap.options == [] and overlap.issue_digest is None
+
+
+async def test_a_butler_filtered_read_attaches_no_options(app, live):
+    scan = await _scan(app, list(_options_world(app)), butlers=["general"])
+
+    (overlap,) = [i for i in scan.issues if i.kind == "overlap"]
+    assert overlap.options == [] and overlap.issue_digest is None
+
+
+async def test_a_stale_source_offers_nothing_and_says_so(app, live):
+    block, meeting = _options_world(app, last_synced_at=_NOW)  # attempts are recent...
+    block["last_success_at"] = meeting["last_success_at"] = _NOW - timedelta(days=1)  # ...not wins
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+    assert overlap.issue_digest is None  # keep_both included: nothing is acknowledged while stale
+
+
+async def test_a_source_that_failed_after_its_last_success_is_stale_now(app, live):
+    block, meeting = _options_world(app)
+    for row in (block, meeting):
+        row["last_error_at"] = _NOW  # a win a moment ago, then a failure
+        row["last_success_at"] = _NOW - timedelta(minutes=5)
+        row["last_error"] = "auth"
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
+async def test_a_source_that_needs_a_full_resync_is_stale(app, live):
+    block, meeting = _options_world(app, full_sync_required=True)
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
+async def test_any_stale_provider_source_silences_every_issue(app, live):
+    rows = list(_options_world(app))
+    other = _ws_row(entry_id="elsewhere", title="Lunch", start=_DAY + timedelta(hours=5))
+    other["source_key"] = "provider:google:other"
+    other["last_success_at"] = _NOW - timedelta(days=2)
+    rows.append(other)
+
+    overlap = await _overlap(app, rows)
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
+async def test_slots_are_working_hours_in_the_owner_zone_not_utc(app, live):
+    from zoneinfo import ZoneInfo
+
+    window = {"start": _DAY - timedelta(days=1), "end": _DAY + timedelta(days=2)}
+
+    overlap = await _overlap(app, list(_options_world(app)), zone="Asia/Tokyo", window=window)
+
+    local = _move_start(overlap).astimezone(ZoneInfo("Asia/Tokyo"))
+    assert 8 <= local.hour <= 18  # 10:45 UTC would be 19:45 in Tokyo: outside the day
+
+
+async def test_no_saved_owner_zone_offers_nothing(app, live):
+    overlap = await _overlap(app, list(_options_world(app)), zone=None)
+
+    assert overlap.options == []
+
+
+async def test_an_event_the_owner_does_not_organise_is_never_moved(app, live):
+    block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
+    stranger = _ws_row(
+        entry_id="mtg",
+        title="Planning",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata={
+            "source_type": "provider_event",
+            "attendees": [{"email": "other@example.com", "responseStatus": "accepted"}],
+        },
+    )
+
+    overlap = await _overlap(app, [block, stranger])
+
+    # No seat for the owner: ownership is unproven, so no decline and no move of that event.
+    assert [o.kind for o in overlap.options] == ["move_block", "keep_both"]
+
+
+async def test_the_organizer_address_proves_ownership(app, live):
+    block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
+    own = _ws_row(
+        entry_id="mtg",
+        title="Mine",
+        start=_DAY + timedelta(minutes=30),
+        event_metadata={
+            "source_type": "provider_event",
+            "organizer": "Me@Example.com",
+            "attendees": [
+                {"email": "me@example.com", "self": True, "responseStatus": "accepted"},
+                {"email": "guest@example.com", "responseStatus": "accepted"},
+            ],
+        },
+    )
+
+    overlap = await _overlap(app, [block, own])
+
+    kinds = {o.kind for o in overlap.options}
+    assert "move_own" in kinds and "decline" not in kinds
+
+
+async def test_the_owner_role_copy_decides_the_digest_not_a_partner_copy(app, live):
+    def world(owner_etag, partner_etag):
+        block, meeting = _options_world(app)
+        partner = dict(meeting, instance_id="a-mtg", source_time_role="household_member")
+        partner["event_etag"] = partner_etag  # sorts first, so it survives the dedup
+        meeting["event_etag"] = owner_etag
+        return [block, meeting, partner]
+
+    base = (await _overlap(app, world("e1", "p1"))).issue_digest
+
+    assert (await _overlap(app, world("e1", "p2"))).issue_digest == base
+    assert (await _overlap(app, world("e2", "p1"))).issue_digest != base
+
+
+async def test_the_digest_follows_an_etag(app, live):
+    block, meeting = _options_world(app)
+    first = (await _overlap(app, [block, meeting])).issue_digest
+    meeting["event_etag"] = "etag-mtg-2"
+
+    assert (await _overlap(app, [block, meeting])).issue_digest != first
+
+
+async def test_the_endpoint_serialises_options_and_the_digest(app, live):
+    block, meeting = _options_world(
+        app, last_synced_at=datetime.now(UTC), last_success_at=datetime.now(UTC)
+    )
+    app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
+    db.pool = MagicMock(return_value=_Pool("UTC"))
+
+    resp = await _get(app)
+
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    assert overlap["issue_digest"]
+    assert overlap["options"][-1]["kind"] == "keep_both"
+    assert all("title" not in o["rationale_fields"] for o in overlap["options"])

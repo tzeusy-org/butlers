@@ -34,9 +34,9 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -44,6 +44,10 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.api.read_models.calendar_resolution import (
+    attach_resolution_options,
+    resolution_options_live,
+)
 from butlers.core.identity.attendees import RESOLVER_VERSION
 from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
@@ -396,6 +400,7 @@ WORKSPACE_COLUMNS: str = (
     " e.recurrence_rule,"
     " e.metadata AS event_metadata,"
     " e.event_type,"
+    " e.etag AS event_etag,"
     " e.source_butler,"
     " e.source_session_id,"
     " s.id AS source_id,"
@@ -548,6 +553,8 @@ class CalendarWorkspaceRow:
     #: Whose calendar a household source is (core_368): the entity and its display name.
     source_subject_entity_id: UUID | None = None
     source_subject_label: str | None = None
+    #: The provider etag of the event row (``calendar_events.etag``), for etag-bound writes.
+    event_etag: str | None = None
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -755,6 +762,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         source_time_role=row.get("source_time_role") or "unclassified",
         source_subject_entity_id=row.get("source_subject_entity_id"),
         source_subject_label=row.get("source_subject_label"),
+        event_etag=row.get("event_etag"),
     )
 
 
@@ -1685,6 +1693,7 @@ async def query_calendar_conflicts(
     display_tz: ZoneInfo | None = None,
     back_to_back_gap_minutes: int = 15,
     overloaded_day_hours: float = 6.0,
+    now: datetime | None = None,
 ) -> CalendarConflictScan:
     """Scan the user-lane events in ``[start, end)`` for scheduling issues.
 
@@ -1804,6 +1813,21 @@ async def query_calendar_conflicts(
             issue.pair_id = overlap_pair_id(
                 *(identity_keys.get(e.entry_id, f"instance\x01{e.entry_id}") for e in issue.events)
             )
+
+    if resolution_options_live():
+        await attach_resolution_options(
+            db,
+            issues,
+            {str(row["instance_id"]): row for row in deduped},
+            flattened,
+            {str(row["instance_id"]): _entry_identity_key(row) for row in flattened},
+            now=now or datetime.now(UTC),
+            start=start,
+            end=end,
+            gap_minutes=back_to_back_gap_minutes,
+            complete=not failed,
+            filtered=bool(butlers),
+        )
 
     # Join pending proposals by the provider-identity pair id, or the legacy instance
     # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a
@@ -1941,6 +1965,81 @@ async def update_calendar_proposal_status(
         for row in raw_rows:
             return row_to_proposal(row, db_butler=schema)
     return None
+
+
+#: The butlers that contribute overlay envelopes. Mirrors ``_SPECIALIST_SCHEMAS`` in migration
+#: core_140 (the view's UNION terms): a new contributor must change both.
+OVERLAY_CONTRIBUTORS: tuple[str, ...] = ("finance", "health", "relationship", "travel")
+#: Cadence assumed for an envelope that does not state one.
+_DEFAULT_OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
+#: An envelope older than this many cadences is stale.
+_STALE_AFTER_CADENCES = 2
+
+
+def compute_overlay_freshness(
+    overlays: Sequence[CalendarOverlayRow], *, available: bool, now: datetime
+) -> list[dict[str, Any]]:
+    """Per contributing butler: ``ok``, ``stale``, ``partial``, ``missing`` or ``failed``. Pure.
+
+    ``failed`` for every contributor when the view could not be read (nothing is known, so nothing
+    is current). Otherwise the newest ``generated_at`` of a butler's envelopes decides: older than
+    twice its cadence is ``stale``, and an envelope that carries no ``generated_at`` (written before
+    the stamp) is ``stale`` with no time. A contributor with no envelope at all is ``missing``.
+    """
+    if not available:
+        return [{"butler": b, "state": "failed"} for b in OVERLAY_CONTRIBUTORS]
+    newest: dict[str, tuple[datetime | None, int, bool]] = {}
+    for row in overlays:
+        if row.butler is None:
+            continue
+        value = row.value if isinstance(row.value, Mapping) else {}
+        stamp = value.get("generated_at")
+        parsed: datetime | None = None
+        if isinstance(stamp, str):
+            try:
+                parsed = datetime.fromisoformat(stamp)
+            except ValueError:
+                parsed = None
+        if parsed is not None and parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        cadence = value.get("cadence_seconds")
+        seconds = (
+            cadence
+            if isinstance(cadence, int) and cadence > 0
+            else _DEFAULT_OVERLAY_CADENCE_SECONDS
+        )
+        partial = value.get("complete") is False
+        seen = newest.get(row.butler)
+        if seen is None or (parsed is not None and (seen[0] is None or parsed > seen[0])):
+            newest[row.butler] = (parsed, seconds, partial)
+    out: list[dict[str, Any]] = []
+    for butler in sorted(set(OVERLAY_CONTRIBUTORS) | set(newest)):
+        if butler not in newest:
+            out.append({"butler": butler, "state": "missing"})
+            continue
+        generated_at, seconds, partial = newest[butler]
+        if generated_at is None:
+            out.append({"butler": butler, "state": "stale"})
+            continue
+        stale_since = generated_at + timedelta(seconds=seconds * _STALE_AFTER_CADENCES)
+        if now > stale_since:
+            out.append(
+                {
+                    "butler": butler,
+                    "state": "stale",
+                    "generated_at": generated_at,
+                    "stale_since": stale_since,
+                }
+            )
+        else:
+            out.append(
+                {
+                    "butler": butler,
+                    "state": "partial" if partial else "ok",
+                    "generated_at": generated_at,
+                }
+            )
+    return out
 
 
 async def query_calendar_overlays(
