@@ -1039,6 +1039,7 @@ async def _anchor_state(
             WHERE e.origin_ref = $1 AND s.lane = 'user'
               AND e.metadata ->> 'source_type' = 'provider_event'
               AND NOT {quarantined_invitation_sql("e")}
+            ORDER BY (s.time_role = 'owner') DESC
             LIMIT 1
             """,
             str(anchor["event_origin_ref"]),
