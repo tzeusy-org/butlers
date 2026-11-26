@@ -1,0 +1,4 @@
+- [x] 1.1 Chronicler adapter reads `calendar_sources.time_role` and gates on `counts_as_owner_time`.
+- [x] 1.2 Interaction sync gates on `asserts_owner_time` and `is_owner_attending`.
+- [x] 1.3 Encounter reducer gates both occurrence arms on `asserts_owner_time`.
+- [x] 1.4 Real-PG tests per reader with a primary-calendar control.

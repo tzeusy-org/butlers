@@ -20,6 +20,7 @@ import asyncpg
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.state import state_get, state_set
 from butlers.core.temporal.calendar_provenance import is_owner_attending
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
@@ -1427,18 +1428,20 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     try:
         cal_rows = await db_pool.fetch(
             """
-            -- quarantine-exempt: filtered in Python by is_owner_attending
+            -- quarantine-exempt: asserts_owner_time and is_owner_attending filter it in Python
             SELECT
-                id,
-                title,
-                starts_at,
-                metadata
-            FROM relationship.calendar_events
-            WHERE status = 'confirmed'
-              AND starts_at >= $1
-              AND starts_at <= now()
-              AND metadata->'attendees' IS NOT NULL
-            ORDER BY starts_at DESC
+                ce.id,
+                ce.title,
+                ce.starts_at,
+                ce.metadata,
+                cs.time_role AS source_time_role
+            FROM relationship.calendar_events ce
+            LEFT JOIN relationship.calendar_sources cs ON cs.id = ce.source_id
+            WHERE ce.status = 'confirmed'
+              AND ce.starts_at >= $1
+              AND ce.starts_at <= now()
+              AND ce.metadata->'attendees' IS NOT NULL
+            ORDER BY ce.starts_at DESC
             """,
             scan_window_start,
         )
@@ -1492,12 +1495,14 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Same RSVP rule as the calendar conflict radar (shared helper): an event the owner
-        # declined, or an unanswered invitation from an untrusted organizer, is not attended.
-        if not is_owner_attending(meta):
+        # An event on a partner or shared calendar is not the owner's own time (the role gate), and
+        # one the owner declined or an unanswered invitation from an untrusted organizer is not
+        # attended. Free (transparent) is deliberately not tested: a coffee marked free is still a
+        # meeting that happened, so transparency is not attendance.
+        if not (asserts_owner_time(cal_row["source_time_role"], meta) and is_owner_attending(meta)):
             logger.debug(
-                "interaction_sync: skipping calendar event %s — owner not attending "
-                "(declined or quarantined invitation)",
+                "interaction_sync: skipping calendar event %s — not the owner's time "
+                "(partner calendar, declined or quarantined invitation)",
                 event_id,
             )
             continue

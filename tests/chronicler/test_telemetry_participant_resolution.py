@@ -53,6 +53,8 @@ def _instance_row(*, event_title: str = "Meeting", origin_instance_ref: str = ""
             "event_title": event_title,
             "event_description": None,
             "event_location": None,
+            "event_metadata": {},
+            "source_time_role": "owner",
         }
     )
 

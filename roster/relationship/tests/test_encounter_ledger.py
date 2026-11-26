@@ -133,6 +133,7 @@ async def test_the_owner_declining_is_declined_by_owner_for_every_guest(interact
                 {"email": _OWNER, "responseStatus": "declined", "self": True},
                 {"email": "alice@example.com", "responseStatus": "accepted"},
             ],
+            time_role="owner",  # on the owner's own calendar; elsewhere a decline drops the event
         )
         await sync_event_participants(pool, event_id)
 

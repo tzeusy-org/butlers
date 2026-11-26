@@ -216,22 +216,31 @@ async def project_event(
     ends_at: datetime | None = None,
     status: str = "confirmed",
     attendees: list[dict] | None = None,
+    calendar_id: str = "synthetic-test",
+    time_role: str | None = "owner",
 ) -> uuid.UUID:
-    """Persist a synthetic provider-shaped event via the real LOCAL projection writer."""
+    """Persist a synthetic provider-shaped event via the real LOCAL projection writer.
+
+    ``time_role`` classifies the event's calendar source; by default the owner's own calendar.
+    """
     starts_at = starts_at or datetime.now(UTC) - timedelta(hours=2)
     ends_at = ends_at or starts_at + timedelta(hours=1)
     module = CalendarModule()
     module._db = SimpleNamespace(pool=pool)
     module._butler_name = "relationship"
     source_id = await module._ensure_calendar_source(
-        source_key="provider:google:synthetic-test",
+        source_key=f"provider:google:{calendar_id}",
         source_kind="provider",
         lane="user",
         provider="google",
-        calendar_id="synthetic-test",
+        calendar_id=calendar_id,
         writable=False,
     )
     assert source_id is not None
+    if time_role is not None:
+        await pool.execute(
+            "UPDATE calendar_sources SET time_role = $2 WHERE id = $1", source_id, time_role
+        )
     normalized = [
         AttendeeInfo.model_validate(
             {
@@ -253,7 +262,7 @@ async def project_event(
     await module._project_provider_changes(
         source_id=source_id,
         provider_name="google",
-        calendar_id="synthetic-test",
+        calendar_id=calendar_id,
         updated_events=[event],
         cancelled_ids=[],
     )
