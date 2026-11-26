@@ -1708,14 +1708,12 @@ async def test_the_endpoint_serialises_options_and_the_digest(app, live):
 # ---------------------------------------------------------------------------
 
 
-class _AckPool:
-    """In-memory stand-in for ``public.calendar_conflict_acknowledgements``."""
+class _AckPool(_Pool):
+    """In-memory stand-in for ``public.calendar_conflict_acknowledgements`` on the zone pool."""
 
     def __init__(self):
+        super().__init__("UTC")
         self.rows: dict[str, tuple[str, str]] = {}
-
-    async def fetchrow(self, sql, *args):
-        return None  # the dedup rules store: never configured
 
     async def fetch(self, sql, *args):
         if "calendar_conflict_acknowledgements" not in sql:
@@ -1745,7 +1743,9 @@ async def _post(app, **body):
 
 
 def _fresh_world(app):
-    block, meeting = _options_world(app, last_synced_at=datetime.now(UTC))
+    block, meeting = _options_world(
+        app, last_synced_at=datetime.now(UTC), last_success_at=datetime.now(UTC)
+    )
     app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
     return app, db, _with_acks(db)
 
@@ -1806,7 +1806,9 @@ async def test_a_changed_overlap_is_never_acknowledged_on_a_stale_digest(app, li
 
 
 async def test_an_acknowledgement_lapses_when_the_overlap_changes(app, live):
-    block, meeting = _options_world(app, last_synced_at=datetime.now(UTC))
+    block, meeting = _options_world(
+        app, last_synced_at=datetime.now(UTC), last_success_at=datetime.now(UTC)
+    )
     app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
     pool = _with_acks(db)
     digest, keep = await _offered(app)
