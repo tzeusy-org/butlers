@@ -24385,6 +24385,8 @@ export interface components {
             pair_id: string;
             /** Response Outcome */
             response_outcome?: string | null;
+            /** Response Reason */
+            response_reason?: string | null;
             /**
              * Status
              * @enum {string}

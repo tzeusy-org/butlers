@@ -112,6 +112,33 @@ describe("CalendarWorkspacePage", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
+  it("says a response card expired, not that the owner rejected it", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onSuccess?: (r: unknown) => void }) => {
+        options?.onSuccess?.({
+          data: {
+            status: "responded",
+            response_outcome: "rejected",
+            response_reason: "response_approval_expired",
+          },
+        });
+      },
+    );
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
+
+    await act(async () => {
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(toast.info).toHaveBeenCalledWith("That response card expired. Nothing was sent.");
+  });
+
   it("tells the owner when the overlap changed under them", async () => {
     const mutate = vi.fn(
       (_vars: unknown, options?: { onError?: (error: Error) => void }) => {

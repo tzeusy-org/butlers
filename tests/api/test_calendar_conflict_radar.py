@@ -1874,6 +1874,7 @@ async def test_a_move_parks_an_approvals_card_and_writes_nothing_else(app, live)
         "option_id": move["id"],
         "action_id": str(action_id),
         "response_outcome": None,
+        "response_reason": None,
     }
     kwargs = park.await_args.kwargs
     assert kwargs["etag"] == "etag-block"  # the etag the options were compiled against
@@ -1947,6 +1948,7 @@ async def test_a_response_option_is_the_owners_own_calendar_respond(app, live, k
         "option_id": option["id"],
         "action_id": str(command),
         "response_outcome": "applied",
+        "response_reason": None,
     }
     arguments = send.await_args_list[0].kwargs["arguments"]
     assert arguments["response_status"] == ("declined" if kind == "decline" else "tentative")

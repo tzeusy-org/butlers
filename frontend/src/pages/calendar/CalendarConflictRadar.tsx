@@ -29,7 +29,9 @@ function outcomeMessage(result: ConflictResolveResponse): string {
       return "Move sent for your approval.";
     case "responded":
       if (result.response_outcome === "rejected") {
-        return "You already rejected this response. Nothing was sent.";
+        return result.response_reason === "response_approval_expired"
+          ? "That response card expired. Nothing was sent."
+          : "You already rejected this response. Nothing was sent.";
       }
       return result.response_outcome === "pending_approval"
         ? "Response sent for your approval."

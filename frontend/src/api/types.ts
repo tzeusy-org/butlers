@@ -1611,6 +1611,8 @@ export interface ConflictResolveResponse {
   action_id?: string | null;
   /** A decline or tentative: how the owner's own response settled (`applied`, ...). */
   response_outcome?: string | null;
+  /** Why a response was rejected or expired (`response_approval_expired`, ...), else null. */
+  response_reason?: string | null;
 }
 
 export interface ResolutionOption {

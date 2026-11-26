@@ -2005,6 +2005,7 @@ async def _respond_option(
         option_id=option.id,
         action_id=outcome.approval_id,
         response_outcome=outcome.status,
+        response_reason=getattr(outcome, "reason", None),
     )
 
 

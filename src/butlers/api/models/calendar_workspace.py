@@ -623,6 +623,8 @@ class ConflictResolveResponse(BaseModel):
     #: A decline or tentative: how the owner's own ``calendar_respond`` settled (``applied``,
     #: ``pending_approval``, ...), exactly as the invitation card reports it.
     response_outcome: str | None = None
+    #: Why a response was rejected or expired (``response_approval_expired``, ...), else null.
+    response_reason: str | None = None
 
 
 class ConflictIssue(BaseModel):
