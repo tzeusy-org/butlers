@@ -43,7 +43,7 @@ one observable.
 | D7 | Assertion format, verification order, keyring, replay set, single replica | `public-mcp-authorization` REQ-002 to -007 |
 | D8 | Namespace `butlers-public-<env>`, default-deny; one allow to the `postgres-<env>` instance pods, widening nothing else; live policy check; the precondition in `butlers-<env>` | `public-mcp-authorization` REQ-008; `public-mcp-projection` REQ-014; `deployment-hardening` REQ-013 |
 | D9 | Roles on both databases; one Butlers-managed REPLICATION role, primary-read-all and with no credential (local peer login only, OD14); the subscription owner, kept as created (OD15); `mcp_surface` schema; slot safety | `public-mcp-projection` REQ-009, -010, -011; `database-security` REQ-016 |
-| D10 | The 19-tool contract, including the finance and health records tools (OD17, accepted by OD19), and the ChatGPT compatibility shapes | `public-mcp-surface` REQ-002 to -010, -012, -014 |
+| D10 | The 20-tool contract, including the finance and health records tools (OD17, accepted by OD19), and the ChatGPT compatibility shapes | `public-mcp-surface` REQ-002 to -010, -012, -014 |
 | D11 | Lexical search in v1 | `public-mcp-surface` REQ-003, -006 |
 | D12 | Reads never write | `public-mcp-surface` REQ-011 |
 | D13 | `propose_fact` pipeline and states | `public-mcp-proposals` (all); `module-approvals` REQ-010; `dashboard-approvals` REQ-904; `relationship-facts` REQ-011 |

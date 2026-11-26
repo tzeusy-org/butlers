@@ -216,7 +216,7 @@ async def test_trips_answers_without_documents_when_they_are_not_published(monke
 
 async def test_describe_takes_no_arguments_and_lists_the_pinned_catalogue():
     assert await _code(describe, {"domain": "x"}) == ("invalid_argument", "domain")
-    assert len(TOOLS) == len(set(TOOLS)) == 19
+    assert len(TOOLS) == len(set(TOOLS)) == 20
     columns = published_columns()
     assert "publish_key" not in columns["public.entity_graph_edges"]
     assert "source_domain" in columns["public.entity_graph_edges"]

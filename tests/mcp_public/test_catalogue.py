@@ -49,7 +49,9 @@ PINNED = {
     "finance_ledger": "b68e04602f0e1b1cedb4f15a0f46a775fd9c060940ede36c8980450f361ac323",
     "finance_obligations": "34cd1851404d20fba00064754837bb8de8a5dcbd526f5182b4ad9d23d365e42b",
     "finance_records": "7a3a712a00641f4f8109c0c100e50f4c6172dffedbaee36143657b080e54e86f",
-    "health_series": "64cbabf9941043ccfec812e65ba03c072026c37d9e60a713a64dcbd9da3d1c76",
+    # bu-y66o00.62: health_metrics added; health_series.metric now points clients at it.
+    "health_metrics": "d6454e947fd590f4c39a85b902305914368f1b9ee88e25d3e68fd4f5038f6cb8",
+    "health_series": "dda24664d0ec093848a7a1d5176cf0165723aa1faf155831037f00ed05795f96",
     "health_profile": "acd2bf516151a9fa678109e878ecfa66690c9953df0fd5aa134ce5096e4fa96f",
     "health_records": "326ce4e81dcbc5c9c267edc80454807c16dab637b3b08d96d6deaa0773a7e0a4",
     # Re-pinned in bu-y66o00.8: idempotentHint flipped to true (RFC 0039 D10 rule: true for every
@@ -75,6 +77,7 @@ D10 = (
     "finance_ledger",
     "finance_obligations",
     "finance_records",
+    "health_metrics",
     "health_series",
     "health_profile",
     "health_records",

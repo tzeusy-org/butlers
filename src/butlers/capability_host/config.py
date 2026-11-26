@@ -33,7 +33,9 @@ ROOT = Path("/etc/butlers-public-mcp")
 RELOAD_SECONDS = 10.0
 ISSUER = "mcp-gateway"
 DEFAULT_CLIENT_DOMAINS = frozenset({"claude.ai", "chatgpt.com"})
-HEAVY_TOOLS = frozenset({"finance_ledger", "finance_records", "health_series", "health_records"})
+HEAVY_TOOLS = frozenset(
+    {"finance_ledger", "finance_records", "health_metrics", "health_series", "health_records"}
+)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_FILE_BYTES = 64 * 1024
 _MIN_CANARY_CHARS = 8

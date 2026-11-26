@@ -40,6 +40,7 @@ TOOLS = (
     "finance_ledger",
     "finance_obligations",
     "finance_records",
+    "health_metrics",
     "health_series",
     "health_profile",
     "health_records",

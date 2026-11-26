@@ -367,7 +367,7 @@ def test_only_describe_skips_dlp():
     from butlers.capability_host import default_tools
 
     assert {t.name for t in default_tools().values() if not t.dlp} == {"describe"}
-    assert len(default_tools()) == 18
+    assert len(default_tools()) == 19
 
 
 # bu-y66o00.70: invisible fillers that are not Cc or Cf, token-shaped userinfo, secret names.
@@ -463,3 +463,13 @@ def test_find_canary_sees_through_invisible_fillers():
     assert find_canary({"a": canary[:6] + "ㅤ" + canary[6:]}, (canary,))
     assert find_canary({"a": canary[:6] + "⠀" + canary[6:]}, (canary,))
     assert not find_canary({"a": "café"}, (canary,))
+
+
+def test_health_metric_names_are_scanned():
+    out, scan = scan_result(
+        "health_metrics",
+        "health",
+        {"metrics": ["measurement_weight", f"token {GHP}"], "source": {"kind": "health_metrics"}},
+    )
+    assert out["metrics"] == ["measurement_weight", "token [redacted:github_token]"]
+    assert scan.counted == 1

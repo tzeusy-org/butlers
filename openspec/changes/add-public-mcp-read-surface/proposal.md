@@ -66,11 +66,11 @@ written in this change.
   from the `butlers` filter-proxy release; egress goes only to the PostgreSQL
   port of `postgres-<env>` and to DNS. That instance also serves the primary,
   so `pg_hba` and grants, not the network, separate the two (D3, D8).
-- **19 tools on one server**, finance and health included, each in a
+- **20 tools on one server**, finance and health included, each in a
   kill-switch domain: `search` and `fetch` in the exact ChatGPT contract,
   `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`,
   `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`,
-  `finance_ledger`, `finance_obligations`, `finance_records`, `health_series`,
+  `finance_ledger`, `finance_obligations`, `finance_records`, `health_metrics`, `health_series`,
   `health_profile`, `health_records` and `propose_fact` (D5, D10, D11).
 - **Response safety.** A DLP scan, canaries, per-tool budgets, a structured audit
   line per call, fixed error codes and refusal when the projection is more than

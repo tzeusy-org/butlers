@@ -353,7 +353,7 @@ types = { "id" = "text", "metric" = "text", "value_numeric" = "numeric", "unit" 
 classes = { "id" = "system", "metric" = "system", "value_numeric" = "personal_record", "unit" = "system", "measured_at" = "system" }
 key = ["id"]
 replica_identity = ["id"]
-tools = ["health_records", "health_series"]
+tools = ["health_records", "health_metrics", "health_series"]
 time_column = "measured_at"
 uri = "butlers://health/measurements_public/{id}"
 
