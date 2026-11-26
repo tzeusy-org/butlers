@@ -88,6 +88,11 @@ REJECT_REASONS = ("stale_event", "policy_changed", "policy_revoked", "policy_no_
 _NAMESPACE = uuid.UUID("5b1e0c0e-3f4a-4d0e-9a52-6d0c5c1f7a11")
 
 
+def docket_butler() -> str:
+    """The one butler the docket acts for: the owner of the primary calendar's response fence."""
+    return DOCKET_BUTLER
+
+
 def docket_live() -> bool:
     return os.environ.get(DOCKET_LIVE_ENV) == "1"
 
@@ -332,7 +337,7 @@ def docket_butler_configured() -> bool:
     except Exception:
         return False
     for config in configs:
-        if config.name != DOCKET_BUTLER:
+        if config.name != docket_butler():
             continue
         calendar = config.modules.get("calendar") or {}
         approval = config.modules.get("approvals") or {}
@@ -363,7 +368,7 @@ async def read_organizer_roles(pool: Any, organizer: str | None) -> frozenset[st
         return frozenset()
     try:
         rows = await pool.fetch(
-            "SELECT e.roles FROM relationship.entity_facts f "
+            "SELECT e.roles FROM entity_facts f "
             "JOIN public.entities e ON e.id = f.subject "
             "WHERE f.predicate = 'has-email' AND f.validity = 'active' "
             "AND lower(btrim(f.object)) = lower(btrim($1)) "
@@ -530,7 +535,7 @@ async def _run(
     current: dict[str, tuple[Evaluation, str | None]] = {}
     for row in read.rows:
         entry_id = str(row["instance_id"])
-        if row.get("butler_name") != DOCKET_BUTLER or row.get("writable") is not True:
+        if row.get("butler_name") != docket_butler() or row.get("writable") is not True:
             continue  # another butler's entry: the docket never prepares an answer for it
         metadata = _metadata(row.get("event_metadata"))
         organizer = metadata.get("organizer")
