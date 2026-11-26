@@ -32,7 +32,7 @@ Scope: v1-mandatory
 The queue SHALL track, per kind, whether its read is complete. A kind whose read failed, is
 unavailable, or came back partial (a dropped row or a degraded source) SHALL be named as unknown in
 the queue, and the count SHALL then be shown as a lower bound ("3+ need you") and SHALL never drop to
-zero because of it. Only when every kind is complete and holds nothing SHALL the queue say that
+zero because of it. Only when every counted kind is complete and holds nothing SHALL the queue say that
 nothing needs the owner. The `changes` kind (provider moves, cancellations and location changes) is not a counted kind until its feed exists: the queue SHALL show a fixed line that moved-under-you changes are not tracked yet, and the "+" and the unknown list SHALL name only a kind whose read failed.
 
 #### Scenario: A failing proposals read does not empty the queue

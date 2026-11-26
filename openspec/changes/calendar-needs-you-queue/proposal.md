@@ -20,7 +20,7 @@ one keyboard queue.
 ## Out of scope
 
 The changes feed (provider moves, cancellations and location changes as before/after items) is N3
-and needs a stored diff; the queue declares that kind unknown until then. The conflict verbs (resolve keys and the persisted `x` dismiss receipt) wait on the resolve route
+and needs a stored diff; the queue shows a fixed not-tracked-yet line for it and does not count it. The conflict verbs (resolve keys and the persisted `x` dismiss receipt) wait on the resolve route
 and its acknowledgement store: bu-5ii4gj.11.2. Every key this change binds has its palette form. No new reasoning agent and no replacement for the notification
 delivery ledger.
 
