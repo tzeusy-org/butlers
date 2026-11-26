@@ -21,8 +21,8 @@ SHALL name its `send_updates` explicitly (default none). `clear_window` SHALL mo
 event to the earliest free slot after the window that lies inside the owner's working hours in
 their own zone and within seven days of the window (`no_free_slot` is a skip, never a guess). The
 compiler SHALL pick the action itself: a decline for an invited meeting and a move for a Butlers
-block. A tentative response and a delete are owner overrides of that pick, never chosen by the
-compiler.
+block. A tentative response and a delete are owner overrides, not offered by this change: the compiler
+never chooses them.
 `shift_window` SHALL move each movable event in the window by the same signed delta and SHALL leave
 invited meetings skipped, because only the organizer can move them. Skips SHALL be decided before
 any slot is treated as free: only an event that really gets a step vacates its slot, and a step
@@ -110,7 +110,8 @@ module's own response coordinator, never auto-approved on the agent path. A reje
 outcome. Each step SHALL leave a `plan_step` row in `calendar_action_log` with the plan id, step
 index, pre-state, `etag_after` and an outcome of `applied`, `declined`, `uncertain` or `skipped`.
 Re-applying the same `plan_id` SHALL replay the recorded `plan_step` receipts and finish only the
-rest, never re-send a step. No dashboard route SHALL apply a plan except by parking; the plan tools
+rest, never re-send a step; until a card executes, a plan that no longer compiles to the same digest
+is refused with `plan_changed`, and once recorded receipts exist they are replayed as they are. No dashboard route SHALL apply a plan except by parking; the plan tools
 are MCP-only. Until the goal-runtime cutover (RFC 0038) the cards are per step; after it the parked
 steps become one decision set with per-item untick (`explicit_only`), and an unticked item leaves its
 event untouched and recomputes its dependents.
@@ -150,8 +151,13 @@ Scope: v1-mandatory
 the `etag_after` that step recorded, and SHALL return `pending`. Approving a card SHALL reverse that
 step only if its event is still as the plan left it: a step whose event changed since SHALL be left
 alone and recorded as not undone (`changed_since_move` when the event changed after the step's own
-move). A step that was `declined`, `uncertain` or `skipped` SHALL NOT be
-reversed. A reversal that reaches another person cannot be offered: a decline reversal SHALL be refused with
+move). Reversals SHALL be offered highest step first and each SHALL list the reversal of any step
+that depended on it in `depends_on`: a reversal whose dependent reversal is not yet applied waits,
+and one whose dependent was not undone is refused with `blocked_by_step_N`. A reversal SHALL run
+with the card's `fail` conflict policy, so a destination already busy declines it as
+`destination_busy` rather than overlapping another event, and SHALL be refused as `in_the_past` once
+the event it would restore has started. A step that was `declined`, `uncertain` or `skipped` SHALL
+NOT be reversed. A reversal that reaches another person cannot be offered: a decline reversal SHALL be refused with
 `response_reversal_not_supported`, and the owner re-answers the invitation from the conflict radar.
 No third-party-visible change SHALL happen without the owner's approval. After the
 goal-runtime cutover the reversals become one decision set with per-item approval.
