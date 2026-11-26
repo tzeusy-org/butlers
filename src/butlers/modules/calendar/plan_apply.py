@@ -9,9 +9,10 @@ surface. Each step leaves a ``plan_step`` row in ``calendar_action_log`` so re-a
 plan replays the recorded receipts and parks only the steps that have none. A step's outcome is
 read off its card, never assumed.
 
-Decline steps (an invited meeting in a cleared window) go through the response gate, which this
-slice does not drive: they are recorded ``skipped`` with ``response_step_not_supported`` and the
-result says so. They are never silently dropped.
+Decline steps (an invited meeting in a cleared window) park ``calendar_respond`` through the
+module's own response preparer (``response_park.park_response``): the owner decides the card, and a
+changed occurrence is caught by the command's own fence. Their outcome is read off the same card.
+A response that cannot be parked is recorded ``skipped`` with the preparer's reason, never dropped.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from butlers.core.temporal.change_plans import Plan, PlanStep
 from .invitation_guard import pool_of
 from .plan_tools import compile_for_window
 from .resolution_move import park_resolution_move
+from .response_park import park_response
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -36,7 +38,6 @@ logger = logging.getLogger(__name__)
 
 PLAN_ROW = "plan"
 PLAN_STEP_ROW = "plan_step"
-SKIP_RESPONSE_STEP = "response_step_not_supported"
 
 _INSERT_SQL = """
 INSERT INTO calendar_action_log (
@@ -169,7 +170,9 @@ async def apply_plan(
     for step in plan.steps:
         receipt = recorded.get(step.index)
         if receipt is None:
-            receipt = await _record_step(pool, butler_name, plan, step, action_ids, zone=zone)
+            receipt = await _record_step(
+                module, pool, butler_name, plan, step, action_ids, zone=zone
+            )
             if receipt.get("action_id"):
                 action_ids[step.index] = receipt["action_id"]
         outcome, reason = await step_outcome(pool, receipt)
@@ -195,6 +198,7 @@ async def apply_plan(
 
 
 async def _record_step(
+    module: CalendarModule,
     pool: Any,
     butler_name: str,
     plan: Plan,
@@ -213,8 +217,20 @@ async def _record_step(
         "authority": step.authority,
         "depends_on": list(step.depends_on),
     }
-    if step.action != "move":
-        receipt.update(outcome="skipped", reason=SKIP_RESPONSE_STEP)
+    if step.action == "decline":
+        parked = await park_response(
+            module,
+            dict(step.exact_call["args"]),
+            why="A calendar plan declines this invited meeting.",
+        )
+        card = parked.get("command_id") or parked.get("action_id")
+        if card:
+            receipt["action_id"] = str(card)
+        else:
+            reason = str(parked.get("error") or "response_unavailable")
+            receipt.update(outcome="skipped", reason=reason)
+    elif step.action != "move":
+        receipt.update(outcome="skipped", reason="unsupported_action")
     else:
         deps = [action_ids[d] for d in step.depends_on if d in action_ids]
         if len(deps) != len(step.depends_on):

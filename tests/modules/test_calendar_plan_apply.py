@@ -75,12 +75,21 @@ def _run(plan, pool, **overrides):
     kind = plan.kind
     compiled = CompiledPlan(plan, WINDOW, "UTC")
     parked: list[dict] = []
+    responded: list[dict] = []
 
     async def park(pool_, **kw):
         parked.append(kw)
         card = uuid.uuid4()
         pool.cards[card] = {"status": "pending", "execution_result": None}
         return card, True
+
+    async def respond(module, arguments, **kw):
+        if "respond_override" in overrides:
+            return overrides["respond_override"]
+        card = uuid.uuid4()
+        pool.cards[card] = {"status": "pending", "execution_result": None}
+        responded.append(arguments)
+        return {"status": "pending_approval", "command_id": str(card), "action_id": str(card)}
 
     async def go():
         with (
@@ -90,6 +99,7 @@ def _run(plan, pool, **overrides):
             ),
             patch("butlers.modules.calendar.plan_apply.pool_of", return_value=pool),
             patch("butlers.modules.calendar.plan_apply.park_resolution_move", park),
+            patch("butlers.modules.calendar.plan_apply.park_response", respond),
         ):
             return await apply_plan(
                 SimpleNamespace(),
@@ -102,6 +112,7 @@ def _run(plan, pool, **overrides):
                 shift_minutes=45 if kind == "shift_window" else None,
             )
 
+    go.responded = responded
     return go, parked
 
 
@@ -134,8 +145,12 @@ async def test_every_move_parks_a_card_bound_to_the_planned_etag_and_returns_pen
     assert [p["authority"] for p in parked] == ["no_park_undo", "owner_submit"]
     assert all("request_id" not in p["call_args"] for p in parked)
     by_ref = {s["event_ref"]: s for s in result["steps"]}
-    assert by_ref["mtg"]["outcome"] == "skipped"
-    assert by_ref["mtg"]["reason"] == "response_step_not_supported"
+    # the decline parked calendar_respond for the owner; nothing was sent
+    assert by_ref["mtg"]["outcome"] == "pending" and by_ref["mtg"]["action"] == "decline"
+    (sent,) = go.responded
+    assert sent["entry_id"] == "mtg" and sent["response_status"] == "declined"
+    assert sent["send_updates"] == "none"
+    uuid.UUID(sent["request_id"])
     # one plan row and one receipt per step
     assert len(pool.inserted) == 1 + len(plan.steps)
 
@@ -277,3 +292,13 @@ async def test_an_approved_step_declines_when_its_dependency_is_not_applied(stat
         reset_approval_execution_context(token)
 
     assert check.refusal == reason and check.bound
+
+
+async def test_a_response_that_cannot_be_parked_is_skipped_with_the_reason_not_dropped():
+    plan = _clear_plan([_ev("mtg", "invited", 11, owner_response="accepted")])
+    go, _parked = _run(plan, _Pool(), respond_override={"error": "response_capability_unavailable"})
+
+    result = await go()
+
+    assert result["steps"][0]["outcome"] == "skipped"
+    assert result["steps"][0]["reason"] == "response_capability_unavailable"

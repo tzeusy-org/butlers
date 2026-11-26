@@ -77,6 +77,12 @@ async def undo_plan(
     for receipt in receipts:
         entry: dict[str, Any] = {"index": receipt["index"], "event_ref": receipt.get("event_ref")}
         outcome, _reason = await step_outcome(pool, receipt)
+        if receipt.get("action") == "decline" and outcome == "applied":
+            # A response reversal is the dashboard's server-bound inverse flow, not a move.
+            reversals.append(
+                {**entry, "undone": False, "reason": "response_reversal_not_supported"}
+            )
+            continue
         if outcome != "applied":
             reversals.append({**entry, "undone": False, "reason": f"step_{outcome}"})
             continue
