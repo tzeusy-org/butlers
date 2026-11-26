@@ -575,6 +575,18 @@ class ConflictEventRef(BaseModel):
     status: str  # "confirmed" | "tentative"
 
 
+class ResolutionOption(BaseModel):
+    """One way to finish an overlap: an exact call and who has to say yes (bu-5ii4gj.11)."""
+
+    id: str
+    kind: Literal["move_block", "move_own", "decline", "tentative", "ask_organizer", "keep_both"]
+    authority: Literal["no_park_undo", "owner_submit", "parked_per_event"]
+    #: ``{"tool": str, "args": dict}``: exactly what the resolve route would run.
+    exact_call: dict[str, Any]
+    #: Which fields explain the option (entry ids, the chosen slot); never event text.
+    rationale_fields: dict[str, Any] = Field(default_factory=dict)
+
+
 class ConflictIssue(BaseModel):
     """A single scheduling problem detected in the scanned window."""
 
@@ -587,6 +599,11 @@ class ConflictIssue(BaseModel):
     #: UUIDs of any ``pending`` fix proposals matching this issue (empty until
     #: the LLM fix-proposal session has run for the window).
     proposal_ids: list[str] = Field(default_factory=list)
+    #: Overlap issues only: resolution options and the digest a resolve must echo back. Empty with
+    #: ``options_reason='stale_source'`` when a calendar source is too stale to offer a move.
+    options: list[ResolutionOption] = Field(default_factory=list)
+    issue_digest: str | None = None
+    options_reason: str | None = None
 
 
 class ConflictScanWindow(BaseModel):

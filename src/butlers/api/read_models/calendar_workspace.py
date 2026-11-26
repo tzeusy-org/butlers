@@ -44,6 +44,10 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.api.read_models.calendar_resolution import (
+    attach_resolution_options,
+    resolution_options_live,
+)
 from butlers.core.identity.attendees import RESOLVER_VERSION
 from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
@@ -396,6 +400,7 @@ WORKSPACE_COLUMNS: str = (
     " e.recurrence_rule,"
     " e.metadata AS event_metadata,"
     " e.event_type,"
+    " e.etag AS event_etag,"
     " e.source_butler,"
     " e.source_session_id,"
     " s.id AS source_id,"
@@ -548,6 +553,8 @@ class CalendarWorkspaceRow:
     #: Whose calendar a household source is (core_368): the entity and its display name.
     source_subject_entity_id: UUID | None = None
     source_subject_label: str | None = None
+    #: The provider etag of the event row (``calendar_events.etag``), for etag-bound writes.
+    event_etag: str | None = None
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -755,6 +762,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         source_time_role=row.get("source_time_role") or "unclassified",
         source_subject_entity_id=row.get("source_subject_entity_id"),
         source_subject_label=row.get("source_subject_label"),
+        event_etag=row.get("event_etag"),
     )
 
 
@@ -1685,6 +1693,7 @@ async def query_calendar_conflicts(
     display_tz: ZoneInfo | None = None,
     back_to_back_gap_minutes: int = 15,
     overloaded_day_hours: float = 6.0,
+    now: datetime | None = None,
 ) -> CalendarConflictScan:
     """Scan the user-lane events in ``[start, end)`` for scheduling issues.
 
@@ -1804,6 +1813,21 @@ async def query_calendar_conflicts(
             issue.pair_id = overlap_pair_id(
                 *(identity_keys.get(e.entry_id, f"instance\x01{e.entry_id}") for e in issue.events)
             )
+
+    if resolution_options_live():
+        await attach_resolution_options(
+            db,
+            issues,
+            {str(row["instance_id"]): row for row in deduped},
+            flattened,
+            {str(row["instance_id"]): _entry_identity_key(row) for row in flattened},
+            now=now or datetime.now(UTC),
+            start=start,
+            end=end,
+            gap_minutes=back_to_back_gap_minutes,
+            complete=not failed,
+            filtered=bool(butlers),
+        )
 
     # Join pending proposals by the provider-identity pair id, or the legacy instance
     # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a

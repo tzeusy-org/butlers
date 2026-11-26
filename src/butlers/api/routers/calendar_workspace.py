@@ -87,6 +87,7 @@ from butlers.api.models.calendar_workspace import (
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
+    ResolutionOption,
     SetPrimaryCalendarRequest,
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
@@ -1823,6 +1824,18 @@ async def get_workspace_conflicts(
                 for ref in issue.events
             ],
             proposal_ids=list(issue.proposal_ids),
+            options=[
+                ResolutionOption(
+                    id=o.id,
+                    kind=o.kind,
+                    authority=o.authority,
+                    exact_call=o.exact_call,
+                    rationale_fields=o.rationale_fields,
+                )
+                for o in issue.options
+            ],
+            issue_digest=issue.issue_digest,
+            options_reason=issue.options_reason,
         )
         for issue in scan.issues
     ]

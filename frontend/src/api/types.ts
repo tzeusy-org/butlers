@@ -1576,6 +1576,22 @@ export interface ConflictIssue {
   events: ConflictEventRef[];
   /** UUIDs of pending fix proposals (empty until the fix-proposal session runs). */
   proposal_ids: string[];
+  /** Overlap issues only (dark until the resolve route ships): ways to finish it. */
+  options?: ResolutionOption[];
+  /** The digest a resolve must echo back, so it can never act on a stale read. */
+  issue_digest?: string | null;
+  /** Why `options` is empty (`stale_source`), else null. */
+  options_reason?: string | null;
+}
+
+export interface ResolutionOption {
+  id: string;
+  kind: "move_block" | "move_own" | "decline" | "tentative" | "ask_organizer" | "keep_both";
+  authority: "no_park_undo" | "owner_submit" | "parked_per_event";
+  /** Exactly what the resolve route would run. */
+  exact_call: { tool: string; args: Record<string, unknown> };
+  /** Which fields explain the option (entry ids, the chosen slot); never event text. */
+  rationale_fields: Record<string, unknown>;
 }
 
 /**
