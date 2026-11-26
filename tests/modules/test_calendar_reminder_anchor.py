@@ -25,6 +25,7 @@ async def _world(db):
     await _person(pool, "Me", "me@example.com", roles=["owner"])
     event = _event("dentist")
     await _project(_module(pool), await _source(pool), event)
+    await pool.execute("UPDATE calendar_sources SET time_role = 'owner'")
     module = _module(pool)
     mcp = FastMCP("anchor-test")
     await module.register_tools(
@@ -107,6 +108,28 @@ async def test_an_anchor_at_the_wrong_start_or_on_a_cancelled_event_is_refused(d
             anchor_original_start=event.start_at,
             offset_minutes=-60,
         )
+
+
+async def test_an_anchor_is_refused_unless_the_matched_copy_is_the_owners_own(db):
+    pool, _module_, mcp, event = await _world(db)
+    await pool.execute("UPDATE calendar_sources SET time_role = 'household_member'")
+
+    with pytest.raises(ValueError, match="not the owner's own"):
+        await _create(
+            mcp,
+            anchor_event_id="dentist",
+            anchor_original_start=event.start_at,
+            offset_minutes=-60,
+        )
+    await pool.execute("UPDATE calendar_sources SET time_role = 'owner'")
+    assert (
+        await _create(
+            mcp,
+            anchor_event_id="dentist",
+            anchor_original_start=event.start_at,
+            offset_minutes=-60,
+        )
+    )["status"] == "created"
 
 
 async def test_an_absolute_reminder_is_unchanged_and_both_forms_together_are_refused(db):

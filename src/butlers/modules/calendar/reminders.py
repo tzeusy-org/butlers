@@ -932,6 +932,7 @@ async def _resolve_reminder_anchor(
     recurring master only the occurrence starting exactly at ``original_start`` can be anchored;
     other unmoved occurrences are not projected, so they are refused. A one-time event matches on
     its own start. The exception row, being the most specific, wins; then the owner-role source.
+    A match that is not on an owner-role calendar is refused: only that copy is followed.
     Returns the matched row's own ``origin_ref`` (the exception's, for a moved occurrence) and
     its current start, so the anchor names exactly the row it follows.
     """
@@ -939,7 +940,7 @@ async def _resolve_reminder_anchor(
         raise RuntimeError("Database pool is not available")
     row = await pool.fetchrow(
         f"""
-        SELECT e.origin_ref, COALESCE(ci.starts_at, e.starts_at) AS starts_at
+        SELECT e.origin_ref, COALESCE(ci.starts_at, e.starts_at) AS starts_at, s.time_role
         FROM calendar_events e
         JOIN calendar_sources s ON s.id = e.source_id
         LEFT JOIN calendar_event_instances ci
@@ -966,6 +967,13 @@ async def _resolve_reminder_anchor(
         raise ValueError(
             "anchor_event_id does not name a live event occurrence at anchor_original_start "
             "in this butler's calendar"
+        )
+    if row["time_role"] != "owner":
+        # Only the owner's own copy is followed (reminder_follow), so an anchor to any other copy
+        # would silently never rebase or retire.
+        raise ValueError(
+            "anchor_event_id is on a calendar that is not the owner's own; only the owner's own "
+            "copy of an event can be followed"
         )
     return row["origin_ref"], row["starts_at"]
 
