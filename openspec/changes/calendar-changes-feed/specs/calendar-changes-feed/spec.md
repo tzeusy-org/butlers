@@ -13,11 +13,14 @@ prior and new value of each field that changed, the event id and calendar id as 
 was observed and whether a prior version was known. A revision that changes none of those fields
 (an RSVP, a retitle, an attendee edit) SHALL NOT be an item, and neither SHALL a revision of an event
 the owner has declined: a meeting the owner is not going to is not moved under them. A baseline revision SHALL never be an item, and neither SHALL a revision with no earlier journaled
-version: a newly seen invitation belongs to the invitations list, not here. A resync revision SHALL be
+version: a newly seen invitation belongs to the invitations list, not here. A location SHALL be compared only when both the revision and its predecessor kept their raw
+payload (a readable-to-blocked flip is never a location change). A resync revision SHALL be
 diffed against its previous revision like any other, so a burst of resyncs that changes no named field
 yields nothing. An item SHALL be returned only while the event's new start (its prior start, for a
-cancellation) is still in the future; until a persisted dismiss exists (bu-5ii4gj.11.2) items age out
-and do not clear.
+cancellation) is still in the future; a client-held seen cursor hides them in that browser, and
+there is no persisted dismiss until bu-5ii4gj.11.2, so items age out and do not clear. A `since` in
+the future (client clock skew) SHALL read as now, and an age up to five minutes past the bound SHALL
+still be served.
 
 One organizer change SHALL be one item across the owner's calendars and accounts: items SHALL be
 keyed on the event's iCalUID (the event id when the journal row has none) with the new start, end,
@@ -98,7 +101,7 @@ ID: REQ-calendar-changes-feed-004
 Source: bu-5ii4gj.11 track N, slice N3
 Scope: v1-mandatory
 
-When the journal read fails, the route SHALL answer with `changes_available: false` and no items, and a result cut at the cap SHALL carry `truncated: true`, which the queue SHALL treat as a lower bound ("+"),
+When the journal read fails, the route SHALL answer with `changes_available: false` and no items, and a result cut at the cap SHALL carry `truncated: true`, and an unreadable list of the owner's account addresses `owners_complete: false`, which the queue SHALL treat as a lower bound ("+"),
 and the Needs-you queue SHALL then name `changes` as unknown and show its count as a lower bound; it
 SHALL NOT read the failure as no changes. A change item SHALL show its before and after, SHALL open
 the event as its evidence, and SHALL NOT bind an accept or decline key.
