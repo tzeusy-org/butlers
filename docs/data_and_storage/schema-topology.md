@@ -102,8 +102,15 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   and `revoked_at`. A policy is revoked, never deleted. Written and listed only by the definer
   `public.calendar_rsvp_policy_dashboard` (`dashboard_auth_api` EXECUTE only) from a current
   dashboard session and CSRF; row level security with no policy and no runtime-role grant. No MCP
-  tool reads or writes it. A policy only prepares an answer; it never sends one. The docket job's
-  read grant arrives with that job (bu-5ii4gj.9 S3).
+  tool reads or writes it. A policy only prepares an answer; it never sends one. Only the docket
+  job's butler (Relationship) holds SELECT (core_389).
+- **`public.calendar_rsvp_ledger`** -- How the owner dealt with each prepared answer (core_390), per
+  policy and version: `approved_as_prepared`, `owner_rejected`, `answered_same`,
+  `answered_elsewhere`; no "edited" outcome, and system rejections are excluded. Append-only, one
+  row per card. Written only through the recorder definer `public.calendar_rsvp_ledger_record`
+  (EXECUTE for `butler_relationship_rw` alone) and read as counts through
+  `public.calendar_rsvp_ledger_dashboard` (`dashboard_auth_api` EXECUTE only, current session).
+  Informational: nothing reads it to widen autonomy.
 - **`public.custody_candidates_dashboard`** -- Content-blind read of the owner's own channels (fact id,
   kind, masked hint, held flag) for a manual custody hold (core_352; same candidate universe and
   masking as a security question). `dashboard_auth_api` only, current cookie session checked in

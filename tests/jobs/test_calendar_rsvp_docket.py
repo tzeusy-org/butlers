@@ -106,6 +106,10 @@ class _Env:
         monkeypatch.setattr(job, "docket_butler_configured", lambda: True)
         monkeypatch.setattr(job, "read_policies", AsyncMock(return_value=policies))
         monkeypatch.setattr(job, "_open_cards", AsyncMock(return_value=open_cards or []))
+        self.decided = []
+        monkeypatch.setattr(job, "_decided_cards", AsyncMock(side_effect=lambda *a: self.decided))
+        self.record = AsyncMock(return_value=True)
+        monkeypatch.setattr(job.ledger, "record_outcome", self.record)
         monkeypatch.setattr(job, "query_calendar_invitations", AsyncMock(return_value=self.read))
         monkeypatch.setattr(
             job,
@@ -601,3 +605,72 @@ def test_the_replay_set_is_exactly_what_calendar_respond_can_return() -> None:
     )
     assert "pending_approval" in returned
     assert job._DECIDED_REPLAYS == returned - {"pending_approval"}
+
+
+async def _open_card_for(monkeypatch, row):
+    first = _Env(monkeypatch, policies=[_policy()], rows=[row])
+    await first.run()
+    return job.parse_marker(first.park.await_args.args[2]["_evidence"])
+
+
+async def test_an_owner_decision_is_recorded_and_a_system_rejection_is_not(monkeypatch) -> None:
+    marker = await _open_card_for(monkeypatch, _row())
+    env = _Env(monkeypatch, policies=[_policy()], rows=[])
+    env.decided = [
+        {"id": uuid4(), "marker": marker, "status": "approved", "by": "owner"},
+        {"id": uuid4(), "marker": marker, "status": "rejected", "by": "owner"},
+        {"id": uuid4(), "marker": marker, "status": "rejected", "by": job.DOCKET_ACTOR},
+    ]
+    summary = await env.run()
+    outcomes = [c.kwargs["outcome"] for c in env.record.await_args_list]
+    assert outcomes == ["approved_as_prepared", "owner_rejected"]
+    assert summary["ledger"] == {"approved_as_prepared": 1, "owner_rejected": 1}
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"), [("declined", "answered_same"), ("accepted", "answered_elsewhere")]
+)
+async def test_an_answer_outside_the_card_is_recorded_when_it_made_the_card_stale(
+    monkeypatch, status, outcome
+) -> None:
+    row = _row()
+    marker = await _open_card_for(monkeypatch, row)
+    answered = {
+        "instance_id": row["instance_id"],
+        "instance_starts_at": START,
+        "instance_ends_at": START + timedelta(hours=1),
+        "event_metadata": {"attendees": [{"self": True, "response_status": status}]},
+    }
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[],
+        owner_rows=[answered],
+        open_cards=[{"id": uuid4(), "marker": marker}],
+    )
+    await env.run()
+    assert env.reject.await_args.args[2] == "stale_event"
+    assert [c.kwargs["outcome"] for c in env.record.await_args_list] == [outcome]
+
+
+async def test_a_card_that_went_stale_without_an_owner_answer_records_nothing(monkeypatch) -> None:
+    row = _row()
+    marker = await _open_card_for(monkeypatch, row)
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[],
+        owner_rows=[],
+        open_cards=[{"id": uuid4(), "marker": marker}],
+    )
+    await env.run()
+    env.record.assert_not_awaited()
+
+
+async def test_a_ledger_outage_is_counted_and_never_makes_a_clean_run(monkeypatch) -> None:
+    marker = await _open_card_for(monkeypatch, _row())
+    env = _Env(monkeypatch, policies=[_policy()], rows=[])
+    env.decided = [{"id": uuid4(), "marker": marker, "status": "approved", "by": "owner"}]
+    env.record.side_effect = job.ledger.LedgerUnavailable
+    summary = await env.run()
+    assert summary["ledger_unavailable"] == 1 and summary["complete"] is False

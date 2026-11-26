@@ -131,3 +131,20 @@ async def test_a_cancelled_tick_releases_the_lock_for_the_next_one(db) -> None:
         await task
     async with job._single_flight(pool) as again:
         assert again is True
+
+
+async def test_only_the_owners_decided_docket_cards_are_read_for_the_ledger(db) -> None:
+    pool = await db("core", "approvals")
+    approved = await _park(pool, with_marker=True)
+    plain = await _park(pool, with_marker=False)
+    for action in (approved, plain):
+        await pool.execute(
+            "UPDATE pending_actions SET status = 'approved', decided_by = 'owner', "
+            "decided_at = $2 WHERE id = $1",
+            action,
+            NOW,
+        )
+    cards = await job._decided_cards(pool, NOW - timedelta(days=1))
+    assert cards is not None
+    assert [(c["id"], c["status"], c["by"]) for c in cards] == [(approved, "approved", "owner")]
+    assert await job._decided_cards(pool, NOW + timedelta(days=1)) == []
