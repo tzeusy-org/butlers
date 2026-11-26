@@ -425,6 +425,101 @@ async def test_end_to_end_a_move_opens_a_condition_and_moving_back_resolves_it_a
     assert (await state())["metadata"]["resolution_cause"] == "declined"
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_a_broker_failure_loses_no_candidate_and_a_second_move_is_a_new_one(
+    db, monkeypatch
+) -> None:
+    from butlers.core.owner_conditions import create_owner_conditions_table
+    from butlers.tools.switchboard.insight import broker
+    from tests.modules.test_calendar_owner_agreements import _attendees, _world
+    from tests.modules.test_calendar_participants import _event, _module, _project
+
+    pool, source = await _world(db)
+    await create_owner_conditions_table(pool)
+    await broker.create_insight_tables(pool)
+    await pool.execute("TRUNCATE TABLE public.owner_conditions")
+    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
+    event = _event(attendees=_attendees()).model_copy(
+        update={"start_at": start, "end_at": start + timedelta(hours=1)}
+    )
+    report = MagicMock(is_available=True, is_stale=False, failed_butlers=())
+    monkeypatch.setattr(job, "compute_calendar_sync_report", AsyncMock(return_value=report))
+    monkeypatch.setattr(job, "read_journal_heads", AsyncMock(return_value={}))
+    db_mgr = db_manager({"switchboard": pool}, modules={"relationship": ["calendar"]})
+
+    async def fan_out(sql, args, butler_names=None):
+        return {"relationship": await pool.fetch(sql)}, []
+
+    db_mgr.fan_out_with_status = fan_out
+
+    async def move(by):
+        await _project(
+            _module(pool),
+            source,
+            event.model_copy(
+                update={"start_at": start + by, "end_at": start + by + timedelta(hours=1)}
+            ),
+        )
+
+    async def keys():
+        return [
+            r["dedup_key"]
+            for r in await pool.fetch(
+                "SELECT dedup_key FROM insight_candidates WHERE category = $1 ORDER BY created_at",
+                job.CANDIDATE_CATEGORY,
+            )
+        ]
+
+    real = broker.propose_insight_candidate
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("broker down")
+
+    await _project(_module(pool), source, event)
+    monkeypatch.setattr(broker, "propose_insight_candidate", down)
+    await move(timedelta(hours=2))
+    assert (await job.run_calendar_agreement_drift_check(db_mgr))["transitions"] == ["opened"]
+    assert await keys() == []  # the condition is durable, its candidate was lost
+
+    monkeypatch.setattr(broker, "propose_insight_candidate", real)
+    result = await job.run_calendar_agreement_drift_check(db_mgr)  # a later complete tick
+    assert result["queued"] == 1 and len(await keys()) == 1
+    await job.run_calendar_agreement_drift_check(db_mgr)
+    assert len(await keys()) == 1  # and exactly once
+
+    await move(timedelta(0))
+    await job.run_calendar_agreement_drift_check(db_mgr)  # resolved
+    await move(timedelta(hours=2))
+    await job.run_calendar_agreement_drift_check(db_mgr)  # a new episode
+
+    found = await keys()
+    assert len(found) == 2 and found[0] != found[1]
+
+
+async def test_a_change_to_an_event_that_has_started_is_not_announced() -> None:
+    item = _agreed(current_start=_T0)
+    broker = _Broker()
+
+    queued = await job.propose_changes(
+        object(), _opened(item), [item], {}, now=_T0 + timedelta(minutes=5), broker=broker
+    )
+
+    assert queued == 0 and broker.calls == []
+
+
+async def test_a_digest_line_expires_when_the_event_starts() -> None:
+    item = _agreed(current_start=_T0 + timedelta(days=3))
+    broker = _Broker()
+
+    await job.propose_changes(
+        object(), _opened(item), [item], {}, now=_T0 - timedelta(days=5), broker=broker
+    )
+
+    assert broker.calls[0]["expires_at"] == _T0 + timedelta(days=3)
+
+
 async def test_only_a_revert_is_amended_after_delivery(tick) -> None:
     from types import SimpleNamespace
 
