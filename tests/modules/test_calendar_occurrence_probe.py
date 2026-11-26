@@ -39,10 +39,21 @@ async def _check(pool, event_id, start, butler=_SCHEMA):
     )
 
 
+async def _synced(pool, source, age=timedelta(0)):
+    await pool.execute(
+        "INSERT INTO calendar_sync_cursors (source_id, last_synced_at) "
+        "VALUES ($1, now() - $2::interval) ON CONFLICT (source_id, cursor_name) "
+        "DO UPDATE SET last_synced_at = EXCLUDED.last_synced_at",
+        source,
+        age,
+    )
+
+
 async def _accepted(db):
     pool, source = await _world(db)
     event = _event(attendees=_attendees())
     await _project(_module(pool), source, event)
+    await _synced(pool, source)
     row = await pool.fetchrow("SELECT event_id, occurrence_start FROM calendar_owner_agreements")
     return pool, source, event, row["event_id"], row["occurrence_start"]
 
@@ -130,12 +141,16 @@ async def test_only_the_switchboard_may_execute_and_it_reads_one_boolean(db):
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
         answer = await conn.fetchval(
-            "SELECT public.resolve_calendar_occurrence($1, $2, $3)", _SCHEMA, event_id, start
+            "SELECT public.resolve_calendar_occurrence($1, $2, $3, $4)",
+            _SCHEMA,
+            event_id,
+            start,
+            timedelta(minutes=10),
         )
     assert answer is False
     assert not await pool.fetchval(
         "SELECT has_function_privilege('public', "
-        "'public.resolve_calendar_occurrence(text, uuid, timestamptz)', 'EXECUTE')"
+        "'public.resolve_calendar_occurrence(text, uuid, timestamptz, interval)', 'EXECUTE')"
     )
 
 
@@ -157,6 +172,45 @@ def test_public_execute_is_revoked_on_its_own_and_the_definer_is_pinned():
     assert "SECURITY DEFINER" in function and "SET search_path = pg_catalog, pg_temp" in function
     assert "RETURNS boolean" in function
     assert (
-        "REVOKE ALL ON FUNCTION public.resolve_calendar_occurrence(text, uuid, timestamptz) "
+        "REVOKE ALL ON FUNCTION public.resolve_calendar_occurrence(text, uuid, timestamptz, interval) "
         "FROM PUBLIC" in flat
     )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_a_stalled_sync_is_unknown_never_changed(db):
+    pool, source, event, event_id, start = await _accepted(db)
+    moved = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(hours=1),
+            "end_at": event.end_at + timedelta(hours=1),
+        }
+    )
+    await _project(_module(pool), source, moved)
+    assert await _check(pool, event_id, start) is True
+
+    await _synced(pool, source, age=timedelta(hours=1))
+    assert await _check(pool, event_id, start) is None
+
+    await _synced(pool, source)
+    assert await _check(pool, event_id, start) is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_an_occurrence_replaced_by_a_re_accept_reads_false_not_unknown(db):
+    pool, source, event, event_id, start = await _accepted(db)
+    declined = event.model_copy(update={"attendees": _attendees(AttendeeResponseStatus.declined)})
+    await _project(_module(pool), source, declined)
+    later = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(days=1),
+            "end_at": event.end_at + timedelta(days=1),
+        }
+    )
+    await _project(_module(pool), source, later)  # accepted again at a new start
+
+    assert await _check(pool, event_id, start) is False

@@ -27,6 +27,7 @@ import asyncpg
 
 from butlers.core.insight_premise import PREMISE_KIND_OWNER_CONDITION, PREMISE_KIND_PROBE
 from butlers.jobs.home_prepared_status import STATUSES
+from butlers.modules.calendar.constants import projection_staleness_threshold
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,8 @@ async def _calendar_occurrence_still_changed(
     """True while an accepted occurrence still differs from what the owner agreed to.
 
     False once it matches again or the agreement is gone; None when the arguments are malformed or
-    the definer answers unknown (no such butler schema).  bu-5ii4gj.10 slice A-S3.
+    the definer answers unknown (no such butler schema, or the calendar source's sync is stale).
+    bu-5ii4gj.10 slice A-S3.
     """
     butler = args.get("butler")
     try:
@@ -180,7 +182,11 @@ async def _calendar_occurrence_still_changed(
     if not isinstance(butler, str) or original_start.tzinfo is None:
         return None
     changed = await pool.fetchval(
-        "SELECT public.resolve_calendar_occurrence($1, $2, $3)", butler, event_id, original_start
+        "SELECT public.resolve_calendar_occurrence($1, $2, $3, $4)",
+        butler,
+        event_id,
+        original_start,
+        projection_staleness_threshold(),
     )
     return None if changed is None else bool(changed)
 

@@ -12,8 +12,14 @@ It answers one boolean and never a time, a digest or an address:
 * ``true``  -- an agreement row exists and the event's current start, end, location or attendees
   differ from what the owner accepted;
 * ``false`` -- the row matches again, or the agreement ended (declined, cancelled, no seat);
-* ``NULL``  -- unknown: no row for the occurrence, no butler named, a name that is not a schema
-  holding the table, or no id.
+* ``NULL``  -- unknown: no row for the event, no butler named, a name that is not a schema
+  holding the table, no id, or the event's calendar source has not synced within ``p_max_age``
+  (the caller passes the sync deadman's staleness threshold), so a stalled sync never reports
+  "changed".
+
+An agreement is found by event id (one provider event has one row per schema). If a re-accept has
+since replaced the occurrence start, the occurrence the caller asked about is no longer agreed to:
+the answer is ``false``, not unknown.
 
 The butler schema is a parameter because every calendar-hosting butler keeps its own agreements.
 It is accepted only when it names an existing relation, and is quoted with ``%I``.
@@ -32,12 +38,12 @@ branch_labels = None
 depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_379:calendar-occurrence', 0))"
-_FUNCTION = "public.resolve_calendar_occurrence(text, uuid, timestamptz)"
+_FUNCTION = "public.resolve_calendar_occurrence(text, uuid, timestamptz, interval)"
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
 
 CREATE_FUNCTION = """
 CREATE OR REPLACE FUNCTION public.resolve_calendar_occurrence(
-    p_butler text, p_event_id uuid, p_original_start timestamptz)
+    p_butler text, p_event_id uuid, p_original_start timestamptz, p_max_age interval)
 RETURNS boolean
 LANGUAGE plpgsql
 STABLE
@@ -46,6 +52,7 @@ SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
     v_changed boolean;
+    v_synced timestamptz;
 BEGIN
     IF p_butler IS NULL OR p_event_id IS NULL OR p_original_start IS NULL
        OR pg_catalog.to_regclass(
@@ -54,12 +61,20 @@ BEGIN
         RETURN NULL;
     END IF;
     EXECUTE pg_catalog.format(
-        'SELECT ended_at IS NULL AND ('
+        'SELECT max(c.last_synced_at) FROM %I.calendar_events e'
+        ' JOIN %I.calendar_sync_cursors c ON c.source_id = e.source_id WHERE e.id = $1',
+        p_butler, p_butler)
+        INTO v_synced USING p_event_id;
+    IF p_max_age IS NULL OR v_synced IS NULL OR v_synced < pg_catalog.now() - p_max_age THEN
+        RETURN NULL;
+    END IF;
+    EXECUTE pg_catalog.format(
+        'SELECT ended_at IS NULL AND occurrence_start = $2 AND ('
         'current_starts_at IS DISTINCT FROM agreed_starts_at'
         ' OR current_ends_at IS DISTINCT FROM agreed_ends_at'
         ' OR current_location_digest IS DISTINCT FROM location_digest'
         ' OR current_attendees_digest IS DISTINCT FROM attendees_digest)'
-        ' FROM %I.calendar_owner_agreements WHERE event_id = $1 AND occurrence_start = $2',
+        ' FROM %I.calendar_owner_agreements WHERE event_id = $1',
         p_butler)
         INTO v_changed USING p_event_id, p_original_start;
     RETURN v_changed;
