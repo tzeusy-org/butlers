@@ -18,6 +18,7 @@ from butlers.jobs.encounter_ledger import run_encounter_reducer
 from butlers.modules.calendar.models import AttendeeInfo, AttendeeResponseStatus
 from tests.jobs.test_prep_participants import _prep, _seed
 from tests.modules.test_calendar_participants import _OWN, _event, _module, _project
+from tests.modules.test_calendar_reminder_integration import _make_module
 
 pytestmark = [
     pytest.mark.integration,
@@ -44,6 +45,35 @@ async def _starts(pool, ref: str) -> datetime:
     return await pool.fetchval("SELECT starts_at FROM calendar_events WHERE origin_ref = $1", ref)
 
 
+async def _native_reminder(pool, alice):
+    """A reminder made by the real reminder insert path, linked to Alice.
+
+    Real reminders are ``{"native": true}`` with no ``source_type``, on the internal reminders
+    source. It also gets the participant record Alice has on her real meeting, so the only thing
+    keeping it out of the ledger is what kind of event it is.
+    """
+    module = _make_module(pool)
+    module._projection_tables_available_cache = True
+    reminder, _row = await module._insert_reminder_to_calendar_events(
+        title="Call Alice back",
+        body=None,
+        starts_at=datetime(2026, 11, 30, 9, tzinfo=UTC),
+        ends_at=datetime(2026, 11, 30, 9, 15, tzinfo=UTC),
+        timezone="UTC",
+        recurrence_rule=None,
+        entity_ids=[alice],
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_participants (event_id, email_norm, role, response_status, "
+        "entity_id, resolution, resolver_version) "
+        "SELECT $1, email_norm, role, response_status, entity_id, resolution, resolver_version "
+        "FROM calendar_event_participants WHERE entity_id = $2 LIMIT 1",
+        reminder,
+        alice,
+    )
+    return reminder
+
+
 async def test_prep_reads_the_reducers_own_rows_for_three_occurrences_and_a_reminder(db):
     pool, alice, upcoming = await _seed(db)
     source = await pool.fetchval("SELECT id FROM calendar_sources")
@@ -66,20 +96,7 @@ async def test_prep_reads_the_reducers_own_rows_for_three_occurrences_and_a_remi
         attested,
         attested_start,
     )
-    # A native reminder linked to the same person: a thing to do, not a meeting.
-    reminder = await pool.fetchval(
-        "INSERT INTO calendar_events (source_id, source_butler, origin_ref, title, starts_at, "
-        "ends_at, timezone, status, metadata) SELECT id, 'relationship', 'reminder-1', 'Call Alice back', $1, "
-        "$1::timestamptz + interval '15 minutes', 'UTC', 'confirmed', "
-        '\'{"source_type": "butler_reminder"}\'::jsonb FROM calendar_sources LIMIT 1 '
-        "RETURNING id",
-        datetime(2026, 11, 30, 9, tzinfo=UTC),
-    )
-    await pool.execute(
-        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
-        reminder,
-        alice,
-    )
+    reminder = await _native_reminder(pool, alice)
 
     result = await run_encounter_reducer(pool, now=_PREP_NOW)
 
@@ -96,7 +113,9 @@ async def test_prep_reads_the_reducers_own_rows_for_three_occurrences_and_a_remi
     assert rows["attested"][:2] == ("happened_attested", "owner_debrief")
     assert rows["unvouched"][:2] == ("unknown", "schedule")
     assert rows["declined"][:2] == ("declined_by_them", "rsvp")
-    assert "reminder-1" not in rows, "a native reminder is not an encounter"
+    assert not await pool.fetchval(
+        "SELECT count(*) FROM relationship.encounters WHERE event_id = $1", reminder
+    ), "a native reminder is not an encounter"
 
     attendee = (await _prep(pool, upcoming))["attendees"][0]
 
@@ -112,29 +131,7 @@ async def test_the_reducer_writes_no_row_for_a_linked_native_reminder(db):
     source = await pool.fetchval("SELECT id FROM calendar_sources")
     await pool.execute("UPDATE calendar_sources SET time_role = 'owner'")
     await _project(_module(pool), source, _past("met", 5, AttendeeResponseStatus.accepted))
-    reminder = await pool.fetchval(
-        "INSERT INTO calendar_events (source_id, source_butler, origin_ref, title, starts_at, "
-        "ends_at, timezone, status, metadata) VALUES ($1, 'relationship', 'reminder-2', 'Call Alice back', $2, "
-        "$2::timestamptz + interval '15 minutes', 'UTC', 'confirmed', "
-        '\'{"source_type": "butler_reminder"}\'::jsonb) RETURNING id',
-        source,
-        datetime(2026, 11, 30, 9, tzinfo=UTC),
-    )
-    await pool.execute(
-        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
-        reminder,
-        alice,
-    )
-    # Give the reminder the same participant record Alice has on her real meeting, so the only
-    # thing keeping it out of the ledger is that it is a reminder.
-    await pool.execute(
-        "INSERT INTO calendar_event_participants (event_id, email_norm, role, response_status, "
-        "entity_id, resolution, resolver_version) "
-        "SELECT $1, email_norm, role, response_status, entity_id, resolution, resolver_version "
-        "FROM calendar_event_participants WHERE entity_id = $2 LIMIT 1",
-        reminder,
-        alice,
-    )
+    reminder = await _native_reminder(pool, alice)
 
     result = await run_encounter_reducer(pool, now=_PREP_NOW)
 
