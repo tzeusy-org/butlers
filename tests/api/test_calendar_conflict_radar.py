@@ -1577,6 +1577,26 @@ async def test_a_stale_source_offers_nothing_and_says_so(app, live):
     assert overlap.issue_digest is None  # keep_both included: nothing is acknowledged while stale
 
 
+async def test_a_source_that_failed_after_its_last_success_is_stale_now(app, live):
+    block, meeting = _options_world(app)
+    for row in (block, meeting):
+        row["last_error_at"] = _NOW  # a win a moment ago, then a failure
+        row["last_success_at"] = _NOW - timedelta(minutes=5)
+        row["last_error"] = "auth"
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
+async def test_a_source_that_needs_a_full_resync_is_stale(app, live):
+    block, meeting = _options_world(app, full_sync_required=True)
+
+    overlap = await _overlap(app, [block, meeting])
+
+    assert overlap.options == [] and overlap.options_reason == "stale_source"
+
+
 async def test_any_stale_provider_source_silences_every_issue(app, live):
     rows = list(_options_world(app))
     other = _ws_row(entry_id="elsewhere", title="Lunch", start=_DAY + timedelta(hours=5))

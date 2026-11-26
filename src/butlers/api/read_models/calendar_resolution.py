@@ -151,14 +151,29 @@ async def any_provider_source_stale(db: Any, now: datetime) -> bool:
         meta = source.source_metadata
         if isinstance(meta, dict) and meta.get("sync_enabled") is False:
             continue  # an operator-disabled source is not a failure
-        ok = source.last_success_at
-        if ok is None or now - ok > threshold:
+        if _source_stale(source, now, threshold):
             return True
     return False
 
 
+def _source_stale(source: Any, now: datetime, threshold: timedelta) -> bool:
+    """One source's own verdict. The poll interval is butler config and is not stored per source,
+    so the default threshold applies; the source's own state still counts: a source that needs a
+    full resync, or whose latest attempt failed after its last success, is stale at once.
+    """
+    ok = source.last_success_at
+    if ok is None or now - ok > threshold or source.full_sync_required:
+        return True
+    failed_at = source.last_error_at
+    return failed_at is not None and failed_at > ok
+
+
 async def owner_zone(db: Any) -> tzinfo | None:
-    """The owner's saved zone, or None when it was never saved or cannot be read."""
+    """The owner's saved zone, or None when it was never saved or cannot be read.
+
+    TODO(bu-5ii4gj.5): use the shared target-zone function once #6191 lands (it also honours the
+    clock's confirmed basis); until then this is the settings zone alone.
+    """
     for name in sorted(db.butlers_with_module("calendar") or db.butler_names or []):
         try:
             zone = await load_configured_general_timezone(db.pool(name))
