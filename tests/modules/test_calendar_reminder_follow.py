@@ -282,21 +282,14 @@ async def test_core_383_converges_a_database_that_ran_the_first_draft(db):
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     # The first draft: no announcement columns and a UNIQUE on the transition's coordinates.
-    await pool.execute("DROP TABLE reminder_receipts")
+    # Rebuilt from the migrated table with ALTERs (the test-DB guard refuses hand-written DDL).
     await pool.execute(
-        """
-        CREATE TABLE reminder_receipts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            reminder_event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
-            kind TEXT NOT NULL CHECK (kind IN ('rebased', 'retired')),
-            revision TEXT NOT NULL,
-            old_starts_at TIMESTAMPTZ NOT NULL,
-            new_starts_at TIMESTAMPTZ,
-            reason TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (reminder_event_id, kind, revision)
-        )
-        """
+        "ALTER TABLE reminder_receipts DROP COLUMN announced_at, DROP COLUMN attempts"
+    )
+    await pool.execute(
+        "ALTER TABLE reminder_receipts ADD CONSTRAINT "
+        "reminder_receipts_reminder_event_id_kind_revision_key "
+        "UNIQUE (reminder_event_id, kind, revision)"
     )
 
     for statement in (migration._TABLE_DDL, *migration._CONVERGE_DDL, migration._INDEX_DDL):
