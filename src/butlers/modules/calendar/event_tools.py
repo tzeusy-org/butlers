@@ -42,6 +42,12 @@ from .models import (
 from .party import gate_calendar_party_mutation
 from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
 from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
+from .resolution_move import (
+    RESOLUTION_DECLINED,
+    RESOLUTION_DECLINED_TEXT,
+    offer_for_card,
+    resolution_refusal,
+)
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -612,6 +618,42 @@ def register_event_tools(
         if undo_refused is not None:
             return await decline_undo(undo_refused)
 
+        # An approved overlap-resolution move (bu-5ii4gj.11 R2b): bound to the etag the owner
+        # saw, which lives outside the call's arguments, and written once.
+        resolution_offer = None
+        resolution_pool = getattr(getattr(module, "_db", None), "pool", None)
+        if not replan and not undo and resolution_pool is not None:
+            approval = get_approval_execution_context(
+                tool_name="calendar_update_event", tool_args=overlap_args
+            )
+            if approval is not None:
+                resolution_offer = await offer_for_card(resolution_pool, approval.action_id)
+        resolution = resolution_offer is not None
+
+        async def decline_resolution() -> dict[str, Any]:
+            """An approved move that wrote nothing: the event is not what the owner saw."""
+            declined_move = {
+                "status": RESOLUTION_DECLINED,
+                "reason": "changed_since_check",
+                "error": RESOLUTION_DECLINED_TEXT,
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+            }
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_NOOP,
+                action_payload=action_payload,
+                action_result=declined_move,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return declined_move
+
+        if resolution_offer is not None and resolution_refusal(resolution_offer, existing_event):
+            return await decline_resolution()
+
         party_gate = await gate_calendar_party_mutation(
             module,
             tool_name="calendar_update_event",
@@ -807,7 +849,7 @@ def register_event_tools(
             etag=existing_event.etag,
             # A conditional move's (or its undo's) etag-bound write is sent once, so a 412
             # can only mean the event changed before it; a 503 stays an error.
-            single_attempt=replan or undo,
+            single_attempt=replan or undo or resolution,
         )
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
@@ -884,6 +926,8 @@ def register_event_tools(
                 return await decline("changed_since_check")
             if undo and refused:
                 return await decline_undo("changed_since_move")
+            if resolution and refused:
+                return await decline_resolution()
             error_payload = _build_structured_error(
                 exc,
                 provider=provider.name,

@@ -1893,6 +1893,69 @@ async def get_workspace_conflicts(
     )
 
 
+async def _park_resolution_move(
+    db: DatabaseManager, issue: Any, option: Any, body: ConflictResolveRequest
+) -> ConflictResolveResponse:
+    """Park a move as an approvals card on the butler that owns the event; write nothing else.
+
+    The owner's decision (bu-kf3n4i) retired dashboard event updates: the card is approved in
+    the existing approvals surface, bound by its arguments digest, and the etag the owner saw
+    is bound outside the arguments (``modules.calendar.resolution_move``).
+    """
+    from butlers.modules.calendar.resolution_move import park_resolution_move
+
+    context = issue.option_context.get(option.id) or {}
+    etag = context.get("etag")
+    instance_id = context.get("instance_id")
+    if (
+        not isinstance(etag, str)
+        or not etag
+        or not instance_id
+        or not option.exact_call["args"].get("calendar_id")
+    ):
+        raise HTTPException(status_code=409, detail="issue_changed")
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="resolution_owner_census_unavailable")
+    owners, failed = await db.fan_out_with_status(
+        "SELECT id FROM calendar_event_instances WHERE id=$1",
+        (instance_id,),
+        butler_names=targets,
+    )
+    matches = [name for name, rows in owners.items() if rows]
+    if failed:
+        raise HTTPException(status_code=503, detail="resolution_owner_lookup_degraded")
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="resolution_owner_unverified")
+    butler = matches[0]
+    pool = db.pool(butler)
+    try:
+        action_id, _created = await park_resolution_move(
+            pool,
+            butler_name=butler,
+            pair_id=body.pair_id,
+            option_id=option.id,
+            issue_digest=body.issue_digest,
+            call_args=option.exact_call["args"],
+            etag=etag,
+        )
+        status = await pool.fetchval("SELECT status FROM pending_actions WHERE id = $1", action_id)
+    except Exception as exc:
+        logger.warning("resolution move could not be parked", exc_info=True)
+        raise HTTPException(status_code=503, detail="approvals_unavailable") from exc
+    if status not in ("pending", "approved"):
+        raise HTTPException(status_code=409, detail="card_closed")
+    await log_audit_entry(
+        db,
+        "dashboard",
+        "calendar.workspace.conflicts.park_move",
+        {"pair_id": body.pair_id, "option_id": option.id, "action_id": str(action_id)},
+    )
+    return ConflictResolveResponse(
+        status="parked", pair_id=body.pair_id, option_id=option.id, action_id=action_id
+    )
+
+
 def _require_resolution_live() -> None:
     """Dark: the route does not exist yet, so it answers 404 before it validates its body."""
     if not resolution_options_live():
@@ -1909,12 +1972,13 @@ async def resolve_workspace_conflict(
     *,
     db: Db,
 ) -> ApiResponse[ConflictResolveResponse]:
-    """Record "keep both" for one overlap, bound to the digest the owner saw.
+    """Resolve one overlap by an option, bound to the digest the owner saw.
 
-    Writes only the local acknowledgement: no provider call and no approval, so it is the one
-    option that needs no park. The overlap is re-read here and its digest compared, so an
-    acknowledgement can never attach to a changed overlap (409 ``issue_changed``). Options that
-    write to a provider are not accepted by this route yet (422).
+    ``keep_both`` writes only the local acknowledgement: no provider call and no approval. A move
+    parks an approvals card on the owning butler and writes nothing else (the owner decides it in
+    the approvals surface). The overlap is re-read here and its digest compared, so neither can
+    attach to a changed overlap (409 ``issue_changed``). Response options are not accepted yet
+    (422).
     """
     if body.end <= body.start:
         raise HTTPException(status_code=400, detail="end must be after start")
@@ -1940,6 +2004,8 @@ async def resolve_workspace_conflict(
     option = next((o for o in issue.options if o.id == body.option_id), None)
     if option is None:
         raise HTTPException(status_code=422, detail="unknown_option")
+    if option.kind in ("move_block", "move_own"):
+        return ApiResponse(data=await _park_resolution_move(db, issue, option, body))
     if option.kind != "keep_both":
         raise HTTPException(status_code=422, detail="option_not_supported")
     if not await record_conflict_acknowledgement(

@@ -2512,12 +2512,13 @@ export interface paths {
         put?: never;
         /**
          * Resolve Workspace Conflict
-         * @description Record "keep both" for one overlap, bound to the digest the owner saw.
+         * @description Resolve one overlap by an option, bound to the digest the owner saw.
          *
-         *     Writes only the local acknowledgement: no provider call and no approval, so it is the one
-         *     option that needs no park. The overlap is re-read here and its digest compared, so an
-         *     acknowledgement can never attach to a changed overlap (409 ``issue_changed``). Options that
-         *     write to a provider are not accepted by this route yet (422).
+         *     ``keep_both`` writes only the local acknowledgement: no provider call and no approval. A move
+         *     parks an approvals card on the owning butler and writes nothing else (the owner decides it in
+         *     the approvals surface). The overlap is re-read here and its digest compared, so neither can
+         *     attach to a changed overlap (409 ``issue_changed``). Response options are not accepted yet
+         *     (422).
          */
         post: operations["resolve_workspace_conflict_api_calendar_workspace_conflicts_resolve_post"];
         delete?: never;
@@ -24260,6 +24261,8 @@ export interface components {
         };
         /** ConflictResolveResponse */
         ConflictResolveResponse: {
+            /** Action Id */
+            action_id?: string | null;
             /** Option Id */
             option_id: string;
             /** Pair Id */
@@ -24268,7 +24271,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "acknowledged" | "already_acknowledged";
+            status: "acknowledged" | "already_acknowledged" | "parked";
         };
         /**
          * ConflictScanResponse
