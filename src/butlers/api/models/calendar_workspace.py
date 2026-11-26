@@ -612,7 +612,6 @@ class ConflictResolveRequest(BaseModel):
     issue_digest: str = Field(min_length=1)
     start: datetime
     end: datetime
-    timezone: str | None = None
 
 
 class ConflictResolveResponse(BaseModel):

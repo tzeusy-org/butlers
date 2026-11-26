@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -1865,9 +1865,74 @@ async def test_a_provider_writing_option_is_not_accepted_here(app, live):
     assert resp.status_code == 422 and pool.rows == {}
 
 
+def _future_world(app, *, synced_at=None):
+    """The overlap two days from now, so a move has somewhere to go ("now" is real here)."""
+    day = (datetime.now(UTC) + timedelta(days=2)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    synced = synced_at or datetime.now(UTC)
+    block, meeting = _options_world(app, last_synced_at=synced, last_success_at=synced)
+    for row, offset in ((block, 0), (meeting, 30)):
+        row["instance_starts_at"] = day + timedelta(minutes=offset)
+        row["instance_ends_at"] = day + timedelta(minutes=offset + 60)
+    app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
+    pool = _with_acks(db)
+    window = {
+        "start": (day - timedelta(days=1)).isoformat(),
+        "end": (day + timedelta(days=1)).isoformat(),
+    }
+    return app, pool, window
+
+
+async def _offered_option(app, kind, window):
+    resp = await _get(app, window)
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    option = next(o for o in overlap["options"] if o["kind"] == kind)
+    pair = overlap["options"][-1]["exact_call"]["args"]["pair_id"]
+    return overlap, option, pair
+
+
 async def test_the_route_is_absent_while_the_flag_is_dark(app):
     app, _, _ = _fresh_world(app)
 
     resp = await _post(app, pair_id="p", option_id="o", issue_digest="d")
 
     assert resp.status_code == 404
+
+
+async def test_the_dark_route_answers_404_even_for_an_invalid_body(app):
+    app, _, _ = _fresh_world(app)
+
+    resp = await _post(app, pair_id="", option_id="o")  # no digest, empty pair id: would be 422
+
+    assert resp.status_code == 404
+
+
+async def test_a_post_a_few_seconds_after_the_get_still_matches_its_digest(app, live):
+    """The digest must not drift with the clock inside one grid step (GET then POST -> 200)."""
+    from butlers.api.routers import calendar_workspace as router
+
+    # The morning of the overlap, mid grid step: "now" is what the first slot starts after.
+    base = (datetime.now(UTC) + timedelta(days=2)).replace(
+        hour=8, minute=2, second=0, microsecond=0
+    )
+    app, pool, window = _future_world(app, synced_at=base)
+    real_scan = router.query_calendar_conflicts
+    clock = {"now": base}
+
+    async def scan(db, **kwargs):
+        return await real_scan(db, now=clock["now"], **kwargs)
+
+    with patch.object(router, "query_calendar_conflicts", scan):
+        overlap, _, pair = await _offered_option(app, "keep_both", window)
+        clock["now"] = base + timedelta(seconds=7)
+        resp = await _post(
+            app,
+            pair_id=pair,
+            option_id="keep_both",
+            issue_digest=overlap["issue_digest"],
+            **window,
+        )
+
+    assert resp.status_code == 200 and resp.json()["data"]["status"] == "acknowledged"
+    assert pair in pool.rows

@@ -24257,8 +24257,6 @@ export interface components {
              * Format: date-time
              */
             start: string;
-            /** Timezone */
-            timezone?: string | null;
         };
         /** ConflictResolveResponse */
         ConflictResolveResponse: {

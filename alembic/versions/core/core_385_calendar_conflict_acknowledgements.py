@@ -1,14 +1,15 @@
 """core_385 -- calendar_conflict_acknowledgements: "keep both" as durable state.
 
 Revision ID: core_385
-Revises: core_377
+Revises: core_378
 Create Date: 2026-11-26 00:00:00.000000
 
 An owner who says "keep both" on an overlap has decided it; the radar must stop raising it
 until the overlap itself changes. One row per overlap pair (the provider-identity pair id the
-radar already uses) holds the digest of the overlap as the owner saw it. The row suppresses the
-issue only while the live digest still equals ``issue_digest``: any etag, time or attendee change
-moves the digest and the overlap is raised again. Public because the radar spans every butler's
+radar already uses) holds the digest of the overlap as the owner saw it (``issue_digest``, the
+resolve route's 409 binding) and its events-only ``state_digest``. The row suppresses the issue
+only while the live state digest still equals the stored one: a change to either event's etag or
+time moves it and the overlap is raised again; the clock and unrelated events never do. Public because the radar spans every butler's
 calendar schema. Installed once across the per-schema core chains (``IF NOT EXISTS``); the last
 schema drops it.
 """

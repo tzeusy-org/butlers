@@ -1593,7 +1593,6 @@ export interface ConflictResolveRequest {
   issue_digest: string;
   start: string;
   end: string;
-  timezone?: string | null;
 }
 
 export interface ConflictResolveResponse {

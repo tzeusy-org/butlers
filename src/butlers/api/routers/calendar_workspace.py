@@ -1893,7 +1893,17 @@ async def get_workspace_conflicts(
     )
 
 
-@router.post("/conflicts/resolve", response_model=ApiResponse[ConflictResolveResponse])
+def _require_resolution_live() -> None:
+    """Dark: the route does not exist yet, so it answers 404 before it validates its body."""
+    if not resolution_options_live():
+        raise HTTPException(status_code=404, detail="conflict_resolution_unavailable")
+
+
+@router.post(
+    "/conflicts/resolve",
+    response_model=ApiResponse[ConflictResolveResponse],
+    dependencies=[Depends(_require_resolution_live)],
+)
 async def resolve_workspace_conflict(
     body: ConflictResolveRequest,
     *,
@@ -1910,18 +1920,8 @@ async def resolve_workspace_conflict(
         raise HTTPException(status_code=400, detail="end must be after start")
     if body.end - body.start > _WORKSPACE_MAX_RANGE:
         raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
-    display_tz: ZoneInfo | None = None
-    if body.timezone is not None:
-        try:
-            display_tz = ZoneInfo(body.timezone.strip())
-        except ZoneInfoNotFoundError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"Invalid timezone: {body.timezone}"
-            ) from exc
-    if not resolution_options_live():
-        raise HTTPException(status_code=404, detail="conflict_resolution_unavailable")
 
-    scan = await query_calendar_conflicts(db, start=body.start, end=body.end, display_tz=display_tz)
+    scan = await query_calendar_conflicts(db, start=body.start, end=body.end)
     if not scan.available:
         raise HTTPException(status_code=503, detail="conflict_scan_degraded")
     issue = next((i for i in scan.issues if str(i.pair_id) == body.pair_id), None)
