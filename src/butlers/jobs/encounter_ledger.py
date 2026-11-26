@@ -58,11 +58,16 @@ MAX_OCCURRENCES: Final = 2000
 _ANSWERED_HAPPENED: Final = frozenset({"none_agreed", "captured"})
 
 _OCCURRENCES_SQL: Final = f"""
-    SELECT o.event_id, o.starts_at, o.cancelled, o.time_role, o.metadata
+    SELECT r.event_id, r.starts_at, r.cancelled, r.time_role, r.metadata, r.origin_ref
+    FROM (
+    SELECT o.*, dense_rank() OVER (
+        ORDER BY abs(extract(epoch FROM (o.starts_at - $5::timestamptz))), o.starts_at,
+                 COALESCE(o.origin_ref, o.event_id::text)
+    ) AS grp
     FROM (
         SELECT ce.id AS event_id, ce.starts_at AS starts_at,
                (ce.status = 'cancelled') AS cancelled,
-               cs.time_role AS time_role, ce.metadata AS metadata
+               cs.time_role AS time_role, ce.metadata AS metadata, ce.origin_ref AS origin_ref
         FROM calendar_events ce
         LEFT JOIN calendar_sources cs ON cs.id = ce.source_id
         WHERE ce.recurrence_rule IS NULL
@@ -74,7 +79,7 @@ _OCCURRENCES_SQL: Final = f"""
           AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
         UNION ALL
         SELECT ce.id, ci.starts_at, (ce.status = 'cancelled' OR ci.status = 'cancelled'),
-               cs.time_role, ce.metadata
+               cs.time_role, ce.metadata, ce.origin_ref
         FROM calendar_event_instances ci
         JOIN calendar_events ce ON ce.id = ci.event_id
         LEFT JOIN calendar_sources cs ON cs.id = ce.source_id
@@ -86,8 +91,11 @@ _OCCURRENCES_SQL: Final = f"""
           AND ci.starts_at >= $1 AND ci.starts_at <= $2
           AND ($4::uuid[] IS NULL OR ce.id = ANY($4::uuid[]))
     ) o
-    ORDER BY abs(extract(epoch FROM (o.starts_at - $5::timestamptz))), o.starts_at, o.event_id
-    LIMIT $3
+    ) r
+    -- The cap counts meetings, not rows: every copy of one meeting shares a rank, so the cap
+    -- can never split copies and let a collapse keep a different one on the next run.
+    WHERE ($3::int IS NULL OR r.grp <= $3)
+    ORDER BY r.grp, r.event_id
 """
 
 #: The ledger's own occurrences inside the window, to find the ones the calendar no longer has.
@@ -214,6 +222,40 @@ def _plan(
     return plan
 
 
+def _collapse_copies(
+    rows: list[Any],
+    answered: set[tuple[uuid.UUID, datetime]] = frozenset(),  # type: ignore[assignment]
+) -> tuple[list[Any], set[tuple[uuid.UUID, datetime]]]:
+    """One row per meeting: copies of the same provider event on several calendars collapse.
+
+    A meeting on the owner's calendar and the same invite on a partner or shared calendar (the
+    owner's seat accepted on both) are two ``calendar_events`` rows with the same provider event
+    id and start. Only one may become an encounter: the copy holding an answered debrief (never
+    drop a captured debrief), else the owner-role source's copy, else the smallest id. Returns the
+    kept rows and the ``(event_id, starts_at)`` keys of the copies dropped, so a ledger row
+    already written for a dropped copy is retired, not kept.
+    """
+    groups: dict[tuple[str, datetime], list[Any]] = {}
+    kept: list[Any] = []
+    for row in rows:
+        if not row["origin_ref"]:
+            kept.append(row)
+            continue
+        groups.setdefault((row["origin_ref"], row["starts_at"]), []).append(row)
+    dropped: set[tuple[uuid.UUID, datetime]] = set()
+    for copies in groups.values():
+        copies.sort(
+            key=lambda r: (
+                (r["event_id"], r["starts_at"]) not in answered,
+                r["time_role"] != "owner",
+                str(r["event_id"]),
+            )
+        )
+        kept.append(copies[0])
+        dropped.update((r["event_id"], r["starts_at"]) for r in copies[1:])
+    return kept, dropped
+
+
 async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
     lo, hi = now - LOOKBACK, now + LOOKAHEAD
     found = await pool.fetch(_OCCURRENCES_SQL, lo, hi, MAX_OCCURRENCES, None, now)
@@ -221,6 +263,12 @@ async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
     # even when the owner's row there reads "accepted". The role gate only: the owner's decline is
     # a state of its own here (declined_by_owner), not a reason to drop the occurrence.
     found = [r for r in found if asserts_owner_time(r["time_role"], r["metadata"])]
+    answered = {
+        (r["event_id"], r["occurrence_start"])
+        for r in await pool.fetch(_DEBRIEFS_SQL, sorted({r["event_id"] for r in found}, key=str))
+        if r["state"] in _ANSWERED_HAPPENED
+    }
+    found, dropped_copies = _collapse_copies(found, answered)
     occurrences = [Occurrence(r["event_id"], r["starts_at"], bool(r["cancelled"])) for r in found]
     seen = {(o.event_id, o.starts_at) for o in occurrences}
     # A ledger row the capped read did not return is checked against the calendar itself, per
@@ -238,7 +286,7 @@ async def _read_inputs(pool: asyncpg.Pool, now: datetime) -> _Inputs:
             for r in await pool.fetch(_OCCURRENCES_SQL, lo, hi, None, ledger_events, now)
             if asserts_owner_time(r["time_role"], r["metadata"])
         }
-        ghosts = [key for key in missing if key not in current]
+        ghosts = [key for key in missing if key not in current or key in dropped_copies]
     event_ids = sorted({o.event_id for o in occurrences} | {e for e, _ in ghosts}, key=str)
     if not event_ids:
         return _Inputs(occurrences, set(), {}, {}, [])

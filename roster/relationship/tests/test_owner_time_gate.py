@@ -190,3 +190,128 @@ async def test_a_free_marked_accepted_meeting_still_logs_an_interaction(interact
         result = await run_interaction_sync(pool)
 
         assert result["logged"] == 1
+
+
+async def _copies(pool):
+    """The same meeting on the owner's primary calendar and on a partner calendar."""
+    from butlers.modules.calendar.participants import sync_event_participants
+    from roster.relationship.tests.calendar_projection import (
+        link_identity,
+        make_entity,
+        project_event,
+    )
+
+    owner = await make_entity(pool, roles=["owner"])
+    await link_identity(pool, entity_id=owner, predicate="has-email", value=_OWNER)
+    alice = await make_entity(pool)
+    await link_identity(pool, entity_id=alice, predicate="has-email", value="alice@example.com")
+    start = (datetime.now(UTC) - timedelta(hours=3)).replace(microsecond=0)
+    ids = {}
+    for key, role, calendar in (
+        ("partner", "other_person", "partner-cal"),
+        ("primary", "owner", "primary-cal"),
+    ):
+        ids[key] = await project_event(
+            pool,
+            title="Lunch with Alice",
+            starts_at=start,
+            # The owner's own seat, accepted, on both copies.
+            attendees=[{**_LISTED, "self": True}, _GUEST],
+            calendar_id=calendar,
+            time_role=role,
+        )
+        await sync_event_participants(pool, ids[key])
+    return ids
+
+
+async def _same_meeting(pool, ids):
+    await pool.execute(
+        "UPDATE calendar_events SET origin_ref = 'shared-ical-uid' WHERE id = ANY($1::uuid[])",
+        list(ids.values()),
+    )
+
+
+async def test_one_meeting_on_two_calendars_is_one_encounter_the_owner_copy(
+    interaction_sync_pool,
+):
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    async with interaction_sync_pool() as pool:
+        ids = await _copies(pool)
+        await _same_meeting(pool, ids)
+
+        result = await run_encounter_reducer(pool)
+
+        assert result["complete"] is True
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == {ids["primary"]}
+
+
+async def test_different_meetings_with_different_provider_ids_both_count(interaction_sync_pool):
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    async with interaction_sync_pool() as pool:
+        ids = await _copies(pool)  # distinct origin_refs: two meetings, not one
+
+        await run_encounter_reducer(pool)
+
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == set(ids.values())
+
+
+async def test_a_duplicate_already_in_the_ledger_is_retired_once_copies_collapse(
+    interaction_sync_pool,
+):
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    async with interaction_sync_pool() as pool:
+        ids = await _copies(pool)
+        await run_encounter_reducer(pool)
+        assert await pool.fetchval("SELECT count(*) FROM relationship.encounters") == 2
+
+        await _same_meeting(pool, ids)
+        await run_encounter_reducer(pool)
+
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == {ids["primary"]}
+
+
+async def test_the_copy_holding_a_captured_debrief_is_the_one_kept(interaction_sync_pool):
+    from butlers.jobs.encounter_ledger import run_encounter_reducer
+
+    async with interaction_sync_pool() as pool:
+        ids = await _copies(pool)
+        await _same_meeting(pool, ids)
+        start = await pool.fetchval(
+            "SELECT starts_at FROM calendar_events WHERE id = $1", ids["partner"]
+        )
+        # The debrief was captured against the partner-calendar copy before the copies collapsed.
+        await pool.execute(
+            "INSERT INTO meeting_debriefs (event_id, occurrence_start, occurrence_end, state) "
+            "VALUES ($1, $2::timestamptz, $2::timestamptz + interval '1 hour', 'captured')",
+            ids["partner"],
+            start,
+        )
+
+        await run_encounter_reducer(pool)
+
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == {ids["partner"]}
+
+
+async def test_the_cap_counts_meetings_so_copies_are_never_split(
+    interaction_sync_pool, monkeypatch
+):
+    from butlers.jobs import encounter_ledger
+
+    async with interaction_sync_pool() as pool:
+        ids = await _copies(pool)
+        await _same_meeting(pool, ids)  # two copies of one meeting
+        monkeypatch.setattr(encounter_ledger, "MAX_OCCURRENCES", 1)
+
+        await encounter_ledger.run_encounter_reducer(pool)
+
+        # A row-capped read would return one copy (whichever sorts first); the meeting cap
+        # returns both, so the owner-role copy is the one collapsed to.
+        rows = await pool.fetch("SELECT event_id FROM relationship.encounters")
+        assert {r["event_id"] for r in rows} == {ids["primary"]}
