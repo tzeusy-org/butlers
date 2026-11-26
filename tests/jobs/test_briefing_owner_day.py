@@ -103,7 +103,7 @@ async def test_the_travel_overlay_window_and_dates_follow_the_owner_zone():
         "trip_name": "Trip",
         "trip_id": "t1",
     }
-    pool = source_reads([leg], [])
+    pool = source_reads([leg], [], [], [])  # legs, stays, reservations, documents
     state = ContributionStateStore()
     with (
         patch("butlers.jobs.briefing._now", return_value=INSTANT),
