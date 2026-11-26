@@ -24,6 +24,10 @@ from butlers.core.scheduler.timing import _DEFAULT_MAX_STAGGER_SECONDS, _next_ru
 logger = logging.getLogger("butlers.core.scheduler")
 
 
+#: Columns that decide what a row is anchored to; a change to any clears the declared kind.
+_ANCHOR_INPUTS = ("timezone", "cron", "task_type", "until_at")
+
+
 async def schedule_update(
     pool: asyncpg.Pool,
     task_id: uuid.UUID,
@@ -219,6 +223,14 @@ async def schedule_update(
         set_clauses.append(f"next_run_at = ${idx}")
         params.append(next_run_at)
         idx += 1
+
+    if any(
+        key in normalized_fields and normalized_fields[key] != existing.get(key)
+        for key in _ANCHOR_INPUTS
+    ):
+        # The declared anchor described the old shape; clear it so the row is derived afresh.
+        set_clauses.append("anchor_kind = NULL")
+        set_clauses.append("anchor_zone = NULL")
 
     set_clauses.append("updated_at = now()")
 
