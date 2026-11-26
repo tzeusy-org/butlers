@@ -119,6 +119,11 @@ def normalize(text: str) -> str:
     )
 
 
+def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    """Whether ``span`` overlaps any of ``spans`` (a UUID token is an identifier, not a match)."""
+    return any(span[0] < end and start < span[1] for start, end in spans)
+
+
 def _luhn(digits: str) -> bool:
     total = 0
     for i, ch in enumerate(reversed(digits)):
@@ -190,7 +195,12 @@ class Scan:
         text = self._sub(_URL, text, lambda m: _url_rule(m.group(0), marked))
         for name, pattern in _TOKENS:
             text = self._sub(pattern, text, lambda m, name=name: name)
-        text = self._sub(_LUHN_RUN, text, lambda m: self._luhn_rule(m))
+        uuids = [m.span() for m in _UUID_TOKEN.finditer(text)]
+        text = self._sub(
+            _LUHN_RUN,
+            text,
+            lambda m: None if _overlaps(m.span(), uuids) else self._luhn_rule(m),
+        )
         text = self._sub(_OTP, text, lambda m: "otp")
         if not marked:
             text = self._sub(
@@ -216,13 +226,7 @@ class Scan:
             text = self._sub(_EMAIL, text, lambda m: "email")
             uuids = [m.span() for m in _UUID_TOKEN.finditer(text)]
             text = self._sub(
-                _PHONE,
-                text,
-                lambda m: (
-                    None
-                    if any(m.start() < end and start < m.end() for start, end in uuids)
-                    else "phone"
-                ),
+                _PHONE, text, lambda m: None if _overlaps(m.span(), uuids) else "phone"
             )
         return text
 
