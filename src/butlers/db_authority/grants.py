@@ -237,6 +237,12 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
         "core_347: custody command receipts, written only by the engine definer; RLS fences a "
         "replay",
     ),
+    "calendar_rsvp_policies": _replay_widened(
+        _NONE,
+        {},
+        "core_387: owner RSVP policies, written and read only by the dashboard definer; RLS with "
+        "no policy fences a replay (the docket job's read grant comes with the job)",
+    ),
     "security_answers": _replay_widened(
         _NONE,
         {_SWITCHBOARD: _SELECT},

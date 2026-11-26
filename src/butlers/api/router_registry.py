@@ -70,6 +70,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.home_assistant", "router"),
     ("butlers.api.routers.home_person_mappings", "router"),
     ("butlers.api.routers.vendor_doors", "router"),
+    ("butlers.api.routers.calendar_rsvp_policies", "router"),
     ("butlers.api.routers.custody", "router"),
     ("butlers.api.routers.custody_device", "router"),
     ("butlers.api.routers.custody_case", "router"),

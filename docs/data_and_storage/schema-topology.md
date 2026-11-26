@@ -95,6 +95,15 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   current dashboard session and CSRF. A `no` binds owner-selected exact targets through
   `public.custody_dashboard` in the same transaction. Row level security; Switchboard has one
   policy and no other runtime role has a grant.
+- **`public.calendar_rsvp_policies`** -- The owner's standing invitation judgment (core_387): an
+  ordered list of closed typed predicates (organizer verdict and role, focus or out-of-office
+  overlap, conflict with an accepted event, outside declared hours, recurring, attendee count,
+  lead time; never a title or description), a verdict, a `send_updates` choice, a rising `version`
+  and `revoked_at`. A policy is revoked, never deleted. Written and listed only by the definer
+  `public.calendar_rsvp_policy_dashboard` (`dashboard_auth_api` EXECUTE only) from a current
+  dashboard session and CSRF; row level security with no policy and no runtime-role grant. No MCP
+  tool reads or writes it. A policy only prepares an answer; it never sends one. The docket job's
+  read grant arrives with that job (bu-5ii4gj.9 S3).
 - **`public.custody_candidates_dashboard`** -- Content-blind read of the owner's own channels (fact id,
   kind, masked hint, held flag) for a manual custody hold (core_352; same candidate universe and
   masking as a security question). `dashboard_auth_api` only, current cookie session checked in
