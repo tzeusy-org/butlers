@@ -112,6 +112,7 @@ OP GET /api/butlers/{name}/skills c3875e77d18d
 OP GET /api/butlers/{name}/state 1913d88d77d5
 OP GET /api/butlers/{name}/state/{key} 3274c3eb0d57
 OP GET /api/calendar/accounts 27d1cf4a2b27
+OP GET /api/calendar/rsvp-docket bbeca93bfcd5
 OP GET /api/calendar/rsvp-policies 2c963ce9fbc7
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
@@ -523,6 +524,7 @@ OP POST /api/butlers/{name}/schedules abf0fd1156b4
 OP POST /api/butlers/{name}/schedules/{schedule_id}/trigger 426e92cac18f
 OP POST /api/butlers/{name}/tick 65cfac2fe050
 OP POST /api/butlers/{name}/trigger 73b0bc420792
+OP POST /api/calendar/rsvp-docket/submit ecc87411b975
 OP POST /api/calendar/rsvp-policies e17094c54c52
 OP POST /api/calendar/rsvp-policies/{policy_id}/revoke c697b6034cad
 OP POST /api/calendar/sources 826a2a3474a4
@@ -847,6 +849,7 @@ ROUTE APIRoute GET '/api/butlers/{name}/skills' name=list_butler_skills op=list_
 ROUTE APIRoute GET '/api/butlers/{name}/state' name=list_state op=list_state_api_butlers__name__state_get tags=butlers,state schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/state/{key:path}' name=get_state op=get_state_api_butlers__name__state__key__get tags=butlers,state schema=True
 ROUTE APIRoute GET '/api/calendar/accounts' name=list_calendar_accounts op=list_calendar_accounts_api_calendar_accounts_get tags=calendar,accounts schema=True
+ROUTE APIRoute GET '/api/calendar/rsvp-docket' name=get_docket op=get_docket_api_calendar_rsvp_docket_get tags=calendar schema=True
 ROUTE APIRoute GET '/api/calendar/rsvp-policies' name=list_policies op=list_policies_api_calendar_rsvp_policies_get tags=calendar schema=True
 ROUTE APIRoute GET '/api/calendar/workspace' name=get_workspace op=get_workspace_api_calendar_workspace_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/audit' name=get_calendar_audit op=get_calendar_audit_api_calendar_workspace_audit_get tags=calendar,workspace schema=True
@@ -1247,6 +1250,7 @@ ROUTE APIRoute POST '/api/butlers/{name}/schedules' name=create_schedule op=crea
 ROUTE APIRoute POST '/api/butlers/{name}/schedules/{schedule_id}/trigger' name=trigger_schedule op=trigger_schedule_api_butlers__name__schedules__schedule_id__trigger_post tags=butlers,schedules schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/tick' name=force_butler_tick op=force_butler_tick_api_butlers__name__tick_post tags=butlers schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/trigger' name=trigger_butler op=trigger_butler_api_butlers__name__trigger_post tags=butlers schema=True
+ROUTE APIRoute POST '/api/calendar/rsvp-docket/submit' name=submit_docket op=submit_docket_api_calendar_rsvp_docket_submit_post tags=calendar schema=True
 ROUTE APIRoute POST '/api/calendar/rsvp-policies' name=create_policy op=create_policy_api_calendar_rsvp_policies_post tags=calendar schema=True
 ROUTE APIRoute POST '/api/calendar/rsvp-policies/{policy_id}/revoke' name=revoke_policy op=revoke_policy_api_calendar_rsvp_policies__policy_id__revoke_post tags=calendar schema=True
 ROUTE APIRoute POST '/api/calendar/sources' name=toggle_calendar_source op=toggle_calendar_source_api_calendar_sources_post tags=calendar,accounts schema=True
@@ -1568,6 +1572,7 @@ SCHEMA ApiResponse_DelegationLedgerEntry_ c05f59df6c01
 SCHEMA ApiResponse_DeliveryReplayResult_ 35f7e19f95b3
 SCHEMA ApiResponse_DeploymentFacts_ 70c81a700ac4
 SCHEMA ApiResponse_DisconnectStatus_ 3b57acbb4dd1
+SCHEMA ApiResponse_DocketResponse_ 60594bc9e783
 SCHEMA ApiResponse_DriftFacts_ d280a57c71cc
 SCHEMA ApiResponse_DriveFileRead_ 1810136deb30
 SCHEMA ApiResponse_EgressCatalog_ ac97716bf725
@@ -1674,6 +1679,7 @@ SCHEMA ApiResponse_StandingReplyTemplateDraft_ 34caa5da30a0
 SCHEMA ApiResponse_StandingReplyTemplatePreview_ 562fff2a7adc
 SCHEMA ApiResponse_StateEntry_ ebe44a1f9a56
 SCHEMA ApiResponse_StoredFunctionFacts_ 099027e9cc43
+SCHEMA ApiResponse_SubmitResult_ 4437dc2eda24
 SCHEMA ApiResponse_SyntheticFindingResponse_ 40935e7e11c9
 SCHEMA ApiResponse_SystemCredentialDetail_ 347059c8ba34
 SCHEMA ApiResponse_SystemDeleteStatus_ 03a2116702ee
@@ -2079,6 +2085,10 @@ SCHEMA DispatchAttemptEntry 0523c6c89168
 SCHEMA DisplayedApprovalCall 3d1a7b6cdcf0
 SCHEMA DispositionRequest f8f21a32579e
 SCHEMA DistinctMerchantModel 979d0a8d1a67
+SCHEMA DocketCard 64d937f28b4e
+SCHEMA DocketEvent 5ba507d16f33
+SCHEMA DocketFact 4edacbf62480
+SCHEMA DocketResponse e20f5d4a28b7
 SCHEMA DocumentModel 45309aaf1e81
 SCHEMA DoorView 05efdfd72197
 SCHEMA Dose 2429bc44f7bb
@@ -2642,6 +2652,10 @@ SCHEMA StoredFunctionFacts 7875ecad335f
 SCHEMA StrugglingNodeEntry e4ce09daa1c7
 SCHEMA StrugglingNodesResponse c3f940bdb239
 SCHEMA SubmitCorrectionRequest 891301f2a52c
+SCHEMA SubmitItem 75de17bbc331
+SCHEMA SubmitRefusal 93f292701347
+SCHEMA SubmitRequest 0e2c73a4f2ba
+SCHEMA SubmitResult 92460bec3368
 SCHEMA SubscriptionEntry 725ee0231704
 SCHEMA SubscriptionModel 44a54b4001a6
 SCHEMA SubsourceCheckpoint 687be81cf735
