@@ -1926,7 +1926,9 @@ async def resolve_workspace_conflict(
         raise HTTPException(status_code=503, detail="conflict_scan_degraded")
     issue = next((i for i in scan.issues if str(i.pair_id) == body.pair_id), None)
     if issue is None:
-        if (await load_conflict_acknowledgements(db)).get(body.pair_id) == body.issue_digest:
+        if (await load_conflict_acknowledgements(db)).get(body.pair_id, ("", ""))[
+            0
+        ] == body.issue_digest:
             return ApiResponse(
                 data=ConflictResolveResponse(
                     status="already_acknowledged", pair_id=body.pair_id, option_id=body.option_id
@@ -1941,7 +1943,11 @@ async def resolve_workspace_conflict(
     if option.kind != "keep_both":
         raise HTTPException(status_code=422, detail="option_not_supported")
     if not await record_conflict_acknowledgement(
-        db, pair_id=body.pair_id, issue_digest=body.issue_digest, option_id=option.id
+        db,
+        pair_id=body.pair_id,
+        issue_digest=body.issue_digest,
+        state_digest=issue.state_digest or "",
+        option_id=option.id,
     ):
         raise HTTPException(status_code=503, detail="acknowledgement_unavailable")
     await log_audit_entry(

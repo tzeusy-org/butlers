@@ -99,6 +99,8 @@ class DetectedIssue:
     #: scan that could not compile any left them empty (``stale_source``).
     options: list[Any] = field(default_factory=list)
     issue_digest: str | None = None
+    #: Events-only digest "keep both" is acknowledged against (never serialised).
+    state_digest: str | None = None
     options_reason: str | None = None
 
 

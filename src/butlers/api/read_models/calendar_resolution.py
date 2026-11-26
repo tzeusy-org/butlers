@@ -240,6 +240,7 @@ async def attach_resolution_options(
                 row = rows_by_entry[ref.entry_id]
                 best = _owner_copy(row, copies, identity_keys.get(ref.entry_id, ""))
                 events.append(resolution_event(best, entry_id=ref.entry_id))
+            issue.state_digest = cr.state_digest(str(issue.pair_id), events)
             result = cr.options_for(
                 str(issue.pair_id), events[0], events[1], free, not_before=now, stale_source=stale
             )

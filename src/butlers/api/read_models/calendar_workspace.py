@@ -1829,18 +1829,18 @@ async def query_calendar_conflicts(
             filtered=bool(butlers),
         )
 
-    # An overlap the owner chose to keep stays quiet until its digest moves (any etag, time or
-    # attendee change). Only issues that carry a digest can be acknowledged, so this is inert
-    # while the options are dark.
-    if any(i.issue_digest for i in issues):
+    # An overlap the owner chose to keep stays quiet until one of its two events changes (etag
+    # or time): it is keyed on the events-only state digest, so the passage of time or an
+    # unrelated calendar change never revives it. Inert while the options are dark.
+    if any(i.state_digest for i in issues):
         acknowledged = await load_conflict_acknowledgements(db)
         issues = [
             i
             for i in issues
             if not (
-                i.issue_digest
+                i.state_digest
                 and i.pair_id is not None
-                and acknowledged.get(str(i.pair_id)) == i.issue_digest
+                and acknowledged.get(str(i.pair_id), ("", ""))[1] == i.state_digest
             )
         ]
 
@@ -2492,21 +2492,23 @@ async def _read_keep_separate_keys(db: DatabaseManager) -> tuple[set[str], bool]
 _ACK_TABLE = "public.calendar_conflict_acknowledgements"
 
 
-async def load_conflict_acknowledgements(db: DatabaseManager) -> dict[str, str]:
-    """``{pair_id: issue_digest}`` of overlaps the owner chose to keep, fail-open (empty)."""
+async def load_conflict_acknowledgements(db: DatabaseManager) -> dict[str, tuple[str, str]]:
+    """``{pair_id: (issue_digest, state_digest)}`` of kept overlaps, fail-open (empty)."""
     pool = _dedup_pool(db)
     if pool is None:
         return {}
     try:
-        rows = await pool.fetch(f"SELECT pair_id, issue_digest FROM {_ACK_TABLE}")
+        rows = await pool.fetch(f"SELECT pair_id, issue_digest, state_digest FROM {_ACK_TABLE}")
     except Exception:
         logger.warning("load_conflict_acknowledgements failed; none suppressed", exc_info=True)
         return {}
-    return {str(row["pair_id"]): str(row["issue_digest"]) for row in rows}
+    return {
+        str(row["pair_id"]): (str(row["issue_digest"]), str(row["state_digest"])) for row in rows
+    }
 
 
 async def record_conflict_acknowledgement(
-    db: DatabaseManager, *, pair_id: str, issue_digest: str, option_id: str
+    db: DatabaseManager, *, pair_id: str, issue_digest: str, state_digest: str, option_id: str
 ) -> bool:
     """Persist "keep both" for one overlap. Returns False when no store is reachable."""
     pool = _dedup_pool(db)
@@ -2514,14 +2516,16 @@ async def record_conflict_acknowledgement(
         return False
     await pool.execute(
         f"""
-        INSERT INTO {_ACK_TABLE} (pair_id, issue_digest, option_id)
-        VALUES ($1, $2, $3)
+        INSERT INTO {_ACK_TABLE} (pair_id, issue_digest, state_digest, option_id)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (pair_id) DO UPDATE
-        SET issue_digest = EXCLUDED.issue_digest, option_id = EXCLUDED.option_id,
+        SET issue_digest = EXCLUDED.issue_digest, state_digest = EXCLUDED.state_digest,
+            option_id = EXCLUDED.option_id,
             acknowledged_at = now()
         """,
         pair_id,
         issue_digest,
+        state_digest,
         option_id,
     )
     return True

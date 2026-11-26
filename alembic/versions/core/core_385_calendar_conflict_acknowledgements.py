@@ -37,6 +37,7 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS {_TABLE} (
             pair_id text PRIMARY KEY,
             issue_digest text NOT NULL,
+            state_digest text NOT NULL,
             option_id text NOT NULL,
             acknowledged_at timestamptz NOT NULL DEFAULT now()
         )
