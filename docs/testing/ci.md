@@ -512,6 +512,10 @@ metrics remain UNKNOWN. It does not retry or perform another scan. Direct probe
 callers still receive the original exception; the observer's safe boundary keeps
 the test verdict unchanged.
 
+The observer can retain validated PGDATA bytes and inodes returned by both
+filesystem reads before a namespace traversal timeout. The timeout leaves
+namespace allocation and cohort inventory UNKNOWN.
+
 The storage inventory decodes both the legacy prefix/logical report and the current
 owned-allocation report. A current complete cohort requires the fixed successful
 probe sequence, matching class/OID counts, stable physical-server identity and

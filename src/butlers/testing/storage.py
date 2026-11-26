@@ -38,7 +38,9 @@ def _unknown(reason: str) -> dict:
     return {"status": "unknown", "reason": reason}
 
 
-def _capture(argv: list[str], seconds: float = 3) -> bytes:
+def _capture(
+    argv: list[str], seconds: float = 3, *, on_timeout: Callable[[bytes], None] | None = None
+) -> bytes:
     """Bound actual child output while it runs; kill/reap only our own group."""
     with subprocess.Popen(
         argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True
@@ -73,6 +75,10 @@ def _capture(argv: list[str], seconds: float = 3) -> bytes:
             if state.si_code != os.CLD_EXITED or state.si_status != 0:
                 raise Unknown("command_failed")
             return bytes(output)
+        except Unknown as exc:
+            if str(exc) == "command_timeout" and on_timeout is not None:
+                on_timeout(bytes(output))
+            raise
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(child.pid, signal.SIGKILL)
@@ -360,7 +366,8 @@ for tool in du awk df find; do command -v "$tool" >/dev/null || exit 2; done
 links=$(find "$data/base" -type l -print -quit) || exit 2
 spaces=$(find "$data/pg_tblspc" -mindepth 1 -print -quit) || exit 2
 [ -z "$links" ] && [ -z "$spaces" ] || exit 2
-(
+# Publish a complete capacity frame before the potentially slower traversal.
+capacity=$(
  for flag in -Pk -Pi; do
    df_rows=$(df "$flag" "$data") || exit 2
    if printf '%s\n' "$df_rows" | awk -v flag="$flag" '
@@ -369,6 +376,9 @@ spaces=$(find "$data/pg_tblspc" -mindepth 1 -print -quit) || exit 2
      }
      END {if(NR!=2 || !good)exit 2}'; then :; else exit 2; fi
  done
+)
+printf '%s\n' "$capacity"
+(
  if du -l -x -B1 -s -- "$data/base"/* 2>/dev/null; then
    printf '__DU_EXIT__ 0\n'
  else printf '__DU_EXIT__ 1\n'; fi
@@ -381,11 +391,6 @@ BEGIN {
      kv[2]!~/^[TCFP]$/ || kv[1] in cls){invalid=1;continue}
   cls[kv[1]]=kv[2];expected++;
  }
-}
-$1=="__DF__" {
- if(NF!=4 || ($2!="-Pk" && $2!="-Pi") || $3!~/^[0-9]+$/ ||
-    $4!~/^[0-9]+$/ || $2 in dfseen){invalid=1;next}
- dfseen[$2]=1;total[$2]=$3;free[$2]=$4;next
 }
 $1=="__DU_EXIT__" {if(NF!=2 || $2!~/^[01]$/)invalid=1;footer++;command_exit=$2;next}
 {
@@ -400,13 +405,10 @@ $1=="__DU_EXIT__" {if(NF!=2 || $2!~/^[01]$/)invalid=1;footer++;command_exit=$2;n
 }
 END {
  missing=0;for(oid in cls)if(!(oid in seen))missing++;
- ok=(!invalid && footer==1 && command_exit==0 && missing==0 && matched==expected &&
-     dfseen["-Pk"] && dfseen["-Pi"]);
+ ok=(!invalid && footer==1 && command_exit==0 && missing==0 && matched==expected);
  printf "scan_complete=%d\nexpected=%d\nmatched=%d\nmissing=%d\n",ok,expected,matched,missing;
  printf "unmapped_oids=%d\nunmapped_bytes=%.0f\n",unmapped,unmapped_bytes;
  printf "other_paths=%d\nother_bytes=%.0f\n",other_count,other_bytes;
- printf "total_bytes=%.0f\nfree_bytes=%.0f\n",total["-Pk"]*1024,free["-Pk"]*1024;
- printf "total_inodes=%.0f\nfree_inodes=%.0f\n",total["-Pi"],free["-Pi"];
  split("T C F P",classes," ");
  for(i=1;i<=4;i++){
   c=classes[i];printf "%s_count=%d\n%s_allocated_namespace_bytes=%.0f\n",c,count[c],c,bytes[c]
@@ -439,7 +441,32 @@ def _metadata(rows) -> dict[str, int]:
     return result
 
 
-def _allocation_filesystem(container_id: str, mapping: dict[int, str]) -> dict:
+_CAPACITY_FRAME = re.compile(
+    rb"__DF__ -Pk ([0-9]{1,16}) ([0-9]{1,16})\n__DF__ -Pi ([0-9]{1,16}) ([0-9]{1,16})\n"
+)
+
+
+def _allocation_capacity(raw: bytes) -> tuple[dict[str, int], int]:
+    match = _CAPACITY_FRAME.match(raw)
+    if match is None:
+        raise Unknown("allocation_output_shape")
+    total_kib, free_kib, total_inodes, free_inodes = map(int, match.groups())
+    if not (
+        0 <= free_kib <= total_kib <= (2**53 - 1) // 1024
+        and 0 <= free_inodes <= total_inodes <= 2**53 - 1
+    ):
+        raise Unknown("allocation_output_range")
+    return {
+        "total_bytes": total_kib * 1024,
+        "free_bytes": free_kib * 1024,
+        "total_inodes": total_inodes,
+        "free_inodes": free_inodes,
+    }, match.end()
+
+
+def _allocation_filesystem(
+    container_id: str, mapping: dict[int, str], *, reached: dict | None = None
+) -> dict:
     if len(mapping) > MAX_DATABASES or any(
         type(oid) is not int or not 0 < oid < 2**32 or kind not in {"T", "C", "F", "P"}
         for oid, kind in mapping.items()
@@ -448,10 +475,19 @@ def _allocation_filesystem(container_id: str, mapping: dict[int, str]) -> dict:
     result = _owned_server(container_id)
     if result["owned_running_servers"] != 1:
         raise Unknown("server_not_running")
+
+    def retain_capacity(partial_output: bytes) -> None:
+        if reached is not None:
+            with contextlib.suppress(Unknown):
+                capacity, _ = _allocation_capacity(partial_output)
+                reached["pgdata"] = {**result, **capacity}
+
     encoded = ",".join(f"{oid}:{kind}" for oid, kind in sorted(mapping.items()))
     raw = _capture(
-        ["docker", "exec", container_id, "sh", "-c", _ALLOCATION_SCRIPT, "storage", encoded]
+        ["docker", "exec", container_id, "sh", "-c", _ALLOCATION_SCRIPT, "storage", encoded],
+        on_timeout=retain_capacity if reached is not None else None,
     )
+    capacity, frame_end = _allocation_capacity(raw)
     keys = {
         "scan_complete",
         "expected",
@@ -461,16 +497,12 @@ def _allocation_filesystem(container_id: str, mapping: dict[int, str]) -> dict:
         "unmapped_bytes",
         "other_paths",
         "other_bytes",
-        "total_bytes",
-        "free_bytes",
-        "total_inodes",
-        "free_inodes",
     }
     keys |= {
         f"{kind}_{suffix}" for kind in "TCFP" for suffix in ("count", "allocated_namespace_bytes")
     }
     parsed = {}
-    for line in raw.decode("ascii").splitlines():
+    for line in raw[frame_end:].decode("ascii").splitlines():
         key, separator, value = line.partition("=")
         if separator != "=" or key not in keys or key in parsed or not value.isdecimal():
             raise Unknown("allocation_output_shape")
@@ -487,7 +519,7 @@ def _allocation_filesystem(container_id: str, mapping: dict[int, str]) -> dict:
         or sum(parsed[f"{kind}_count"] for kind in "TCFP") != len(mapping)
     ):
         raise Unknown("allocation_output_incomplete")
-    return {**result, **parsed}
+    return {**result, **capacity, **parsed}
 
 
 def owned_database_allocation(
@@ -544,7 +576,9 @@ def owned_database_allocation(
                 if name in before
             }
             pgdata = _probe_step(
-                steps, "allocation", lambda: _allocation_filesystem(observer.container_id, mapping)
+                steps,
+                "allocation",
+                lambda: _allocation_filesystem(observer.container_id, mapping, reached=reached),
             )
             physical = {key: observer.binding.get(key, "") for key in ("run", "attempt")}
             physical["container"] = observer.container_id
@@ -819,7 +853,7 @@ class StorageObserver:
                 lambda: owned_database_allocation(self, steps=probes["postgres"], reached=reached)
             )
             measured = {**reached, **outcome}
-            allocation = measured.get("owned_allocation", measured)
+            allocation = measured.get("owned_allocation", outcome)
             pgdata = measured.get("pgdata", _unknown("allocation_unavailable"))
             postgres = measured.get("postgres", _unknown("logical_sizes_not_sampled"))
         else:
