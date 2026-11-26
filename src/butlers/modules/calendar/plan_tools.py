@@ -207,8 +207,8 @@ def register_plan_tools(
         ``shift_minutes`` (signed) and leaves invited meetings alone. Returns
         ``{plan_id, plan_digest, steps, skipped}``: each step names its exact call and authority
         class, and every skipped event says why. A window over 25 hours, more than 16 steps, or a
-        stale or partial calendar source gives no steps and the reason ``plan_unavailable``. Titles are
-        never returned.
+        stale or partial calendar source gives no steps and the reason
+        ``plan_unavailable``. Titles are never returned.
         """
         return await plan_change(
             module,
