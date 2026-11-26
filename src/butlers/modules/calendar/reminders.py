@@ -184,7 +184,8 @@ class RemindersMixin:
         try:
             onetime_rows = await pool.fetch(
                 """
-                SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at
+                SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at,
+                       ce.metadata -> 'anchor' AS anchor, ce.updated_at AS updated_at
                 FROM calendar_events ce
                 JOIN calendar_sources cs ON cs.id = ce.source_id
                 WHERE cs.source_kind = $1
@@ -216,13 +217,34 @@ class RemindersMixin:
             event_id = row["event_id"]
             title = row["title"] or "Reminder"
             starts_at = row["starts_at"]
+            message = f"Reminder: {title}"
+            anchor = _stored_anchor(row.get("anchor"))
+            if anchor is not None:
+                state = await _anchor_state(pool, anchor)
+                if state == "changed":
+                    # The event moved or was cancelled since this reminder was set: its time is
+                    # no longer true. It is neither sent nor marked sent; the rebase or retire
+                    # path owns it.
+                    logger.info(
+                        "CalendarModule.tick: anchored reminder %s held, its event changed",
+                        event_id,
+                    )
+                    continue
+                if state == "unknown":
+                    from butlers.jobs.briefing import owner_briefing_zone
+
+                    # Owner-facing text is in the owner's zone, never UTC.
+                    as_of = (row.get("updated_at") or now).astimezone(
+                        await owner_briefing_zone(pool)
+                    )
+                    message += f" (as of {as_of:%H:%M %Z}; event not rechecked)"
 
             from butlers.jobs.owner_notify import owner_notify_request
 
             envelope = {
                 **owner_notify_request(
                     origin_butler=source_butler,
-                    message=f"Reminder: {title}",
+                    message=message,
                     channel=None,
                 ),
                 "reminder_event_id": str(event_id),
@@ -976,6 +998,65 @@ async def _resolve_reminder_anchor(
             "copy of an event can be followed"
         )
     return row["origin_ref"], row["starts_at"]
+
+
+def _stored_anchor(raw: Any) -> dict[str, Any] | None:
+    """The anchor stored in a reminder's metadata, or None for an absolute reminder."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if (
+        not isinstance(raw, dict)
+        or not raw.get("event_origin_ref")
+        or not raw.get("original_start")
+    ):
+        return None
+    return raw
+
+
+async def _anchor_state(
+    pool: Any, anchor: dict[str, Any]
+) -> Literal["current", "changed", "unknown"]:
+    """Whether an anchored reminder's occurrence is still where the reminder assumed.
+
+    ``current``: the occurrence is live at its original start. ``changed``: its event is cancelled,
+    or the occurrence moved or was cancelled. ``unknown``: no projection row names the event, or
+    the read failed: the reminder then still fires, stamped. Never raises.
+    """
+    try:
+        original = datetime.fromisoformat(str(anchor["original_start"]))
+        row = await pool.fetchrow(
+            f"""
+            SELECT e.status, e.starts_at, e.recurrence_rule,
+                   (SELECT ci.status FROM calendar_event_instances ci
+                     WHERE ci.event_id = e.id AND ci.starts_at = $2 LIMIT 1) AS instance_status,
+                   EXISTS (SELECT 1 FROM calendar_event_instances ci
+                            WHERE ci.event_id = e.id AND ci.starts_at = $2) AS has_instance
+            FROM calendar_events e
+            JOIN calendar_sources s ON s.id = e.source_id
+            WHERE e.origin_ref = $1 AND s.lane = 'user'
+              AND e.metadata ->> 'source_type' = 'provider_event'
+              AND NOT {quarantined_invitation_sql("e")}
+            ORDER BY (s.time_role = 'owner') DESC
+            LIMIT 1
+            """,
+            str(anchor["event_origin_ref"]),
+            original,
+        )
+    except Exception:
+        logger.warning("CalendarModule.tick: anchor recheck failed", exc_info=True)
+        return "unknown"
+    if row is None:
+        return "unknown"
+    if (row["status"] or "confirmed") == "cancelled":
+        return "changed"
+    if row["recurrence_rule"]:
+        live = row["has_instance"] and (row["instance_status"] or "confirmed") != "cancelled"
+    else:
+        live = row["starts_at"] == original
+    return "current" if live else "changed"
 
 
 #: An anchored reminder may sit at most this far from its event (14 days).
