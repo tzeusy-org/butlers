@@ -189,8 +189,7 @@ export default function CalendarWorkspacePage() {
       complete:
         !changesQuery.isError &&
         changesQuery.data?.data.changes_available === true &&
-        !changesQuery.data.data.truncated &&
-        changesQuery.data.data.owners_complete !== false,
+        !changesQuery.data.data.truncated,
     },
     debriefs: {
       rows: debriefsQuery.data?.debriefs,
@@ -283,6 +282,7 @@ export default function CalendarWorkspacePage() {
         invitations={context.invitations ?? []}
         responses={responses}
         timezone={timezone}
+        changesMayIncludeOwn={changesQuery.data?.data.owners_complete === false}
         onMarkChangesSeen={changesCursor.markSeen}
         onOpenEntry={(entryId, kind) => {
           void selection.openInvitation(entryId, kind === "invitation" ? "Invitation details" : "Event details");

@@ -43,6 +43,8 @@ export interface NeedsYouQueueProps {
   invitations: readonly CalendarInvitationEntry[];
   responses: InvitationResponses;
   timezone: string;
+  /** The owner's account addresses were unreadable: changes may include their own edits. */
+  changesMayIncludeOwn?: boolean;
   onMarkChangesSeen: () => void;
   onOpenEntry: (entryId: string, kind: NeedsYouItem["kind"]) => void;
   onAcceptProposal: (proposalId: string) => void;
@@ -55,6 +57,7 @@ export function NeedsYouQueue({
   invitations,
   responses,
   timezone,
+  changesMayIncludeOwn = false,
   onMarkChangesSeen,
   onOpenEntry,
   onAcceptProposal,
@@ -147,6 +150,9 @@ export function NeedsYouQueue({
         <p role="status" className="text-xs text-muted-foreground">
           This list may be longer than shown.
         </p>
+      ) : null}
+      {changesMayIncludeOwn ? (
+        <p className="text-xs text-muted-foreground">Changes may include your own edits.</p>
       ) : null}
       {queue.overlapsNotRead ? (
         <p className="text-xs text-muted-foreground">Overlaps are checked in day and week views.</p>

@@ -55,11 +55,13 @@ function Harness({
   conflictsNotRead = false,
   changes = [] as CalendarChange[],
   changesComplete = true,
+  changesMayIncludeOwn = false,
 }: {
   proposalsComplete?: boolean;
   conflictsNotRead?: boolean;
   changes?: CalendarChange[];
   changesComplete?: boolean;
+  changesMayIncludeOwn?: boolean;
 }) {
   const responses = useInvitationResponses({ entries: [invitation], unavailable: false });
   const queue = buildNeedsYouQueue({
@@ -85,6 +87,7 @@ function Harness({
       invitations={[invitation]}
       responses={responses}
       timezone="UTC"
+      changesMayIncludeOwn={changesMayIncludeOwn}
       onMarkChangesSeen={() => void document.body.setAttribute("data-seen", "1")}
       onOpenEntry={(id) => void document.body.setAttribute("data-opened", id)}
       onAcceptProposal={(id) => void document.body.setAttribute("data-accepted", id)}
@@ -252,4 +255,10 @@ it("an event with no recorded prior version says so instead of inventing a befor
     changes: [{ ...moved, prior_known: false, fields: [], prior_start_at: null, entry_id: null }],
   });
   expect(screen.getByText(/no earlier version recorded/)).toBeTruthy();
+});
+
+it("unreadable owner addresses say changes may include your own edits, with no plus", () => {
+  view({ changes: [moved], changesMayIncludeOwn: true });
+  expect(screen.getByText("Changes may include your own edits.")).toBeTruthy();
+  expect(screen.getByRole("heading").textContent).not.toContain("+");
 });
