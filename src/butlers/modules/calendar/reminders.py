@@ -926,7 +926,9 @@ async def _resolve_reminder_anchor(
 
     An anchor must name a live (not cancelled, not quarantined) provider occurrence in this
     schema, by the provider's event id and the occurrence's original start. A recurring event
-    is matched on its instance, so the other occurrences are unaffected.
+    is matched on its instance by the ORIGINAL start (the provider's
+    ``<id>_<YYYYMMDDTHHMMSSZ>`` instance ref), so an instance that has since moved can still be
+    anchored and the other occurrences are unaffected.
     """
     if pool is None:
         raise RuntimeError("Database pool is not available")
@@ -936,7 +938,10 @@ async def _resolve_reminder_anchor(
         FROM calendar_events e
         JOIN calendar_sources s ON s.id = e.source_id
         LEFT JOIN calendar_event_instances ci
-               ON ci.event_id = e.id AND ci.starts_at = $2 AND e.recurrence_rule IS NOT NULL
+               ON ci.event_id = e.id AND e.recurrence_rule IS NOT NULL
+              AND (ci.starts_at = $2
+                   OR ci.origin_instance_ref = e.origin_ref || '_'
+                      || to_char($2 AT TIME ZONE 'UTC', 'YYYYMMDD"T"HH24MISS"Z"'))
         WHERE e.origin_ref = $1 AND s.lane = 'user'
           AND e.metadata ->> 'source_type' = 'provider_event'
           AND COALESCE(e.status, 'confirmed') <> 'cancelled'
@@ -946,6 +951,7 @@ async def _resolve_reminder_anchor(
               OR (e.recurrence_rule IS NOT NULL AND ci.id IS NOT NULL
                   AND COALESCE(ci.status, 'confirmed') <> 'cancelled')
           )
+        ORDER BY (s.time_role = 'owner') DESC
         LIMIT 1
         """,
         anchor_event_id,

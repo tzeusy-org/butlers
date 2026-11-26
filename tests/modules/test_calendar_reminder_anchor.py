@@ -130,3 +130,34 @@ async def test_an_absolute_reminder_is_unchanged_and_both_forms_together_are_ref
         )
     with pytest.raises(ValueError, match="due_at is required"):
         await _create(mcp)
+
+
+async def test_a_moved_recurring_instance_is_anchored_by_its_original_start(db):
+    pool, _module_, mcp, event = await _world(db)
+    original = event.start_at + timedelta(days=7)
+    moved = original + timedelta(hours=3)
+    await pool.execute(
+        "UPDATE calendar_events SET recurrence_rule = 'RRULE:FREQ=WEEKLY' "
+        "WHERE origin_ref = 'dentist'"
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref, "
+        "timezone, starts_at, ends_at, status, is_exception) "
+        "SELECT id, source_id, 'dentist_' || to_char($1::timestamptz AT TIME ZONE 'UTC', "
+        "'YYYYMMDD\"T\"HH24MISS\"Z\"'), 'UTC', $2::timestamptz, $2::timestamptz + interval '1 hour', 'confirmed', true "
+        "FROM calendar_events WHERE origin_ref = 'dentist'",
+        original,
+        moved,
+    )
+
+    created = await _create(
+        mcp,
+        anchor_event_id="dentist",
+        anchor_original_start=original,
+        offset_minutes=-30,
+    )
+
+    due = await pool.fetchval(
+        "SELECT starts_at FROM calendar_events WHERE id = $1::uuid", created["event_id"]
+    )
+    assert due == moved - timedelta(minutes=30)

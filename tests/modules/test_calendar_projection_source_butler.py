@@ -96,5 +96,5 @@ class TestCalendarProjectionSourceButler:
         )
 
         sql_args = pool.fetchrow.await_args_list[-1].args
-        # source_butler is the second-to-last positional argument (followed by session_id).
-        assert sql_args[-2] == "travel"
+        # source_butler is the named $11 position (args[0] is the SQL text).
+        assert sql_args[11] == "travel"
