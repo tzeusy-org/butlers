@@ -473,3 +473,25 @@ async def test_a_deferred_move_reads_pending_never_a_failure(reason, expected):
     pool.failures[card] = reason
 
     assert await step_outcome(pool, {"action_id": str(card)}) == expected
+
+
+async def test_a_settled_respond_command_row_wins_over_a_failure_audit():
+    # a response whose handler errored, then was settled by its own coordinator: the command row
+    # is the record of how it ended, whatever the executor audited on the way
+    card = uuid.uuid4()
+    pool = _Pool(
+        cards={card: {"status": "approved", "execution_result": None}},
+        commands={
+            card: {
+                "action_status": "failed",
+                "action_result": {"status": "failed", "reason": "response_version_changed"},
+                "phase": "terminal",
+            }
+        },
+    )
+    pool.failures[card] = DEFERRED_ERROR
+
+    assert await step_outcome(pool, {"action_id": str(card)}) == (
+        "declined",
+        "response_version_changed",
+    )

@@ -40,9 +40,7 @@ async def test_the_sweep_hands_the_wired_executor_to_the_release():
     (pool, run), kwargs = release.await_args
     assert pool is module._db.pool and kwargs == {"after": "card"}
     await run("card-id")  # the module re-runs only the tools it owns
-    execute.assert_awaited_once_with(
-        "card-id", tool_names=frozenset({"calendar_update_event", "calendar_respond"})
-    )
+    execute.assert_awaited_once_with("card-id", tool_names=frozenset({"calendar_update_event"}))
 
 
 async def test_a_write_schedules_a_release_of_its_own_dependents_only():
@@ -67,3 +65,19 @@ async def test_no_release_is_scheduled_without_the_executor():
     module = _module()
     module.schedule_dependent_release(uuid.uuid4())
     assert not module._release_tasks
+
+
+async def test_shutdown_cancels_a_pending_release():
+    module = _module()
+    module.set_approved_card_executor(AsyncMock())
+    with patch(
+        "butlers.modules.calendar.asyncio.sleep",
+        new=AsyncMock(side_effect=lambda _: asyncio.sleep(3600)),
+    ):
+        module.schedule_dependent_release(uuid.uuid4())
+        (task,) = module._release_tasks
+        await asyncio.sleep(0)
+        await module.on_shutdown()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert task.cancelled() and not module._release_tasks

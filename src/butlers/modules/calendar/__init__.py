@@ -179,7 +179,8 @@ _CALENDAR_REDISCOVERY_MIN_INTERVAL_S = 300.0
 
 
 #: The approved tools this module may re-run when it defers a plan step (never another module's).
-_OWN_APPROVED_TOOLS = frozenset({"calendar_update_event", "calendar_respond"})
+#: Only a move defers: a plan's respond steps are never anyone's dependency, so they are not here.
+_OWN_APPROVED_TOOLS = frozenset({"calendar_update_event"})
 
 
 class CalendarModule(
@@ -909,6 +910,9 @@ class CalendarModule(
         task.add_done_callback(self._release_tasks.discard)
 
     async def on_shutdown(self) -> None:
+        for release_task in list(self._release_tasks):
+            release_task.cancel()
+        self._release_tasks.clear()
         self._response_ready = False
         self._response_credential_entity_id = None
         await self._response_fence.close()

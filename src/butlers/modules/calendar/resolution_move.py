@@ -377,6 +377,8 @@ async def dependency_wait_over(pool: Any, action_id: Any) -> bool:
         return False
 
 
+# Cards whose dependencies are all still undecided (and not yet 48 hours old) are filtered out here,
+# not in Python, so the oldest still-waiting cards can never fill the LIMIT and starve the rest.
 _DEFERRED_SQL = """
 SELECT p.id FROM pending_actions p
 JOIN calendar_action_log l
@@ -385,6 +387,13 @@ WHERE p.status = 'approved' AND p.execution_result IS NULL
   AND CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
            THEN jsonb_array_length(l.action_result->'depends_on') ELSE 0 END > 0
   AND ($1::text IS NULL OR l.action_result->'depends_on' ? $1)
+  AND (p.requested_at < now() - interval '48 hours' OR EXISTS (
+        SELECT 1
+          FROM jsonb_array_elements_text(
+                 CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
+                      THEN l.action_result->'depends_on' ELSE '[]'::jsonb END) AS d(dep_id)
+          LEFT JOIN pending_actions dp ON dp.id::text = d.dep_id
+         WHERE dp.id IS NULL OR dp.status NOT IN ('pending', 'approved')))
   AND (SELECT e.reason FROM approval_events e
         WHERE e.action_id = p.id AND e.event_type = 'action_execution_failed'
         ORDER BY e.occurred_at DESC LIMIT 1) LIKE 'dependency_pending%'

@@ -83,7 +83,11 @@ it for the current names and signatures. The families:
   dependency that is rejected, expired, declined or never applied makes it decline
   `dependency_not_applied`, and so does waiting out the card's own 48 hours. Only a card the owner
   already approved is ever re-run, through the approvals executor's own retry, so the stored call,
-  etag and plan digest are never rebuilt. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
+  etag and plan digest are never rebuilt. Only moves (`calendar_update_event`) are ever deferred or
+  re-run: a plan's respond steps are never anyone's dependency. A deferral is audited today as the
+  executor's `action_execution_failed` event whose reason is the closed text `dependency_pending: ...`
+  and is logged at error level by the executor; it is not a failure, and readers key off that
+  closed text (the core executor is unchanged). An invited meeting's decline parks `calendar_respond` for the owner through the module's own
   response preparer (`response_park.park_response`), so no MCP round trip and no second
   implementation (a crash mid-send reads `pending` until the executor retry settles it); it is undone from the dashboard's response-inverse flow, not by the plan undo. An approved move records the etag it left and the times
   it replaced; `calendar_undo_plan(plan_id)` then parks one approvals card per applied step, each

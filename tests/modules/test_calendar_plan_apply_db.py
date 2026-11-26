@@ -368,3 +368,66 @@ async def test_the_sweep_never_touches_a_card_the_owner_did_not_approve(db) -> N
         )
         assert await release_deferred(pool, execute) == 0
     assert called == []
+
+
+async def test_execute_approved_card_runs_a_deferred_step_through_the_real_executor(db) -> None:
+    from butlers.modules.approvals.module import ApprovalsModule
+    from butlers.modules.calendar.resolution_move import (
+        DEFERRED_ERROR,
+        RESOLUTION_DECLINED_TEXTS,
+        check_resolution_binding,
+        offer_for_card,
+        release_deferred,
+    )
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    dep, dependent = (UUID(s["approval_id"]) for s in result["steps"])
+    module_stub = SimpleNamespace(_db=SimpleNamespace(pool=pool))
+
+    # the approvals module's own executor callback: the stand-in calendar_update_event handler
+    async def tool_executor(tool_name, args):
+        card = await pool.fetchval(
+            "SELECT id FROM pending_actions WHERE tool_name = $1 AND tool_args @> $2::jsonb "
+            "AND status = 'approved' AND execution_result IS NULL ORDER BY requested_at LIMIT 1",
+            tool_name,
+            {k: args[k] for k in ("request_id",) if k in args},
+        )
+        offer = await offer_for_card(pool, card)
+        check = await check_resolution_binding(
+            module_stub,
+            tool_name="calendar_update_event",
+            tool_args=args,
+            request_id=args.get("request_id"),
+            event=_card_event(offer, args),
+        )
+        if check.refusal == "dependency_pending":
+            return {"error": DEFERRED_ERROR}
+        if check.refusal:
+            return {"error": RESOLUTION_DECLINED_TEXTS[check.refusal]}
+        return {"status": "updated"}
+
+    approvals = ApprovalsModule()
+    approvals._db = pool
+    approvals._butler_name = "general"
+    approvals.set_tool_executor(tool_executor)
+    owned = frozenset({"calendar_update_event"})
+
+    await _approve(pool, dependent)
+    # a caller that does not own calendar_update_event cannot re-run it, and nothing runs
+    assert (
+        await approvals.execute_approved_card(dependent, tool_names=frozenset({"other"})) is False
+    )
+    assert await _outcome(pool, dependent) == ("pending", None)
+
+    assert await approvals.execute_approved_card(dependent, tool_names=owned) is True
+    assert await _outcome(pool, dependent) == ("pending", None)  # deferred, not failed
+
+    await _approve(pool, dep)
+    await approvals.execute_approved_card(dep, tool_names=owned)
+
+    async def execute(card_id) -> bool:
+        return await approvals.execute_approved_card(card_id, tool_names=owned)
+
+    assert await release_deferred(pool, execute, after=str(dep)) == 1
+    assert (await _outcome(pool, dependent))[0] == "applied"
