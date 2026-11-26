@@ -95,7 +95,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   current dashboard session and CSRF. A `no` binds owner-selected exact targets through
   `public.custody_dashboard` in the same transaction. Row level security; Switchboard has one
   policy and no other runtime role has a grant.
-- **`public.calendar_rsvp_policies`** -- The owner's standing invitation judgment (core_387): an
+- **`public.calendar_rsvp_policies`** -- The owner's standing invitation judgment (core_388): an
   ordered list of closed typed predicates (organizer verdict and role, focus or out-of-office
   overlap, conflict with an accepted event, outside declared hours, recurring, attendee count,
   lead time; never a title or description), a verdict, a `send_updates` choice, a rising `version`

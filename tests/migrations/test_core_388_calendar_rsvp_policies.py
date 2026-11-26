@@ -1,4 +1,4 @@
-"""core_387 RSVP policies on migrated PostgreSQL (bu-5ii4gj.9 S1).
+"""core_388 RSVP policies on migrated PostgreSQL (bu-5ii4gj.9 S1).
 
 The table is written only by the dashboard definer on a current owner session and CSRF; no runtime
 role reads or writes it; the closed predicate vocabulary holds in the database as well as in the

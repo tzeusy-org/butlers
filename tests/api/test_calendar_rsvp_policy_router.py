@@ -1,7 +1,7 @@
 """Owner RSVP policy routes (bu-5ii4gj.9 S1, REQ-calendar-invitation-docket-001).
 
 Thin routes over ``OwnerAuthService.rsvp_policy_call``; the definer's session, CSRF and vocabulary
-checks are covered on real PostgreSQL in ``tests/migrations/test_core_387_calendar_rsvp_policies.py``.
+checks are covered on real PostgreSQL in ``tests/migrations/test_core_388_calendar_rsvp_policies.py``.
 """
 
 from __future__ import annotations

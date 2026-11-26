@@ -1,6 +1,6 @@
 """Owner-only RSVP policy routes (bu-5ii4gj.9 S1, REQ-calendar-invitation-docket-001).
 
-Every read and write goes through ``public.calendar_rsvp_policy_dashboard`` (core_387) on the
+Every read and write goes through ``public.calendar_rsvp_policy_dashboard`` (core_388) on the
 dashboard-auth login. The definer rechecks the owner's cookie session and, for a write, its CSRF
 token in the committing transaction; API-key header authority is refused. There is no MCP tool and
 no butler role holds a grant on the table, so this is the only way a policy is written.

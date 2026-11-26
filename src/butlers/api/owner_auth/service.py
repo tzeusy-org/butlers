@@ -178,7 +178,7 @@ class OwnerAuthService:
     async def rsvp_policy_call(
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
-        """Owner RSVP policies (core_387); the definer rechecks session and CSRF at commit."""
+        """Owner RSVP policies (core_388); the definer rechecks session and CSRF at commit."""
         if action not in {"list", "create", "update", "revoke"}:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:
