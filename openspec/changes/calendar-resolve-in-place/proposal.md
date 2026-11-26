@@ -31,3 +31,13 @@ queue are separate changes.
 
 R1 pure compiler and the read fields; R2 the resolve route, the acknowledgement table and the
 suppression, with `proposal_ids` removed; R3 parked decline and tentative plus the keyboard verbs.
+
+## Scenario titles kept for the validator
+
+`openspec validate --strict` forbids renaming a scenario inside a MODIFIED requirement, so four
+titles keep their old wording while their bodies changed. The archive step renames them:
+
+- "Response includes proposal_ids for pending proposals" now means "A pending proposal is no longer referenced".
+- "Proposal stays attached when a resync rotates the surviving copy" now means "Options survive a resync that rotates the surviving copy".
+- "Fix card with proposal" now means "Overlap card runs an option by number key".
+- "Fix card without proposal (LLM session not yet run)" now means "A stale source leaves the card informational".
