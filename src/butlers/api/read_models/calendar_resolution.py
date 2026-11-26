@@ -279,6 +279,7 @@ async def attach_resolution_options(
         zone,
         gap=timedelta(minutes=gap_minutes),
     )
+    zone_name = getattr(zone, "key", None)
     for issue, events in compiled:
         try:
             result = cr.options_for(
@@ -295,4 +296,5 @@ async def attach_resolution_options(
             if o.rationale_fields.get("entry_id") in context
         }
         issue.options_reason = result.reason
+        issue.owner_timezone = zone_name
         issue.issue_digest = cr.issue_digest(events, result.options) if result.options else None

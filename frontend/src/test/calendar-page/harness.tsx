@@ -85,6 +85,7 @@ export function setConflictOptionsIssue() {
               },
             ],
             issue_digest: "digest-1",
+            pair_id: "pair-1",
             options: [
               {
                 id: "decline:entry-1",

@@ -53,9 +53,7 @@ export function CalendarConflictRadar({
       isResolving={resolve.isPending}
       onResolve={(issue, option) => {
         const digest = issue.issue_digest;
-        // The overlap's id travels in its keep-both option's call, which every offered set has.
-        const pairArg = issue.options?.find((o) => o.kind === "keep_both")?.exact_call.args.pair_id;
-        const pairId = typeof pairArg === "string" ? pairArg : null;
+        const pairId = issue.pair_id;
         if (!digest || !pairId) return;
         resolve.mutate(
           {

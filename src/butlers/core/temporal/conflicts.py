@@ -127,6 +127,8 @@ class DetectedIssue:
     series_key: str | None = None
     #: How many occurrences in the scanned window break the same limit (1 for a single event).
     occurrences: int = 1
+    #: The owner zone the slots were compiled in (an IANA name), set with the options.
+    owner_timezone: str | None = None
 
 
 def overlap_pair_id(entry_id_a: str, entry_id_b: str) -> UUID:

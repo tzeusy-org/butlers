@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -1957,7 +1958,7 @@ async def test_a_response_option_is_the_owners_own_calendar_respond(app, live, k
     assert pool.rows == {}  # a response is not an acknowledgement
 
 
-def _future_world(app, *, synced_at=None):
+def _future_world(app, *, synced_at=None, own_meeting=False):
     """The overlap two days from now, so a move has somewhere to go ("now" is real here)."""
     day = (datetime.now(UTC) + timedelta(days=2)).replace(
         hour=12, minute=0, second=0, microsecond=0
@@ -1967,6 +1968,9 @@ def _future_world(app, *, synced_at=None):
     for row, offset in ((block, 0), (meeting, 30)):
         row["instance_starts_at"] = day + timedelta(minutes=offset)
         row["instance_ends_at"] = day + timedelta(minutes=offset + 60)
+    if own_meeting:  # the owner organised both: a decline is not a verb they have
+        meeting["event_metadata"] = {}
+        meeting["source_time_role"] = "owner"
     app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
     pool = _with_acks(db)
     window = {
@@ -1974,6 +1978,84 @@ def _future_world(app, *, synced_at=None):
         "end": (day + timedelta(days=1)).isoformat(),
     }
     return app, pool, window
+
+
+async def test_an_owner_organised_pair_offers_no_decline(app, live):
+    app, pool, window = _future_world(app, own_meeting=True)
+    resp = await _get(app, window)
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    kinds = {o["kind"] for o in overlap["options"]}
+    assert "decline" not in kinds and "tentative" not in kinds
+    pair = overlap["pair_id"]
+
+    resp = await _post(
+        app,
+        pair_id=pair,
+        option_id="decline:" + overlap["events"][1]["entry_id"],
+        issue_digest=overlap["issue_digest"],
+        **window,
+    )
+
+    assert resp.status_code == 422 and resp.json()["detail"] == "unknown_option"
+    assert pool.rows == {}
+
+
+async def test_the_issue_carries_its_pair_id_and_the_zone_its_slots_were_compiled_in(app, live):
+    app, _, window = _future_world(app)
+    resp = await _get(app, window)
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    keep = next(o for o in overlap["options"] if o["kind"] == "keep_both")
+    assert overlap["pair_id"] == keep["exact_call"]["args"]["pair_id"]
+    assert overlap["owner_timezone"] == "UTC"
+
+
+async def test_a_decline_after_a_re_accept_is_a_new_command_not_the_old_receipt(app, live):
+    from butlers.api.models.calendar_workspace import CalendarRespondResponse
+
+    app, pool, window = _future_world(app)
+    overlap, option, pair = await _offered_option(app, "decline", window)
+    command = uuid4()
+    outcome = CalendarRespondResponse(
+        status="applied", command_id=command, approval_id=command, source_butler="general"
+    )
+    router = "butlers.api.routers.calendar_workspace"
+    seen = []
+    with (
+        patch(f"{router}._response_owner", new=AsyncMock(return_value="general")),
+        patch(
+            f"{router}._respond_through_approval",
+            new=AsyncMock(side_effect=lambda **kw: seen.append(kw["arguments"]) or outcome),
+        ),
+        patch(f"{router}.query_calendar_conflicts") as scan,
+    ):
+        # The same overlap state twice: one command. A different digest (the owner re-accepted,
+        # then the pair overlapped again): a new one.
+        for digest in (overlap["issue_digest"], overlap["issue_digest"], "digest-after-reaccept"):
+            scan.return_value = SimpleNamespace(
+                available=True,
+                issues=[
+                    SimpleNamespace(
+                        pair_id=pair,
+                        issue_digest=digest,
+                        state_digest="s",
+                        options=[
+                            SimpleNamespace(
+                                id=option["id"],
+                                kind="decline",
+                                authority="parked_per_event",
+                                exact_call=option["exact_call"],
+                            )
+                        ],
+                    )
+                ],
+            )
+            resp = await _post(
+                app, pair_id=pair, option_id=option["id"], issue_digest=digest, **window
+            )
+            assert resp.status_code == 200, resp.json()
+
+    ids = [a["request_id"] for a in seen]
+    assert ids[0] == ids[1] and ids[2] != ids[0]
 
 
 async def _offered_option(app, kind, window):

@@ -24339,6 +24339,10 @@ export interface components {
             options?: components["schemas"]["ResolutionOption"][];
             /** Options Reason */
             options_reason?: string | null;
+            /** Owner Timezone */
+            owner_timezone?: string | null;
+            /** Pair Id */
+            pair_id?: string | null;
             /** Reasons */
             reasons?: string[];
             /**

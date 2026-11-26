@@ -1588,6 +1588,10 @@ export interface ConflictIssue {
   issue_digest?: string | null;
   /** Why `options` is empty (`stale_source`), else null. */
   options_reason?: string | null;
+  /** Overlap issues: the id a resolve names. */
+  pair_id?: string | null;
+  /** The owner zone the option slots were compiled in (IANA), for displaying them. */
+  owner_timezone?: string | null;
 }
 
 /** Body of POST /api/calendar/workspace/conflicts/resolve. */

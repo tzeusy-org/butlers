@@ -642,6 +642,10 @@ class ConflictIssue(BaseModel):
     #: ``outside_declared_hours`` only: which declared limit the event breaks (``before_earliest``,
     #: ``after_latest``, ``off_day`` or ``no_meeting_block``). Empty for every other kind.
     reasons: list[str] = Field(default_factory=list)
+    #: Overlap issues: the id a resolve names (stable across resyncs).
+    pair_id: str | None = None
+    #: The owner zone the option slots were compiled in (an IANA name), for displaying them.
+    owner_timezone: str | None = None
 
 
 class ConflictScanWindow(BaseModel):

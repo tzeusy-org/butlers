@@ -130,6 +130,18 @@ describe("ConflictRadarBanner", () => {
     expect(screen.getByRole("button", { name: /Keep both/ })).toBeTruthy();
   });
 
+  it("shows a move's slot in the zone it was compiled in, not the browser's", () => {
+    render(
+      <ConflictRadarBanner
+        issues={[overlapIssue({ ...OFFERED, owner_timezone: "Asia/Tokyo" })]}
+        available
+      />,
+    );
+    fireEvent.click(screen.getByText("Review"));
+    // 14:00Z is 11 PM in Tokyo whatever zone the test machine is in.
+    expect(screen.getByRole("button", { name: /Move 1:1 to Jul 1, 11:00 PM/ })).toBeTruthy();
+  });
+
   it("offers nothing to click when the scan compiled no options", () => {
     render(<ConflictRadarBanner issues={[overlapIssue()]} available />);
     fireEvent.click(screen.getByText("Review"));

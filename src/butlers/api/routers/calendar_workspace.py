@@ -1885,6 +1885,8 @@ async def get_workspace_conflicts(
             issue_digest=issue.issue_digest,
             options_reason=issue.options_reason,
             reasons=list(issue.reasons),
+            pair_id=str(issue.pair_id) if issue.pair_id is not None else None,
+            owner_timezone=issue.owner_timezone,
         )
         for issue in scan.issues
     ]
@@ -1980,9 +1982,11 @@ async def _respond_option(
         entry_id = UUID(str(call["entry_id"]))
     except (KeyError, ValueError):
         raise HTTPException(status_code=409, detail="issue_changed") from None
-    # ``calendar_respond`` takes a UUID request id; the option's stable ``resolve:`` string maps
-    # to one deterministically, so a retry replays the same command.
-    request_id = uuid5(NAMESPACE_URL, str(call["request_id"]))
+    # ``calendar_respond`` takes a UUID request id, so the option's ``resolve:`` string maps to one.
+    # It is seeded with the digest the owner saw: the same overlap state replays one command, but
+    # a decline after a re-accept (a changed state, a new digest) is a new command, never the old
+    # command's stale "applied".
+    request_id = uuid5(NAMESPACE_URL, f"{call['request_id']}:{body.issue_digest}")
     outcome = await _respond_through_approval(
         arguments={
             "entry_id": str(entry_id),
