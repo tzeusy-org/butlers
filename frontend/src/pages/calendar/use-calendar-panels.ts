@@ -67,6 +67,8 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
     auditQuery,
     proposalsQuery,
     proposalEntries,
+    /** Every proposal in the window, whether or not the panel is open; `undefined` until read. */
+    proposalRows: proposalsQuery.data?.data.entries,
     /** How many proposals wait in the window; `null` when the read failed or is unavailable. */
     proposalCount:
       proposalsPartial ? null

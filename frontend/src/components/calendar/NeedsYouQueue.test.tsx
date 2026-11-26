@@ -1,0 +1,115 @@
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, it, vi } from "vitest";
+
+import { respondToCalendarInvitation } from "@/api/index";
+import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
+import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
+import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
+import { CommandRegistryProvider } from "@/lib/command-registry";
+import { ShortcutRegistryProvider } from "@/hooks/use-register-shortcut";
+import { buildNeedsYouQueue } from "@/pages/calendar/needs-you-queue";
+
+vi.mock("@/api/index", () => ({ respondToCalendarInvitation: vi.fn() }));
+afterEach(() => {
+  cleanup();
+  vi.resetAllMocks();
+  for (const name of ["data-opened", "data-accepted", "data-dismissed"]) document.body.removeAttribute(name);
+});
+
+const invitation: CalendarInvitationEntry = {
+  entry_id: "inv-1", title: "Planning", start_at: "2026-11-30T09:00:00Z", end_at: "2026-11-30T10:00:00Z",
+  timezone: "UTC", organizer: null, organizer_source: "unknown", butler_name: "messenger",
+  conflict_issues: [], response_configured: true,
+};
+const receipt: CalendarResponseReceipt = {
+  status: "pending_approval", command_id: null, approval_id: null, source_butler: "messenger",
+  projection_available: false, reason: null,
+};
+
+function Harness({ proposalsComplete = true }: { proposalsComplete?: boolean }) {
+  const responses = useInvitationResponses({ entries: [invitation], unavailable: false });
+  const queue = buildNeedsYouQueue({
+    invitations: { rows: [invitation], complete: true },
+    conflicts: {
+      rows: [{ kind: "overlap", date: "2026-11-30", summary: "Planning overlaps lunch", severity: "warning",
+        proposal_ids: [], events: [{ entry_id: "c-1", title: "Lunch", start_at: "2026-11-30T11:00:00Z",
+          end_at: "2026-11-30T12:00:00Z", timezone: "UTC", status: "confirmed" }] }],
+      complete: true,
+    },
+    proposals: {
+      rows: [{ entry_id: "prop-1", title: "Dinner", start_at: "2026-11-30T18:00:00Z" } as never],
+      complete: proposalsComplete,
+    },
+    debriefs: { rows: [{ debrief_id: "deb-1", number: 1, event_title: "Standup", occurrence_start: "2026-11-30T12:30:00Z",
+      prompted_at: "2026-11-30T13:00:00Z", attendees: [] }], complete: true },
+  });
+  return (
+    <NeedsYouQueue
+      queue={queue}
+      invitations={[invitation]}
+      responses={responses}
+      onOpenEntry={(id) => void document.body.setAttribute("data-opened", id)}
+      onAcceptProposal={(id) => void document.body.setAttribute("data-accepted", id)}
+      onDismissProposal={(id) => void document.body.setAttribute("data-dismissed", id)}
+    />
+  );
+}
+
+const view = (props = {}) =>
+  render(
+    <CommandRegistryProvider>
+      <ShortcutRegistryProvider>
+        <Harness {...props} />
+      </ShortcutRegistryProvider>
+    </CommandRegistryProvider>,
+  );
+
+it("j/k navigate across kinds and the selected kind's verbs act", async () => {
+  vi.mocked(respondToCalendarInvitation).mockResolvedValue({ data: receipt, meta: {} });
+  view();
+  const user = userEvent.setup();
+  const rows = screen.getAllByRole("button");
+  expect(rows.map((row) => row.textContent)).toEqual([
+    expect.stringContaining("Planning"),
+    expect.stringContaining("Planning overlaps lunch"),
+    expect.stringContaining("Standup"),
+    expect.stringContaining("Dinner"),
+  ]);
+  await user.keyboard("j");
+  expect(screen.getByRole("button", { name: /Planning$/ }).getAttribute("aria-current")).toBe("true");
+  await user.keyboard("d");
+  expect(respondToCalendarInvitation).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(respondToCalendarInvitation).mock.calls[0][0]).toMatchObject({
+    entry_id: "inv-1", response_status: "declined",
+  });
+  await act(async () => {});
+  expect(screen.getByText("Response awaiting approval")).toBeTruthy();
+  // once answered, the choice keys leave with the receipt
+  await user.keyboard("a");
+  expect(respondToCalendarInvitation).toHaveBeenCalledTimes(1);
+  await user.keyboard("jjj");
+  await user.keyboard("a");
+  expect(document.body.getAttribute("data-accepted")).toBe("prop-1");
+  await user.keyboard("d");
+  expect(document.body.getAttribute("data-dismissed")).toBe("prop-1");
+});
+
+it("an overlap opens evidence and has no accept key", async () => {
+  view();
+  const user = userEvent.setup();
+  await user.keyboard("jj");
+  await user.keyboard("a");
+  expect(document.body.getAttribute("data-accepted")).toBeNull();
+  expect(respondToCalendarInvitation).not.toHaveBeenCalled();
+  await user.keyboard("{Enter}");
+  expect(document.body.getAttribute("data-opened")).toBe("c-1");
+});
+
+it("an unknown kind is named and the count is a lower bound", () => {
+  view({ proposalsComplete: false });
+  expect(screen.getByRole("heading", { name: "4+ need you" })).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toContain("proposals");
+});
