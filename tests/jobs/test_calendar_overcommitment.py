@@ -10,7 +10,7 @@ faked fan-out (task 1.1), and the check's completeness rules. The ledger semanti
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -367,9 +367,11 @@ def _event(entry_id: str, start: datetime, hours: float = 1.0) -> ConflictEventR
     )
 
 
-def _london_trip(confirmed: bool = True) -> list[TripLeg]:
+def _london_trip(confirmed: bool = True, trip_end: date | None = None) -> list[job.DatedLeg]:
     out = datetime(2026, 1, 10, 1, tzinfo=UTC)
-    return [TripLeg(out, out + timedelta(hours=14), "LHR", "London", confirmed)]
+    return [
+        job.DatedLeg(TripLeg(out, out + timedelta(hours=14), "LHR", "London", confirmed), trip_end)
+    ]
 
 
 def _off_hours(events, legs):
@@ -447,9 +449,9 @@ def test_a_return_leg_into_the_home_city_reads_as_home_and_flags_nothing():
     out = datetime(2026, 1, 10, 1, tzinfo=UTC)
     back = datetime(2026, 1, 12, 1, tzinfo=UTC)
     legs = [
-        TripLeg(out, out + timedelta(hours=14), "LHR", "London", True),
+        job.DatedLeg(TripLeg(out, out + timedelta(hours=14), "LHR", "London", True), None),
         # Singapore is deliberately not named by airport, so only home_city can place it.
-        TripLeg(back, back + timedelta(hours=13), None, "Singapore", True),
+        job.DatedLeg(TripLeg(back, back + timedelta(hours=13), None, "Singapore", True), None),
     ]
     meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))  # 09:00 at home
     assert (
@@ -458,3 +460,32 @@ def test_a_return_leg_into_the_home_city_reads_as_home_and_flags_nothing():
         )
         == []
     )
+
+
+def test_a_trip_that_ended_before_the_meeting_day_is_dropped_per_meeting():
+    # One-way trip, no stored return: the 15 Jan meeting is after the trip's 12 Jan end.
+    meeting = _event("m", datetime(2026, 1, 15, 1, 0, tzinfo=UTC))
+    assert _off_hours([meeting], _london_trip(trip_end=date(2026, 1, 12))) == []
+    assert _off_hours([meeting], _london_trip(trip_end=date(2026, 1, 15)))  # still on the trip
+
+
+async def test_read_trip_legs_is_incomplete_when_the_read_raises_or_a_schema_fails():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=7)
+
+    boom = MagicMock(spec=DatabaseManager)
+    boom.fan_out_with_status = AsyncMock(side_effect=OSError("down"))
+    assert await job.read_trip_legs(boom, start=start, end=end) == ([], False)
+
+    failed = MagicMock(spec=DatabaseManager)
+    failed.fan_out_with_status = AsyncMock(return_value=({"travel": []}, ["travel"]))
+    assert await job.read_trip_legs(failed, start=start, end=end) == ([], False)
+
+    absent = MagicMock(spec=DatabaseManager)
+    absent.fan_out_with_status = AsyncMock(return_value=({}, []))
+    assert await job.read_trip_legs(absent, start=start, end=end) == ([], False)
+
+    ok = MagicMock(spec=DatabaseManager)
+    ok.fan_out_with_status = AsyncMock(return_value=({"travel": []}, []))
+    assert await job.read_trip_legs(ok, start=start, end=end) == ([], True)
+    assert ok.fan_out_with_status.await_args.kwargs["deadline_seconds"] == job._TRIP_READ_DEADLINE_S

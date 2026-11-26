@@ -44,7 +44,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import UTC, datetime, time, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -177,18 +178,29 @@ _NIGHT_START = time(23, 0)
 _NIGHT_END = time(7, 0)
 #: How far before the window a leg can still decide the owner's zone at its start.
 _LEG_LOOKBACK = timedelta(days=90)
+#: A slow Travel schema must not hold the tick: past this it counts as unreadable (incomplete).
+_TRIP_READ_DEADLINE_S = 10.0
 _TRIP_LEGS_SQL = """
     SELECT l.departure_at, l.arrival_at, l.arrival_airport_station, l.arrival_city,
-           l.confirmation_number, t.status AS trip_status, t.metadata AS trip_metadata
+           l.confirmation_number, t.status AS trip_status, t.metadata AS trip_metadata,
+           t.end_date AS trip_end_date
     FROM travel.legs l JOIN travel.trips t ON t.id = l.trip_id
     WHERE l.departure_at < $2 AND l.arrival_at >= $1 AND t.status <> 'cancelled'
       AND (t.end_date IS NULL OR t.end_date >= $3)
 """
 
 
+@dataclass(frozen=True, slots=True)
+class DatedLeg:
+    """A leg with the end date of its trip, so each meeting can drop trips already over."""
+
+    leg: TripLeg
+    trip_end: date | None
+
+
 async def read_trip_legs(
     db: DatabaseManager, *, start: datetime, end: datetime
-) -> tuple[list[TripLeg], bool]:
+) -> tuple[list[DatedLeg], bool]:
     """The Travel butler's legs that can decide the owner's zone in ``[start, end)``.
 
     Returns ``(legs, complete)``; an unreadable Travel schema is ``complete=False`` so the caller
@@ -199,11 +211,12 @@ async def read_trip_legs(
             _TRIP_LEGS_SQL,
             (start - _LEG_LOOKBACK, end, start.date()),  # current or future trips only
             butler_names=["travel"],
+            deadline_seconds=_TRIP_READ_DEADLINE_S,
         )
     except Exception:
         logger.warning("calendar overcommitment: trip legs unreadable", exc_info=True)
         return [], False
-    legs: list[TripLeg] = []
+    legs: list[DatedLeg] = []
     for row in (r for rows in results.values() for r in rows):
         meta = row["trip_metadata"]
         if isinstance(meta, str):
@@ -212,23 +225,30 @@ async def read_trip_legs(
             except ValueError:
                 meta = None
         legs.append(
-            TripLeg(
-                departure_at=row["departure_at"],
-                arrival_at=row["arrival_at"],
-                arrival_airport=row["arrival_airport_station"],
-                arrival_city=row["arrival_city"],
-                confirmed=leg_is_confirmed(
-                    confirmation_number=row["confirmation_number"],
-                    trip_status=row["trip_status"],
-                    trip_metadata=meta if isinstance(meta, dict) else None,
+            DatedLeg(
+                TripLeg(
+                    departure_at=row["departure_at"],
+                    arrival_at=row["arrival_at"],
+                    arrival_airport=row["arrival_airport_station"],
+                    arrival_city=row["arrival_city"],
+                    confirmed=leg_is_confirmed(
+                        confirmation_number=row["confirmation_number"],
+                        trip_status=row["trip_status"],
+                        trip_metadata=meta if isinstance(meta, dict) else None,
+                    ),
                 ),
+                row["trip_end_date"],
             )
         )
     return legs, not failed and bool(results)
 
 
 def _touches_night(start: datetime, end: datetime) -> bool:
-    """Whether ``[start, end)`` (both in one zone) overlaps any local 23:00 to 07:00 night."""
+    """Whether ``[start, end)`` (both in one zone) overlaps any local 23:00 to 07:00 night.
+
+    The comparison is on that zone's wall clock on purpose: "night" is the hours the owner will
+    see on the clock there, so a DST shift moves the instants and not the rule.
+    """
     day = start.date() - timedelta(days=1)
     while day <= end.date():
         night_start = datetime.combine(day, _NIGHT_START, tzinfo=start.tzinfo)
@@ -241,7 +261,7 @@ def _touches_night(start: datetime, end: datetime) -> bool:
 
 def build_off_hours_observations(
     events: list[ConflictEventRef],
-    legs: list[TripLeg],
+    legs: list[DatedLeg],
     *,
     home_zone: str,
     home_city: str | None = None,
@@ -254,9 +274,14 @@ def build_off_hours_observations(
     the basis and the zone, so the reader can say "assumed" or "confirmed".
     """
     observations: list[Observation] = []
+    home = ZoneInfo(home_zone)
     for event in events:
+        # A trip is over for any meeting dated after its end date, however long the read window.
+        # Both are calendar dates on the owner's wall clock, so a plain date comparison is meant.
+        event_day = event.start_at.astimezone(home).date()
+        live = [d.leg for d in legs if d.trip_end is None or d.trip_end >= event_day]
         projected = projected_owner_zone(
-            event.start_at, legs=legs, home_zone=home_zone, home_city=home_city
+            event.start_at, legs=live, home_zone=home_zone, home_city=home_city
         )
         if projected.zone is None or projected.zone == home_zone:
             continue

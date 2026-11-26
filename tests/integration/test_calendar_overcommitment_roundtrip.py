@@ -233,3 +233,30 @@ async def test_a_trip_that_ended_before_the_window_is_not_read(db, monkeypatch) 
     )
 
     assert result["transitions"] == [] and await _off_hours_rows(pool) == []
+
+
+async def test_a_one_way_trip_that_ended_before_the_meeting_raises_nothing(db, monkeypatch) -> None:
+    pool = await db("core", "travel")
+    monkeypatch.setattr(
+        job, "load_general_settings", AsyncMock(return_value={"timezone": "Asia/Singapore"})
+    )
+    monkeypatch.setattr(job.flags, "OWNER_CLOCK_LIVE", True)
+    monkeypatch.setattr(
+        job,
+        "query_calendar_conflicts",
+        AsyncMock(
+            return_value=CalendarConflictScan(
+                issues=[], owner_events=[_nine_am_singapore_meeting()]
+            )
+        ),
+    )
+    # Trip 10 to 12 July, one confirmed leg into LHR and no stored return; "now" is 10 July, so the
+    # trip is live at the window start and the 15 July meeting is inside the 7-day window.
+    await _seed_london_trip(pool, confirmation="PNR123", end_date="2026-07-12")
+
+    result = await job.run_calendar_overcommitment_check(
+        db_manager({"switchboard": pool, "travel": pool}),
+        now=datetime(2026, 7, 10, 20, 0, tzinfo=UTC),
+    )
+
+    assert result["transitions"] == [] and await _off_hours_rows(pool) == []
