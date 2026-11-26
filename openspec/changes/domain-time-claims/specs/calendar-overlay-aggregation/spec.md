@@ -71,7 +71,11 @@ calendar row SHALL be retracted in that run. A record whose `record_version`, pr
 previous claims, mark the envelope incomplete, report the error in its result, and retract nothing.
 A run in which any claim is invalid SHALL likewise be partial, with the error code `invalid_claims`,
 and a run in which retraction did not run (for example the projection tables are absent) SHALL be
-partial with the error code `retraction_skipped`. A run that cannot
+partial with the error code `retraction_skipped`. A claim names its span in the owner's IANA zone,
+the one the briefing day resolves: when no owner zone was ever saved a producer SHALL emit no claims
+and reconcile nothing (result `skipped: owner_zone_unsaved`), leaving the existing calendar rows as
+they are, and when the zone read fails or the saved zone is invalid the run SHALL be skipped before
+it writes anything, never keying a claim to a guessed zone. A run that cannot
 read the owner's bill reminder preference SHALL leave the bill claims as they are for that run, not
 reconcile them with the default.
 
