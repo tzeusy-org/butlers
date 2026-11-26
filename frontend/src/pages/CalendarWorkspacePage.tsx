@@ -41,6 +41,7 @@ import {
   useSourceSelectionGuard,
 } from "@/pages/calendar/use-calendar-url-state";
 import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspace-data";
+import { usePendingMeetingDebriefs } from "@/hooks/use-meeting-debriefs";
 import { useEntrySelection } from "@/pages/calendar/use-entry-selection";
 import { useQuickAddCreate } from "@/pages/calendar/use-quick-add-create";
 import { headlineLabel } from "@/pages/calendar/workspace-model";
@@ -95,6 +96,7 @@ export default function CalendarWorkspacePage() {
     workspaceFetching: workspaceQuery.isFetching,
   });
   const panels = useCalendarPanels({ queryStart, queryEnd, timezone });
+  const debriefsQuery = usePendingMeetingDebriefs();
   const sync = useCalendarSync();
   const queryClient = useQueryClient();
   const selection = useEntrySelection({
@@ -203,6 +205,14 @@ export default function CalendarWorkspacePage() {
         onOpenInvitation={(entryId) => {
           void selection.openInvitation(entryId);
         }}
+        proposalCount={panels.proposalCount}
+        proposalsLoading={panels.proposalsLoading}
+        proposalsError={panels.proposalsError}
+        debriefCount={
+          debriefsQuery.data?.debriefs_available ? debriefsQuery.data.debriefs.length : null
+        }
+        debriefsLoading={debriefsQuery.isLoading}
+        debriefsError={debriefsQuery.isError || debriefsQuery.data?.debriefs_available === false}
         invitationDetailLoading={selection.invitationDetailLoading}
       />
 
