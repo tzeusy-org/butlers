@@ -95,6 +95,29 @@ def test_an_unnamed_arrival_is_unmapped_not_guessed():
     assert result.zone is None and result.basis == "unmapped_place"
 
 
+def test_an_unmapped_airport_code_is_not_rescued_by_the_city_name():
+    # London, Ontario (YXU) must not become Europe/London.
+    out = leg(at(2026, 7, 10, 1), at(2026, 7, 10, 8), "London", code="YXU")
+    result = zone(at(2026, 7, 12, 12), [out])
+    assert result.zone is None and result.basis == "unmapped_place"
+    assert zone_for_place("YXU", "London") is None
+    assert zone_for_place("", "London") == "Europe/London"  # no code: the city is consulted
+
+
+def test_the_leg_reached_is_the_one_that_arrived_last_not_the_one_that_departed_last():
+    # A short hop that departs later but lands earlier than the long-haul leg.
+    long_haul = leg(at(2026, 7, 10, 1), at(2026, 7, 10, 20), "London")
+    short_hop = leg(at(2026, 7, 10, 2), at(2026, 7, 10, 4), "Tokyo")
+    result = zone(at(2026, 7, 11, 0), [long_haul, short_hop])
+    assert result.zone == "Europe/London"
+
+
+def test_a_naive_leg_time_is_refused():
+    naive = TripLeg(datetime(2026, 7, 10, 1), at(2026, 7, 10, 8), None, "London", True)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        zone(at(2026, 7, 12), [naive])
+
+
 def test_a_naive_instant_is_refused():
     with pytest.raises(ValueError):
         projected_owner_zone(datetime(2026, 7, 1), legs=[], home_zone=HOME)

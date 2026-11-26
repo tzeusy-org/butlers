@@ -14,6 +14,12 @@ arrival the pinned table (or the owner's home city) names it is that place's zon
 leg to a place the table does not name, the zone SHALL be unknown (`zone` absent) and no zone SHALL
 be guessed. A consumer SHALL NOT raise an off-hours observation for an unknown zone.
 
+The table is consulted by airport code first; a present airport code the table does not name is
+unmapped and SHALL NOT be rescued by the city name. The leg reached is the one with the latest
+arrival at or before the instant. Callers SHALL pass only the legs of current or future trips (a
+past trip would pin the owner to its destination) and SHALL pass the owner's home city whenever it
+is known; times SHALL be timezone-aware.
+
 #### Scenario: Confirmed trip then return
 
 - **WHEN** a confirmed outbound leg arrives in London and a confirmed return leg arrives home

@@ -114,7 +114,6 @@ CITY_ZONES: dict[str, str] = {
     "athens": "Europe/Athens",
     "new york": "America/New_York",
     "boston": "America/New_York",
-    "washington": "America/New_York",
     "atlanta": "America/New_York",
     "miami": "America/New_York",
     "toronto": "America/Toronto",
@@ -150,8 +149,12 @@ def normalise_place(value: str | None) -> str:
 
 
 def zone_for_place(airport: str | None, city: str | None) -> str | None:
-    """The zone of a leg's arrival, by airport code first, then city; ``None`` when unnamed."""
+    """The zone of a leg's arrival; ``None`` when the table does not name it.
+
+    The city is consulted only when no airport code is given: a present but unmapped code is
+    unmapped, never rescued by a city name (London, Ontario at YXU is not Europe/London).
+    """
     code = (airport or "").strip().upper()
-    if code in AIRPORT_ZONES:
-        return AIRPORT_ZONES[code]
+    if code:
+        return AIRPORT_ZONES.get(code)
     return CITY_ZONES.get(normalise_place(city))

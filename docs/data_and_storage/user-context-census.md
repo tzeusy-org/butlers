@@ -89,6 +89,7 @@ matched.
 <!-- census:owner_zone -->
 | Reference | Use | Owner | Status |
 | --- | --- | --- | --- |
+| `src/butlers/core/temporal/city_zones.py::<module>` | the pinned airport and city to zone table (Singapore is one place among many, not a default) | bu-5ii4gj.5 | permanent, a place lookup and not an owner-zone default |
 | `src/butlers/perception/clock.py::<module>` | `LEGACY_FALLBACK_ZONE`, the legacy basis shadow parity compares against | bu-enbrs2 | switch-time, removed when `OWNER_CLOCK_LIVE` flips |
 | `roster/chronicler/api/models.py::CreateRoutineRequest` | routine zone default | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |
 | `roster/chronicler/api/models.py::RollupsResponse` | rollup zone default | bu-enbrs2 | switch-time, no code until `OWNER_CLOCK_LIVE` |

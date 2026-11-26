@@ -71,15 +71,22 @@ def projected_owner_zone(
 
     ``home_city`` lets a return leg that arrives home read as the home zone even when the pinned
     table does not name that city.
+
+    Caller contract: pass only the legs of current or future trips (a past trip's last leg would
+    otherwise pin the owner to its destination forever), and always pass ``home_city`` when it is
+    known, so a trip that ends at home reads as home. Datetimes must be timezone-aware.
     """
     if instant.tzinfo is None:
         raise ValueError("instant must be timezone-aware")
-    ordered = sorted(legs, key=lambda leg: (leg.departure_at, leg.arrival_at))
+    ordered = list(legs)
+    for leg in ordered:
+        if leg.departure_at.tzinfo is None or leg.arrival_at.tzinfo is None:
+            raise ValueError("leg times must be timezone-aware")
     reached: TripLeg | None = None
     for leg in ordered:
         if leg.departure_at <= instant < leg.arrival_at:
             return ProjectedZone(None, "in_flight")
-        if leg.arrival_at <= instant:
+        if leg.arrival_at <= instant and (reached is None or leg.arrival_at > reached.arrival_at):
             reached = leg
     if reached is None:
         return ProjectedZone(home_zone, "home_assumed")
