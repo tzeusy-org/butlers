@@ -4,4 +4,5 @@
 - [x] 1.2 Compare-and-set `apply_reanchor` and the gated `run_clock_transition`
 - [x] 1.3 Real-Postgres test: only owner-local rows move; a lost race is not overwritten
 - [x] 1.4 One owner-zone resolver shared by the scheduler tick and the re-anchor; per-schema completeness
-- [ ] 1.5 P6: replace `is_owner_local`'s sentinel predicate with `anchor_kind = 'owner_local'`
+- [x] 1.5 Owner card composer (REQ-core-scheduler-007), dark, doors per item; ledger delivery is a later flag-gated step
+- [ ] 1.6 P6: replace `is_owner_local`'s sentinel predicate with `anchor_kind = 'owner_local'`

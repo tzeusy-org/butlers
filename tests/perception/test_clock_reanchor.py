@@ -159,3 +159,13 @@ def test_a_settling_transition_says_when_to_retry():
     result = plan([row()], transition_at=young)
     assert result.reason == "settling"
     assert result.retry_after == young + ra.RETRACTION_WINDOW
+
+
+def test_only_cron_rows_with_a_non_sentinel_zone_are_kept():
+    rows = [
+        row(name="pinned", tz="Europe/London"),
+        row(name="deadline", tz="Europe/London", task_type="deadline"),
+        row(name="sentinel"),
+    ]
+    result = plan(rows)
+    assert [k.name for k in result.kept] == ["pinned"]
