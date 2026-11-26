@@ -77,9 +77,12 @@ it for the current names and signatures. The families:
   returns `pending` with one receipt per step (outcome read off its card: `applied`, `pending`,
   `declined`, `uncertain`, `skipped`) and records `plan` and `plan_step` rows in
   `calendar_action_log`; re-applying the same plan replays the receipts and parks only what has
-  none. Decline steps for invited meetings are not driven yet and come back `skipped`
-  (`response_step_not_supported`); composite undo is the next slice
-  (`openspec/changes/calendar-change-plans`).
+  none. A step whose dependency is still undecided declines `dependency_pending` and the owner
+  re-applies after deciding it. Decline steps for invited meetings are not driven yet and come back
+  `skipped` (`response_step_not_supported`). An approved move records the etag it left and the times
+  it replaced; `calendar_undo_plan(plan_id)` then parks one approvals card per applied step, each
+  bound to that recorded etag (`changed_since_move` if the event changed since), and never reverses
+  a declined, pending, skipped or uncertain step (`openspec/changes/calendar-change-plans`).
 - **Calendar and sync management** -- list calendars, set the primary calendar, check sync
   status, and force a sync cycle.
 

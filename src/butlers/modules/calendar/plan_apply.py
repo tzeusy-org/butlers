@@ -210,6 +210,7 @@ async def _record_step(
         "event_ref": step.entry_id,
         "action": step.action,
         "etag": step.etag,
+        "authority": step.authority,
         "depends_on": list(step.depends_on),
     }
     if step.action != "move":

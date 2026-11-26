@@ -35,6 +35,7 @@ EXPECTED_CALENDAR_TOOLS = frozenset(
         "calendar_list_events",
         "calendar_plan_change",
         "calendar_apply_plan",
+        "calendar_undo_plan",
         "calendar_propose_event",
         "calendar_respond",
         "calendar_response_fence_status",

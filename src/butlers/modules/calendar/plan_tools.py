@@ -267,6 +267,7 @@ def register_plan_apply_tools(
     module: CalendarModule, mcp: Any, _tool: Callable[..., Any], butler_name: str
 ) -> None:
     from .plan_apply import apply_plan
+    from .plan_undo import undo_plan
 
     @_tool("core")
     async def calendar_apply_plan(
@@ -295,3 +296,14 @@ def register_plan_apply_tools(
             window_end=window_end,
             shift_minutes=shift_minutes,
         )
+
+    @_tool("core")
+    async def calendar_undo_plan(plan_id: str) -> dict[str, Any]:
+        """Undo an applied plan: one approvals card per reversal. Returns ``pending``.
+
+        Only steps whose move really applied are reversed, each bound to the version that step
+        left: a card declines (``changed_since_move``, nothing written) if its event changed since.
+        Declined, pending, skipped and uncertain steps are never reversed. Calling it again
+        returns the cards already parked.
+        """
+        return await undo_plan(module, butler_name, plan_id=plan_id)

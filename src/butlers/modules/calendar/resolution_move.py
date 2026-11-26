@@ -57,6 +57,9 @@ RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
         "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
         "nothing was moved."
     ),
+    "changed_since_move": (
+        "Move not undone: the event changed after the plan moved it, so it was left as it is."
+    ),
     "unbound": (
         "Move not applied: this request has no recorded check against the calendar, so nothing "
         "was moved."
@@ -133,6 +136,8 @@ async def park_resolution_move(
     zone: tzinfo | None = None,
     series_event_id: str | None = None,
     depends_on: Sequence[uuid.UUID] = (),
+    stale_reason: str | None = None,
+    summary: str | None = None,
 ) -> tuple[uuid.UUID, bool]:
     """Park the move's card and bind it to ``etag``; returns ``(action_id, created)``.
 
@@ -150,7 +155,7 @@ async def park_resolution_move(
             action_id=uuid.uuid4(),
             tool_name="calendar_update_event",
             tool_args=args,
-            agent_summary=resolution_card_summary(call_args, zone),
+            agent_summary=summary or resolution_card_summary(call_args, zone),
             requested_at=now,
             expires_at=now + RESOLUTION_CARD_TTL,
             why=RESOLUTION_CARD_WHY,
@@ -171,6 +176,8 @@ async def park_resolution_move(
                 **({"series_event_id": series_event_id} if series_event_id else {}),
                 # A plan step that uses a slot another step vacates runs only if those applied.
                 **({"depends_on": [str(a) for a in depends_on]} if depends_on else {}),
+                # An undo declines ``changed_since_move``, not ``changed_since_check``.
+                **({"stale_reason": stale_reason} if stale_reason else {}),
             },
         )
         return admission.action_id, not admission.duplicate
@@ -241,6 +248,27 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     return "pending" if waiting else "applied"
 
 
+async def record_applied_move(
+    pool: Any, action_id: uuid.UUID, *, etag_after: str | None, pre_start: str, pre_end: str
+) -> None:
+    """Best effort: keep what an applied move left, so a plan's undo is bound to it.
+
+    Only times and the new etag are stored, never event text. A failed write loses the undo for
+    that step (it is then not offered), never the move.
+    """
+    if not etag_after:
+        return
+    try:
+        await pool.execute(
+            "UPDATE calendar_action_log SET action_result = action_result || $2::jsonb "
+            "WHERE action_type = 'resolution_move' AND action_result->>'action_id' = $1",
+            str(action_id),
+            json.dumps({"etag_after": etag_after, "pre_start": pre_start, "pre_end": pre_end}),
+        )
+    except Exception:
+        logger.warning("resolution move: etag_after could not be recorded", exc_info=True)
+
+
 def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | None:
     """``None`` when the move may write, else why it declines (nothing is written).
 
@@ -249,7 +277,8 @@ def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | 
     bound = offer.get("etag")
     if isinstance(bound, str) and bound and event.etag == bound:
         return None
-    return "changed_since_check"
+    reason = offer.get("stale_reason")
+    return reason if reason in RESOLUTION_DECLINED_TEXTS else "changed_since_check"
 
 
 @dataclass(frozen=True, slots=True)
