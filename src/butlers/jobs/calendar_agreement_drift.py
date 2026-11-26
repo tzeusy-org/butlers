@@ -68,6 +68,7 @@ SELECT a.occurrence_start, a.agreed_starts_at, a.agreed_ends_at, a.location_dige
   FROM calendar_owner_agreements a
   JOIN calendar_events ce ON ce.id = a.event_id
  WHERE ce.origin_ref IS NOT NULL
+   AND a.ended_at IS NULL
    AND ce.status <> 'cancelled'
    AND NOT {quarantined_invitation_sql("ce")}
    AND GREATEST(a.agreed_starts_at, a.current_starts_at) > now()

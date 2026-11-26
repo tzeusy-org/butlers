@@ -241,3 +241,25 @@ async def test_the_agreement_query_feeds_the_job_from_a_real_projection(db) -> N
     assert quiet == [] and checked == 1
     assert [o.metadata["reasons"] for o in observations] == [["moved"]]
     assert observations[0].metadata["moved_minutes"] == 120
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_a_declined_occurrence_is_not_read_as_an_agreement(db) -> None:
+    from butlers.modules.calendar.models import AttendeeResponseStatus
+    from tests.modules.test_calendar_owner_agreements import _attendees, _world
+    from tests.modules.test_calendar_participants import _event, _module, _project
+
+    pool, source = await _world(db)
+    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
+    event = _event(attendees=_attendees()).model_copy(
+        update={"start_at": start, "end_at": start + timedelta(hours=1)}
+    )
+    await _project(_module(pool), source, event)
+    assert len(await pool.fetch(job._AGREEMENTS_SQL)) == 1
+
+    declined = event.model_copy(update={"attendees": _attendees(AttendeeResponseStatus.declined)})
+    await _project(_module(pool), source, declined)
+
+    assert await pool.fetch(job._AGREEMENTS_SQL) == []
