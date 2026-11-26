@@ -80,7 +80,7 @@ it for the current names and signatures. The families:
   none. A step whose dependency is still undecided declines `dependency_pending` and the owner
   re-applies after deciding it. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
   response preparer (`response_park.park_response`), so no MCP round trip and no second
-  implementation; it is undone from the dashboard's response-inverse flow, not by the plan undo. An approved move records the etag it left and the times
+  implementation (a crash mid-send reads `pending` until the executor retry settles it); it is undone from the dashboard's response-inverse flow, not by the plan undo. An approved move records the etag it left and the times
   it replaced; `calendar_undo_plan(plan_id)` then parks one approvals card per applied step, each
   bound to that recorded etag (`changed_since_move` if the event changed since), and never reverses
   a declined, pending, skipped or uncertain step (`openspec/changes/calendar-change-plans`).
