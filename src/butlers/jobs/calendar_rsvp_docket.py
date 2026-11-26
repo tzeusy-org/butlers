@@ -58,6 +58,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.read_models.calendar_workspace import (
     query_calendar_invitations,
     query_owner_calendar_rows,
+    query_owner_response_rows,
 )
 from butlers.config import list_butlers
 from butlers.core.job_health import mark_tick_incomplete, record_tick
@@ -584,6 +585,7 @@ async def _run(
     truncated = len(read.rows) >= INVITATION_LIMIT
 
     owner_rows, rows_available = await query_owner_calendar_rows(db, start=now, end=end)
+    response_rows, responses_available = await query_owner_response_rows(db, start=now, end=end)
     degraded: list[str] = []
     if truncated:
         degraded.append("invitations_truncated")
@@ -688,7 +690,7 @@ async def _run(
         if seen is None:
             # No longer a pending invitation (answered, moved or cancelled). Rejecting it needs the
             # owner's own row to tell an answer from a move, so an unreadable calendar keeps it.
-            if truncated or not rows_available:
+            if truncated or not responses_available:
                 summary["unprepared"]["card_kept_unreadable"] += 1
                 summary["complete"] = False
                 continue
@@ -710,9 +712,9 @@ async def _run(
         if await _reject(pool, card["id"], reason):
             summary["rejected"][reason] += 1
             if reason == "stale_event" and seen is None:
-                # rows_available held above: the owner may have answered outside the card
+                # responses_available held above: the owner may have answered outside the card
                 outcome = ledger.answered_outcome(
-                    marker.get("verdict"), ledger.owner_response(owner_rows, entry_id)
+                    marker.get("verdict"), ledger.owner_response(response_rows, entry_id)
                 )
                 await _ledger(summary, pool, card["id"], marker, outcome)
 

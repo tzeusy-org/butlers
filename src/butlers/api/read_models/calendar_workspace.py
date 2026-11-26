@@ -1722,6 +1722,24 @@ async def query_owner_calendar_rows(
     return owned, not failed and rules_read and pins_read
 
 
+async def query_owner_response_rows(
+    db: DatabaseManager, *, start: datetime, end: datetime
+) -> tuple[list[dict[str, Any]], bool]:
+    """Every calendar copy in ``[start, end)`` with its metadata, and whether the read was whole.
+
+    Unfiltered and not deduplicated: no attendance filter (a self-declined event still shows) and
+    every schema's copy is present, so a copy is found by its own instance id. It exists to read the
+    owner's own response status for an entry, never to judge time (see
+    :func:`query_owner_calendar_rows` for that). A failed or partial read is ``available=False``.
+    """
+    try:
+        rows, failed = await query_calendar_workspace(db, view="user", start=start, end=end)
+    except Exception:
+        logger.warning("query_owner_response_rows workspace fan-out failed", exc_info=True)
+        return [], False
+    return [shallow_asdict(row) for row in rows], not failed
+
+
 async def query_calendar_conflicts(
     db: DatabaseManager,
     *,

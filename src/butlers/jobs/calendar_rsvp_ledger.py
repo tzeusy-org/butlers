@@ -25,9 +25,17 @@ _APPROVED = frozenset({"approved", "executed"})
 _ANSWER_FOR_VERDICT = {"accepted": "accepted", "declined": "declined", "tentative": "tentative"}
 
 
+# The actors the approvals path records for the owner's own decision: the dashboard's approve route
+# and the owner's Telegram card. Anything else (``system:*`` sweeps, expiry, this job) is not the
+# owner, and an unknown actor is never counted as one.
+OWNER_ACTORS = frozenset({"dashboard:rest-api", "owner@telegram"})
+_RECORDED_LIMIT = 4096
+_recorded: dict[str, None] = {}
+
+
 def decided_outcome(status: str | None, decided_by: str | None) -> str | None:
-    """The outcome of a card the owner decided, or ``None`` for anything else (system included)."""
-    if not decided_by or str(decided_by).startswith("system:"):
+    """The outcome of a card the owner decided, or ``None`` for anything else."""
+    if decided_by not in OWNER_ACTORS:
         return None
     if status in _APPROVED:
         return "approved_as_prepared"
@@ -80,8 +88,11 @@ async def record_outcome(
         return None
     if outcome not in OUTCOMES:
         raise ValueError(f"not a ledger outcome: {outcome!r}")
+    key = str(action_id)
+    if key in _recorded:
+        return False  # already written by this process: no database round trip
     try:
-        return bool(
+        written = bool(
             await pool.fetchval(
                 "SELECT public.calendar_rsvp_ledger_record($1, $2, $3, $4)",
                 action_id if isinstance(action_id, uuid.UUID) else uuid.UUID(str(action_id)),
@@ -90,6 +101,10 @@ async def record_outcome(
                 outcome,
             )
         )
+        _recorded[key] = None
+        if len(_recorded) > _RECORDED_LIMIT:
+            _recorded.pop(next(iter(_recorded)))
+        return written
     except Exception:  # noqa: BLE001 - the ledger is informational: a failure is counted, not fatal
         logger.warning("rsvp ledger: outcome not recorded", exc_info=True)
         raise LedgerUnavailable from None

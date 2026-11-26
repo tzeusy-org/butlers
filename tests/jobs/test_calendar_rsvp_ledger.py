@@ -17,13 +17,15 @@ MARKER = {"policy_id": str(uuid4()), "policy_version": 3, "verdict": "declined"}
 @pytest.mark.parametrize(
     ("status", "by", "outcome"),
     [
-        ("approved", "owner", "approved_as_prepared"),
-        ("executed", "owner", "approved_as_prepared"),
-        ("rejected", "owner", "owner_rejected"),
+        ("approved", "dashboard:rest-api", "approved_as_prepared"),
+        ("executed", "dashboard:rest-api", "approved_as_prepared"),
+        ("rejected", "dashboard:rest-api", "owner_rejected"),
         ("rejected", "system:rsvp_docket", None),
         ("rejected", "system:expiry", None),
         ("approved", None, None),
-        ("pending", "owner", None),
+        ("rejected", "owner@telegram", "owner_rejected"),
+        ("rejected", "someone-else", None),
+        ("pending", "dashboard:rest-api", None),
         ("expired", "system:expiry", None),
     ],
 )
@@ -98,3 +100,21 @@ def test_the_owners_own_response_is_read_from_the_calendar_row() -> None:
     assert ledger.owner_response(rows, "b") == "declined"
     assert ledger.owner_response(rows, "a") is None
     assert ledger.owner_response(rows, "missing") is None
+
+
+async def test_an_action_already_recorded_by_this_process_skips_the_write() -> None:
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    pool = AsyncMock()
+    pool.fetchval.return_value = True
+    marker = {"policy_id": str(uuid4()), "policy_version": 1}
+    action = uuid4()
+    first = await ledger.record_outcome(
+        pool, action_id=action, marker=marker, outcome="approved_as_prepared"
+    )
+    again = await ledger.record_outcome(
+        pool, action_id=action, marker=marker, outcome="approved_as_prepared"
+    )
+    assert (first, again) == (True, False)
+    assert pool.fetchval.await_count == 1
