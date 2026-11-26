@@ -2484,9 +2484,11 @@ export interface paths {
          *
          *     Read from the connector's revision journal through a narrow reader; the owner's own edits and
          *     events the owner declined are not returned. A failed read answers ``changes_available=false``
-         *     with no items (never an empty "no changes"). ``since`` must carry a timezone, must not be in the
-         *     future and must be at most 14 days old (HTTP 400 otherwise): the window is never shortened
-         *     silently.
+         *     with no items (never an empty "no changes"). ``since`` defaults to seven days ago; if given it
+         *     must carry a timezone, must not be in the future and must be at most 14 days old (HTTP 400
+         *     otherwise): the window is never shortened silently. Only events still ahead are returned, one
+         *     item per organizer change across the owner's calendars, never a baseline or a new invitation;
+         *     ``truncated`` says more exist than the cap.
          */
         get: operations["get_workspace_changes_api_calendar_workspace_changes_get"];
         put?: never;
@@ -45931,9 +45933,9 @@ export interface operations {
     };
     get_workspace_changes_api_calendar_workspace_changes_get: {
         parameters: {
-            query: {
-                /** @description Return changes observed after this instant */
-                since: string;
+            query?: {
+                /** @description Return changes observed after this instant (default: seven days ago) */
+                since?: string | null;
             };
             header?: never;
             path?: never;

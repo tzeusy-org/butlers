@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 CHANGES_MAX_AGE = timedelta(days=14)
 CHANGES_LIMIT = 200
 
-_READ_SQL = "SELECT * FROM public.read_calendar_event_changes($1, $2)"
+_READ_SQL = "SELECT * FROM public.read_calendar_event_changes($1, $2, $3::text[])"
+# The owner's own connected account addresses: an organizer among them is the owner.
+_OWNER_EMAILS_SQL = (
+    "SELECT DISTINCT lower(metadata ->> 'account_email') AS email FROM calendar_sources "
+    "WHERE nullif(btrim(metadata ->> 'account_email'), '') IS NOT NULL"
+)
 # The projection knows which events are untrusted invitations: their text never leaves, so the
 # title, entry and journal location of a quarantined (or unprojected) event are left out.
 _TITLES_SQL = f"""
@@ -82,8 +87,16 @@ def _change(row: Any) -> Change:
 
 async def query_calendar_changes(db: DatabaseManager, *, since: datetime) -> ChangesRead:
     """Changes observed after ``since``, newest first; titles are best effort, never required."""
+    owner_emails: list[str] = []
     try:
-        rows = await db.pool("switchboard").fetch(_READ_SQL, since, CHANGES_LIMIT + 1)
+        found_emails, _failed = await db.fan_out_with_status(_OWNER_EMAILS_SQL)
+        owner_emails = sorted({r["email"] for rows_of in found_emails.values() for r in rows_of})
+    except Exception:
+        # Without the address list an owner edit made through another account can look like an
+        # organizer change; the provider's own organizer.self still excludes the common case.
+        logger.warning("calendar changes: owner addresses unavailable", exc_info=True)
+    try:
+        rows = await db.pool("switchboard").fetch(_READ_SQL, since, CHANGES_LIMIT + 1, owner_emails)
     except Exception:
         logger.warning("calendar changes: journal reader failed", exc_info=True)
         return ChangesRead(changes=[], available=False)

@@ -1979,7 +1979,9 @@ def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
 
 @router.get("/changes", response_model=ApiResponse[CalendarChangesResponse])
 async def get_workspace_changes(
-    since: datetime = Query(..., description="Return changes observed after this instant"),
+    since: datetime | None = Query(
+        None, description="Return changes observed after this instant (default: seven days ago)"
+    ),
     *,
     db: Db,
 ) -> ApiResponse[CalendarChangesResponse]:
@@ -1987,13 +1989,17 @@ async def get_workspace_changes(
 
     Read from the connector's revision journal through a narrow reader; the owner's own edits and
     events the owner declined are not returned. A failed read answers ``changes_available=false``
-    with no items (never an empty "no changes"). ``since`` must carry a timezone, must not be in the
-    future and must be at most 14 days old (HTTP 400 otherwise): the window is never shortened
-    silently.
+    with no items (never an empty "no changes"). ``since`` defaults to seven days ago; if given it
+    must carry a timezone, must not be in the future and must be at most 14 days old (HTTP 400
+    otherwise): the window is never shortened silently. Only events still ahead are returned, one
+    item per organizer change across the owner's calendars, never a baseline or a new invitation;
+    ``truncated`` says more exist than the cap.
     """
+    now = datetime.now(UTC)
+    if since is None:
+        since = now - timedelta(days=7)
     if since.tzinfo is None:
         raise HTTPException(status_code=400, detail="since must include a timezone")
-    now = datetime.now(UTC)
     if since > now:
         raise HTTPException(status_code=400, detail="since must not be in the future")
     if now - since > CHANGES_MAX_AGE:

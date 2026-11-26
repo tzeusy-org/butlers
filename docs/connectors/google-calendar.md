@@ -54,13 +54,18 @@ consecutive revisions; it is not stored.
   status only; `prior_known=false` when no earlier version was journaled). Baselines emit nothing,
   and a plan change never asserts attendance or counts as activity.
 - The dashboard's moved-under-you changes feed (`GET /api/calendar/workspace/changes?since=`,
-  bu-5ii4gj.11 slice N3) reads the journal through `public.read_calendar_event_changes` (core_386),
-  a capped `SECURITY DEFINER` reader on the Switchboard role: for revisions of the last 14 days
-  whose start, end, status or location differs from the previous version (or that have no earlier
-  one) it returns the event id, calendar id, observation time and those prior and new values, plus
-  `organizer_self`, and nothing else (no raw payload, attendee, title or description). Revisions the
-  owner made as organizer and revisions of events the owner declined are left out; a policy-blocked
-  row (times and status only) is returned with `organizer_self` null, shown as "organizer unknown".
-  A failed read is `changes_available: false`, never an empty list.
+  default seven days ago, bu-5ii4gj.11 slice N3) reads the journal through
+  `public.read_calendar_event_changes` (core_386), a `SECURITY DEFINER` reader on the Switchboard
+  role. It returns, for `change` and `resync` revisions of the last 14 days that differ from the
+  event's previous version in start, end, status or location, the event id, calendar id, observation
+  time, those prior and new values and `organizer_self`, and nothing else (no raw payload, attendee,
+  title or description). It leaves out baselines, revisions with no earlier version (a new
+  invitation), events already past (a cancellation is judged on its prior start), revisions the owner
+  made (the provider's `organizer.self`, or an organizer address among the owner's connected account
+  addresses the route passes in) and events the owner declined. One change journaled on several of
+  the owner's calendars is one row (iCalUID plus the new values, earliest observation). It fetches
+  one row past the cap of 200 so the route can set `truncated`. A policy-blocked row (times and
+  status only) is returned with `organizer_self` null, shown as "organizer unknown". A failed read is
+  `changes_available: false`, never an empty list.
 - If the write fails, nothing is submitted, the sync token is held and health is **degraded**
   ("Google Calendar revision journal write failed"); the next cycle journals the same delta.

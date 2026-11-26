@@ -8,7 +8,8 @@ Create Date: 2026-11-27 09:00:00.000000
 runtime role but the writer and the chronicler may read it. The Needs-you queue (slice N3) must show
 what an organizer moved under the owner. This SECURITY DEFINER function returns exactly that and
 nothing else: for each revision observed after ``p_since`` whose start, end, status or location
-differs from the same event's previous journaled revision (or that has no earlier version), the
+differs from the same event's previous journaled revision (a revision with no earlier version is
+not a change: a newly seen invitation belongs to the invitations list), the
 event id, calendar id, observation time, the prior and new values of those fields, whether a prior
 version was known, and ``organizer_self``. No title, attendee, description, conference or raw
 column.
@@ -16,7 +17,11 @@ column.
 Rows the owner made themselves (the organizer is the owner) and rows of an event the owner has
 declined are not returned. A policy-blocked row keeps times and status only: its organizer cannot
 be told, so ``organizer_self`` is NULL and it is returned, never hidden. The window is clamped to
-14 days and the result to 200 rows, newest first.
+14 days and the result to 201 rows (one past the route's cap of 200, so it can say "truncated"),
+newest first. Only events still in the future count (the prior start, for a cancellation), and one
+change journaled on several of the owner's calendars is one row, keyed on iCalUID plus the new
+values, keeping the earliest observation. ``p_owner_emails`` are the owner's own connected account
+addresses: an organizer among them is the owner (``organizer_self`` true).
 
 ``search_path`` is pinned and every relation is schema-qualified. EXECUTE is revoked from PUBLIC
 as its own statement and granted to the Switchboard role only (the dashboard reads through it, like
@@ -35,11 +40,12 @@ branch_labels = None
 depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_386:calendar-changes', 0))"
-_FUNCTION = "public.read_calendar_event_changes(timestamptz, integer)"
+_FUNCTION = "public.read_calendar_event_changes(timestamptz, integer, text[])"
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
 
 CREATE_FUNCTION = """
-CREATE OR REPLACE FUNCTION public.read_calendar_event_changes(p_since timestamptz, p_limit integer)
+CREATE OR REPLACE FUNCTION public.read_calendar_event_changes(
+    p_since timestamptz, p_limit integer, p_owner_emails text[])
 RETURNS TABLE (
     event_id text, calendar_id text, observed_at timestamptz, prior_known boolean,
     all_day boolean,
@@ -53,7 +59,12 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $fn$
-    SELECT c.event_id, c.calendar_id, c.observed_at, c.prior_known, c.all_day,
+    SELECT d.event_id, d.calendar_id, d.observed_at, d.prior_known, d.all_day,
+           d.prior_start, d.new_start, d.prior_end, d.new_end,
+           d.prior_status, d.new_status, d.prior_location, d.new_location, d.organizer_self
+      FROM (
+    SELECT DISTINCT ON (c.dedupe_key, c.new_start, c.new_end, c.new_status, c.new_location)
+           c.event_id, c.calendar_id, c.observed_at, c.id, c.prior_known, c.all_day,
            c.prior_start, c.new_start, c.prior_end, c.new_end,
            c.prior_status, c.new_status, c.prior_location, c.new_location, c.organizer_self
       FROM (
@@ -64,8 +75,12 @@ AS $fn$
                p.status AS prior_status, r.status AS new_status,
                p.raw ->> 'location' AS prior_location, r.raw ->> 'location' AS new_location,
                CASE WHEN r.raw IS NULL THEN NULL
-                    ELSE COALESCE((r.raw -> 'organizer' ->> 'self') = 'true', false) END
-                 AS organizer_self,
+                    ELSE COALESCE((r.raw -> 'organizer' ->> 'self') = 'true', false)
+                         OR pg_catalog.lower(r.raw -> 'organizer' ->> 'email') = ANY (
+                              ARRAY(SELECT pg_catalog.lower(m)
+                                      FROM pg_catalog.unnest(COALESCE(p_owner_emails, '{}')) AS m))
+                    END AS organizer_self,
+               COALESCE(r.raw ->> 'iCalUID', r.event_id) AS dedupe_key,
                COALESCE((
                    SELECT bool_or(a ->> 'self' = 'true' AND a ->> 'responseStatus' = 'declined')
                      FROM pg_catalog.jsonb_array_elements(
@@ -93,13 +108,18 @@ AS $fn$
       ) AS c
      WHERE c.organizer_self IS NOT TRUE
        AND NOT c.owner_declined
-       AND (NOT c.prior_known
-            OR c.new_start IS DISTINCT FROM c.prior_start
+       AND c.prior_known
+       AND (c.new_start IS DISTINCT FROM c.prior_start
             OR c.new_end IS DISTINCT FROM c.prior_end
             OR c.new_status IS DISTINCT FROM c.prior_status
             OR c.new_location IS DISTINCT FROM c.prior_location)
-     ORDER BY c.observed_at DESC, c.id DESC
-     LIMIT LEAST(GREATEST(p_limit, 1), 200)
+       AND COALESCE(CASE WHEN c.new_status = 'cancelled' THEN c.prior_start ELSE c.new_start END,
+                    c.new_start, c.prior_start) > pg_catalog.now()
+     ORDER BY c.dedupe_key, c.new_start, c.new_end, c.new_status, c.new_location,
+              c.observed_at ASC, c.id ASC
+      ) AS d
+     ORDER BY d.observed_at DESC, d.id DESC
+     LIMIT LEAST(GREATEST(p_limit, 1), 201)
 $fn$
 """
 

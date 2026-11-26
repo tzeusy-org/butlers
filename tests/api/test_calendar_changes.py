@@ -39,7 +39,7 @@ def _journal_row(event_id="evt-1", *, organizer_self=False, prior_known=True, **
     return row
 
 
-def _build(app, *, journal=None, journal_error=None, titles=None):
+def _build(app, *, journal=None, journal_error=None, titles=None, emails=None):
     db = MagicMock(spec=DatabaseManager)
     db.butler_names = ["general"]
     switchboard = MagicMock()
@@ -48,17 +48,24 @@ def _build(app, *, journal=None, journal_error=None, titles=None):
     else:
         switchboard.fetch = AsyncMock(return_value=journal or [])
     db.pool = MagicMock(return_value=switchboard)
-    db.fan_out_with_status = AsyncMock(return_value=({"general": titles or []}, []))
+
+    async def _fan_out(query, args=(), butler_names=None, deadline_seconds=None):
+        if "account_email" in query:
+            return {"general": [{"email": e} for e in (emails or [])]}, []
+        return {"general": titles or []}, []
+
+    db.fan_out_with_status = AsyncMock(side_effect=_fan_out)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: AsyncMock(spec=MCPClientManager)
     return app, db, switchboard
 
 
-async def _get(app, since):
+async def _get(app, since=None):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        return await client.get("/api/calendar/workspace/changes", params={"since": since})
+        params = {"since": since} if since is not None else {}
+        return await client.get("/api/calendar/workspace/changes", params=params)
 
 
 def _since(hours=1):
@@ -178,3 +185,25 @@ async def test_calendar_changes_a_quarantined_or_unprojected_event_shows_no_thir
         assert change["title"] is None and change["entry_id"] is None
         assert change["prior_location"] is None and change["new_location"] is None
         assert change["new_start_at"] is not None  # the move itself is still shown
+
+
+async def test_calendar_changes_defaults_to_seven_days_and_passes_the_owners_addresses(app):
+    app, _, switchboard = _build(
+        app, journal=[], emails=["me@example.test", "me.work@example.test"]
+    )
+
+    resp = await _get(app)
+
+    assert resp.status_code == 200
+    args = switchboard.fetch.await_args.args
+    assert abs((_NOW - args[1]) - timedelta(days=7)) < timedelta(minutes=1)
+    assert args[3] == ["me.work@example.test", "me@example.test"]
+
+
+async def test_calendar_changes_without_the_owners_addresses_still_answers(app):
+    app, db, _ = _build(app, journal=[_journal_row()])
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("sources unreadable"))
+
+    resp = await _get(app, _since())
+
+    assert resp.status_code == 200 and len(resp.json()["data"]["changes"]) == 1
