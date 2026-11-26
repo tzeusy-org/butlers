@@ -1,7 +1,7 @@
 """reminder_receipts: one row per rebase or retirement of an anchored reminder (bu-5ii4gj.10 R-S2).
 
 Revision ID: core_383
-Revises: core_380
+Revises: core_384
 Create Date: 2026-11-26 15:00:00.000000
 
 When the event an anchored reminder follows moves, the reminder is rebased; when the event is
@@ -23,7 +23,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_383"
-down_revision = "core_380"
+down_revision = "core_384"
 branch_labels = None
 depends_on = None
 
