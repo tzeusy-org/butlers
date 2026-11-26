@@ -41,6 +41,14 @@ export interface CalendarVerdictOpenerProps {
   onMoreInvitations?: () => void;
   onOpenInvitation?: (entryId: string) => void;
   invitationDetailLoading?: boolean;
+  /** Pending proposals in the window; `null`/`undefined` is unknown, never "none". */
+  proposalCount?: number | null;
+  proposalsLoading?: boolean;
+  proposalsError?: boolean;
+  /** Prompted, unanswered meeting debriefs. */
+  debriefCount?: number | null;
+  debriefsLoading?: boolean;
+  debriefsError?: boolean;
 }
 
 function plural(count: number, singular: string, pluralWord = `${singular}s`): string {
@@ -159,6 +167,12 @@ export function CalendarVerdictOpener({
   onMoreInvitations,
   onOpenInvitation,
   invitationDetailLoading = false,
+  proposalCount = null,
+  proposalsLoading = false,
+  proposalsError = false,
+  debriefCount = null,
+  debriefsLoading = false,
+  debriefsError = false,
 }: CalendarVerdictOpenerProps) {
   const [selectedEvidence, setEvidence] = useState<{ entryId: string; index: number } | null>(null);
   const evidence = selectedEvidence
@@ -180,6 +194,9 @@ export function CalendarVerdictOpener({
     { label: "calendar workspace", isLoading: workspaceLoading, isError: workspaceError },
     { label: "calendar invitations", isLoading: invitationsLoading || invitationsRefreshing,
       isError: invitationsError || !invitationsAvailable },
+    // A source that cannot be read is named as unknown: a missing count is never "nothing".
+    { label: "calendar proposals", isLoading: proposalsLoading, isError: proposalsError },
+    { label: "meeting debriefs", isLoading: debriefsLoading, isError: debriefsError },
     {
       label: "calendar source freshness",
       isLoading: sourceFreshnessLoading,
@@ -222,9 +239,14 @@ export function CalendarVerdictOpener({
           },
         ]
       : [];
+  const waiting: VerdictClause[] = [
+    ...(proposalCount ? [{ key: "pending-proposals", text: `${plural(proposalCount, "proposed event")} to review` }] : []),
+    ...(debriefCount ? [{ key: "pending-debriefs", text: `${plural(debriefCount, "meeting")} to debrief` }] : []),
+  ];
   const clauses = [
     ...dayClauses.lead,
     ...needsYou,
+    ...waiting,
     ...dayClauses.tail,
     ...buildClauses({ freshnessDetail, conflicts }),
   ];

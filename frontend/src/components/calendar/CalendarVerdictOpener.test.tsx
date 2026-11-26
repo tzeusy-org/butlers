@@ -302,3 +302,18 @@ describe("CalendarVerdictOpener", () => {
     } finally { cleanup(); }
   });
 });
+
+describe("CalendarVerdictOpener waiting counts (bu-5ii4gj.11 N1)", () => {
+  it("counts proposals and debriefs in the verdict", () => {
+    const html = render({ proposalCount: 2, debriefCount: 1 });
+    expect(html).toContain("2 proposed events to review");
+    expect(html).toContain("1 meeting to debrief");
+  });
+
+  it("names an unreadable proposals or debriefs source as unknown, never as none", () => {
+    const html = render({ proposalCount: null, proposalsError: true, debriefsError: true });
+    expect(html).toContain("calendar proposals unavailable");
+    expect(html).toContain("meeting debriefs unavailable");
+    expect(html).not.toContain("calendar-verdict-all-clear");
+  });
+});
