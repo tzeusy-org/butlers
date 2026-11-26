@@ -14,7 +14,7 @@ one keyboard queue.
 - **One panel.** A Needs-you panel on the calendar page lists the items in urgency order and is
   driven by the shared `useListTriage` hook, so `j`/`k`, the per-type verbs, the `?` help sheet and
   the command palette come from the one shortcut registry.
-- **Honest counts.** The verdict clause counts the queue, and a kind whose read failed or is
+- **Honest counts.** The queue heading counts the queue (the verdict keeps its per-kind clauses), and a kind whose read failed or is
   partial is named as unknown instead of being counted as empty.
 
 ## Out of scope

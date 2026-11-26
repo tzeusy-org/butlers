@@ -72,16 +72,18 @@ person SHALL keep the existing approval behaviour: the queue never sends one its
 - **WHEN** an overlap item is selected
 - **THEN** `a` SHALL not be bound and SHALL not appear in the help sheet for that item
 
-### Requirement: The verdict counts the queue
+### Requirement: The queue states its own count
 
 ID: REQ-calendar-needs-you-queue-004
 Source: bu-5ii4gj.11 track N, slice N2
 Scope: v1-mandatory
 
-The calendar verdict SHALL state the queue's count ("3 need you") as a clause, with the lower-bound
-form of requirement 002 when a kind is unknown. A queue of zero complete kinds SHALL add no clause.
+The queue's heading SHALL state its count ("3 need you"), in the lower-bound form of requirement
+002 when a kind is unknown, and SHALL say nothing needs the owner only when every kind is complete
+and empty. The verdict's own per-kind clauses already count each kind and SHALL stay as they are; the
+queue adds no second verdict clause.
 
-#### Scenario: The count reaches the verdict
+#### Scenario: The count is stated
 
-- **WHEN** three items wait and all kinds are complete
-- **THEN** the verdict SHALL carry the clause "3 need you"
+- **WHEN** three items wait and a kind is unknown
+- **THEN** the heading SHALL read "3+ need you"
