@@ -24,7 +24,7 @@ vi.mock("@/hooks/use-meeting-debriefs", async () =>
 vi.mock("@/hooks/use-calendar-workspace", async () =>
   (await import("@/test/calendar-page/mocks")).calendarWorkspaceHookMock(),
 );
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 describe("CalendarWorkspacePage", () => {
   const { container, renderPage, getSearchText, openConflictOptions } =
@@ -86,6 +86,30 @@ describe("CalendarWorkspacePage", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Kept both. The radar stays quiet until one of them changes.",
     );
+  });
+
+  it("says so when the owner already rejected this response, not that it failed", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onSuccess?: (r: unknown) => void }) => {
+        options?.onSuccess?.({ data: { status: "responded", response_outcome: "rejected" } });
+      },
+    );
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
+
+    await act(async () => {
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(toast.info).toHaveBeenCalledWith(
+      "You already rejected this response. Nothing was sent.",
+    );
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("tells the owner when the overlap changed under them", async () => {

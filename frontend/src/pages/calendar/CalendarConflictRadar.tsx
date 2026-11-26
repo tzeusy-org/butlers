@@ -28,6 +28,9 @@ function outcomeMessage(result: ConflictResolveResponse): string {
     case "parked":
       return "Move sent for your approval.";
     case "responded":
+      if (result.response_outcome === "rejected") {
+        return "You already rejected this response. Nothing was sent.";
+      }
       return result.response_outcome === "pending_approval"
         ? "Response sent for your approval."
         : "Response recorded on your calendar.";
@@ -64,7 +67,10 @@ export function CalendarConflictRadar({
             end: scanWindow.end,
           },
           {
-            onSuccess: (response) => toast.success(outcomeMessage(response.data)),
+            onSuccess: (response) =>
+              response.data.response_outcome === "rejected"
+                ? toast.info(outcomeMessage(response.data))
+                : toast.success(outcomeMessage(response.data)),
             onError: (error) =>
               toast.error(
                 error instanceof ApiError && error.status === 409
