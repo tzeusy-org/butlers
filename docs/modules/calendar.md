@@ -355,8 +355,10 @@ projection (slice R-S3). While the occurrence is live at its original start the 
 usual. If its event was cancelled, or the occurrence moved or was cancelled, the reminder is held:
 neither sent nor marked sent, so a move back sends it and the rebase or retire path owns the rest.
 If no projection row names the event, or the read fails, it still fires, with an
-"(as of HH:MM UTC; event not rechecked)" suffix: never dropped silently. Absolute reminders are
-never rechecked. Recurring anchors are rechecked on their instance.
+"(as of HH:MM <owner zone>; event not rechecked)" suffix in the owner's zone, never dropped silently.
+Absolute reminders are never rechecked. Recurring anchors are rechecked on their instance (the
+anchor stores the instance's start when the reminder was set; an instance that moves again holds
+the reminder).
 
 ## Connector sync
 

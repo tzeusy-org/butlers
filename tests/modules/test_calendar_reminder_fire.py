@@ -83,16 +83,78 @@ async def test_a_cancelled_event_holds_the_reminder(db):
     notify.assert_not_awaited()
 
 
-async def test_a_missing_anchor_row_still_fires_stamped_as_of(db):
-    pool, module, _event, _id = await _due_reminder(db)
+async def test_a_missing_anchor_row_still_fires_stamped_in_the_owner_zone(db, monkeypatch):
+    from zoneinfo import ZoneInfo
+
+    async def tokyo(_pool):
+        return ZoneInfo("Asia/Tokyo")
+
+    monkeypatch.setattr("butlers.jobs.briefing.owner_briefing_zone", tokyo)
+    pool, module, _event, reminder_id = await _due_reminder(db)
     await pool.execute("DELETE FROM calendar_events WHERE origin_ref = 'dentist'")
+    await pool.execute(
+        "UPDATE calendar_events SET updated_at = '2026-12-01T03:30:00+00' WHERE id = $1::uuid",
+        reminder_id,
+    )
     notify = AsyncMock()
 
     assert await module.tick("relationship", notify_fn=notify) == 1
 
-    message = _message(notify)
-    assert message.startswith("Reminder: Leave for the dentist (as of ")
-    assert "UTC; event not rechecked)" in message
+    assert _message(notify) == (
+        "Reminder: Leave for the dentist (as of 12:30 JST; event not rechecked)"
+    )
+
+
+async def _recurring_instance_reminder(db):
+    pool, module, mcp, event = await _world(db)
+    original = event.start_at + timedelta(days=7)
+    moved = original + timedelta(hours=3)
+    await pool.execute(
+        "UPDATE calendar_events SET recurrence_rule = 'RRULE:FREQ=WEEKLY' "
+        "WHERE origin_ref = 'dentist'"
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref, "
+        "timezone, starts_at, ends_at, status, is_exception) "
+        "SELECT id, source_id, 'dentist_' || to_char($1::timestamptz AT TIME ZONE 'UTC', "
+        "'YYYYMMDD\"T\"HH24MISS\"Z\"'), 'UTC', $2::timestamptz, "
+        "$2::timestamptz + interval '1 hour', 'confirmed', true "
+        "FROM calendar_events WHERE origin_ref = 'dentist'",
+        original,
+        moved,
+    )
+    result = await _create(
+        mcp, anchor_event_id="dentist", anchor_original_start=original, offset_minutes=-30
+    )
+    await pool.execute(
+        "UPDATE calendar_events SET starts_at = now() - interval '1 minute', "
+        "ends_at = now() + interval '14 minutes' WHERE id = $1::uuid",
+        result["event_id"],
+    )
+    return pool, module, moved
+
+
+async def test_a_recurring_instance_anchor_fires_while_the_instance_is_where_it_was(db):
+    pool, module, _moved = await _recurring_instance_reminder(db)
+    notify = AsyncMock()
+
+    assert await module.tick("relationship", notify_fn=notify) == 1
+
+    assert _message(notify) == "Reminder: Leave for the dentist"
+
+
+async def test_a_recurring_instance_that_moves_again_holds_the_reminder(db):
+    pool, module, moved = await _recurring_instance_reminder(db)
+    await pool.execute(
+        "UPDATE calendar_event_instances SET starts_at = $1::timestamptz, ends_at = $1::timestamptz + interval '1 hour' "
+        "WHERE origin_instance_ref LIKE 'dentist_%'",
+        moved + timedelta(hours=2),
+    )
+    notify = AsyncMock()
+
+    assert await module.tick("relationship", notify_fn=notify) == 0
+
+    notify.assert_not_awaited()
 
 
 async def test_an_absolute_reminder_is_never_rechecked(db):

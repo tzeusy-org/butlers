@@ -231,8 +231,13 @@ class RemindersMixin:
                     )
                     continue
                 if state == "unknown":
-                    as_of = row.get("updated_at") or now
-                    message += f" (as of {as_of.astimezone(UTC):%H:%M} UTC; event not rechecked)"
+                    from butlers.jobs.briefing import owner_briefing_zone
+
+                    # Owner-facing text is in the owner's zone, never UTC.
+                    as_of = (row.get("updated_at") or now).astimezone(
+                        await owner_briefing_zone(pool)
+                    )
+                    message += f" (as of {as_of:%H:%M %Z}; event not rechecked)"
 
             from butlers.jobs.owner_notify import owner_notify_request
 
