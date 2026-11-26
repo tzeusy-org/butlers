@@ -39,7 +39,7 @@ async def _world(db):
 async def _agreements(pool):
     return await pool.fetch(
         "SELECT agreed_starts_at, agreed_ends_at, location_digest, attendees_digest, "
-        "response_status FROM calendar_owner_agreements"
+        "response_status FROM calendar_owner_agreements WHERE ended_at IS NULL"
     )
 
 
@@ -128,3 +128,25 @@ async def test_the_current_terms_follow_a_move_while_the_agreed_terms_stay(db):
     assert row["current_starts_at"] == moved.start_at and row["current_ends_at"] == moved.end_at
     assert row["current_location_digest"] is not None
     assert row["location_digest"] != row["current_location_digest"]
+
+
+async def test_declining_leaves_a_tombstone_and_accepting_again_starts_a_fresh_agreement(db):
+    pool, source = await _world(db)
+    event = _event(attendees=_attendees())
+    await _project(_module(pool), source, event)
+    declined = event.model_copy(update={"attendees": _attendees(AttendeeResponseStatus.declined)})
+    await _project(_module(pool), source, declined)
+
+    assert await pool.fetchval("SELECT count(*) FROM calendar_owner_agreements") == 1
+    assert await pool.fetchval("SELECT ended_at IS NOT NULL FROM calendar_owner_agreements")
+
+    moved = event.model_copy(
+        update={
+            "start_at": event.start_at + timedelta(hours=3),
+            "end_at": event.end_at + timedelta(hours=3),
+        }
+    )
+    await _project(_module(pool), source, moved)
+    rows = await _agreements(pool)
+
+    assert len(rows) == 1 and rows[0]["agreed_starts_at"] == moved.start_at

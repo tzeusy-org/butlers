@@ -82,7 +82,9 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
         agreed = None if row["status"] == "cancelled" else owner_agreement(metadata)
         if agreed is None:
             await pool.execute(
-                "DELETE FROM calendar_owner_agreements WHERE event_id = $1", event_id
+                "UPDATE calendar_owner_agreements SET ended_at = now() "
+                "WHERE event_id = $1 AND ended_at IS NULL",
+                event_id,
             )
             return "ended"
         response, others = agreed
@@ -93,8 +95,14 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
         followed = await pool.fetchval(
             """
             UPDATE calendar_owner_agreements
-               SET current_starts_at = $2, current_ends_at = $3, current_location_digest = $4,
-                   current_attendees_digest = $5, current_observed_at = now()
+               SET occurrence_start = CASE WHEN ended_at IS NULL THEN occurrence_start ELSE $2 END,
+                   agreed_starts_at = CASE WHEN ended_at IS NULL THEN agreed_starts_at ELSE $2 END,
+                   agreed_ends_at = CASE WHEN ended_at IS NULL THEN agreed_ends_at ELSE $3 END,
+                   location_digest = CASE WHEN ended_at IS NULL THEN location_digest ELSE $4 END,
+                   attendees_digest = CASE WHEN ended_at IS NULL THEN attendees_digest ELSE $5 END,
+                   response_status = CASE WHEN ended_at IS NULL THEN response_status ELSE $6 END,
+                   current_starts_at = $2, current_ends_at = $3, current_location_digest = $4,
+                   current_attendees_digest = $5, current_observed_at = now(), ended_at = NULL
              WHERE event_id = $1
             RETURNING id
             """,
@@ -103,6 +111,7 @@ async def record_owner_agreement(pool: asyncpg.Pool, event_id: uuid.UUID) -> str
             row["ends_at"],
             location,
             others_digest,
+            response,
         )
         if followed:
             return "kept"

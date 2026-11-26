@@ -297,7 +297,8 @@ A-S1 of bu-5ii4gj.10): the start and end, and digests of the location and of the
 never the location, a join link or an address. One row per event: a later move or edit leaves the
 row as agreed, so a later drift job can compare the event with what the owner said yes to. The
 owner declining or clearing their answer, the event being cancelled, or the event going away ends
-the agreement. Recurring events are not recorded yet, and `join_digest` stays empty until the
+the agreement: the row is kept with `ended_at` stamped, so a reader can tell an ended agreement from
+none, and accepting again starts a fresh one. Recurring events are not recorded yet, and `join_digest` stays empty until the
 provider mapping carries conference data.
 
 ## Connector sync
