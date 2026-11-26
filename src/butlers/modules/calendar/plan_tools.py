@@ -114,6 +114,7 @@ def plan_payload(plan: Plan, window: tuple[datetime, datetime]) -> dict[str, Any
                 "exact_call": s.exact_call,
                 "authority": s.authority,
                 "reason": s.reason,
+                "depends_on": list(s.depends_on),
             }
             for s in plan.steps
         ],
@@ -206,7 +207,8 @@ def register_plan_tools(
         ``shift_minutes`` (signed) and leaves invited meetings alone. Returns
         ``{plan_id, plan_digest, steps, skipped}``: each step names its exact call and authority
         class, and every skipped event says why. A window over 25 hours, more than 16 steps, or a
-        stale calendar source gives no steps and a reason. Titles are never returned.
+        stale or partial calendar source gives no steps and the reason ``plan_unavailable``. Titles are
+        never returned.
         """
         return await plan_change(
             module,

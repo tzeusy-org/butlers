@@ -125,7 +125,7 @@ async def test_a_stale_source_gives_no_steps_and_says_why():
         return_value="UTC",
     ):
         result = await _clear(pool)
-    assert result["status"] == "refused" and result["reason"] == "stale_source"
+    assert result["status"] == "refused" and result["reason"] == "plan_unavailable"
     assert result["steps"] == []
 
 
@@ -136,7 +136,7 @@ async def test_a_failed_attempt_after_the_last_success_is_stale_too():
         "butlers.modules.calendar.plan_tools.load_configured_general_timezone",
         return_value="UTC",
     ):
-        assert (await _clear(pool))["reason"] == "stale_source"
+        assert (await _clear(pool))["reason"] == "plan_unavailable"
 
 
 async def test_a_clear_with_no_owner_zone_is_refused_not_guessed():

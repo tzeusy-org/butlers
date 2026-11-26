@@ -101,6 +101,7 @@ def resolution_event(row: Mapping[str, Any], *, entry_id: str | None = None) -> 
         # The instance's own start is the occurrence key; the series is never offered an edit.
         instance_start_at=row["instance_starts_at"] if recurring else None,
         instance_event_id=_instance_event_id(row) if recurring else None,
+        status=str(row.get("instance_status") or row.get("event_status") or "") or None,
     )
 
 

@@ -117,7 +117,9 @@ def test_events_that_shift_together_do_not_block_each_other():
         delta=timedelta(hours=1),
         busy=[BusyInterval(e.entry_id, e.start_at, e.end_at) for e in events],
     )
-    assert [s.entry_id for s in plan.steps] == ["a", "b"]
+    # b vacates 10-11 for a, so b goes first and a declares the dependency.
+    assert [s.entry_id for s in plan.steps] == ["b", "a"]
+    assert plan.steps[0].depends_on == () and plan.steps[1].depends_on == (0,)
 
 
 def test_an_unprovable_all_day_unetagged_or_unnameable_event_is_skipped_with_its_reason():
@@ -177,7 +179,7 @@ def test_a_shift_into_the_past_is_skipped():
 
 def test_a_stale_source_gives_no_plan():
     plan = _clear([_ev("a", "owner_organized", 9)], stale_source=True)
-    assert plan.steps == [] and plan.reason == "stale_source"
+    assert plan.steps == [] and plan.reason == "plan_unavailable"
 
 
 def test_an_oversized_plan_is_refused_whole():
@@ -210,3 +212,80 @@ def test_a_shift_needs_a_real_delta_and_a_window_must_run_forward():
         compile_plan("shift_window", WINDOW, [], now=NOW, delta=timedelta(0))
     with pytest.raises(ValueError):
         compile_plan("clear_window", (DAY, DAY), [], now=NOW)
+
+
+def _shift(events, minutes=45):
+    return compile_plan(
+        "shift_window",
+        WINDOW,
+        events,
+        now=NOW,
+        delta=timedelta(minutes=minutes),
+        busy=[BusyInterval(e.entry_id, e.start_at, e.end_at) for e in events],
+    )
+
+
+def test_a_skipped_event_does_not_free_its_slot_for_another():
+    # The reviewer's probe: A is solo 13-14; B recurs with no instance id (skipped) 14-15.
+    a = _ev("a", "owner_organized", 13)
+    b = _ev("b", "owner_organized", 14, recurring=True)
+
+    plan = _shift([a, b])
+
+    assert plan.steps == []
+    assert {s.entry_id: s.why for s in plan.skipped} == {
+        "a": "destination_busy",
+        "b": "occurrence_unknown",
+    }
+
+
+def test_an_event_that_fails_its_destination_stops_vacating_for_the_rest():
+    # c (10-11) cannot move (destination 10:45-11:45 overlaps staying d); b must not use c's slot.
+    b = _ev("b", "owner_organized", 9, end_at=DAY + timedelta(hours=9, minutes=15))
+    c = _ev("c", "owner_organized", 10)
+    d = _ev("d", "owner_organized", 11, recurring=True)
+
+    plan = _shift([b, c, d], minutes=60)
+
+    assert plan.steps == []  # b's 10:00-10:15 would sit on c's old slot, which c never vacates
+    assert dict((s.entry_id, s.why) for s in plan.skipped) == {
+        "b": "destination_busy",
+        "c": "destination_busy",
+        "d": "occurrence_unknown",
+    }
+
+
+def test_a_cancelled_or_declined_event_is_skipped_with_its_reason():
+    plan = _shift(
+        [
+            _ev("gone", "owner_organized", 9, status="cancelled"),
+            _ev("no", "owner_organized", 10, owner_response="declined"),
+        ]
+    )
+    assert plan.steps == []
+    assert {s.entry_id: s.why for s in plan.skipped} == {
+        "gone": "cancelled",
+        "no": "already_declined",
+    }
+
+
+def test_request_ids_are_uuids_bound_to_the_event_state():
+    import uuid
+
+    events = [
+        _ev("block", "butlers_block", 9),
+        _ev("mtg", "invited", 11, owner_response="accepted"),
+    ]
+    first = _clear(events)
+    again = _clear(events)
+    changed = _clear([_ev("block", "butlers_block", 9, etag="etag-other"), events[1]])
+
+    def ids(plan):
+        return [s.exact_call["args"]["request_id"] for s in plan.steps]
+
+    assert ids(first) == ids(again)
+    for rid in ids(first):
+        uuid.UUID(rid)  # parses
+    by_entry = lambda plan: {s.entry_id: s.exact_call["args"]["request_id"] for s in plan.steps}  # noqa: E731
+    assert by_entry(first)["block"] != by_entry(changed)["block"]
+    assert by_entry(first)["mtg"] == by_entry(changed)["mtg"]
