@@ -18,8 +18,8 @@ step that may run without an owner card; an owner-organised event with no other 
 attendees, a decline of an invited meeting) SHALL be `parked_per_event`. Both of those SHALL reach
 the owner as a card: no step for an owner's own event runs without the owner's approval. A decline
 SHALL name its `send_updates` explicitly (default none). `clear_window` SHALL move each movable
-event to the earliest free slot after the window, within the owner's working hours in their zone and
-within a bounded horizon (`no_free_slot` is a skip, never a guess), and SHALL offer an invited
+event to the earliest free slot after the window that lies inside the owner's working hours in
+their own zone and within seven days of the window (`no_free_slot` is a skip, never a guess), and SHALL offer an invited
 meeting a decline or tentative; for a Butlers block it SHALL offer a move or a delete.
 `shift_window` SHALL move each movable event in the window by the same signed delta and SHALL leave
 invited meetings skipped, because only the organizer can move them. Skips SHALL be decided before
@@ -99,7 +99,7 @@ the digest differs. It SHALL return `pending` at once: every step that touches a
 (`owner_submit` and `parked_per_event`) SHALL be parked as its own approvals card, bound to the etag
 the plan was compiled against, and only `no_park_undo` steps (Butlers blocks) MAY run directly. An
 approved card runs through the approvals executor as its own stored call, sent once. A changed etag
-SHALL decline that step (`changed_since_plan`) and write nothing for it; a step whose dependency was
+SHALL decline that step (`changed_since_check`, and `changed_since_move` when its own move already changed the event) and write nothing for it; a step whose dependency was
 not applied SHALL decline `dependency_not_applied`, and a declined or uncertain step SHALL skip its
 dependents. A rejected or expired card SHALL run no step for it and the plan SHALL record the
 outcome. Each step SHALL leave a `plan_step` row in `calendar_action_log` with the plan id, step
@@ -123,7 +123,7 @@ event untouched and recomputes its dependents.
 #### Scenario: A changed event declines only its own step
 
 - **WHEN** one event's etag changed after the plan was compiled
-- **THEN** that step SHALL be recorded `declined` with `changed_since_plan` and the independent others SHALL still run
+- **THEN** that step SHALL be recorded `declined` with `changed_since_check` and the independent others SHALL still run
 
 #### Scenario: A declined step skips its dependents
 
