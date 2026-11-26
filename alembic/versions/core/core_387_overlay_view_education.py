@@ -12,13 +12,18 @@ fail-open health check on the read path, and a migration-tracked, reversible SEL
 ``education.state`` to ``butler_calendar_rw``.
 
 ``upgrade`` rebuilds the view from the schemas that exist; ``downgrade`` restores core_140's four.
+
+Core revisions replay once per butler schema against the shared ``calendar`` view and the shared
+``education.state`` grant. Both directions therefore take one advisory lock, upgrade is idempotent,
+and downgrade restores the four-schema view only when the last schema at or past this revision
+leaves it, so one butler stepping back never drops education from the view the others still use.
 """
 
 from __future__ import annotations
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision: str = "core_387"
 down_revision: str = "core_383"
@@ -31,9 +36,51 @@ _PREVIOUS_SCHEMAS: tuple[str, ...] = ("finance", "health", "relationship", "trav
 _SPECIALIST_SCHEMAS: tuple[str, ...] = ("education", *_PREVIOUS_SCHEMAS)
 _NEW_SCHEMA = "education"
 
+_SHARED_DDL_LOCK = "butlers:core_387:overlay_view"
+
 _CALENDAR_ROLE = "butler_calendar_rw"
 _VIEW_FQN = "calendar.v_overlay_contributions"
 _KEY_PREFIX = "calendar/overlay/%"
+
+
+def _installed_schema_count() -> int:
+    """Count schemas whose core chain is at this revision or a descendant of it."""
+    script = context.script
+    descendants: set[str] = set()
+    pending = [revision]
+    while pending:
+        current = pending.pop()
+        if current in descendants:
+            continue
+        descendants.add(current)
+        pending.extend(script.get_revision(current).nextrev)
+
+    bind = op.get_bind()
+    schemas = bind.exec_driver_sql(
+        """
+        SELECT namespace.nspname
+        FROM pg_class version_table
+        JOIN pg_namespace namespace ON namespace.oid = version_table.relnamespace
+        WHERE version_table.relname = 'alembic_version'
+          AND version_table.relkind IN ('r', 'p')
+          AND left(namespace.nspname, 3) <> 'pg_'
+          AND namespace.nspname <> 'information_schema'
+        """
+    ).scalars()
+    quote = bind.dialect.identifier_preparer.quote
+    count = 0
+    for schema in list(schemas):
+        versions = set(
+            bind.exec_driver_sql(f"SELECT version_num FROM {quote(schema)}.alembic_version")
+            .scalars()
+            .all()
+        )
+        count += int(bool(versions & descendants))
+    return count
+
+
+def _take_shared_lock() -> None:
+    op.execute(f"SELECT pg_advisory_xact_lock(hashtextextended('{_SHARED_DDL_LOCK}', 0))")
 
 
 def _state_table_exists(schema_name: str) -> bool:
@@ -79,10 +126,14 @@ def _rebuild_view(schemas: tuple[str, ...]) -> None:
 
 
 def upgrade() -> None:
+    _take_shared_lock()
     _grant_best_effort("GRANT", _NEW_SCHEMA)
     _rebuild_view(_SPECIALIST_SCHEMAS)
 
 
 def downgrade() -> None:
+    _take_shared_lock()
+    if _installed_schema_count() > 1:
+        return
     _rebuild_view(_PREVIOUS_SCHEMAS)
     _grant_best_effort("REVOKE", _NEW_SCHEMA)
