@@ -312,3 +312,50 @@ async def test_no_llm_session_spawned():
     assert result["butler"] == "health"
     # Only appointment + medication queries were issued — no LLM, no other fan-out.
     assert pool.fetch.await_count == 2
+
+
+async def test_a_failed_medication_read_flags_the_envelopes_incomplete_and_keeps_them():
+    from unittest.mock import AsyncMock, patch
+
+    from butlers.testing.briefing_clock import sgt_noon
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.records import records
+    from tests.jobs.calendar_contribution_harness import patch_state
+
+    key = overlay_key("2026-06-23")
+    previous = {"butler": "health", "date": "2026-06-23", "entries": [{"kind": "x"}], "claims": []}
+    state = ContributionStateStore(seed={key: previous})
+    pool = fake_pool(fetch=AsyncMock(side_effect=[records([]), RuntimeError("facts unreadable")]))
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
+        patch_state("butlers.jobs.calendar_overlay", state),
+    ):
+        result = await run_health_calendar_overlay_contribution(pool, None)
+
+    assert result["complete"] is False
+    assert state.store[key]["complete"] is False and state.store[key]["entries"] == [{"kind": "x"}]
+
+
+async def test_a_health_without_the_calendar_tables_reads_no_appointments_and_stays_complete():
+    from unittest.mock import AsyncMock, patch
+
+    import asyncpg
+
+    from butlers.testing.briefing_clock import sgt_noon
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.records import records
+    from tests.jobs.calendar_contribution_harness import patch_state
+
+    state = ContributionStateStore()
+    pool = fake_pool(
+        fetch=AsyncMock(
+            side_effect=[asyncpg.UndefinedTableError("no calendar_events"), records([])]
+        )
+    )
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
+        patch_state("butlers.jobs.calendar_overlay", state),
+    ):
+        result = await run_health_calendar_overlay_contribution(pool, None)
+
+    assert result["complete"] is True and result["appointment_entries"] == 0
