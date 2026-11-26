@@ -326,7 +326,11 @@ class TestResolutionRoute:
         """
         from butlers.core.condition_ledger import RESOLUTION_METADATA_KEYS
 
-        assert RESOLUTION_METADATA_KEYS == {"resolution_reason", "evidence_closed"}
+        assert RESOLUTION_METADATA_KEYS == {
+            "resolution_reason",
+            "evidence_closed",
+            "resolution_cause",
+        }
         assert not hasattr(job, "Observation")
         referenced = _referenced_names(job)
         assert "Observation" not in referenced

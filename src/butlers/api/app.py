@@ -76,6 +76,10 @@ from butlers.jobs.backup_facts_snapshot import (
     DEFAULT_SNAPSHOT_INTERVAL_S,
     run_backup_facts_snapshot_loop,
 )
+from butlers.jobs.calendar_agreement_drift import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_CALENDAR_AGREEMENT_DRIFT_CHECK_INTERVAL_S,
+)
+from butlers.jobs.calendar_agreement_drift import run_calendar_agreement_drift_loop
 from butlers.jobs.calendar_overcommitment import (
     CHECK_INTERVAL_ENV as _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
 )
@@ -219,6 +223,7 @@ async def lifespan(app: FastAPI):
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
     calendar_overcommitment_task: asyncio.Task | None = None
+    calendar_agreement_drift_task: asyncio.Task | None = None
     day_sheet_push_task: asyncio.Task | None = None
     backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
@@ -551,6 +556,27 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
 
+        # Changed since you said yes (bu-5ii4gj.10 A-S2): accepted occurrences compared with the
+        # calendar and the connector journal, reconciled into the owner condition ledger. See
+        # butlers.jobs.calendar_agreement_drift.
+        try:
+            calendar_agreement_drift_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "calendar_agreement_drift",
+                    lambda: run_calendar_agreement_drift_loop(
+                        get_db_manager(),
+                        interval_s=DEFAULT_CALENDAR_AGREEMENT_DRIFT_CHECK_INTERVAL_S,
+                    ),
+                    health=job_health.recorder(
+                        "calendar_agreement_drift",
+                        "periodic",
+                        DEFAULT_CALENDAR_AGREEMENT_DRIFT_CHECK_INTERVAL_S,
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start calendar-agreement-drift loop", exc_info=True)
+
         # Day sheet push (bu-5ii4gj.2 S3): tomorrow's day sheet to the owner, from the same
         # projection the dashboard serves. Dark: each tick is a no-op unless
         # DAY_SHEET_PUSH_ENABLED is set. See butlers.jobs.day_sheet_push.
@@ -685,6 +711,10 @@ async def lifespan(app: FastAPI):
         calendar_overcommitment_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_overcommitment_task
+    if calendar_agreement_drift_task is not None:
+        calendar_agreement_drift_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_agreement_drift_task
     if day_sheet_push_task is not None:
         day_sheet_push_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

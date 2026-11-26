@@ -64,7 +64,8 @@ producer SHALL count against the timed lane's per-day cap of six, shared with ev
 producer, so a burst of moved meetings cannot exceed it. A change that reverts before
 delivery SHALL withdraw the candidate with reason `premise_false`; a revert after delivery SHALL
 amend the delivered message in place, struck through, once. Every resolution SHALL record its cause
-(`reverted`, `declined`, `cancelled` or `started`) and only `reverted` SHALL amend a delivered
+(`reverted`, `declined`, `cancelled`, `started`, or `ended` when the seat or the source
+was lost) and only `reverted` SHALL amend a delivered
 message, because the delivered line was true when it was sent. A replayed cycle SHALL change nothing
 a second time. Title, location and attendee text SHALL reach the card only through the inert-text and
 delivery-defang helpers, and description text SHALL never reach it.

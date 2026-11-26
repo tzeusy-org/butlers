@@ -311,6 +311,27 @@ agreement row or the butler schema has no such table. The
 insight engine reaches it through the premise probe `("calendar", "occurrence_still_changed")`
 whose args are `butler`, `event_id` and a timezone-aware `original_start`.
 
+The dashboard-api process runs a supervised `calendar_agreement_drift` loop
+(`src/butlers/jobs/calendar_agreement_drift.py`, slice A-S2, every 10 minutes) that compares each
+accepted occurrence with the calendar and reconciles one `public.owner_conditions` episode per
+material change under source `calendar:changed_since_accepted`. Material means the start moved 15
+minutes or more, the location digest changed, or every other attendee was removed; a title or
+description change alone never is. The connector's revision journal can be newer than a projection
+that has not synced yet, so the job reads the journal's newest version of each checked event through
+the narrow `public.read_calendar_event_heads` definer (core_380: status, start, end and observation
+time only, granted to the Switchboard role). Copies of one provider event across butler schemas are
+one condition. A tick that cannot measure (journal unreadable, a stale or unreadable calendar source,
+no pool) reconciles nothing and records an incomplete tick; a partial fan-out never resolves by
+omission.
+
+A resolution carries its cause in the condition's `resolution_cause` metadata: `reverted` (the
+event matches what the owner accepted again), `declined`, `cancelled` or `started`. Only
+`reverted` amends a delivered insight (struck through); the others resolve with no amendment,
+because the delivered line was true when it was sent. Several copies of one provider event are
+reported from the copy observed most recently (ties by butler name). The comparison against the
+revision journal treats a head as newer when it was observed after the calendar source's last sync
+(the sync cursor), not after the projection's last change.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync

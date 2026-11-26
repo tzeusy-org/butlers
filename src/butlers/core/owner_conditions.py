@@ -127,6 +127,7 @@ async def reconcile_snapshot(
     transaction_connection: asyncpg.Connection | None = None,
     escalation_advance: Mapping[str, tuple[str, timedelta]] | None = None,
     preserve_metadata_keys: Sequence[str] = (),
+    amend_resolved: Callable[[ConditionTransition], bool] | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -149,6 +150,11 @@ async def reconcile_snapshot(
     ``escalation_advance`` and ``preserve_metadata_keys`` are the engine's opt-ins
     for a producer-specific re-escalation ladder and for keeping named metadata
     keys across a confirmation; omitted, the shared behavior is unchanged.
+
+    ``amend_resolved``, when given, is asked about each ``resolved`` transition and the delivered
+    insights whose premise it was are amended (struck through) only when it answers true. A
+    producer whose condition can end for a reason that does not make the delivered line wrong
+    (the owner declined, the event started) answers false. Omitted, every resolution amends.
     """
 
     async def _chained_post_write(
@@ -158,7 +164,14 @@ async def reconcile_snapshot(
             await post_write(conn, transitions)
         # bu-q7vx1q.5: a resolved condition amends the delivered insights whose
         # premise it was, atomically with the resolution itself.
-        await enqueue_premise_amendments(conn, transitions)
+        await enqueue_premise_amendments(
+            conn,
+            [
+                t
+                for t in transitions
+                if amend_resolved is None or t.transition != "resolved" or amend_resolved(t)
+            ],
+        )
 
     connection_kwargs = (
         {"transaction_connection": transaction_connection}
