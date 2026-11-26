@@ -43,6 +43,9 @@ from butlers.modules.calendar.participants import _metadata_object
 logger = logging.getLogger(__name__)
 
 SOURCE_KIND_REMINDERS = "internal_reminders"
+#: A receipt the broker did not take is retried on later sync passes this many times.
+MAX_ANNOUNCE_ATTEMPTS = 5
+
 #: A reminder this close to firing is announced on the timed lane, otherwise in the digest.
 TIMED_WITHIN = timedelta(hours=2)
 CANDIDATE_PRIORITY = 55
@@ -69,7 +72,8 @@ _UNANNOUNCED_SQL = """
 SELECT rr.id, rr.kind, rr.new_starts_at, r.id AS reminder_id, r.title
 FROM reminder_receipts rr
 JOIN calendar_events r ON r.id = rr.reminder_event_id
-WHERE rr.announced_at IS NULL AND rr.created_at > now() - interval '2 days'
+WHERE rr.announced_at IS NULL AND rr.attempts < $1
+  AND rr.created_at > now() - interval '2 days'
 ORDER BY rr.created_at
 LIMIT 50
 -- quarantine-exempt: native reminders are never invitations
@@ -200,10 +204,17 @@ async def _announce(pool: Any, change: dict[str, Any], origin_butler: str, now: 
     return str(result.get("status"))
 
 
-async def _announce_pending(pool: Any, origin_butler: str) -> None:
-    """Announce every receipt the broker has not yet taken. Never raises."""
+async def announce_pending_reminder_receipts(pool: Any, origin_butler: str | None) -> None:
+    """Announce every receipt the broker has not yet taken. Never raises.
+
+    Run once per successful sync pass, never per projected event. A broker that is down costs one
+    failed call per pass (the sweep stops at the first failure and counts an attempt), and a
+    receipt is tried at most ``MAX_ANNOUNCE_ATTEMPTS`` times. A broker that answers ``error`` or
+    ``skipped`` has refused the receipt, so it is not retried.
+    """
+    origin_butler = origin_butler or "general"
     try:
-        rows = await pool.fetch(_UNANNOUNCED_SQL)
+        rows = await pool.fetch(_UNANNOUNCED_SQL, MAX_ANNOUNCE_ATTEMPTS)
     except Exception:
         logger.warning("reminder follow: unannounced receipts unreadable", exc_info=True)
         return
@@ -218,12 +229,26 @@ async def _announce_pending(pool: Any, origin_butler: str) -> None:
         }
         try:
             status = await _announce(pool, change, origin_butler, now)
-            if status not in ("error", "skipped"):
+            if status in ("error", "skipped"):
+                await pool.execute(
+                    "UPDATE reminder_receipts SET attempts = $2 WHERE id = $1",
+                    row["id"],
+                    MAX_ANNOUNCE_ATTEMPTS,
+                )
+            else:
                 await pool.execute(
                     "UPDATE reminder_receipts SET announced_at = now() WHERE id = $1", row["id"]
                 )
         except Exception:
             logger.warning("reminder follow: announcement failed", exc_info=True)
+            try:
+                await pool.execute(
+                    "UPDATE reminder_receipts SET attempts = attempts + 1 WHERE id = $1",
+                    row["id"],
+                )
+            except Exception:
+                logger.warning("reminder follow: attempt not counted", exc_info=True)
+            return  # the broker is down: the rest wait for the next pass
 
 
 async def follow_anchored_reminders(
@@ -232,7 +257,7 @@ async def follow_anchored_reminders(
     """Rebase or retire the reminders anchored to one provider event. Never raises.
 
     Returns the receipt kinds written this call (``rebased`` / ``retired``), in reminder order.
-    Receipts left unannounced by an earlier call are announced here too.
+    Announcing is a separate once-per-pass sweep (``announce_pending_reminder_receipts``).
     """
     kinds: list[str] = []
     try:
@@ -258,5 +283,4 @@ async def follow_anchored_reminders(
     except Exception as exc:  # the event write has already committed; this must not undo it
         logger.warning("reminder_follow_failed error=%s", type(exc).__name__)
         return []
-    await _announce_pending(pool, origin_butler or "general")
     return kinds

@@ -22,7 +22,10 @@ from butlers.modules.calendar.participants import (
     sync_event_participants,
     sync_manual_participants,
 )
-from butlers.modules.calendar.reminder_follow import follow_anchored_reminders
+from butlers.modules.calendar.reminder_follow import (
+    announce_pending_reminder_receipts,
+    follow_anchored_reminders,
+)
 
 from .constants import (
     _INVALID_PROBE_CALENDAR_IDS,
@@ -457,6 +460,9 @@ class ProjectionMixin:
                 await reresolve_participants(pool)
             except Exception as exc:  # likewise for the has-email re-resolution sweep
                 logger.warning("Participant re-resolution failed: %s", type(exc).__name__)
+            # Once per pass, after the pass's events were followed: announce what the broker has
+            # not yet taken (a failure never fails the sync; the sweep itself never raises).
+            await announce_pending_reminder_receipts(pool, getattr(self, "_butler_name", None))
 
     async def _record_projection_action(
         self,

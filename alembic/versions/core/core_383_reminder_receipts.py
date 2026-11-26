@@ -37,9 +37,19 @@ CREATE TABLE IF NOT EXISTS reminder_receipts (
     new_starts_at     TIMESTAMPTZ,
     reason            TEXT NOT NULL,
     announced_at      TIMESTAMPTZ,
+    attempts          INTEGER NOT NULL DEFAULT 0,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 """
+# A database that ran an earlier draft of this revision converges: the draft had a UNIQUE
+# constraint (receipts are keyed on the transition now, so a flip-flop writes each time) and no
+# announcement columns. Every statement is idempotent.
+_CONVERGE_DDL = (
+    "ALTER TABLE reminder_receipts ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ",
+    "ALTER TABLE reminder_receipts ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE reminder_receipts DROP CONSTRAINT IF EXISTS "
+    "reminder_receipts_reminder_event_id_kind_revision_key",
+)
 _INDEX_DDL = """
 CREATE INDEX IF NOT EXISTS reminder_receipts_unannounced_idx
     ON reminder_receipts (created_at) WHERE announced_at IS NULL
@@ -68,6 +78,8 @@ def upgrade() -> None:
     ):
         return
     op.execute(_TABLE_DDL)
+    for statement in _CONVERGE_DDL:
+        op.execute(statement)
     op.execute(_INDEX_DDL)
     op.execute(_OWNER_SQL)
 

@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from butlers.modules.calendar.models import AttendeeInfo, AttendeeResponseStatus, EventStatus
+from butlers.modules.calendar.reminder_follow import (
+    MAX_ANNOUNCE_ATTEMPTS,
+    announce_pending_reminder_receipts,
+)
 from tests.modules.test_calendar_participants import _module, _project
 from tests.modules.test_calendar_reminder_anchor import _create, _world
 
@@ -16,6 +21,9 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
+
+
+_CORE_383 = next(Path("alembic/versions/core").glob("core_383*.py"))
 
 
 async def _anchored(db):
@@ -35,8 +43,10 @@ def _moved(event, by: timedelta):
     return event.model_copy(update={"start_at": event.start_at + by, "end_at": event.end_at + by})
 
 
-async def _sync(pool, source, event):
+async def _sync(pool, source, event, *, sweep=True):
     await _project(_module(pool), source, event)
+    if sweep:  # the announcement sweep runs once per successful sync pass
+        await announce_pending_reminder_receipts(pool, "relationship")
 
 
 async def _state(pool, reminder_id):
@@ -222,6 +232,91 @@ async def test_a_broker_outage_loses_no_announcement(db, monkeypatch):
     assert not await pool.fetchval(
         "SELECT count(*) FROM reminder_receipts WHERE announced_at IS NULL"
     )
+
+
+async def test_a_down_broker_costs_one_call_per_pass_and_a_refused_receipt_stops(db, monkeypatch):
+    import importlib
+
+    pool, source, event, reminder_id = await _anchored(db)
+    broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
+    calls: list[int] = []
+
+    async def down(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(broker, "propose_insight_candidate", down)
+    # Two moves leave two unannounced receipts; neither projecting them sweeps.
+    await _sync(pool, source, _moved(event, timedelta(hours=3)), sweep=False)
+    await _sync(pool, source, _moved(event, timedelta(hours=4)), sweep=False)
+    assert calls == []
+
+    await announce_pending_reminder_receipts(pool, "relationship")
+
+    assert len(calls) == 1  # one failed call, then the pass stops
+    for _ in range(2 * MAX_ANNOUNCE_ATTEMPTS + 2):
+        await announce_pending_reminder_receipts(pool, "relationship")
+    assert len(calls) <= 2 * MAX_ANNOUNCE_ATTEMPTS  # a capped number of tries, never unbounded
+    settled = len(calls)
+    await announce_pending_reminder_receipts(pool, "relationship")
+    assert len(calls) == settled  # both receipts exhausted their attempts
+
+    async def refused(*args, **kwargs):
+        calls.append(1)
+        return {"status": "error"}
+
+    monkeypatch.setattr(broker, "propose_insight_candidate", refused)
+    await pool.execute("UPDATE reminder_receipts SET attempts = 0, announced_at = NULL")
+    await announce_pending_reminder_receipts(pool, "relationship")
+    after_refusal = len(calls)
+    await announce_pending_reminder_receipts(pool, "relationship")
+    assert len(calls) == after_refusal  # a refused receipt is not retried
+
+
+async def test_core_383_converges_a_database_that_ran_the_first_draft(db):
+    import importlib.util
+
+    pool, _source, _event, reminder_id = await _anchored(db)
+    path = _CORE_383
+    spec = importlib.util.spec_from_file_location("core_383_under_test", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    # The first draft: no announcement columns and a UNIQUE on the transition's coordinates.
+    await pool.execute("DROP TABLE reminder_receipts")
+    await pool.execute(
+        """
+        CREATE TABLE reminder_receipts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            reminder_event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('rebased', 'retired')),
+            revision TEXT NOT NULL,
+            old_starts_at TIMESTAMPTZ NOT NULL,
+            new_starts_at TIMESTAMPTZ,
+            reason TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (reminder_event_id, kind, revision)
+        )
+        """
+    )
+
+    for statement in (migration._TABLE_DDL, *migration._CONVERGE_DDL, migration._INDEX_DDL):
+        await pool.execute(statement)
+        await pool.execute(statement)  # and it is idempotent
+
+    columns = {
+        r["column_name"]
+        for r in await pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'reminder_receipts'"
+        )
+    }
+    assert {"announced_at", "attempts"} <= columns
+    for _ in range(2):  # the old UNIQUE would refuse the second identical transition
+        await pool.execute(
+            "INSERT INTO reminder_receipts (reminder_event_id, kind, revision, old_starts_at, "
+            "reason) VALUES ($1::uuid, 'rebased', 'a>b', now(), 'anchor_moved')",
+            reminder_id,
+        )
 
 
 def test_the_moved_line_is_in_the_owners_zone_not_utc():
