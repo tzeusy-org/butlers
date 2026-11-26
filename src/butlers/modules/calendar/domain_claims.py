@@ -133,6 +133,7 @@ class DomainClaimsMixin:
                 SELECT id, origin_ref, title, timezone, starts_at, ends_at, all_day, status,
                        metadata
                 FROM calendar_events
+                -- quarantine-exempt: the butler's own claim rows, never a provider invitation
                 WHERE source_id = $1 AND origin_ref LIKE $2
                 FOR UPDATE
                 """,
