@@ -52,10 +52,11 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
   const dismissProposalMutation = useDismissCalendarProposal();
 
   // A dropped row means the lane is partial: its count could be short, so it is unknown, not low.
+  const droppedRows = proposalsQuery.data?.data.proposals_dropped_rows;
   const proposalsPartial =
     proposalsQuery.isError ||
     proposalsQuery.data?.data.proposals_available === false ||
-    (proposalsQuery.data?.data.proposals_dropped_rows ?? 0) > 0;
+    droppedRows !== undefined && droppedRows > 0;
 
   return {
     activityOpen,
