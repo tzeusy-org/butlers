@@ -45,6 +45,8 @@ logger = logging.getLogger("butlers.core.scheduler")
 
 # Kept beside tick(): the reviewed host-policy selector scan resolves this alias per module.
 _QA_BUTLER_NAME = "qa"
+#: The owner-zone read must never hold a tick; past this the default zone is used.
+_OWNER_ZONE_TIMEOUT_S = 5.0
 
 
 async def tick(
@@ -274,7 +276,8 @@ async def tick(
             # One source for the owner zone sentinel rows follow: the same one the owner-clock
             # re-anchor uses, so a re-anchored row does not snap back after its first firing.
             try:
-                default_timezone = await owner_zone_resolver(default_timezone)
+                async with asyncio.timeout(_OWNER_ZONE_TIMEOUT_S):
+                    default_timezone = await owner_zone_resolver(default_timezone)
             except Exception:
                 logger.warning(
                     "Scheduler: owner zone resolver failed; using default", exc_info=True

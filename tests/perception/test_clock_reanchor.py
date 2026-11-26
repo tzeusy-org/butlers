@@ -137,3 +137,25 @@ def test_a_return_leg_into_the_home_city_confirms_the_home_zone():
         ClockState.initial(HOME), booked(out, back), now=NOW, home_city="Singapore"
     )
     assert state.current.zone == HOME
+
+
+@pytest.mark.parametrize(
+    ("clock", "expected"),
+    [
+        (None, None),
+        (ClockValue("Asia/Tokyo", "owner_confirmed_booking"), "Asia/Tokyo"),
+        (ClockValue("Asia/Tokyo", "phone"), "Asia/Tokyo"),
+        (ClockValue("Asia/Tokyo", "owner"), "Asia/Tokyo"),
+        (ClockValue("Asia/Singapore", "home"), "Asia/Singapore"),
+        (ClockValue("UTC", "utc_fallback"), "Asia/Singapore"),
+    ],
+)
+def test_the_target_zone_is_the_clock_when_confirmed_else_the_settings_zone(clock, expected):
+    assert ra.target_zone(clock, "Asia/Singapore") == expected
+
+
+def test_a_settling_transition_says_when_to_retry():
+    young = NOW - timedelta(minutes=3)
+    result = plan([row()], transition_at=young)
+    assert result.reason == "settling"
+    assert result.retry_after == young + ra.RETRACTION_WINDOW

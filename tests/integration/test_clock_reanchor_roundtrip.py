@@ -26,8 +26,8 @@ NOW = datetime.now(UTC)  # real clock: the dispatcher in the fire-once test uses
 AGO = NOW - timedelta(hours=1)
 
 
-@pytest.fixture
-async def pool(db):
+async def _general(db):
+    """The general butler's schema on the shared test database (the factory, not a fixture)."""
     return await db("core", schemas={"core": "general"}, schema="general")
 
 
@@ -50,12 +50,19 @@ async def _next(pool, name):
 
 
 async def _run(pool, **kw):
-    args = {"old_clock": HOME, "new_clock": TOKYO, "transition_at": AGO, "now": NOW}
+    args = {
+        "old_clock": HOME,
+        "new_clock": TOKYO,
+        "settings_zone": HOME.zone,
+        "transition_at": AGO,
+        "now": NOW,
+    }
     args.update(kw)
     return await ra.run_clock_transition({"general": pool}, **args)
 
 
-async def test_only_owner_local_rows_move(pool, monkeypatch) -> None:
+async def test_only_owner_local_rows_move(db, monkeypatch) -> None:
+    pool = await _general(db)
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     local_before = await _seed(pool, "owner_local")
     pinned_before = await _seed(pool, "pinned", tz="Europe/London")
@@ -70,7 +77,8 @@ async def test_only_owner_local_rows_move(pool, monkeypatch) -> None:
     assert await _next(pool, "pinned") == pinned_before
 
 
-async def test_a_claim_that_wins_the_race_is_not_overwritten(pool, monkeypatch) -> None:
+async def test_a_claim_that_wins_the_race_is_not_overwritten(db, monkeypatch) -> None:
+    pool = await _general(db)
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     old = await _seed(pool, "raced")
     rows = [dict(r) for r in await pool.fetch(ra._ROWS_SQL)]
@@ -87,8 +95,9 @@ async def test_a_claim_that_wins_the_race_is_not_overwritten(pool, monkeypatch) 
 
 
 async def test_dark_until_the_owner_clock_is_live_and_unknown_moves_nothing(
-    pool, monkeypatch
+    db, monkeypatch
 ) -> None:
+    pool = await _general(db)
     before = await _seed(pool, "idle")
     assert await _run(pool) == {"live": False}
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
@@ -117,7 +126,8 @@ def _hour(value: datetime, zone: str) -> int:
     return value.astimezone(ZoneInfo(zone)).hour
 
 
-async def test_a_reanchored_row_stays_on_the_travel_zone_after_it_fires(pool, monkeypatch) -> None:
+async def test_a_reanchored_row_stays_on_the_travel_zone_after_it_fires(db, monkeypatch) -> None:
+    pool = await _general(db)
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     real_now = NOW
     await _seed(pool, "brief")
@@ -132,7 +142,8 @@ async def test_a_reanchored_row_stays_on_the_travel_zone_after_it_fires(pool, mo
     assert _hour(after, TOKYO.zone) == 9  # still 09:00 Tokyo after one firing
 
 
-async def test_without_the_shared_resolver_the_row_would_snap_back_home(pool, monkeypatch) -> None:
+async def test_without_the_shared_resolver_the_row_would_snap_back_home(db, monkeypatch) -> None:
+    pool = await _general(db)
     # The control: the dispatcher's own default is the settings zone, which is why the resolver exists.
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     real_now = NOW
@@ -144,7 +155,8 @@ async def test_without_the_shared_resolver_the_row_would_snap_back_home(pool, mo
     assert _hour(after, HOME.zone) == 9 and _hour(after, TOKYO.zone) != 9
 
 
-async def test_an_unreadable_or_missing_schema_makes_the_run_incomplete(pool, monkeypatch) -> None:
+async def test_an_unreadable_or_missing_schema_makes_the_run_incomplete(db, monkeypatch) -> None:
+    pool = await _general(db)
     monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
     await _seed(pool, "present")
 
@@ -171,3 +183,66 @@ async def test_the_resolver_ignores_home_and_unknown_clocks(monkeypatch) -> None
         return TOKYO
 
     assert await ra.owner_zone_resolver(tokyo)("Asia/Singapore") == "Asia/Singapore"  # dark
+
+
+async def test_a_utc_fallback_clock_moves_nothing(db, monkeypatch) -> None:
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    before = await _seed(pool, "stays")
+
+    summary = await _run(pool, new_clock=ClockValue("UTC", "utc_fallback"))
+
+    assert summary["reason"] == "same_zone"
+    assert await _next(pool, "stays") == before
+
+
+async def test_a_return_home_re_anchors_back_through_the_same_rule(db, monkeypatch) -> None:
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    await _seed(pool, "brief")
+    await _run(pool)  # out to Tokyo
+    assert _hour(await _next(pool, "brief"), TOKYO.zone) == 9
+
+    await _run(pool, old_clock=TOKYO, new_clock=HOME)  # the clock is home again
+
+    assert _hour(await _next(pool, "brief"), HOME.zone) == 9
+
+
+async def test_one_unreadable_schema_is_reported_and_the_others_still_move(db, monkeypatch) -> None:
+    pool = await _general(db)
+    monkeypatch.setattr(flags, "OWNER_CLOCK_LIVE", True)
+    await _seed(pool, "fine")
+
+    class Broken:
+        async def fetch(self, *_a, **_k):
+            raise OSError("schema unreadable")
+
+    summary = await ra.run_clock_transition(
+        {"general": pool, "travel": Broken()},
+        old_clock=HOME,
+        new_clock=TOKYO,
+        settings_zone=HOME.zone,
+        transition_at=AGO,
+        now=NOW,
+    )
+
+    assert summary["complete"] is False and summary["failed"] == ["travel"]
+    assert summary["per_schema"]["general"]["moved"] == 1
+
+
+async def test_a_hung_owner_zone_read_does_not_hold_the_tick(db, monkeypatch) -> None:
+    import asyncio
+
+    from butlers.core.scheduler import dispatch
+
+    pool = await _general(db)
+    await _seed(pool, "brief")
+    monkeypatch.setattr(dispatch, "_OWNER_ZONE_TIMEOUT_S", 0.05)
+
+    async def hang(_zone: str) -> str:
+        await asyncio.sleep(3600)
+        return "Asia/Tokyo"
+
+    after = await _fire_once(pool, "brief", owner_zone_resolver=hang)
+
+    assert _hour(after, HOME.zone) == 9  # the default zone, not a hung or half-read answer

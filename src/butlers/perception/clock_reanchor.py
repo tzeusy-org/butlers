@@ -127,6 +127,8 @@ class ReanchorPlan:
     skipped: int = 0
     #: Why nothing was planned at all: ``clock_unknown``, ``settling``, ``same_zone``.
     reason: str | None = None
+    #: For ``settling``: when the transition leaves the retraction window. The caller re-runs then.
+    retry_after: datetime | None = None
 
 
 def is_owner_local(row: Mapping[str, Any]) -> bool:
@@ -155,7 +157,7 @@ def plan_reanchor(
     if new_zone == old_zone:
         return ReanchorPlan(reason="same_zone")
     if now - transition_at < RETRACTION_WINDOW:
-        return ReanchorPlan(reason="settling")
+        return ReanchorPlan(reason="settling", retry_after=transition_at + RETRACTION_WINDOW)
     moves: list[Move] = []
     pinned = skipped = 0
     for row in rows:
@@ -202,11 +204,30 @@ _ROWS_SQL = """
 """
 
 
+# -- one owner-zone source for the scheduler and the re-anchor -------------------------
+
+#: Clock bases that are the owner's own word or a confirmed place, not the home fallback.
+_CONFIRMED_BASES = frozenset({"owner", "owner_confirmed_booking", "phone"})
+
+
+def target_zone(clock: ClockValue | None, settings_zone: str) -> str | None:
+    """The zone owner-local schedules should read in: the one rule both halves share.
+
+    ``None`` when the clock is unknown or stale. A confirmed basis gives the clock's zone; any other
+    (home, ``utc_fallback``) gives the settings zone, so a return home re-anchors back through the
+    same rule and a ``utc_fallback`` clock never moves a row that is already on the settings zone.
+    """
+    if clock is None:
+        return None
+    return clock.zone if clock.basis in _CONFIRMED_BASES else settings_zone
+
+
 async def run_clock_transition(
     pools: Mapping[str, Any],
     *,
     old_clock: ClockValue,
     new_clock: ClockValue | None,
+    settings_zone: str,
     transition_at: datetime,
     now: datetime,
     expected: Iterable[str] | None = None,
@@ -226,7 +247,8 @@ async def run_clock_transition(
     per_schema: dict[str, dict[str, int]] = {}
     failed: list[str] = []
     reason: str | None = None
-    new_zone = new_clock.zone if new_clock is not None else None
+    retry_after: datetime | None = None
+    new_zone = target_zone(new_clock, settings_zone)
     for butler in names:
         pool = pools.get(butler)
         if pool is None:
@@ -243,6 +265,7 @@ async def run_clock_transition(
                 stagger_key=butler,
             )
             reason = plan.reason
+            retry_after = plan.retry_after
             moved = await apply_reanchor(pool, plan) if plan.reason is None else 0
             per_schema[butler] = {
                 "moved": moved,
@@ -257,30 +280,23 @@ async def run_clock_transition(
         "complete": not failed,
         "failed": failed,
         "reason": reason,
+        #: Set when the transition is still settling: re-run this at or after it.
+        "retry_after": retry_after,
         "per_schema": per_schema,
     }
 
 
-# -- one owner-zone source for the scheduler --------------------------------------------
-
-#: Clock bases that are the owner's own word or a confirmed place, not the home fallback.
-_CONFIRMED_BASES = frozenset({"owner", "owner_confirmed_booking", "phone"})
-
-
 def owner_zone_resolver(read_clock: Callable[[], Awaitable[ClockValue | None]]):
-    """The scheduler's owner zone: the live clock zone when confirmed, else the settings zone.
+    """The scheduler's owner zone: ``target_zone`` of the live clock, else the settings zone.
 
     ``read_clock`` returns the current clock, or ``None`` when it is unknown or stale. While
-    ``OWNER_CLOCK_LIVE`` is off, or the clock is home or unconfirmed, the settings zone wins, so a
-    sentinel row recomputed after a firing lands in the same zone the re-anchor moved it to.
+    ``OWNER_CLOCK_LIVE`` is off the settings zone wins, so a sentinel row recomputed after a firing
+    lands in the same zone the re-anchor moved it to.
     """
 
     async def resolve(settings_zone: str) -> str:
         if not flags.OWNER_CLOCK_LIVE:
             return settings_zone
-        clock = await read_clock()
-        if clock is not None and clock.basis in _CONFIRMED_BASES:
-            return clock.zone
-        return settings_zone
+        return target_zone(await read_clock(), settings_zone) or settings_zone
 
     return resolve

@@ -11,8 +11,15 @@ When the owner clock's zone changes and `OWNER_CLOCK_LIVE` is on, the system SHA
 sentinel) as the same cron fields read in the new zone. It SHALL NOT touch a schedule pinned to a
 zone, a one-shot schedule, or one already due (which fires once on its old anchor). It SHALL move
 nothing while the clock is unknown or stale, and nothing until the transition is older than ten
-minutes, so a flip back is a no-op. The write SHALL be a compare-and-set on the old `next_run_at`,
+minutes, so a flip back is a no-op (a settling run returns `retry_after`, and the caller SHALL re-run it
+at or after that instant). The write SHALL be a compare-and-set on the old `next_run_at`,
 so a claim that wins the race is never duplicated or overwritten.
+
+The zone to move rows to is one shared rule (`target_zone`): the clock's zone when its basis is owner,
+owner-confirmed booking or phone, else the settings zone, and none when the clock is unknown. The
+scheduler resolver and the re-anchor both use it, so a return home re-anchors back and a
+`utc_fallback` clock moves nothing already on the settings zone. A TOML sync or schedule edit made
+during a trip snaps that one occurrence back to the settings zone.
 
 A Travel leg SHALL confirm the clock only when it satisfies the confirmed-booking rule
 (`leg_is_confirmed`), at its `arrival_at` and not at booking time; any other leg with a mapped place
