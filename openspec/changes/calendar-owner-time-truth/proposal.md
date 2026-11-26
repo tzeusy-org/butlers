@@ -21,26 +21,26 @@ pursuit run 26 move 10).
 - **Reminders that follow their event.** `reminder_create` accepts an anchor (provider identity,
   original start, offset). An anchored reminder rebases when its occurrence moves, retires when it
   is cancelled or declined, and the tick rechecks the anchor at fire.
-- **The owner's gesture is an instruction.** A drag of a Butlers-owned one-off reminder or task in
-  Google is adopted when the owner is the calendar's only writer, with a receipt and an undo card;
-  any other editor, or an unreadable ACL, parks an owner card instead. The scenario that reverts
-  silently is replaced.
+- **No silent revert.** When a Butlers-owned event is edited on Google, the push still restores the
+  butler's state, but it now writes a receipt the owner can see. The scenario that reverts silently is
+  replaced.
 
 ## Slices (each its own PR, after this spec is reviewed)
 
 - Changed since you said yes: A-S1 snapshot table and writer, A-S3 probe, A-S2 reconciler, A-S4
   proposer, A-S5 dashboard chip.
 - Reminders: R-S1 anchor fields, R-S2 rebase and retire, R-S3 fire-time check, R-S4 owner-drag
-  adoption.
-- Gesture: S1 push-loop honesty is already on main (calendar-mirror-truth, core_377); S2 adoption
-  with If-Match, S3 recurring-item question.
+  adoption (parked, see the open decision).
+- Gesture: S1 push-loop honesty is already on main (calendar-mirror-truth, core_377); S2 revert-with-receipt
+  (adoption, If-Match and the recurring question wait on the owner decision).
 
-## Decisions to take before R-S4 and the gesture slices
+## Open owner decision (parked, not specified here)
 
-The revision journal records no editor identity. Adoption therefore trusts the calendar's ACL: only
-when the owner is its sole writer. Another writer, or an ACL read that fails, parks an owner card.
-If the owner would rather adopt on the strength of the owner surface alone, that is a separate,
-weaker rule and needs an explicit decision.
+Whether an owner's own drag or delete of a Butlers-owned one-off in Google should be adopted as an
+instruction (with a receipt and an undo) instead of reverted. The revision journal records no editor
+identity, so the options are trusting the calendar's ACL (owner as the only writer) or something
+weaker, and a recurring item needs a "this occurrence or the series" question. None of this is
+specified or built until the owner decides; R-S4 and the gesture adoption slices wait on it.
 
 ## Not in this change
 

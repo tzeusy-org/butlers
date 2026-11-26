@@ -12,7 +12,7 @@ or the owner declines it, the reminder SHALL be cancelled with reason `anchor_ca
 recurring anchor SHALL follow one occurrence by original start and leave the others alone. While
 the calendar source is stale, no rebase SHALL happen.
 
-ID: REQ-module-calendar-053
+ID: REQ-module-calendar-057
 Source: bu-5ii4gj.10 slices R-S1, R-S2; design "Reminders that follow their event"
 Scope: v1-mandatory
 
@@ -32,7 +32,7 @@ The reminder tick SHALL recheck an anchored reminder's anchor when it fires. It 
 while the anchor is still current. When the anchor cannot be determined the reminder SHALL still
 fire, with an "as of" suffix, and SHALL NOT be dropped silently.
 
-ID: REQ-module-calendar-054
+ID: REQ-module-calendar-058
 Source: bu-5ii4gj.10 slice R-S3; design "Reminders that follow their event"
 Scope: v1-mandatory
 
@@ -48,10 +48,10 @@ Scope: v1-mandatory
 The projection SHALL use a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
 
 - **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth. The local projection faithfully mirrors whatever the provider reports on each sync cycle.
-- **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's `calendar_events` rows (for reminders with `source_kind='internal_reminders'`) and `scheduled_tasks` table are the source of truth. These are pushed outbound to Google for visibility. An edit the owner makes to one of them on Google is an instruction and is adopted (below); an edit by anyone else is not.
+- **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's `calendar_events` rows (for reminders with `source_kind='internal_reminders'`) and `scheduled_tasks` table are the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them. An edit made to one of them on Google is never reverted silently: the revert leaves a receipt the owner can see.
 
-ID: REQ-module-calendar-055
-Source: bu-5ii4gj.10 slices R-S4, gesture S2; design "The owner's gesture is an instruction"
+ID: REQ-module-calendar-059
+Source: bu-5ii4gj.10 slice gesture S2 (revert with receipt); design "The owner's gesture is an instruction"
 Scope: v1-mandatory
 
 #### Scenario: Butler-generated events in provider sync projection
@@ -61,21 +61,14 @@ Scope: v1-mandatory
 - **AND** butler-generated metadata (`butler_generated`, `butler_name`) is preserved in the projection row metadata for UI differentiation
 - **BECAUSE** butler events created via `calendar_create_event` are user-lane workspace mutations (not internal scheduler items) and should be visible in the provider projection
 
-#### Scenario: The owner's drag of a butler-owned one-off is adopted
-
-- **WHEN** the owner moves or deletes a pushed one-off reminder or task on Google Calendar, and the owner is the only writer on the Butlers calendar
-- **THEN** the local row SHALL take the provider's time (or the deleted reminder SHALL be dismissed), a receipt `owner_edit_adopted` with the prior state SHALL be written, and the owner SHALL get one notice with an undo that restores the prior state
-- **AND** the outbound push SHALL NOT revert it, and SHALL send only on a difference, conditioned on the provider's etag so a concurrent owner edit is adopted instead of overwritten
-
 #### Scenario: Butler overwrites external edits to butler-owned events
 
-- **WHEN** a pushed butler-owned event is edited on Google by anyone but the sole-writer owner (the calendar has another writer, or its ACL cannot be read)
-- **THEN** nothing SHALL be adopted, the push SHALL restore the butler's state with a receipt row, and the owner SHALL get a card asking whether to keep the edit
-
-#### Scenario: A recurring item asks
-
-- **WHEN** one occurrence of a recurring (cron or RRULE) butler-owned item is moved on Google
-- **THEN** the owner SHALL be asked whether the change is for this occurrence or the whole series, and nothing SHALL be written until they answer
+- **WHEN** a user manually moves or edits a pushed butler-owned event (a scheduled task or internal reminder) directly on Google Calendar
+- **AND** the next sync and push cycle runs
+- **THEN** the provider sync persists the edited copy to the projection with its butler-generated metadata, like any other butler-generated event (there is no butler-generated filter)
+- **AND** the outbound push of internal events overwrites the Google event with the butler's local state, and writes one receipt row recording what the edit was and that it was reverted, so the owner can be told rather than the event silently snapping back
+- **AND** the projection converges on the restored state on the following sync
+- **BECAUSE** the butler's database is authoritative for butler-owned events; Google is a mirror for them
 
 #### Scenario: External events faithfully track provider state
 
@@ -88,5 +81,6 @@ Scope: v1-mandatory
 #### Scenario: Modifying butler events requires the butler
 
 - **WHEN** a user wants to reschedule or edit a butler-managed event
-- **THEN** they use butler MCP tools (`calendar_update_butler_event`, `calendar_update_event` with the event ID), which update both the local state and the Google Calendar event atomically
-- **AND** a direct Google Calendar edit by anyone other than the sole-writer owner is not adopted
+- **THEN** they must use butler MCP tools (`calendar_update_butler_event`, `calendar_update_event` with the event ID)
+- **AND** the butler updates both its local state and the Google Calendar event atomically
+- **AND** a direct Google Calendar edit is reverted on the next sync cycle with a receipt, never silently

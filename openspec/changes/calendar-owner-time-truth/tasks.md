@@ -15,10 +15,10 @@
 - [ ] 2.1 R-S1 anchor fields on `reminder_create`, validation, derived `due_at`.
 - [ ] 2.2 R-S2 rebase and retire at the projection upsert and cancel paths, with receipts.
 - [ ] 2.3 R-S3 fire-time anchor check in the tick.
-- [ ] 2.4 R-S4 owner-drag adoption (after the editor-identity decision).
+- [ ] 2.4 R-S4 owner-drag adoption: parked on the owner decision, not built.
 
 ## 3. The owner's gesture is an instruction
 
 - [x] 3.1 Push-loop honesty: already on main (calendar-mirror-truth).
-- [ ] 3.2 Adoption detector, ACL trust check, receipt and undo card, If-Match on push.
-- [ ] 3.3 Recurring-item owner question.
+- [ ] 3.2 Revert with a receipt row and an owner-visible notice when a butler-owned event is edited on Google.
+- [ ] 3.3 Adoption, undo, If-Match and the recurring question: parked on the owner decision, not built.
