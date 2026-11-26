@@ -64,3 +64,9 @@ egressPolicy:
 # docs/operations/approval-delivery-dev-rollout.md. Split support stays opt-in.
 butlersControl:
   enabled: false
+
+# The site's Prometheus Operator selects PodMonitors with release=lgtm.
+connectorMetrics:
+  podMonitor:
+    enabled: true
+    labels: {release: lgtm}

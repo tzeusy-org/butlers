@@ -110,5 +110,5 @@ port `metrics` (9464). Pods carry `k8s.grafana.com/*` and `prometheus.io/*` scra
 `connector` labels match the Compose scrape jobs. Default-deny ingress selects every pod, and the
 metrics port admits only pods in `connectorMetrics.sourceNamespace` (default `lgtm`, matched on
 `kubernetes.io/metadata.name`). The chart refuses an empty value and the public MCP namespaces.
-Which discovery the cluster LGTM stack honours, and which namespace its scraper runs in, are site
-configuration; confirm the targets appear after deploy.
+The dev overlay enables the PodMonitor with `release: lgtm` for the site Prometheus Operator.
+Confirm the connector targets appear after deploying the overlay.
