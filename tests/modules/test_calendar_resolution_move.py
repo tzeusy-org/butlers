@@ -310,3 +310,33 @@ async def test_an_unreadable_binding_is_no_binding_never_an_error(fetchrow):
     pool = SimpleNamespace(fetchrow=fetchrow)
 
     assert await offer_for_card(pool, uuid.uuid4()) is None
+
+
+async def test_an_unreadable_binding_with_a_resolve_request_id_is_unbound():
+    from butlers.modules.calendar.resolution_move import check_resolution_binding
+
+    args = {"event_id": "evt-1", "request_id": "resolve:abc"}
+    module = SimpleNamespace(
+        _db=SimpleNamespace(pool=SimpleNamespace(fetchrow=AsyncMock(side_effect=RuntimeError("x"))))
+    )
+    context = ApprovalExecutionContext(
+        action_id=uuid.uuid4(),
+        session_id=None,
+        actor="owner",
+        tool_name="calendar_update_event",
+        tool_args_digest=approval_tool_args_digest(args),
+        authorized_task=asyncio.current_task(),  # type: ignore[arg-type]
+    )
+    token = set_approval_execution_context(context)
+    try:
+        check = await check_resolution_binding(
+            module,
+            tool_name="calendar_update_event",
+            tool_args=args,
+            request_id="resolve:abc",
+            event=None,  # type: ignore[arg-type]
+        )
+    finally:
+        reset_approval_execution_context(token)
+
+    assert check.refusal == "unbound"
