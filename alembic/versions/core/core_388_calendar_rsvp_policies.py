@@ -72,7 +72,7 @@ BEGIN
         IF jsonb_typeof(item) <> 'object' THEN RETURN false; END IF;
         kind := item ->> 'kind';
         v := item -> 'value';
-        IF kind IS NULL OR kind = ANY (seen) THEN RETURN false; END IF;
+        IF kind IS NULL OR kind = ANY (seen) OR v IS NULL THEN RETURN false; END IF;
         seen := seen || kind;
         IF kind IN ('overlaps_focus_or_out_of_office', 'conflicts_with_accepted',
                     'outside_declared_hours', 'recurring') THEN
@@ -202,8 +202,12 @@ BEGIN
                 'verdict', x.verdict, 'send_updates', x.send_updates, 'version', x.version,
                 'revoked_at', x.revoked_at, 'updated_at', x.updated_at)
                 ORDER BY x.position, x.id)
-            FROM (SELECT * FROM public.calendar_rsvp_policies
-                  ORDER BY position, id LIMIT 100) x), '[]'::jsonb));
+            FROM (
+                SELECT * FROM public.calendar_rsvp_policies WHERE revoked_at IS NULL
+                UNION ALL
+                (SELECT * FROM public.calendar_rsvp_policies WHERE revoked_at IS NOT NULL
+                 ORDER BY revoked_at DESC, id LIMIT 80)
+            ) x), '[]'::jsonb));
     END IF;
 
     IF action = 'create' THEN
@@ -213,7 +217,8 @@ BEGIN
         END IF;
     ELSIF action = 'update' THEN
         IF EXISTS (SELECT 1 FROM jsonb_object_keys(p) k
-                   WHERE k NOT IN ('id', 'position', 'predicates', 'verdict', 'send_updates')) THEN
+                   WHERE k NOT IN ('id', 'expected_version', 'position', 'predicates', 'verdict',
+                                   'send_updates')) THEN
             RETURN '{"error":"BAD_REQUEST"}';
         END IF;
     ELSIF EXISTS (SELECT 1 FROM jsonb_object_keys(p) k WHERE k <> 'id') THEN
@@ -233,6 +238,15 @@ BEGIN
         END IF;
         IF row_.revoked_at IS NOT NULL THEN
             RETURN '{"outcome":"refused","reason":"policy_revoked"}';
+        END IF;
+        IF action = 'update' THEN
+            BEGIN
+                IF (p->>'expected_version')::integer IS DISTINCT FROM row_.version THEN
+                    RETURN '{"outcome":"refused","reason":"stale_version"}';
+                END IF;
+            EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
+                RETURN '{"error":"BAD_REQUEST"}';
+            END;
         END IF;
         IF action = 'revoke' THEN
             UPDATE public.calendar_rsvp_policies

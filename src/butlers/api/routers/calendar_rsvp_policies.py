@@ -53,6 +53,7 @@ class PolicyCreate(_Body):
 
 
 class PolicyUpdate(_Body):
+    expected_version: int = Field(ge=1)
     position: int | None = Field(default=None, ge=0, le=1000)
     predicates: list[dict[str, Any]] | None = None
     verdict: Literal["accepted", "declined", "tentative"] | None = None
@@ -65,7 +66,8 @@ class PolicyUpdate(_Body):
 
     @model_validator(mode="after")
     def _something_changes(self) -> PolicyUpdate:
-        if all(v is None for v in self.model_dump().values()):
+        changes = self.model_dump(exclude={"expected_version"})
+        if all(v is None for v in changes.values()):
             raise ValueError("an update changes at least one field")
         return self
 

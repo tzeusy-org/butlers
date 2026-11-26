@@ -82,13 +82,27 @@ def test_update_sends_only_what_changed_and_refuses_an_empty_change() -> None:
     client = _client(call)
     assert (
         client.patch(
-            f"/api/calendar/rsvp-policies/{PID}", json={"verdict": "tentative"}
+            f"/api/calendar/rsvp-policies/{PID}",
+            json={"verdict": "tentative", "expected_version": 1},
         ).status_code
         == 200
     )
     assert call.await_args.args[0] == "update"
-    assert call.await_args.kwargs == {"id": PID, "verdict": "tentative"}
+    assert call.await_args.kwargs == {"id": PID, "expected_version": 1, "verdict": "tentative"}
     assert client.patch(f"/api/calendar/rsvp-policies/{PID}", json={}).status_code == 422
+    only_version = {"expected_version": 1}
+    assert client.patch(f"/api/calendar/rsvp-policies/{PID}", json=only_version).status_code == 422
+    no_version = {"verdict": "tentative"}
+    assert client.patch(f"/api/calendar/rsvp-policies/{PID}", json=no_version).status_code == 422
+
+
+def test_a_stale_version_is_a_409() -> None:
+    call = AsyncMock(return_value={"outcome": "refused", "reason": "stale_version"})
+    response = _client(call).patch(
+        f"/api/calendar/rsvp-policies/{PID}", json={"verdict": "accepted", "expected_version": 1}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["details"] == {"reason": "stale_version"}
 
 
 def test_revoke_and_list_reach_the_definer() -> None:
@@ -106,7 +120,7 @@ def test_unknown_policy_is_404_and_a_revoked_one_is_409() -> None:
     assert _client(unknown).post(f"/api/calendar/rsvp-policies/{PID}/revoke").status_code == 404
     revoked = AsyncMock(return_value={"outcome": "refused", "reason": "policy_revoked"})
     response = _client(revoked).patch(
-        f"/api/calendar/rsvp-policies/{PID}", json={"verdict": "accepted"}
+        f"/api/calendar/rsvp-policies/{PID}", json={"verdict": "accepted", "expected_version": 1}
     )
     assert response.status_code == 409
 
