@@ -12,6 +12,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -34,15 +35,22 @@ def _instants() -> list[datetime]:
     The real ``schedule_create`` anchors croniter at the wall clock, so a fixed past instant would
     return next year's date once real time passes it. Both are comfortably ahead of now:
     - 12:00Z (20:00 in Singapore) at least two days out;
-    - the next Dec 31 19:00Z more than a day out: a moment whose Singapore day and month are not
-      its UTC ones (03:00 on Jan 1).
+    - 19:00Z on the last day of the month after next: its Singapore day and month are not its UTC
+      ones (03:00 on the 1st), and it is always under 12 months out, so a yearless cron anchored
+      at the real clock reaches it.
     """
     real = datetime.now(UTC)
     evening = (real + timedelta(days=2)).replace(hour=12, minute=0, second=0, microsecond=0)
-    year_end = datetime(real.year, 12, 31, 19, 0, tzinfo=UTC)
-    if year_end <= real + timedelta(days=1):
-        year_end = year_end.replace(year=real.year + 1)
-    return [evening, year_end]
+    return [evening, _month_end_evening(real)]
+
+
+def _month_end_evening(real: datetime) -> datetime:
+    """19:00Z on the last day of the month after next (always 31 to 92 days ahead)."""
+    month = real.month + 2
+    year = real.year + (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    first_after = datetime(year + month // 12, month % 12 + 1, 1, 19, 0, tzinfo=UTC)
+    return first_after - timedelta(days=1)
 
 
 INSTANTS = _instants()
@@ -108,7 +116,7 @@ async def _review(
     return result
 
 
-@pytest.mark.parametrize("now", INSTANTS, ids=["evening", "year-end"])
+@pytest.mark.parametrize("now", INSTANTS, ids=["evening", "month-end"])
 @pytest.mark.parametrize("zone", ["Asia/Singapore", "Asia/Tokyo", "Europe/London", None])
 async def test_the_review_is_due_at_the_instant_it_was_scheduled_for(
     edu_pool, monkeypatch, zone, now
@@ -130,3 +138,15 @@ async def test_the_review_is_due_at_the_instant_it_was_scheduled_for(
     effective = _effective_schedule_timezone(row["timezone"], zone or "UTC")
     assert _next_run(row["cron"], timezone=effective, now=intended - timedelta(hours=1)) == intended
     assert _next_run(row["cron"], timezone=effective, now=intended) > row["until_at"]
+
+
+@pytest.mark.parametrize(
+    "real",
+    [datetime(2026, 12, 30, 19, 1, tzinfo=UTC), datetime(2026, 1, 31, 0, 0, tzinfo=UTC)]
+    + [datetime(2026, m, 15, 12, 0, tzinfo=UTC) for m in range(1, 13)],
+)
+def test_the_month_end_instant_is_always_under_a_year_ahead_and_crosses_the_singapore_month(real):
+    instant = _month_end_evening(real)
+    assert timedelta(days=28) < instant - real < timedelta(days=365)
+    sgt = instant.astimezone(ZoneInfo("Asia/Singapore"))
+    assert (sgt.month, sgt.day) != (instant.month, instant.day)
