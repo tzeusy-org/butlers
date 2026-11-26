@@ -12,15 +12,13 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
-from croniter import croniter
 
 from butlers.core.scheduler.crud import schedule_create as core_schedule_create
 from butlers.core.scheduler.crud import schedule_delete as core_schedule_delete
-from butlers.core.scheduler.timing import _effective_schedule_timezone
+from butlers.core.scheduler.timing import _effective_schedule_timezone, _next_run
 from butlers.tools.education import spaced_repetition as sr
 
 pytestmark = [
@@ -29,8 +27,25 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-# 20:00 in Singapore, and a moment whose Singapore day and month are not its UTC ones.
-INSTANTS = [datetime(2026, 11, 26, 12, 0, tzinfo=UTC), datetime(2026, 12, 31, 19, 0, tzinfo=UTC)]
+
+def _instants() -> list[datetime]:
+    """Review moments derived from the real clock.
+
+    The real ``schedule_create`` anchors croniter at the wall clock, so a fixed past instant would
+    return next year's date once real time passes it. Both are comfortably ahead of now:
+    - 12:00Z (20:00 in Singapore) at least two days out;
+    - the next Dec 31 19:00Z more than a day out: a moment whose Singapore day and month are not
+      its UTC ones (03:00 on Jan 1).
+    """
+    real = datetime.now(UTC)
+    evening = (real + timedelta(days=2)).replace(hour=12, minute=0, second=0, microsecond=0)
+    year_end = datetime(real.year, 12, 31, 19, 0, tzinfo=UTC)
+    if year_end <= real + timedelta(days=1):
+        year_end = year_end.replace(year=real.year + 1)
+    return [evening, year_end]
+
+
+INSTANTS = _instants()
 
 
 async def _as_education_rw(connection: asyncpg.Connection) -> None:
@@ -103,15 +118,15 @@ async def test_the_review_is_due_at_the_instant_it_was_scheduled_for(
     assert intended == now + timedelta(days=result["interval_days"])
 
     row = await edu_pool.fetchrow(
-        "SELECT cron, timezone, next_run_at FROM scheduled_tasks WHERE name LIKE 'review-%'"
+        "SELECT cron, timezone, next_run_at, until_at FROM scheduled_tasks WHERE name LIKE 'review-%'"
         " OR name LIKE '%rep%'"
     )
     assert row is not None
     assert row["next_run_at"] == intended
 
-    # The cron, read in the zone the scheduler evaluates it in after the first claim, names the
-    # same instant: the one-shot never re-fires an hour early or late once the zone is applied.
-    effective = ZoneInfo(_effective_schedule_timezone(row["timezone"], zone or "UTC"))
-    again = croniter(row["cron"], intended - timedelta(days=2)).get_next(datetime)
-    again = again.replace(tzinfo=effective).astimezone(UTC)
-    assert again == intended
+    # The cron, read in the zone the scheduler evaluates it in, names the same instant: the real
+    # recompute an hour before it lands on it, and the recompute after the claim lands beyond
+    # until_at, so the one-shot auto-disables instead of firing again.
+    effective = _effective_schedule_timezone(row["timezone"], zone or "UTC")
+    assert _next_run(row["cron"], timezone=effective, now=intended - timedelta(hours=1)) == intended
+    assert _next_run(row["cron"], timezone=effective, now=intended) > row["until_at"]
