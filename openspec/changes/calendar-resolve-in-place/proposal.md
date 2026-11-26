@@ -7,7 +7,7 @@ slot, reopen the event and edit it by hand (bu-5ii4gj.11, calendar pursuit run 2
 
 ## What changes
 
-- **Resolution options.** Each overlap issue carries two to five options compiled by a pure,
+- **Resolution options.** Each overlap issue carries one to five options compiled by a pure,
   deterministic function (no model): move a Butlers block, move an owner-organised event, decline or
   tentatively accept an invited meeting, ask the organizer for a new time with a typed template, or
   keep both. Every option names its exact tool call and its authority class.

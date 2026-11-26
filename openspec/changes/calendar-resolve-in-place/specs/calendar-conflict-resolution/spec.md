@@ -2,7 +2,7 @@
 
 ### Requirement: Overlap resolution options are compiled deterministically
 
-Each `overlap` issue in a healthy scan SHALL carry two to five resolution options compiled by a pure
+Each `overlap` issue in a healthy scan SHALL carry one to five resolution options compiled by a pure
 function of the issue, both events' provenance and the owner's response to each, and the free slots
 on every owner-busy calendar. No model, provider call or randomness SHALL take part. An option SHALL
 have an id, a kind (`move_block`, `move_own`, `decline`, `tentative`, `ask_organizer`, `keep_both`),
