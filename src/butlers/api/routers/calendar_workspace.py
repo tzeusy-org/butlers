@@ -36,6 +36,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarAuditResponse,
     CalendarButlerEventPreviewRequest,
     CalendarButlerEventPreviewResponse,
+    CalendarChange,
+    CalendarChangesResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
     CalendarInvitationEntry,
@@ -97,6 +99,7 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from butlers.api.read_models.calendar_changes import CHANGES_MAX_AGE, query_calendar_changes
 from butlers.api.read_models.calendar_day_sheet import (
     query_calendar_day_sheet,
     query_calendar_day_verdict,
@@ -1971,6 +1974,59 @@ def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
         start_at=event.starts_at,
         end_at=event.ends_at,
         all_day=event.all_day,
+    )
+
+
+@router.get("/changes", response_model=ApiResponse[CalendarChangesResponse])
+async def get_workspace_changes(
+    since: datetime = Query(..., description="Return changes observed after this instant"),
+    *,
+    db: Db,
+) -> ApiResponse[CalendarChangesResponse]:
+    """Organizer-made changes to start, end, status or location since ``since`` (N3).
+
+    Read from the connector's revision journal through a narrow reader; the owner's own edits and
+    events the owner declined are not returned. A failed read answers ``changes_available=false``
+    with no items (never an empty "no changes"). ``since`` must carry a timezone, must not be in the
+    future and must be at most 14 days old (HTTP 400 otherwise): the window is never shortened
+    silently.
+    """
+    if since.tzinfo is None:
+        raise HTTPException(status_code=400, detail="since must include a timezone")
+    now = datetime.now(UTC)
+    if since > now:
+        raise HTTPException(status_code=400, detail="since must not be in the future")
+    if now - since > CHANGES_MAX_AGE:
+        raise HTTPException(status_code=400, detail="since is older than 14 days")
+    read = await query_calendar_changes(db, since=since)
+    return ApiResponse[CalendarChangesResponse](
+        data=CalendarChangesResponse(
+            changes=[
+                CalendarChange(
+                    event_id=c.event_id,
+                    calendar_id=c.calendar_id,
+                    entry_id=UUID(c.entry_id) if c.entry_id else None,
+                    title=c.title,
+                    observed_at=c.observed_at,
+                    prior_known=c.prior_known,
+                    all_day=c.all_day,
+                    fields=c.fields,
+                    prior_start_at=c.prior_start,
+                    new_start_at=c.new_start,
+                    prior_end_at=c.prior_end,
+                    new_end_at=c.new_end,
+                    prior_status=c.prior_status,
+                    new_status=c.new_status,
+                    prior_location=c.prior_location,
+                    new_location=c.new_location,
+                    organizer_self=c.organizer_self,
+                )
+                for c in read.changes
+            ],
+            changes_available=read.available,
+            truncated=read.truncated,
+            since=since,
+        )
     )
 
 

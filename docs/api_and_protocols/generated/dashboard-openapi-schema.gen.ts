@@ -2471,6 +2471,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/workspace/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Workspace Changes
+         * @description Organizer-made changes to start, end, status or location since ``since`` (N3).
+         *
+         *     Read from the connector's revision journal through a narrow reader; the owner's own edits and
+         *     events the owner declined are not returned. A failed read answers ``changes_available=false``
+         *     with no items (never an empty "no changes"). ``since`` must carry a timezone, must not be in the
+         *     future and must be at most 14 days old (HTTP 400 otherwise): the window is never shortened
+         *     silently.
+         */
+        get: operations["get_workspace_changes_api_calendar_workspace_changes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/workspace/conflicts": {
         parameters: {
             query?: never;
@@ -17737,6 +17763,11 @@ export interface components {
             data: components["schemas"]["CalendarButlerEventPreviewResponse"];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[CalendarChangesResponse] */
+        ApiResponse_CalendarChangesResponse_: {
+            data: components["schemas"]["CalendarChangesResponse"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[CalendarDayBriefingResponse] */
         ApiResponse_CalendarDayBriefingResponse_: {
             data: components["schemas"]["CalendarDayBriefingResponse"];
@@ -21746,6 +21777,78 @@ export interface components {
              * Format: date-time
              */
             window_start: string;
+        };
+        /**
+         * CalendarChange
+         * @description One organizer-made change to an event the owner planned around (bu-5ii4gj.11 N3).
+         */
+        CalendarChange: {
+            /**
+             * All Day
+             * @default false
+             */
+            all_day?: boolean;
+            /** Calendar Id */
+            calendar_id: string;
+            /** Entry Id */
+            entry_id?: string | null;
+            /** Event Id */
+            event_id: string;
+            /** Fields */
+            fields?: string[];
+            /** New End At */
+            new_end_at?: string | null;
+            /** New Location */
+            new_location?: string | null;
+            /** New Start At */
+            new_start_at?: string | null;
+            /** New Status */
+            new_status?: string | null;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Organizer Self */
+            organizer_self?: boolean | null;
+            /** Prior End At */
+            prior_end_at?: string | null;
+            /** Prior Known */
+            prior_known: boolean;
+            /** Prior Location */
+            prior_location?: string | null;
+            /** Prior Start At */
+            prior_start_at?: string | null;
+            /** Prior Status */
+            prior_status?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
+         * CalendarChangesResponse
+         * @description Response payload for GET /api/calendar/workspace/changes.
+         *
+         *     ``changes_available=False`` means the journal read failed: ``changes`` is empty because nothing
+         *     was read, which the queue must show as unknown, never as no changes.
+         */
+        CalendarChangesResponse: {
+            /** Changes */
+            changes?: components["schemas"]["CalendarChange"][];
+            /**
+             * Changes Available
+             * @default true
+             */
+            changes_available?: boolean;
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated?: boolean;
         };
         /**
          * CalendarConflictEntry
@@ -45813,6 +45916,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_CalendarButlerEventPreviewResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workspace_changes_api_calendar_workspace_changes_get: {
+        parameters: {
+            query: {
+                /** @description Return changes observed after this instant */
+                since: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_CalendarChangesResponse_"];
                 };
             };
             /** @description Validation Error */

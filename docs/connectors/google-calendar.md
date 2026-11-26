@@ -53,5 +53,14 @@ consecutive revisions; it is not stored.
   start, end or status becomes one `plan_changed` **intent** point event (prior and new times and
   status only; `prior_known=false` when no earlier version was journaled). Baselines emit nothing,
   and a plan change never asserts attendance or counts as activity.
+- The dashboard's moved-under-you changes feed (`GET /api/calendar/workspace/changes?since=`,
+  bu-5ii4gj.11 slice N3) reads the journal through `public.read_calendar_event_changes` (core_386),
+  a capped `SECURITY DEFINER` reader on the Switchboard role: for revisions of the last 14 days
+  whose start, end, status or location differs from the previous version (or that have no earlier
+  one) it returns the event id, calendar id, observation time and those prior and new values, plus
+  `organizer_self`, and nothing else (no raw payload, attendee, title or description). Revisions the
+  owner made as organizer and revisions of events the owner declined are left out; a policy-blocked
+  row (times and status only) is returned with `organizer_self` null, shown as "organizer unknown".
+  A failed read is `changes_available: false`, never an empty list.
 - If the write fails, nothing is submitted, the sync token is held and health is **degraded**
   ("Google Calendar revision journal write failed"); the next cycle journals the same delta.
