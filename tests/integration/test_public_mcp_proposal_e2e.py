@@ -98,7 +98,16 @@ async def test_proposals_reach_applied_rejected_and_expired(
     client, projected, primary, admin, inbox
 ) -> None:
     world = World(projected, admin)
-    people = [await world.person() for _ in range(7)]
+    # Fixed subjects and objects keep the derived proposal references repeatable.
+    people = [uuid.UUID(int=index, version=4) for index in range(1, 7)]
+    await admin.executemany(
+        "INSERT INTO public.entities (id, canonical_name, entity_type, roles, metadata) "
+        "VALUES ($1, $2, 'person', '{}', '{}')",
+        [
+            (entity_id, f"Synthetic lifecycle person {index}")
+            for index, entity_id in enumerate(people, 1)
+        ],
+    )
     # Three distinct pairs; none is the owner, which the importer would refuse as a subject.
     pairs = {
         "applied": (people[0], people[1]),
