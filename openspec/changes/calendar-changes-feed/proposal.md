@@ -20,7 +20,7 @@ N) asks for those moved-under-you changes to appear in the Needs-you queue with 
 
 A persisted dismiss or acknowledgement of a change (bu-5ii4gj.11.2, with the other `x` verbs); the
 cursor is held by the client. Attendee-list changes, description and conference changes, and
-anything the owner did themselves. No notification: the queue is the surface.
+anything the owner did themselves, and events the owner has declined. No notification: the queue is the surface.
 
 ## Slices
 

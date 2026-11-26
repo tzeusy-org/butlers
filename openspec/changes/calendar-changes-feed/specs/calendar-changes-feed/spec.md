@@ -11,7 +11,8 @@ revision, observed after `since`, whose start, end, status or location differs f
 event's previous journaled revision and whose organizer is not the owner. Each item SHALL carry the
 prior and new value of each field that changed, the event id and calendar id as evidence, the time it
 was observed and whether a prior version was known. A revision that changes none of those fields
-(an RSVP, a retitle, an attendee edit) SHALL NOT be an item. Items SHALL be ordered by observation
+(an RSVP, a retitle, an attendee edit) SHALL NOT be an item, and neither SHALL a revision of an event
+the owner has declined: a meeting the owner is not going to is not moved under them. Items SHALL be ordered by observation
 time, newest first, and the read SHALL be bounded in both age and count: a window past the bound
 SHALL be refused with a stated reason, never silently shortened.
 
@@ -33,8 +34,9 @@ Scope: v1-mandatory
 
 A revision of an event the owner organizes SHALL NOT be an item, whoever applied it (the owner in the
 provider's own app, or a Butlers write). A revision whose organizer cannot be told (a
-policy-blocked row keeps structure and times only) SHALL be returned with its times and status, an
-unknown organizer, and no location, so the owner can see a move; it SHALL never be returned as the
+policy-blocked row keeps structure and times only) SHALL be included: it SHALL be returned with its
+times and status, `organizer_self` null (shown as "organizer unknown") and no location, so the owner
+can see a move; it SHALL never be returned as the
 owner's own edit and SHALL never be silently dropped.
 
 #### Scenario: The owner reschedules their own meeting
@@ -45,7 +47,7 @@ owner's own edit and SHALL never be silently dropped.
 #### Scenario: An unknown organizer is shown, not hidden
 
 - **WHEN** a policy-blocked revision changes an event's times
-- **THEN** the feed SHALL return it with an unknown organizer and no location
+- **THEN** the feed SHALL return it with `organizer_self` null ("organizer unknown") and no location
 
 ### Requirement: The journal is read through a narrow reader
 
@@ -55,7 +57,8 @@ Scope: v1-mandatory
 
 The changes read SHALL reach the revision journal only through a `SECURITY DEFINER` function with a
 fixed `search_path` that returns the event id, calendar id, observation time, prior and new start,
-end, status and location, whether a prior version was known and the organizer flag, and no raw
+end, status and location, whether a prior version was known, the organizer flag (`organizer_self`,
+null when the row keeps structure only) and whether the owner has declined, and no raw
 payload, attendee, description or conference data. It SHALL cap its result. The calling role SHALL
 have execute on that function and no direct grant on the journal. Titles SHALL come from the calendar
 projection the owner can already read, not from the journal.
@@ -63,7 +66,7 @@ projection the owner can already read, not from the journal.
 #### Scenario: The reader exposes only the named fields
 
 - **WHEN** the function is called
-- **THEN** its result columns SHALL be exactly the named fields and it SHALL return at most its cap
+- **THEN** its result columns SHALL be exactly the named fields, with no raw payload or description column, and it SHALL return at most its cap
 
 ### Requirement: An unreadable feed is unknown, never empty
 
