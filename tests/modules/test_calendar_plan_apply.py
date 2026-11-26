@@ -14,6 +14,8 @@ from butlers.core.temporal.conflict_resolution import ResolutionEvent
 from butlers.modules.calendar.plan_apply import apply_plan, step_outcome
 from butlers.modules.calendar.plan_tools import CompiledPlan
 from butlers.modules.calendar.resolution_move import (
+    DEFERRED_ERROR,
+    RESOLUTION_DECLINED_TEXTS,
     check_resolution_binding,
     dependency_state,
 )
@@ -60,16 +62,19 @@ class _Pool:
         self.receipts = [{"action_payload": r} for r in receipts]
         self.cards = cards or {}
         self.commands = commands or {}
-        self.failures: set = set()
+        self.failures: dict = {}
         self.inserted: list[tuple] = []
 
     async def fetch(self, sql, *args):
         return self.receipts
 
     async def fetchval(self, sql, *args):
-        return 1 if args[0] in self.failures else None
+        return False  # the 48 hour wait is not over
 
     async def fetchrow(self, sql, *args):
+        if "approval_events" in sql:
+            reason = self.failures.get(args[0])
+            return None if reason is None else {"reason": reason}
         if "calendar_action_log" in sql:
             return self.commands.get(args[0])
         return self.cards.get(args[0])
@@ -430,7 +435,7 @@ async def test_an_approved_move_whose_handler_errored_is_uncertain_not_pending_f
     # result and audits action_execution_failed; a move has no coordinator command row.
     card = uuid.uuid4()
     pool = _Pool(cards={card: {"status": "approved", "execution_result": None}})
-    pool.failures.add(card)
+    pool.failures[card] = "calendar_update_event failed"
 
     assert await step_outcome(pool, {"action_id": str(card)}) == ("uncertain", "execution_failed")
 
@@ -447,3 +452,24 @@ async def test_an_approved_move_with_no_failure_audit_stays_pending():
     pool = _Pool(cards={card: {"status": "approved", "execution_result": None}})
 
     assert await step_outcome(pool, {"action_id": str(card)}) == ("pending", None)
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (DEFERRED_ERROR, ("pending", None)),
+        (
+            RESOLUTION_DECLINED_TEXTS["dependency_not_applied"],
+            ("declined", "dependency_not_applied"),
+        ),
+        (RESOLUTION_DECLINED_TEXTS["changed_since_check"], ("declined", "changed_since_check")),
+        ("something unexpected", ("uncertain", "execution_failed")),
+        ("", ("uncertain", "execution_failed")),
+    ],
+)
+async def test_a_deferred_move_reads_pending_never_a_failure(reason, expected):
+    card = uuid.uuid4()
+    pool = _Pool(cards={card: {"status": "approved", "execution_result": None}})
+    pool.failures[card] = reason
+
+    assert await step_outcome(pool, {"action_id": str(card)}) == expected

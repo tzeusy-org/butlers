@@ -51,6 +51,9 @@ class _ApprovalsModuleProbe:
     def set_tool_executor(self, executor: object) -> None:
         self.tool_executor = executor
 
+    async def execute_approved_card(self, action_id: object) -> bool:
+        return True
+
 
 class _UnexpectedMetadataModule:
     name = "email"
@@ -574,3 +577,30 @@ async def test_messenger_whatsapp_replay_respects_runtime_send_policy(
         send.assert_not_awaited()
     event_types = [call["args"][0] for call in db.approval_events]
     assert expected_execution_event in event_types
+
+
+class _DeferringModuleProbe:
+    name = "calendar"
+
+    def __init__(self) -> None:
+        self.card_executor = None
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        return {}
+
+    def set_approved_card_executor(self, execute: object) -> None:
+        self.card_executor = execute
+
+
+async def test_a_module_that_defers_its_own_steps_gets_the_approvals_card_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approvals executor's retry is handed to a module that asks for it, and no other."""
+    approvals = _ApprovalsModuleProbe()
+    calendar = _DeferringModuleProbe()
+    monkeypatch.setattr("butlers.daemon.apply_approval_gates", AsyncMock(return_value={}))
+    daemon = _approval_wiring_daemon("home", [calendar, approvals], mcp=RuntimeFastMCP("test-home"))
+
+    await daemon._apply_approval_gates()
+
+    assert calendar.card_executor == approvals.execute_approved_card

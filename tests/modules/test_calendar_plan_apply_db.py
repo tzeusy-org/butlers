@@ -206,3 +206,165 @@ async def test_undo_parks_one_bound_card_per_applied_step_only(db) -> None:
         )
     )
     assert binding["etag"] == "etag-after" and binding["stale_reason"] == "changed_since_move"
+
+
+# ---- deferral (bu-5ii4gj.11.1) ---------------------------------------------------------------
+
+
+def _card_event(offer: dict, tool_args: dict):
+    from butlers.modules.calendar.models import CalendarEvent
+
+    return CalendarEvent(
+        event_id=tool_args.get("event_id", "e"),
+        title="t",
+        start_at=DAY,
+        end_at=DAY + timedelta(hours=1),
+        timezone="UTC",
+        etag=offer["etag"],
+    )
+
+
+async def _executor(pool):
+    """The approvals executor around a stand-in for the calendar update handler.
+
+    The handler runs the real move gate against the real card and bindings, then answers the way
+    ``calendar_update_event`` does: a deferral and a decline are error dicts, a write is ``updated``.
+    """
+    from butlers.modules.approvals.executor import execute_approved_action
+    from butlers.modules.calendar.resolution_move import (
+        DEFERRED_ERROR,
+        RESOLUTION_DECLINED_TEXTS,
+        check_resolution_binding,
+        offer_for_card,
+    )
+
+    module = SimpleNamespace(_db=SimpleNamespace(pool=pool))
+
+    async def execute(card_id) -> bool:
+        row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", card_id)
+        if row is None or row["status"] != "approved" or row["execution_result"] is not None:
+            return False
+        args = _obj(row["tool_args"])
+        offer = await offer_for_card(pool, card_id)
+
+        async def tool(**kwargs):
+            check = await check_resolution_binding(
+                module,
+                tool_name="calendar_update_event",
+                tool_args=args,
+                request_id=args.get("request_id"),
+                event=_card_event(offer, args),
+            )
+            if check.refusal == "dependency_pending":
+                return {"error": DEFERRED_ERROR}
+            if check.refusal:
+                return {"error": RESOLUTION_DECLINED_TEXTS[check.refusal]}
+            return {"status": "updated"}
+
+        await execute_approved_action(pool, card_id, row["tool_name"], args, tool)
+        return True
+
+    return execute
+
+
+async def _approve(pool, card) -> None:
+    await pool.execute("UPDATE pending_actions SET status = 'approved' WHERE id = $1", card)
+
+
+async def _outcome(pool, card):
+    from butlers.modules.calendar.plan_apply import step_outcome
+
+    return await step_outcome(pool, {"action_id": str(card)})
+
+
+async def test_approving_the_dependency_then_the_dependent_applies_both_with_no_reapply(db) -> None:
+    from butlers.modules.calendar.resolution_move import release_deferred
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    dep, dependent = (UUID(s["approval_id"]) for s in result["steps"])
+    execute = await _executor(pool)
+
+    # the owner approves the dependent first: it is deferred, not failed or declined
+    await _approve(pool, dependent)
+    await execute(dependent)
+    assert await _outcome(pool, dependent) == ("pending", None)
+    assert await release_deferred(pool, execute) == 0  # the dependency is still undecided
+
+    await _approve(pool, dep)
+    await execute(dep)
+    assert (await _outcome(pool, dep))[0] == "applied"
+
+    assert await release_deferred(pool, execute, after=str(dep)) == 1
+    assert (await _outcome(pool, dependent))[0] == "applied"
+    assert await release_deferred(pool, execute) == 0  # nothing left to release
+
+
+async def test_a_rejected_dependency_declines_the_deferred_dependent(db) -> None:
+    from butlers.modules.calendar.resolution_move import release_deferred
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    dep, dependent = (UUID(s["approval_id"]) for s in result["steps"])
+    execute = await _executor(pool)
+    await _approve(pool, dependent)
+    await execute(dependent)
+
+    await pool.execute("UPDATE pending_actions SET status = 'rejected' WHERE id = $1", dep)
+    assert await release_deferred(pool, execute) == 1
+
+    assert await _outcome(pool, dependent) == ("declined", "dependency_not_applied")
+    assert await release_deferred(pool, execute) == 0  # ended for good, never re-run
+
+
+async def test_a_dependent_that_waited_its_whole_lifetime_declines(db) -> None:
+    from butlers.modules.calendar.resolution_move import release_deferred
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    dep, dependent = (UUID(s["approval_id"]) for s in result["steps"])
+    execute = await _executor(pool)
+    await _approve(pool, dependent)
+    await execute(dependent)
+    assert await release_deferred(pool, execute) == 0
+
+    await pool.execute(
+        "UPDATE pending_actions SET requested_at = now() - interval '49 hours' WHERE id = $1",
+        dependent,
+    )
+    assert await release_deferred(pool, execute) == 1
+
+    assert await _outcome(pool, dependent) == ("declined", "dependency_not_applied")
+
+
+async def test_the_sweep_never_touches_a_card_the_owner_did_not_approve(db) -> None:
+    from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+    from butlers.modules.calendar.resolution_move import DEFERRED_ERROR, release_deferred
+
+    pool = await db("core", "approvals")
+    result = await _apply(pool, _shift_plan())
+    dep, dependent = (UUID(s["approval_id"]) for s in result["steps"])
+    await pool.execute("UPDATE pending_actions SET status = 'executed' WHERE id = $1", dep)
+    called: list = []
+
+    async def execute(card_id) -> bool:
+        called.append(card_id)
+        return True
+
+    # an approved card that was never deferred (no failure audit) is not this sweep's either
+    await pool.execute("UPDATE pending_actions SET status = 'approved' WHERE id = $1", dependent)
+    assert await release_deferred(pool, execute) == 0
+    for status in ("rejected", "expired", "pending"):
+        await pool.execute(
+            "UPDATE pending_actions SET status = $2 WHERE id = $1", dependent, status
+        )
+        await record_approval_event(
+            pool,
+            ApprovalEventType.ACTION_EXECUTION_FAILED,
+            actor="system:executor",
+            action_id=dependent,
+            reason=DEFERRED_ERROR,
+            metadata={"tool_name": "calendar_update_event"},
+        )
+        assert await release_deferred(pool, execute) == 0
+    assert called == []

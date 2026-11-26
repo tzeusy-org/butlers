@@ -215,6 +215,10 @@ class CalendarModule(
         self._internal_projection_task: asyncio.Task[None] | None = None
         self._force_sync_queue_task: asyncio.Task[None] | None = None
         self._force_sync_queue_wake = asyncio.Event()
+        #: The approvals executor's retry for one approved card (wired by the daemon), used only to
+        #: re-run a plan step that was deferred behind its dependency.
+        self._execute_approved_card: Any = None
+        self._release_tasks: set[asyncio.Task[None]] = set()
         self._force_sync_queue_lock = asyncio.Lock()
         # In-memory sync state cache (calendar_id → CalendarSyncState).
         self._sync_states: dict[str, CalendarSyncState] = {}
@@ -858,6 +862,41 @@ class CalendarModule(
             "Calendar internal projection poller started (interval=%dm)",
             DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
         )
+
+    def set_approved_card_executor(self, execute: Any) -> None:
+        """Wire the approvals executor's retry: ``await execute(card_id) -> bool``."""
+        self._execute_approved_card = execute
+
+    async def _sweep_deferred_plan_steps(self, *, after: str | None = None) -> int:
+        """Re-run approved plan steps deferred behind a dependency that has since settled."""
+        pool = getattr(self._db, "pool", None)
+        if self._execute_approved_card is None or pool is None:
+            return 0
+        from .resolution_move import release_deferred
+
+        return await release_deferred(pool, self._execute_approved_card, after=after)
+
+    def schedule_dependent_release(self, card_id: Any) -> None:
+        """Soon after a plan step's write, release the steps that were waiting for it.
+
+        The step's own card is only marked executed after its handler returns, so the release waits
+        a moment, then sweeps the dependents of that one card. The periodic sweep is the backstop.
+        """
+        if self._execute_approved_card is None:
+            return
+
+        async def release() -> None:
+            for delay in (2, 10):
+                await asyncio.sleep(delay)
+                try:
+                    if await self._sweep_deferred_plan_steps(after=str(card_id)):
+                        return
+                except Exception:
+                    logger.warning("calendar: dependent release failed", exc_info=True)
+
+        task = asyncio.create_task(release(), name="calendar-plan-dependent-release")
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
 
     async def on_shutdown(self) -> None:
         self._response_ready = False
