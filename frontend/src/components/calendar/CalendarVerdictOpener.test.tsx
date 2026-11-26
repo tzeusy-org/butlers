@@ -295,7 +295,7 @@ describe("CalendarVerdictOpener", () => {
     const open = vi.fn();
     const more = vi.fn();
     const issue = { kind: "overlap" as const, date: "2026-07-01", summary: "Actual overlap",
-      severity: "warning" as const, proposal_ids: [], events: [{ entry_id: "invited", title: "Invitation",
+      severity: "warning" as const, events: [{ entry_id: "invited", title: "Invitation",
         start_at: "2026-07-01T09:00:00Z", end_at: "2026-07-01T10:00:00Z", timezone: "UTC", status: "confirmed" }] };
     const props = { dayVerdict: dayVerdict(), workspaceLoading: false,
       workspaceError: false, sourceFreshnessLoading: false, sourceFreshnessError: false,

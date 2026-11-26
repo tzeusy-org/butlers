@@ -17,7 +17,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -343,7 +343,6 @@ async def test_conflicts_endpoint_detects_overlap(app):
     overlaps = [i for i in data["issues"] if i["kind"] == "overlap"]
     assert len(overlaps) == 1
     assert {e["entry_id"] for e in overlaps[0]["events"]} == {"a", "b"}
-    assert overlaps[0]["proposal_ids"] == []
 
 
 async def test_conflicts_endpoint_empty_on_clean_window(app):
@@ -358,10 +357,10 @@ async def test_conflicts_endpoint_empty_on_clean_window(app):
     assert data["issues"] == []
 
 
-async def test_conflicts_proposal_stays_attached_when_resync_rotates_surviving_copy(app):
+async def test_conflict_pair_id_stays_put_when_resync_rotates_surviving_copy(app):
     """bu-nd32y3: each calendar schema holds its own copy of a provider event and the
     origin_ref collapse keeps the freshest, so a resync can make another schema's copy
-    survive. The overlap's pair_id (and the proposal stored under it) must not rotate."""
+    survive. The overlap's pair_id (what an acknowledgement is keyed on) must not rotate."""
     a_general = _ws_row(entry_id="a-general", title="Design review", start=_DAY)
     a_relationship = _ws_row(entry_id="a-relationship", title="Design review", start=_DAY)
     for row in (a_general, a_relationship):
@@ -380,31 +379,13 @@ async def test_conflicts_proposal_stays_attached_when_resync_rotates_surviving_c
     before = await query_calendar_conflicts(db, **window)
     (overlap,) = [i for i in before.issues if i.kind == "overlap"]
     assert {e.entry_id for e in overlap.events} == {"a-general", "b"}
-    pid = uuid4()
-    proposals.append(
-        _proposal_row(proposal_id=pid, source_event_id=str(overlap.pair_id), start=_DAY)
-    )
+    before_pair = overlap.pair_id
 
     a_relationship["instance_updated_at"] = _DAY + timedelta(hours=1)  # resync: other copy wins
     after = await query_calendar_conflicts(db, **window)
     (overlap,) = [i for i in after.issues if i.kind == "overlap"]
     assert {e.entry_id for e in overlap.events} == {"a-relationship", "b"}
-    assert overlap.proposal_ids == [str(pid)]
-
-
-async def test_conflicts_endpoint_attaches_proposal_stored_under_legacy_instance_pair_id(app):
-    """Proposals written before bu-nd32y3 carry the instance-based pair id; they still join."""
-    a = _ws_row(entry_id="a", title="Design review", start=_DAY)
-    b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
-    pair_id = str(overlap_pair_id("a", "b"))
-    pid = uuid4()
-    prop = _proposal_row(proposal_id=pid, source_event_id=pair_id, start=_DAY)
-    app, _ = _build_app(app, workspace_rows={"general": [a, b]}, proposal_rows={"general": [prop]})
-
-    resp = await _get(app)
-    data = resp.json()["data"]
-    overlap = [i for i in data["issues"] if i["kind"] == "overlap"][0]
-    assert overlap["proposal_ids"] == [str(pid)]
+    assert overlap.pair_id == before_pair
 
 
 async def test_conflicts_endpoint_fails_open_on_db_error(app, monkeypatch):
@@ -1461,11 +1442,14 @@ class _Pool:
         return {"timezone": self.zone} if self.zone else None
 
 
+_MTG_ID = "7c1f0c0e-5b1d-4f7e-9a2d-0d2f6f3b9a11"
+
+
 def _options_world(app, **overrides):
     block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
     block["event_etag"] = "etag-block"
     meeting = _ws_row(
-        entry_id="mtg",
+        entry_id=_MTG_ID,
         title="Planning",
         start=_DAY + timedelta(minutes=30),
         event_metadata=_INVITED,
@@ -1636,7 +1620,7 @@ async def test_no_saved_owner_zone_offers_nothing(app, live):
 async def test_an_event_the_owner_does_not_organise_is_never_moved(app, live):
     block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
     stranger = _ws_row(
-        entry_id="mtg",
+        entry_id=_MTG_ID,
         title="Planning",
         start=_DAY + timedelta(minutes=30),
         event_metadata={
@@ -1654,7 +1638,7 @@ async def test_an_event_the_owner_does_not_organise_is_never_moved(app, live):
 async def test_the_organizer_address_proves_ownership(app, live):
     block = _ws_row(entry_id="block", title="Focus", start=_DAY, time_role="butler")
     own = _ws_row(
-        entry_id="mtg",
+        entry_id=_MTG_ID,
         title="Mine",
         start=_DAY + timedelta(minutes=30),
         event_metadata={
@@ -1888,6 +1872,7 @@ async def test_a_move_parks_an_approvals_card_and_writes_nothing_else(app, live)
         "pair_id": pair,
         "option_id": move["id"],
         "action_id": str(action_id),
+        "response_outcome": None,
     }
     kwargs = park.await_args.kwargs
     assert kwargs["etag"] == "etag-block"  # the etag the options were compiled against
@@ -1923,15 +1908,53 @@ async def test_a_card_the_owner_already_decided_is_not_reopened(app, live):
     assert resp.status_code == 409 and resp.json()["detail"] == "card_closed"
 
 
-async def test_a_response_option_is_not_accepted_yet(app, live):
+@pytest.mark.parametrize("kind", ["decline", "tentative"])
+async def test_a_response_option_is_the_owners_own_calendar_respond(app, live, kind):
+    from butlers.api.models.calendar_workspace import CalendarRespondResponse
+
     app, pool, window = _future_world(app)
-    overlap, decline, pair = await _offered_option(app, "decline", window)
-
-    resp = await _post(
-        app, pair_id=pair, option_id=decline["id"], issue_digest=overlap["issue_digest"], **window
+    overlap, option, pair = await _offered_option(app, kind, window)
+    command = uuid4()
+    outcome = CalendarRespondResponse(
+        status="applied", command_id=command, approval_id=command, source_butler="general"
     )
+    router = "butlers.api.routers.calendar_workspace"
+    with (
+        patch(f"{router}._response_owner", new=AsyncMock(return_value="general")),
+        patch(f"{router}._respond_through_approval", new=AsyncMock(return_value=outcome)) as send,
+    ):
+        resp = await _post(
+            app,
+            pair_id=pair,
+            option_id=option["id"],
+            issue_digest=overlap["issue_digest"],
+            **window,
+        )
+        again = await _post(
+            app,
+            pair_id=pair,
+            option_id=option["id"],
+            issue_digest=overlap["issue_digest"],
+            **window,
+        )
 
-    assert resp.status_code == 422 and pool.rows == {}
+    assert resp.status_code == 200, resp.json()
+    assert again.status_code == 200
+    assert resp.json()["data"] == {
+        "status": "responded",
+        "pair_id": pair,
+        "option_id": option["id"],
+        "action_id": str(command),
+        "response_outcome": "applied",
+    }
+    arguments = send.await_args_list[0].kwargs["arguments"]
+    assert arguments["response_status"] == ("declined" if kind == "decline" else "tentative")
+    assert arguments["send_updates"] == "none"  # nothing reaches the organizer
+    assert arguments["entry_id"] == option["exact_call"]["args"]["entry_id"]
+    UUID(arguments["request_id"])  # calendar_respond takes a UUID request id
+    # A retry replays the same command: the request id is deterministic.
+    assert send.await_args_list[1].kwargs["arguments"]["request_id"] == arguments["request_id"]
+    assert pool.rows == {}  # a response is not an acknowledgement
 
 
 def _future_world(app, *, synced_at=None):

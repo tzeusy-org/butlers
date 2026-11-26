@@ -47,6 +47,7 @@ export {
   getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
   getCalendarWorkspaceConflicts,
+  resolveCalendarConflict,
   getCalendarInvitations,
   respondToCalendarInvitation,
   decideCalendarOrganizer,
