@@ -330,11 +330,25 @@ async def test_expiry_capacity_cancel_and_missing_singleton_fail_closed(store):
     second = OwnerAuthService(store.pool, store.config)
     for _ in range(29):
         await second.context()
-    await store.pool.execute(
-        "UPDATE dashboard_auth.rate_buckets SET count=30,minute=date_trunc('minute',clock_timestamp()) WHERE kind='context'"
-    )
-    with pytest.raises(AuthError, match="rate limit"):
-        await store.context()
+    # A call that straddles a database-minute boundary starts a fresh bucket, so re-seed until one
+    # attempt ran inside the seeded minute (no sleeps).
+    for _ in range(5):
+        seeded = await store.pool.fetchval(
+            "UPDATE dashboard_auth.rate_buckets SET count=30,"
+            "minute=date_trunc('minute',clock_timestamp()) WHERE kind='context' RETURNING minute"
+        )
+        refused = False
+        try:
+            await store.context()
+        except AuthError as error:
+            refused = "rate limit" in str(error)
+        rolled = await store.pool.fetchval(
+            "SELECT date_trunc('minute',clock_timestamp()) <> $1", seeded
+        )
+        if not rolled:
+            break
+    assert not rolled, "the database minute rolled on every attempt"
+    assert refused, "the exhausted context bucket did not refuse"
     await store.pool.execute(
         "UPDATE dashboard_auth.rate_buckets SET minute=clock_timestamp()-interval '2 minutes'; UPDATE dashboard_auth.contexts SET expires_at=clock_timestamp()-interval '1 second'"
     )
@@ -501,14 +515,27 @@ async def test_failed_finishes_consume_durable_rate_budget_without_consuming_pro
     assert await store.pool.fetchval(
         "SELECT finish_count>0 FROM dashboard_auth.contexts WHERE digest=$1", _digest(context.token)
     )
-    await store.pool.execute(
-        "UPDATE dashboard_auth.contexts SET finish_count=10,finish_minute=date_trunc('minute',clock_timestamp()) WHERE digest=$1",
-        _digest(context.token),
-    )
-    with pytest.raises(AuthError) as limited:
-        await OwnerAuthService(store.pool, store.config).finish_login(
-            context.token, context.data["csrf_token"], options["ceremony_id"], response
+    # The finish budget is a fixed wall-clock minute read from the database clock inside the
+    # function, so a call that straddles a minute boundary legitimately starts a fresh window
+    # (count 1, a 401). Seed the budget in the current minute and keep the attempt only if the
+    # database minute did not roll while it ran; otherwise re-seed. No sleeps, no wider limits.
+    for _ in range(5):
+        seeded = await store.pool.fetchval(
+            "UPDATE dashboard_auth.contexts SET finish_count=10,"
+            "finish_minute=date_trunc('minute',clock_timestamp()) WHERE digest=$1 "
+            "RETURNING finish_minute",
+            _digest(context.token),
         )
+        with pytest.raises(AuthError) as limited:
+            await OwnerAuthService(store.pool, store.config).finish_login(
+                context.token, context.data["csrf_token"], options["ceremony_id"], response
+            )
+        rolled = await store.pool.fetchval(
+            "SELECT date_trunc('minute',clock_timestamp()) <> $1", seeded
+        )
+        if not rolled:
+            break
+    assert not rolled, "the database minute rolled on every attempt"
     assert limited.value.status_code == 429
     assert not await store.pool.fetchval(
         "SELECT consumed FROM dashboard_auth.ceremonies WHERE id=$1", options["ceremony_id"]
