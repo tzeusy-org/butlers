@@ -58,10 +58,12 @@ Scope: v1-mandatory
 The changes read SHALL reach the revision journal only through a `SECURITY DEFINER` function with a
 fixed `search_path` that returns the event id, calendar id, observation time, prior and new start,
 end, status and location, whether a prior version was known, the organizer flag (`organizer_self`,
-null when the row keeps structure only) and whether the owner has declined, and no raw
-payload, attendee, description or conference data. It SHALL cap its result. The calling role SHALL
+null when the row keeps structure only), and no raw
+payload, attendee, description or conference data. It SHALL leave out the owner's own revisions and the revisions of events the owner has declined, and
+SHALL cap its result and clamp its window. The calling role SHALL
 have execute on that function and no direct grant on the journal. Titles SHALL come from the calendar
-projection the owner can already read, not from the journal.
+projection the owner can already read, not from the journal, and an event the projection holds as a
+quarantined invitation, or does not hold at all, SHALL be shown with no title, entry or location.
 
 #### Scenario: The reader exposes only the named fields
 
