@@ -324,6 +324,14 @@ one condition. A tick that cannot measure (journal unreadable, a stale or unread
 no pool) reconciles nothing and records an incomplete tick; a partial fan-out never resolves by
 omission.
 
+A resolution carries its cause in the condition's `resolution_cause` metadata: `reverted` (the
+event matches what the owner accepted again), `declined`, `cancelled` or `started`. Only
+`reverted` amends a delivered insight (struck through); the others resolve with no amendment,
+because the delivered line was true when it was sent. Several copies of one provider event are
+reported from the copy observed most recently (ties by butler name). The comparison against the
+revision journal treats a head as newer when it was observed after the calendar source's last sync
+(the sync cursor), not after the projection's last change.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync

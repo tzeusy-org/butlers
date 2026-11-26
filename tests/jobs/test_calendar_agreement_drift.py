@@ -112,6 +112,8 @@ def _db(rows=None, failed=()):
 def _row(**over):
     item = _agreed(**over)
     return {
+        "state": item.state,
+        "synced_at": item.synced_at,
         "event_id": item.event_id,
         "origin_ref": item.origin_ref,
         "occurrence_start": item.occurrence_start,
@@ -262,4 +264,146 @@ async def test_a_declined_occurrence_is_not_read_as_an_agreement(db) -> None:
     declined = event.model_copy(update={"attendees": _attendees(AttendeeResponseStatus.declined)})
     await _project(_module(pool), source, declined)
 
-    assert await pool.fetch(job._AGREEMENTS_SQL) == []
+    assert [r["state"] for r in await pool.fetch(job._AGREEMENTS_SQL)] == ["declined"]
+
+
+def test_the_freshest_copy_is_reported_then_the_butler_name() -> None:
+    later = _OBS + timedelta(hours=1)
+    moved = {"current_start": _T0 + timedelta(hours=1)}
+    stale_move = _agreed("aaa", current_observed_at=_OBS, **moved)
+    fresh_unchanged = _agreed("zzz", current_observed_at=later)
+    # A newer copy that shows no change wins over an older copy that does.
+    assert job.build_observations([stale_move, fresh_unchanged], {})[0] == []
+
+    tie_b = _agreed("bbb", current_observed_at=later, **moved)
+    tie_z = _agreed("zzz", current_observed_at=later, **moved)
+    observations, _ = job.build_observations([tie_z, tie_b], {})
+    assert [o.metadata["butler"] for o in observations] == ["bbb"]
+
+
+def test_a_journal_head_is_compared_with_the_sync_cursor_not_the_last_change() -> None:
+    synced = _OBS + timedelta(days=2)
+    # The projection last changed long ago, but it was confirmed by a sync after the head was seen.
+    item = _agreed(current_observed_at=_OBS, synced_at=synced)
+    older_head = Head(
+        "confirmed", _T0 + timedelta(hours=2), _T0 + timedelta(hours=3), synced - timedelta(hours=1)
+    )
+    assert job.material_reasons(item, older_head) == ([], 0)
+
+    newer_head = Head(
+        "confirmed", _T0 + timedelta(hours=2), _T0 + timedelta(hours=3), synced + timedelta(hours=1)
+    )
+    assert job.material_reasons(item, newer_head)[0] == ["moved"]
+
+
+def test_resolution_causes_name_why_each_unchanged_occurrence_ended() -> None:
+    items = [
+        _agreed(ref="rev"),
+        _agreed(ref="dec", state="declined"),
+        _agreed(ref="can", state="cancelled"),
+        _agreed(ref="sta", state="started"),
+        _agreed(ref="jcan"),
+        _agreed(ref="moved", current_start=_T0 + timedelta(hours=1)),
+    ]
+    causes = job.resolution_causes(items, {"jcan": Head("cancelled", None, None, _OBS)})
+    by_ref = {r: causes[job.fingerprint(r, _T0)] for r in ("rev", "dec", "can", "sta", "jcan")}
+    assert by_ref == {
+        "rev": "reverted",
+        "dec": "declined",
+        "can": "cancelled",
+        "sta": "started",
+        "jcan": "cancelled",
+    }
+    assert job.fingerprint("moved", _T0) not in causes  # still changed: nothing resolves
+
+
+def test_ended_agreements_are_never_observed_or_counted() -> None:
+    observations, checked = job.build_observations(
+        [_agreed(state="declined", current_start=_T0 + timedelta(hours=1))], {}
+    )
+    assert observations == [] and checked == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@_docker
+async def test_end_to_end_a_move_opens_a_condition_and_moving_back_resolves_it_as_reverted(
+    db, monkeypatch
+) -> None:
+    from butlers.core.owner_conditions import create_owner_conditions_table
+    from butlers.modules.calendar.models import AttendeeResponseStatus
+    from tests.modules.test_calendar_owner_agreements import _attendees, _world
+    from tests.modules.test_calendar_participants import _event, _module, _project
+
+    pool, source = await _world(db)
+    await create_owner_conditions_table(pool)
+    await pool.execute("TRUNCATE TABLE public.owner_conditions")
+    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
+    event = _event(attendees=_attendees()).model_copy(
+        update={"start_at": start, "end_at": start + timedelta(hours=1)}
+    )
+    report = MagicMock(is_available=True, is_stale=False, failed_butlers=())
+    monkeypatch.setattr(job, "compute_calendar_sync_report", AsyncMock(return_value=report))
+    monkeypatch.setattr(job, "read_journal_heads", AsyncMock(return_value={}))
+    db_mgr = db_manager({"switchboard": pool}, modules={"relationship": ["calendar"]})
+
+    async def fan_out(sql, args, butler_names=None):
+        return {"relationship": await pool.fetch(sql)}, []
+
+    db_mgr.fan_out_with_status = fan_out
+
+    async def move(by):
+        await _project(
+            _module(pool),
+            source,
+            event.model_copy(
+                update={"start_at": start + by, "end_at": start + by + timedelta(hours=1)}
+            ),
+        )
+
+    async def state():
+        return await pool.fetchrow(
+            "SELECT state, metadata FROM public.owner_conditions ORDER BY episode DESC LIMIT 1"
+        )
+
+    await _project(_module(pool), source, event)
+    assert (await job.run_calendar_agreement_drift_check(db_mgr))["observed"] == 0
+
+    await move(timedelta(hours=2))
+    assert (await job.run_calendar_agreement_drift_check(db_mgr))["transitions"] == ["opened"]
+    assert (await state())["state"] != "resolved"
+
+    await move(timedelta(0))
+    result = await job.run_calendar_agreement_drift_check(db_mgr)
+    assert result["complete"] and result["transitions"] == ["resolved"]
+    row = await state()
+    assert row["state"] == "resolved" and row["metadata"]["resolution_cause"] == "reverted"
+
+    # A fresh move, then declining: resolved as declined, never "reverted".
+    await move(timedelta(hours=4))
+    await job.run_calendar_agreement_drift_check(db_mgr)
+    declined = event.model_copy(
+        update={
+            "start_at": start + timedelta(hours=4),
+            "end_at": start + timedelta(hours=5),
+            "attendees": _attendees(AttendeeResponseStatus.declined),
+        }
+    )
+    await _project(_module(pool), source, declined)
+    await job.run_calendar_agreement_drift_check(db_mgr)
+    assert (await state())["metadata"]["resolution_cause"] == "declined"
+
+
+async def test_only_a_revert_is_amended_after_delivery(tick) -> None:
+    from types import SimpleNamespace
+
+    rows = [_row(ref="rev"), _row(ref="dec", state="declined"), _row(ref="can", state="cancelled")]
+    await job.run_calendar_agreement_drift_check(_db(rows))
+    gate = tick["reconcile"].await_args.kwargs["amend_resolved"]
+
+    def verdict(ref):
+        return gate(SimpleNamespace(fingerprint=job.fingerprint(ref, _T0)))
+
+    assert verdict("rev") is True
+    assert verdict("dec") is False and verdict("can") is False
+    assert verdict("unknown") is False

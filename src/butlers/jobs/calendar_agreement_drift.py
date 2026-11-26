@@ -64,14 +64,19 @@ _EMPTY_ATTENDEES = attendees_digest([])
 _AGREEMENTS_SQL = f"""
 SELECT a.occurrence_start, a.agreed_starts_at, a.agreed_ends_at, a.location_digest,
        a.attendees_digest, a.current_starts_at, a.current_ends_at, a.current_location_digest,
-       a.current_attendees_digest, a.current_observed_at, ce.id AS event_id, ce.origin_ref
+       a.current_attendees_digest, a.current_observed_at, ce.id AS event_id, ce.origin_ref,
+       ce.title,
+       (SELECT max(c.last_synced_at) FROM calendar_sync_cursors c
+         WHERE c.source_id = ce.source_id) AS synced_at,
+       CASE WHEN ce.status = 'cancelled' THEN 'cancelled'
+            WHEN a.ended_at IS NOT NULL THEN 'declined'
+            WHEN GREATEST(a.agreed_starts_at, a.current_starts_at) <= now() THEN 'started'
+            ELSE 'active' END AS state
   FROM calendar_owner_agreements a
   JOIN calendar_events ce ON ce.id = a.event_id
  WHERE ce.origin_ref IS NOT NULL
-   AND a.ended_at IS NULL
-   AND ce.status <> 'cancelled'
    AND NOT {quarantined_invitation_sql("ce")}
-   AND GREATEST(a.agreed_starts_at, a.current_starts_at) > now()
+   AND GREATEST(a.agreed_starts_at, a.current_starts_at) > now() - interval '14 days'
 """
 
 
@@ -102,6 +107,8 @@ class Agreed:
     current_location: str | None
     current_attendees: str
     current_observed_at: datetime
+    synced_at: datetime | None = None
+    state: str = "active"
 
 
 def material_reasons(item: Agreed, head: Head | None) -> tuple[list[str], int]:
@@ -114,7 +121,10 @@ def material_reasons(item: Agreed, head: Head | None) -> tuple[list[str], int]:
     if head is not None:
         if head.status == "cancelled":
             return [], 0
-        if head.observed_at > item.current_observed_at and head.starts_at is not None:
+        # The journal is newer than the projection when it was observed after the source's last
+        # successful sync (the cursor); current_observed_at only means "last change".
+        projected_at = item.synced_at or item.current_observed_at
+        if head.observed_at > projected_at and head.starts_at is not None:
             start = head.starts_at
             end = head.ends_at or end
     moved = abs(start - item.agreed_start)
@@ -140,6 +150,38 @@ def fingerprint(origin_ref: str, occurrence_start: datetime) -> str:
     )
 
 
+def _copy_rank(item: Agreed) -> tuple[float, str]:
+    """Newest observation first, then the butler name: the freshest copy is the one reported."""
+    return (-item.current_observed_at.timestamp(), item.butler)
+
+
+def _freshest(items: Iterable[Agreed]) -> dict[tuple[str, datetime], Agreed]:
+    """One copy per provider occurrence across schemas (active copies win over ended ones)."""
+    chosen: dict[tuple[str, datetime], Agreed] = {}
+    for item in sorted(items, key=lambda i: (i.state != "active", *_copy_rank(i))):
+        chosen.setdefault((item.origin_ref, item.occurrence_start), item)
+    return chosen
+
+
+def resolution_causes(items: Iterable[Agreed], heads: Mapping[str, Head]) -> dict[str, str]:
+    """Why each unchanged occurrence's condition would resolve: ``reverted``, ``declined``,
+    ``cancelled`` or ``started``. Only ``reverted`` makes a delivered line wrong.
+    """
+    causes: dict[str, str] = {}
+    for (origin_ref, occurrence_start), item in _freshest(items).items():
+        head = heads.get(origin_ref)
+        if item.state != "active":
+            cause = item.state
+        elif head is not None and head.status == "cancelled":
+            cause = "cancelled"
+        elif not material_reasons(item, head)[0]:
+            cause = "reverted"
+        else:
+            continue
+        causes[fingerprint(origin_ref, occurrence_start)] = cause
+    return causes
+
+
 def build_observations(
     items: Iterable[Agreed], heads: Mapping[str, Head]
 ) -> tuple[list[Observation], int]:
@@ -147,11 +189,11 @@ def build_observations(
 
     Returns the observations and how many accepted occurrences were checked.
     """
-    chosen: dict[tuple[str, datetime], Agreed] = {}
-    for item in sorted(items, key=lambda i: i.butler):
-        chosen.setdefault((item.origin_ref, item.occurrence_start), item)
+    chosen = _freshest(items)
     observations: list[Observation] = []
     for (origin_ref, occurrence_start), item in chosen.items():
+        if item.state != "active":
+            continue
         reasons, moved_minutes = material_reasons(item, heads.get(origin_ref))
         if not reasons:
             continue
@@ -171,7 +213,7 @@ def build_observations(
                 },
             )
         )
-    return observations, len(chosen)
+    return observations, sum(1 for i in chosen.values() if i.state == "active")
 
 
 async def read_journal_heads(pool: asyncpg.Pool, origin_refs: list[str]) -> dict[str, Head]:
@@ -211,6 +253,8 @@ def _agreed(butler: str, row: Mapping[str, Any]) -> Agreed:
         current_location=row["current_location_digest"],
         current_attendees=row["current_attendees_digest"],
         current_observed_at=row["current_observed_at"],
+        synced_at=row.get("synced_at"),
+        state=row.get("state") or "active",
     )
 
 
@@ -240,6 +284,18 @@ async def run_calendar_agreement_drift_check(db: DatabaseManager) -> dict[str, A
     if not complete:
         mark_tick_incomplete()
     observations, checked = build_observations(items, heads)
+    causes = resolution_causes(items, heads)
+
+    async def _stamp_cause(conn: Any, transitions: list[Any]) -> None:
+        for t in transitions:
+            if t.transition == "resolved":
+                await conn.execute(
+                    "UPDATE public.owner_conditions SET metadata = COALESCE(metadata, '{}'::jsonb) "
+                    "|| jsonb_build_object('resolution_cause', $2::text) WHERE id = $1",
+                    t.condition_id,
+                    causes.get(t.fingerprint, "ended"),
+                )
+
     try:
         transitions = await reconcile_snapshot(
             pool,
@@ -247,6 +303,9 @@ async def run_calendar_agreement_drift_check(db: DatabaseManager) -> dict[str, A
             observations=observations,
             snapshot_complete=complete,
             initial_grace_seconds=INITIAL_GRACE_S,
+            post_write=_stamp_cause,
+            # Only a revert makes a delivered line wrong; the others resolve with no amendment.
+            amend_resolved=lambda t: causes.get(t.fingerprint) == "reverted",
         )
     except Exception:
         logger.warning("calendar agreement drift: reconciliation failed", exc_info=True)
