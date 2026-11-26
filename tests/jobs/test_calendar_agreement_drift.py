@@ -438,3 +438,81 @@ async def test_only_a_revert_is_amended_after_delivery(tick) -> None:
     assert verdict("rev") is True
     assert verdict("dec") is False and verdict("can") is False
     assert verdict("unknown") is False
+
+
+class _Broker:
+    def __init__(self, timed_status="accepted"):
+        self.calls: list[dict[str, Any]] = []
+        self.timed_status = timed_status
+
+    async def propose_insight_candidate(self, pool, **kw):
+        self.calls.append(kw)
+        if kw.get("lane") == "timed":
+            return {"status": self.timed_status}
+        return {"status": "accepted"}
+
+
+def _opened(item):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(
+            fingerprint=job.fingerprint(item.origin_ref, item.occurrence_start), transition="opened"
+        )
+    ]
+
+
+async def test_an_opened_condition_proposes_one_premised_digest_candidate() -> None:
+    item = _agreed(title="Board review", current_start=_T0 + timedelta(days=3))
+    broker = _Broker()
+
+    queued = await job.propose_changes(
+        object(), _opened(item), [item], {}, now=_T0 - timedelta(days=5), broker=broker
+    )
+
+    assert queued == 1
+    (call,) = broker.calls
+    assert call.get("lane", "digest") == "digest"
+    assert call["premise"] == {
+        "kind": "owner_condition",
+        "source": job.CONDITION_SOURCE,
+        "fingerprint": job.fingerprint("evt-1", _T0),
+    }
+    assert call["message"].startswith("Board review changed since you accepted it: moved")
+
+
+async def test_a_change_starting_within_a_day_uses_the_timed_lane_then_falls_back() -> None:
+    item = _agreed(current_start=_T0 + timedelta(hours=1))
+    now = _T0 - timedelta(hours=3)
+
+    timed = _Broker()
+    await job.propose_changes(object(), _opened(item), [item], {}, now=now, broker=timed)
+    assert [c.get("lane") for c in timed.calls] == ["timed"]
+
+    dark = _Broker(timed_status="error")
+    await job.propose_changes(object(), _opened(item), [item], {}, now=now, broker=dark)
+    assert [c.get("lane") for c in dark.calls] == ["timed", None]  # never notify directly
+
+
+async def test_only_opened_or_reopened_conditions_are_proposed() -> None:
+    from types import SimpleNamespace
+
+    item = _agreed(current_start=_T0 + timedelta(hours=2))
+    fp = job.fingerprint(item.origin_ref, item.occurrence_start)
+    broker = _Broker()
+    for kind in ("confirmed", "no_change", "resolved", "escalation_due"):
+        await job.propose_changes(
+            object(),
+            [SimpleNamespace(fingerprint=fp, transition=kind)],
+            [item],
+            {},
+            now=_T0,
+            broker=broker,
+        )
+    assert broker.calls == []
+
+
+async def test_third_party_text_is_defanged_in_the_line() -> None:
+    item = _agreed(title="Sync https://evil.test/x", current_start=_T0 + timedelta(hours=2))
+    line = job.change_line(item, ["moved"], 120)
+    assert "https://" not in line and "evil[.]test" in line

@@ -40,7 +40,7 @@ import asyncio
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -59,6 +59,9 @@ IDENTITY_VERSION = 1
 INITIAL_GRACE_S = 0.0
 DEFAULT_CHECK_INTERVAL_S = 600
 MATERIAL_START_MOVE = timedelta(minutes=15)
+TIMED_WITHIN = timedelta(hours=24)
+CANDIDATE_PRIORITY = 60
+CANDIDATE_CATEGORY = "calendar_changed"
 _EMPTY_ATTENDEES = attendees_digest([])
 
 _AGREEMENTS_SQL = f"""
@@ -116,6 +119,7 @@ class Agreed:
     current_observed_at: datetime
     synced_at: datetime | None = None
     state: str = "active"
+    title: str | None = None
 
 
 def material_reasons(item: Agreed, head: Head | None) -> tuple[list[str], int]:
@@ -190,6 +194,23 @@ def resolution_causes(items: Iterable[Agreed], heads: Mapping[str, Head]) -> dic
     return causes
 
 
+def _changed(
+    items: Iterable[Agreed], heads: Mapping[str, Head]
+) -> tuple[list[tuple[Agreed, list[str], int]], int]:
+    """Changed active occurrences (copies across schemas collapsed) and how many were checked."""
+    chosen = _freshest(items)
+    changed: list[tuple[Agreed, list[str], int]] = []
+    checked = 0
+    for item in chosen.values():
+        if item.state != "active":
+            continue
+        checked += 1
+        reasons, moved_minutes = material_reasons(item, heads.get(item.origin_ref))
+        if reasons:
+            changed.append((item, reasons, moved_minutes))
+    return changed, checked
+
+
 def build_observations(
     items: Iterable[Agreed], heads: Mapping[str, Head]
 ) -> tuple[list[Observation], int]:
@@ -197,31 +218,100 @@ def build_observations(
 
     Returns the observations and how many accepted occurrences were checked.
     """
-    chosen = _freshest(items)
-    observations: list[Observation] = []
-    for (origin_ref, occurrence_start), item in chosen.items():
-        if item.state != "active":
-            continue
-        reasons, moved_minutes = material_reasons(item, heads.get(origin_ref))
-        if not reasons:
-            continue
-        observations.append(
-            Observation(
-                fingerprint=fingerprint(origin_ref, occurrence_start),
-                identity_version=IDENTITY_VERSION,
-                summary="An event you accepted changed: "
-                + ", ".join(r.replace("_", " ") for r in reasons),
-                metadata={
-                    "butler": item.butler,
-                    "event_id": item.event_id,
-                    "original_start": occurrence_start.isoformat(),
-                    "agreed_start": item.agreed_start.isoformat(),
-                    "reasons": reasons,
-                    "moved_minutes": moved_minutes,
-                },
-            )
+    changed, checked = _changed(items, heads)
+    observations = [
+        Observation(
+            fingerprint=fingerprint(item.origin_ref, item.occurrence_start),
+            identity_version=IDENTITY_VERSION,
+            summary="An event you accepted changed: "
+            + ", ".join(r.replace("_", " ") for r in reasons),
+            metadata={
+                "butler": item.butler,
+                "event_id": item.event_id,
+                "original_start": item.occurrence_start.isoformat(),
+                "agreed_start": item.agreed_start.isoformat(),
+                "reasons": reasons,
+                "moved_minutes": moved_minutes,
+            },
         )
-    return observations, sum(1 for i in chosen.values() if i.state == "active")
+        for item, reasons, moved_minutes in changed
+    ]
+    return observations, checked
+
+
+def change_line(item: Agreed, reasons: list[str], moved_minutes: int) -> str:
+    """The one owner-facing line. Third-party text passes only through the inert helpers."""
+    from butlers.jobs.meeting_card import inert_text
+
+    title = inert_text(item.title, 80) or "An event you accepted"
+    what = [f"moved {moved_minutes} min" if r == "moved" else r.replace("_", " ") for r in reasons]
+    return f"{title} changed since you accepted it: {', '.join(what)}."
+
+
+async def propose_changes(
+    pool: Any,
+    transitions: Iterable[Any],
+    items: Iterable[Agreed],
+    heads: Mapping[str, Head],
+    *,
+    now: datetime,
+    broker: Any | None = None,
+) -> int:
+    """Propose one candidate per newly opened condition. Returns how many were queued.
+
+    The premise is the condition itself, so a revert withdraws it unsent (or amends it in place
+    after delivery). Timed lane when the occurrence starts within 24 hours, digest otherwise or
+    while the timed lane is dark. Never raises: the condition is already durable.
+    """
+    fresh = {t.fingerprint for t in transitions if t.transition in ("opened", "reopened")}
+    if not fresh:
+        return 0
+    if broker is None:
+        import importlib
+
+        broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
+    from butlers.core.insight_premise import owner_condition_premise
+
+    queued = 0
+    changed, _checked = _changed(items, heads)
+    for item, reasons, moved_minutes in changed:
+        fp = fingerprint(item.origin_ref, item.occurrence_start)
+        if fp not in fresh:
+            continue
+        head = heads.get(item.origin_ref)
+        start = head.starts_at if head and head.starts_at else item.current_start
+        common: dict[str, Any] = {
+            "origin_butler": item.butler,
+            "priority": CANDIDATE_PRIORITY,
+            "category": CANDIDATE_CATEGORY,
+            "dedup_key": (
+                f"{item.butler}:{CANDIDATE_CATEGORY}:{fp[:16]}:{item.occurrence_start:%Y%m%d}"
+            ),
+            "message": change_line(item, reasons, moved_minutes),
+            "premise": owner_condition_premise(CONDITION_SOURCE, fp),
+            "now": now,
+        }
+        try:
+            result: dict[str, Any] = {}
+            if now <= start <= now + TIMED_WITHIN:
+                result = await broker.propose_insight_candidate(
+                    pool,
+                    expires_at=start,
+                    lane="timed",
+                    deliver_after=now,
+                    **common,
+                )
+                if result.get("status") == "error":
+                    result = {}  # timed lane dark or refused: digest instead
+            if not result:
+                result = await broker.propose_insight_candidate(
+                    pool, expires_at=max(start, now) + timedelta(hours=12), **common
+                )
+            if result.get("status") == "accepted":
+                queued += 1
+        except Exception:
+            logger.warning("calendar agreement drift: candidate not queued", exc_info=True)
+    return queued
 
 
 async def read_journal_heads(pool: asyncpg.Pool, origin_refs: list[str]) -> dict[str, Head]:
@@ -263,6 +353,7 @@ def _agreed(butler: str, row: Mapping[str, Any]) -> Agreed:
         current_observed_at=row["current_observed_at"],
         synced_at=row.get("synced_at"),
         state=row.get("state") or "active",
+        title=row.get("title"),
     )
 
 
@@ -318,11 +409,13 @@ async def run_calendar_agreement_drift_check(db: DatabaseManager) -> dict[str, A
     except Exception:
         logger.warning("calendar agreement drift: reconciliation failed", exc_info=True)
         return _skip("reconcile_failed")
+    queued = await propose_changes(pool, transitions, items, heads, now=datetime.now(UTC))
     return {
         "reconciled": True,
         "complete": complete,
         "checked": checked,
         "observed": len(observations),
+        "queued": queued,
         "transitions": [t.transition for t in transitions],
     }
 
