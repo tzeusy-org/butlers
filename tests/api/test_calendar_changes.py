@@ -191,11 +191,14 @@ async def test_calendar_changes_defaults_to_seven_days_and_passes_the_owners_add
         app, journal=[], emails=["me@example.test", "me.work@example.test"]
     )
 
+    before = datetime.now(UTC)
     resp = await _get(app)
+    after = datetime.now(UTC)
 
     assert resp.status_code == 200
     args = switchboard.fetch.await_args.args
-    assert abs((_NOW - args[1]) - timedelta(days=7)) < timedelta(minutes=1)
+    # exactly seven days before the moment the route read the clock, which lies between the two
+    assert before - timedelta(days=7) <= args[1] <= after - timedelta(days=7)
     assert args[3] == ["me.work@example.test", "me@example.test"]
 
 
