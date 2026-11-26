@@ -145,6 +145,12 @@ async def test_a_suppressed_tick_sends_nothing_and_records_nothing(wired):
     wired.state.assert_not_called()
 
 
+async def test_quiet_hours_are_judged_at_the_ticks_own_instant(wired):
+    await job.run_day_sheet_push(wired.db, now=SGT_NOW)
+    assert wired.suppressed.await_args.kwargs["now"] == SGT_NOW
+    assert wired.send.await_args.kwargs["now"] == SGT_NOW
+
+
 async def test_an_unreadable_sheet_is_sent_as_unreadable_never_clear(wired):
     wired.read.return_value = _sheet("u", "unreadable", ["general"])
     await job.run_day_sheet_push(wired.db, now=SGT_NOW)

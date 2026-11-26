@@ -21,6 +21,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 import asyncpg
@@ -172,6 +173,10 @@ class OwnerNotifyResult:
     delivery_outcome: DeliveryOutcome | None = None
 
 
+def _now_kwargs(now: datetime | None) -> dict[str, Any]:
+    return {} if now is None else {"now": now}
+
+
 async def send_owner_telegram_checked(
     pool: asyncpg.Pool,
     *,
@@ -183,8 +188,13 @@ async def send_owner_telegram_checked(
     boundary: OwnerNotifyBoundary | None = None,
     priority: str = "medium",
     metadata: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> OwnerNotifyResult:
     """Send to the verified owner and report whether transport began.
+
+    ``now`` is the instant the suppression gates are judged at; a caller that decided its own
+    instant (a scheduled tick) passes it so the send and the decision agree. Absent, the wall
+    clock decides, and a boundary's own suppression callable is called unchanged.
 
     A prebuilt envelope carries its existing presentation and must name the
     resolved owner chat. The optional dedup key belongs to the caller's retry
@@ -216,7 +226,7 @@ async def send_owner_telegram_checked(
     client = None
     try:
         reason = (
-            await bound.suppression(pool, log_context=log_context)
+            await bound.suppression(pool, log_context=log_context, **_now_kwargs(now))
             if bound.suppression is not None
             else None
         )
@@ -277,8 +287,9 @@ async def send_owner_telegram(
     boundary: OwnerNotifyBoundary | None = None,
     priority: str = "medium",
     metadata: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> NotifyOutcome:
-    """Send to the verified owner and return the recorded outcome."""
+    """Send to the verified owner and return the recorded outcome (see the checked variant)."""
     result = await send_owner_telegram_checked(
         pool,
         origin_butler=origin_butler,
@@ -288,5 +299,6 @@ async def send_owner_telegram(
         boundary=boundary,
         priority=priority,
         metadata=metadata,
+        now=now,
     )
     return result.outcome
