@@ -97,7 +97,7 @@ calls the registered handler directly with no ephemeral LLM session:
 
 ### Interactive Skills
 
-- **`bill-reminder`**: Interactive bill review, triage, and calendar reminder workflow
+- **`bill-reminder`**: Interactive bill review, triage, and reminder-timing workflow (the calendar reminder itself comes from the overlay job)
 - **`spending-review`**: Interactive spending analysis and pattern detection workflow
 - **`budget-review`**: Interactive budget setting, status check, and end-of-month forecast review
 - **`anomaly-triage`**: Interactive anomaly review: investigate, mark expected, or dispute suspicious charges

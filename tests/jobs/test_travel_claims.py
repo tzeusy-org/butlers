@@ -268,3 +268,21 @@ async def test_a_reconcile_error_makes_the_travel_run_partial_and_names_the_erro
     result = await job.run_travel_calendar_overlay_contribution(pool, None)
 
     assert result["claims"] == {"error": "TypeError"} and result["complete"] is False
+
+
+def test_a_long_travel_label_is_clipped_so_the_claim_stays_valid():
+    from butlers.core.temporal.domain_claims import MAX_LABEL_CHARS, parse_claim
+
+    stay = {
+        "id": "a1",
+        "name": "H" * 130,
+        "type": "hotel",
+        "check_in": datetime(2030, 3, 10, 7, tzinfo=UTC),
+        "check_out": datetime(2030, 3, 14, 3, tzinfo=UTC),
+    }
+    claims = _flat(_claims(accom=[stay]))
+
+    assert claims
+    for raw in claims.values():
+        assert len(raw["label"]) <= MAX_LABEL_CHARS
+        parse_claim(raw, source_butler="travel")
