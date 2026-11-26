@@ -33,6 +33,9 @@ class ContributionStateStore:
         self.set_calls.append(key)
         return 1
 
+    async def state_get(self, pool: Any, key: str) -> Any:
+        return self.store.get(key)
+
     async def state_list(self, pool: Any, prefix: str | None = None, keys_only: bool = True):
         if prefix is None:
             return sorted(self.store)
@@ -49,6 +52,7 @@ def patch_state(module: str, state: ContributionStateStore) -> Iterator[None]:
     with patch.multiple(
         module,
         state_set=state.state_set,
+        state_get=state.state_get,
         state_list=state.state_list,
         state_delete=state.state_delete,
     ):

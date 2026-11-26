@@ -70,7 +70,7 @@ Create or update a recurring service commitment.
 
 **Notes:**
 - Upsert behavior: if `service` already exists, fields are updated with provided values.
-- After creating/updating, create a calendar reminder 7 days before `next_renewal`.
+- The daily overlay job claims the renewal (and `cancel_by`) on the calendar by itself; do not create a calendar reminder for it.
 
 ---
 
@@ -96,7 +96,7 @@ Record a payable obligation.
 **Notes:**
 - Dedupes on the normalized payee + `due_date`; use a consistent payee name to avoid fragmenting records.
 - Never put the raw payment destination in `metadata` or any note field; pass it only as `payment_destination`.
-- Create a calendar reminder 3 days before `due_date` (configurable via user's `bill_reminder_preference` memory fact).
+- The daily overlay job claims the bill on the calendar by itself; do not create a calendar reminder for it.
 
 ---
 
@@ -191,7 +191,7 @@ for the full workflow.
 Tools provided by enabled modules (calendar, memory, email) are listed in the butler's tool list
 at runtime. Key tools:
 
-- **`calendar_create_event`**: Create calendar reminders for bills and renewals.
+- **`calendar_create_event`**: One-off events the owner asks for. Not for bills, renewals or `cancel_by` dates, which the overlay job claims by itself.
 - **`memory_store_fact`**: Persist durable facts (preferences, patterns, anomalies). See the `butler-memory` skill for entity resolution protocol.
 - **`memory_search`**: Retrieve facts by query.
 - **`memory_recall`**: Recall facts about a specific topic or subject.

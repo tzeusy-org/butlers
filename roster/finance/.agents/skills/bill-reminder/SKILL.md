@@ -124,7 +124,7 @@ If user selects "Mark as paid":
 
 #### Action: Set a Reminder
 
-If user selects "Set a reminder":
+If user selects "Set a reminder": every pending bill already gets an automatic calendar reminder from the daily overlay job (3 days before the due date). Say so, and only create an extra event when the owner asks for a different time:
 1. Determine reminder timing: Use user's default (from memory, typically 3 days before due date), or ask: "When would you like to be reminded? [3 days before / 1 day before / day of]?"
 2. Use `calendar_create_event(title="Bill Due: [Payee]", start_time=<reminder_date>, notes="$[amount] due [due_date]", conflict_behavior="suggest")` to create calendar event
 3. Confirm: "📅 Reminder set for [reminder_date]. You'll be reminded [duration] before the due date."
