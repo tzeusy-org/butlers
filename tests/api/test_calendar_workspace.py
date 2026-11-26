@@ -1159,6 +1159,7 @@ async def test_a_failed_overlay_read_names_every_contributor_as_failed(app, monk
     assert body["overlays_available"] is False
     assert {f["state"] for f in body["overlay_freshness"]} == {"failed"}
     assert {f["butler"] for f in body["overlay_freshness"]} == {
+        "education",
         "finance",
         "health",
         "relationship",
