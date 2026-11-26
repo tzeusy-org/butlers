@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { respondToCalendarInvitation } from "@/api/index";
-import type { CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
+import type { CalendarChange, CalendarInvitationEntry, CalendarResponseReceipt } from "@/api/types";
 import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
 import { useCalendarCommands } from "@/pages/calendar/use-calendar-commands";
 import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
@@ -18,7 +18,7 @@ vi.mock("@/api/index", () => ({ respondToCalendarInvitation: vi.fn() }));
 afterEach(() => {
   cleanup();
   vi.resetAllMocks();
-  for (const name of ["data-opened", "data-accepted", "data-dismissed"]) document.body.removeAttribute(name);
+  for (const name of ["data-opened", "data-accepted", "data-dismissed", "data-seen"]) document.body.removeAttribute(name);
 });
 
 const invitation: CalendarInvitationEntry = {
@@ -41,12 +41,25 @@ function PageKeys() {
   return null;
 }
 
+const moved = {
+  event_id: "evt-9", calendar_id: "primary", entry_id: "c-9", title: "Budget review",
+  observed_at: "2026-11-30T13:30:00Z", prior_known: true, all_day: false, fields: ["time"],
+  prior_start_at: "2026-11-30T14:00:00Z", new_start_at: "2026-11-30T16:00:00Z",
+  prior_end_at: "2026-11-30T15:00:00Z", new_end_at: "2026-11-30T17:00:00Z",
+  prior_status: "confirmed", new_status: "confirmed", prior_location: null, new_location: null,
+  organizer_self: false,
+};
+
 function Harness({
   proposalsComplete = true,
   conflictsNotRead = false,
+  changes = [] as CalendarChange[],
+  changesComplete = true,
 }: {
   proposalsComplete?: boolean;
   conflictsNotRead?: boolean;
+  changes?: CalendarChange[];
+  changesComplete?: boolean;
 }) {
   const responses = useInvitationResponses({ entries: [invitation], unavailable: false });
   const queue = buildNeedsYouQueue({
@@ -62,6 +75,7 @@ function Harness({
       rows: [{ entry_id: "prop-1", title: "Dinner", start_at: "2026-11-30T18:00:00Z" } as never],
       complete: proposalsComplete,
     },
+    changes: { rows: changes, complete: changesComplete },
     debriefs: { rows: [{ debrief_id: "deb-1", number: 1, event_title: "Standup", occurrence_start: "2026-11-30T12:30:00Z",
       prompted_at: "2026-11-30T13:00:00Z", attendees: [] }], complete: true },
   });
@@ -70,6 +84,8 @@ function Harness({
       queue={queue}
       invitations={[invitation]}
       responses={responses}
+      timezone="UTC"
+      onMarkChangesSeen={() => void document.body.setAttribute("data-seen", "1")}
       onOpenEntry={(id) => void document.body.setAttribute("data-opened", id)}
       onAcceptProposal={(id) => void document.body.setAttribute("data-accepted", id)}
       onDismissProposal={(id) => void document.body.setAttribute("data-dismissed", id)}
@@ -165,9 +181,8 @@ it("every bound key reaches the ? sheet, and a key that does not apply is not li
   expect(sheetHolder.current).not.toContain("Decline invitation");
 });
 
-it("says moved-under-you changes are not tracked and still says nothing is unknown", () => {
+it("with every kind readable there is no unknown line", () => {
   view();
-  expect(screen.getByText("Moved-under-you changes are not tracked yet.")).toBeTruthy();
   expect(screen.queryByRole("status")).toBeNull();
 });
 
@@ -209,4 +224,32 @@ it("in month view overlaps are not read: a fixed line, no unknown kind", () => {
   view({ conflictsNotRead: true });
   expect(screen.getByText("Overlaps are checked in day and week views.")).toBeTruthy();
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("a change shows its before and after, opens its event, and can be marked seen", async () => {
+  view({ changes: [moved] });
+  const user = userEvent.setup();
+  expect(screen.getByText(/Moved from Mon 30 Nov 14:00 to Mon 30 Nov 16:00/)).toBeTruthy();
+  await user.keyboard("jjjj"); // invitation, overlap, debrief, change
+  expect(screen.getByRole("button", { name: /Budget review/ }).getAttribute("aria-current")).toBe(
+    "true",
+  );
+  expect(sheetHolder.current).toContain("Open evidence");
+  expect(sheetHolder.current).not.toContain("Accept invitation");
+  await user.keyboard("{Enter}");
+  expect(document.body.getAttribute("data-opened")).toBe("c-9");
+  await user.click(screen.getByRole("button", { name: "Mark changes seen" }));
+  expect(document.body.getAttribute("data-seen")).toBe("1");
+});
+
+it("a failed changes read names changes unknown and does not say nothing needs you", () => {
+  view({ changes: [], changesComplete: false, proposalsComplete: true });
+  expect(screen.getByRole("heading").textContent).toContain("changes unknown");
+});
+
+it("an event with no recorded prior version says so instead of inventing a before", () => {
+  view({
+    changes: [{ ...moved, prior_known: false, fields: [], prior_start_at: null, entry_id: null }],
+  });
+  expect(screen.getByText(/no earlier version recorded/)).toBeTruthy();
 });

@@ -55,6 +55,7 @@ import type {
   DayVerdictResponse,
   NowCard,
   ConflictScanParams,
+  CalendarChangesResponse,
   ConflictScanResponse,
   CalendarInvitationsParams,
   CalendarOrganizerDecisionRequest,
@@ -1610,6 +1611,13 @@ export function getCalendarWorkspaceConflicts(
     sp.set("overloaded_day_hours", String(params.overloaded_day_hours));
   return apiFetch<ApiResponse<ConflictScanResponse>>(
     `/calendar/workspace/conflicts?${sp.toString()}`,
+  );
+}
+
+/** Organizer-made changes since `since` (at most 14 days back). */
+export function getCalendarChanges(since: string): Promise<ApiResponse<CalendarChangesResponse>> {
+  return apiFetch<ApiResponse<CalendarChangesResponse>>(
+    `/calendar/workspace/changes?${new URLSearchParams({ since }).toString()}`,
   );
 }
 

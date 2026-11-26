@@ -1628,6 +1628,38 @@ export interface ConflictScanParams {
   overloaded_day_hours?: number;
 }
 
+/** One organizer-made change to an event the owner planned around (GET .../changes). */
+export interface CalendarChange {
+  event_id: string;
+  calendar_id: string;
+  /** The entry to open as evidence; `null` for a quarantined or unprojected event. */
+  entry_id: string | null;
+  title: string | null;
+  observed_at: string;
+  prior_known: boolean;
+  all_day: boolean;
+  /** `time`, `status` and/or `location`; empty when no prior version was journaled. */
+  fields: string[];
+  prior_start_at: string | null;
+  new_start_at: string | null;
+  prior_end_at: string | null;
+  new_end_at: string | null;
+  prior_status: string | null;
+  new_status: string | null;
+  prior_location: string | null;
+  new_location: string | null;
+  /** `false`: someone else organizes it. `null`: "organizer unknown" (policy-blocked row). */
+  organizer_self: boolean | null;
+}
+
+/** `changes_available: false` means the journal read failed: unknown, never "no changes". */
+export interface CalendarChangesResponse {
+  changes: CalendarChange[];
+  changes_available: boolean;
+  truncated: boolean;
+  since: string;
+}
+
 export interface CalendarInvitationEntry {
   entry_id: string;
   title: string;

@@ -5,6 +5,7 @@
 import { useMemo } from "react";
 
 import type {
+  CalendarChange,
   CalendarInvitationEntry,
   ConflictIssue,
   PendingDebrief,
@@ -26,11 +27,12 @@ export interface UseNeedsYouQueueArgs {
   conflicts: Read<ConflictIssue>;
   proposals: Read<UnifiedCalendarEntry>;
   debriefs: Read<PendingDebrief>;
+  changes: Read<CalendarChange>;
 }
 
 const NONE: readonly never[] = [];
 
-export function useNeedsYouQueue({ invitations, conflicts, proposals, debriefs }: UseNeedsYouQueueArgs) {
+export function useNeedsYouQueue({ invitations, conflicts, proposals, debriefs, changes }: UseNeedsYouQueueArgs) {
   return useMemo(
     () =>
       buildNeedsYouQueue({
@@ -42,12 +44,14 @@ export function useNeedsYouQueue({ invitations, conflicts, proposals, debriefs }
         },
         proposals: { rows: proposals.rows ?? NONE, complete: proposals.complete && proposals.rows !== undefined },
         debriefs: { rows: debriefs.rows ?? NONE, complete: debriefs.complete && debriefs.rows !== undefined },
+        changes: { rows: changes.rows ?? NONE, complete: changes.complete && changes.rows !== undefined },
       }),
     [
       invitations.rows, invitations.complete,
       conflicts.rows, conflicts.complete, conflicts.notRead,
       proposals.rows, proposals.complete,
       debriefs.rows, debriefs.complete,
+      changes.rows, changes.complete,
     ],
   );
 }

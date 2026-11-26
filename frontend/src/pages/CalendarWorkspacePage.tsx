@@ -45,6 +45,8 @@ import {
 import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspace-data";
 import { usePendingMeetingDebriefs } from "@/hooks/use-meeting-debriefs";
 import { useNeedsYouQueue } from "@/pages/calendar/use-needs-you-queue";
+import { useChangesSeenCursor } from "@/pages/calendar/use-changes-seen-cursor";
+import { useCalendarChanges } from "@/hooks/use-calendar-workspace";
 import { useEntrySelection } from "@/pages/calendar/use-entry-selection";
 import { useQuickAddCreate } from "@/pages/calendar/use-quick-add-create";
 import { headlineLabel } from "@/pages/calendar/workspace-model";
@@ -165,6 +167,8 @@ export default function CalendarWorkspacePage() {
     unavailable:
       !context.invitationsAvailable || invitationsQuery.isPending || invitationsQuery.isPlaceholderData,
   });
+  const changesCursor = useChangesSeenCursor();
+  const changesQuery = useCalendarChanges(changesCursor.since);
   const needsYou = useNeedsYouQueue({
     invitations: {
       rows: context.invitations,
@@ -180,6 +184,13 @@ export default function CalendarWorkspacePage() {
       notRead: !context.radarEnabled,
     },
     proposals: { rows: panels.proposalRows, complete: !panels.proposalsError },
+    changes: {
+      rows: changesQuery.data?.data.changes,
+      complete:
+        !changesQuery.isError &&
+        changesQuery.data?.data.changes_available === true &&
+        !changesQuery.data.data.truncated,
+    },
     debriefs: {
       rows: debriefsQuery.data?.debriefs,
       complete: !debriefsQuery.isError && debriefsQuery.data?.debriefs_available === true,
@@ -270,6 +281,8 @@ export default function CalendarWorkspacePage() {
         queue={needsYou}
         invitations={context.invitations ?? []}
         responses={responses}
+        timezone={timezone}
+        onMarkChangesSeen={changesCursor.markSeen}
         onOpenEntry={(entryId, kind) => {
           void selection.openInvitation(entryId, kind === "invitation" ? "Invitation details" : "Event details");
         }}

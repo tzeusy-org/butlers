@@ -106,6 +106,12 @@ export function calendarWorkspaceHookMock() {
     })),
     useAcceptCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
     useDismissCalendarProposal: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+    useCalendarChanges: vi.fn(() => ({
+      ...idleQuery,
+      data: {
+        data: { changes: [], changes_available: true, truncated: false, since: "2026-07-01T00:00:00Z" },
+      },
+    })),
     useCalendarConflicts: vi.fn(() => ({
       ...idleQuery,
       data: {

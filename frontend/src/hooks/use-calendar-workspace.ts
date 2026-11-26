@@ -18,6 +18,7 @@ import {
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
+  getCalendarChanges,
   getCalendarWorkspaceConflicts,
   getCalendarInvitations,
   getCalendarWorkspaceEntry,
@@ -473,6 +474,17 @@ export function useCalendarConflicts(
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
+  });
+}
+
+/** Organizer-made changes since `since`; the window is the caller's seen cursor. */
+export function useCalendarChanges(since: string, options?: CalendarWorkspaceQueryOptions) {
+  const busAwareInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["calendar-changes", since],
+    queryFn: () => getCalendarChanges(since),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
   });
 }
 
