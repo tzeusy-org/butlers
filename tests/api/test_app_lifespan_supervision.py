@@ -29,7 +29,7 @@ from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.asyncio
 
-# The twelve dashboard lifespan loops, independent of
+# The thirteen dashboard lifespan loops, independent of
 # EXTERNAL_DEADMAN_URL configuration.
 _ALWAYS_ON_LOOP_NAMES = {
     "secrets_lifecycle",
@@ -40,6 +40,7 @@ _ALWAYS_ON_LOOP_NAMES = {
     "migration_drift",
     "calendar_sync_deadman",
     "calendar_overcommitment",
+    "calendar_agreement_drift",
     "day_sheet_push",
     "backup_facts_snapshot",
     "fleet_shadow_observer",
@@ -59,6 +60,7 @@ _MODULE_LEVEL_LOOP_FUNCS = [
     "run_migration_drift_loop",
     "run_calendar_sync_deadman_loop",
     "run_calendar_overcommitment_loop",
+    "run_calendar_agreement_drift_loop",
     "run_day_sheet_push_loop",
     "run_backup_facts_snapshot_loop",
     "run_external_deadman_loop",
