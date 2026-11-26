@@ -2009,7 +2009,7 @@ async def update_calendar_proposal_status(
 
 
 #: The butlers that contribute overlay envelopes. Mirrors ``_SPECIALIST_SCHEMAS`` in migration
-#: core_385 (the view's UNION terms, widened from core_140): a new contributor must change both.
+#: core_387 (the view's UNION terms, widened from core_140): a new contributor must change both.
 OVERLAY_CONTRIBUTORS: tuple[str, ...] = (
     "education",
     "finance",

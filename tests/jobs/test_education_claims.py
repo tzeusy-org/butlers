@@ -53,7 +53,13 @@ def _e2e(fn):
 
 
 async def _world(db, monkeypatch):
-    pool = await db("core", "education", schemas={"education": "education"}, schema="education")
+    # The calendar tables sit in the butler's own schema, as the claim module expects.
+    pool = await db(
+        "core",
+        "education",
+        schemas={"core": "education", "education": "education"},
+        schema="education",
+    )
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     await pool.execute("TRUNCATE TABLE education.mind_maps CASCADE")

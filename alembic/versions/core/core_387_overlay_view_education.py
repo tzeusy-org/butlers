@@ -1,7 +1,7 @@
 """Add education to calendar.v_overlay_contributions.
 
-Revision ID: core_385
-Revises: core_384
+Revision ID: core_387
+Revises: core_383
 Create Date: 2026-11-26 00:00:00.000000
 
 The Education butler contributes one aggregated "N reviews due" overlay claim per day
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "core_385"
-down_revision: str = "core_384"
+revision: str = "core_387"
+down_revision: str = "core_383"
 branch_labels = None
 depends_on = None
 

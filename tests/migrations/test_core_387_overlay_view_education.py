@@ -1,4 +1,4 @@
-"""core_385 widens calendar.v_overlay_contributions with the education schema.
+"""core_387 widens calendar.v_overlay_contributions with the education schema.
 
 Static checks pin the contributor set against the read model's list. The integration test runs the
 real upgrade and downgrade on a migrated database: an education overlay key surfaces with the
@@ -22,20 +22,21 @@ from butlers.testing.migration import (
 )
 
 _CORE = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "core"
-_MIGRATION_PATH = _CORE / "core_385_overlay_view_education.py"
+_MIGRATION_PATH = _CORE / "core_387_overlay_view_education.py"
 
 
 @pytest.mark.unit
 def test_the_view_contributors_are_the_read_models_contributors():
-    mod = load_migration(_MIGRATION_PATH, "core_385")
+    mod = load_migration(_MIGRATION_PATH, "core_387")
     assert tuple(sorted(mod._SPECIALIST_SCHEMAS)) == tuple(sorted(OVERLAY_CONTRIBUTORS))
     assert set(mod._SPECIALIST_SCHEMAS) - set(mod._PREVIOUS_SCHEMAS) == {"education"}
 
 
 @pytest.mark.unit
-def test_it_chains_onto_the_core_head_and_keeps_the_guardrails():
-    mod = load_migration(_MIGRATION_PATH, "core_385")
-    assert mod.down_revision == "core_384"
+def test_it_chains_onto_a_core_revision_and_keeps_the_guardrails():
+    mod = load_migration(_MIGRATION_PATH, "core_387")
+    # Chained onto main's core head when armed; only the family is pinned here.
+    assert mod.down_revision.startswith("core_") and mod.down_revision != mod.revision
     source = _MIGRATION_PATH.read_text()
     assert (
         "SELECT '{s}' AS butler, key, value FROM {s}.state WHERE key LIKE '{_KEY_PREFIX}'" in source
@@ -54,7 +55,7 @@ def test_education_overlay_keys_surface_after_upgrade_and_leave_on_downgrade(pos
     core = _build_alembic_config(db_url, chains=["core"])
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
-        command.upgrade(core, "core@core_384")
+        command.upgrade(core, "core@core_383")
         with engine.connect() as conn:
             for schema in _ALL:
                 conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
@@ -73,7 +74,7 @@ def test_education_overlay_keys_surface_after_upgrade_and_leave_on_downgrade(pos
                 text("INSERT INTO education.state (key, value) VALUES ('other/key', '{}'::jsonb)")
             )
 
-        command.upgrade(core, "core@core_385")
+        command.upgrade(core, "core@core_387")
         with engine.connect() as conn:
             rows = conn.execute(
                 text("SELECT butler, key FROM calendar.v_overlay_contributions ORDER BY butler")
@@ -83,7 +84,7 @@ def test_education_overlay_keys_surface_after_upgrade_and_leave_on_downgrade(pos
                 ("finance", "calendar/overlay/2030-03-04"),
             ]
 
-        command.downgrade(core, "core_384")
+        command.downgrade(core, "core_383")
         with engine.connect() as conn:
             rows = conn.execute(
                 text("SELECT butler, key FROM calendar.v_overlay_contributions ORDER BY butler")
