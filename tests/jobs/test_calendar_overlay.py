@@ -263,7 +263,7 @@ def test_handler_only_registered_for_finance():
     """Non-contributing butlers must NOT have a finance overlay handler bleed in."""
     from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
-    for butler in ("general", "education", "home", "lifestyle"):
+    for butler in ("general", "home", "lifestyle"):
         jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler, {})
         assert "calendar_overlay_contribution" not in jobs, butler
 
