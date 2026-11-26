@@ -151,12 +151,12 @@ Scope: v1-mandatory
 the `etag_after` that step recorded, and SHALL return `pending`. Approving a card SHALL reverse that
 step only if its event is still as the plan left it: a step whose event changed since SHALL be left
 alone and recorded as not undone (`changed_since_move` when the event changed after the step's own
-move). Reversals SHALL be offered highest step first and each SHALL list the reversal of any step
-that depended on it in `depends_on`: a reversal whose dependent reversal is not yet applied waits,
-and one whose dependent was not undone is refused with `blocked_by_step_N`. A reversal SHALL run
-with the card's `fail` conflict policy, so a destination already busy declines it as
-`destination_busy` rather than overlapping another event, and SHALL be refused as `in_the_past` once
-the event it would restore has started. A step that was `declined`, `uncertain` or `skipped` SHALL
+move). Reversals SHALL be offered highest step first. A reversal SHALL list in `depends_on` the reversals of
+the applied steps that moved into the slot its event left, and SHALL be refused with
+`blocked_by_step_N` when one of those reversals could not be offered. A reversal SHALL run with the
+card's `fail` conflict policy, so a destination already busy declines it as `destination_busy`
+rather than overlapping another event, and SHALL be refused as `in_the_past` once the start it would
+restore has passed. A step that was `declined`, `uncertain` or `skipped` SHALL
 NOT be reversed. A reversal that reaches another person cannot be offered: a decline reversal SHALL be refused with
 `response_reversal_not_supported`, and the owner re-answers the invitation from the conflict radar.
 No third-party-visible change SHALL happen without the owner's approval. After the
