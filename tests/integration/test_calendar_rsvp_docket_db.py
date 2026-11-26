@@ -100,3 +100,13 @@ async def test_policies_are_read_in_position_order_and_a_bad_row_is_an_outage(db
     finally:
         await pool.execute("DELETE FROM public.calendar_rsvp_policies")
         await pool.execute("ALTER TABLE public.calendar_rsvp_policies ENABLE TRIGGER USER")
+
+
+async def test_the_single_flight_lock_admits_one_tick_at_a_time(db) -> None:
+    pool = await db("core")
+    async with job._single_flight(pool) as first:
+        assert first is True
+        async with job._single_flight(pool) as second:
+            assert second is False
+    async with job._single_flight(pool) as again:
+        assert again is True

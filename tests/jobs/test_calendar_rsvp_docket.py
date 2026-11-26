@@ -6,6 +6,8 @@ are faked; the pure pieces run as they are.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -74,6 +76,23 @@ def _focus(start=START):
     }
 
 
+def _fake_lock():
+    held = {"by": None}
+
+    @contextlib.asynccontextmanager
+    async def lock(pool):
+        got = held["by"] is None
+        if got:
+            held["by"] = object()
+        try:
+            yield got
+        finally:
+            if got:
+                held["by"] = None
+
+    return lock
+
+
 class _Env:
     def __init__(self, monkeypatch, *, policies, rows, owner_rows=None, open_cards=None):
         self.park = AsyncMock(
@@ -98,6 +117,7 @@ class _Env:
         monkeypatch.setattr(job, "_park", self.park)
         monkeypatch.setattr(job, "_reject", self.reject)
         self.db = MagicMock()
+        monkeypatch.setattr(job, "_single_flight", _fake_lock())
 
     async def run(self):
         return await job.run_calendar_rsvp_docket(self.db, self.mgr, now=NOW)
@@ -420,3 +440,30 @@ def test_the_job_only_ever_calls_the_gated_tool_and_never_sends() -> None:
     assert "approve_action" not in source and "send_updates=" not in source.replace(
         "send_updates=match", ""
     )
+
+
+async def test_a_second_concurrent_tick_parks_nothing(monkeypatch) -> None:
+    env = _Env(monkeypatch, policies=[_policy()], rows=[_row()])
+    gate = asyncio.Event()
+
+    async def slow_park(*args):
+        await gate.wait()
+        return {"status": "pending_approval"}
+
+    monkeypatch.setattr(job, "_park", slow_park)
+    first = asyncio.create_task(env.run())
+    await asyncio.sleep(0.05)
+    second = await env.run()
+    assert second["status"] == "another_tick_running" and second["prepared"] == 0
+    gate.set()
+    assert (await first)["prepared"] == 1
+
+
+async def test_a_park_that_times_out_is_counted_unprepared(monkeypatch) -> None:
+    async def hang(*args, **kw):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(job, "PARK_TIMEOUT_S", 0.01)
+    mgr = SimpleNamespace(get_client=AsyncMock(return_value=SimpleNamespace(call_tool=hang)))
+    result = await job._park(mgr, {"entry_id": "e"}, {"_why": "w"})
+    assert result == {"error": "response_transport_unavailable"}

@@ -172,16 +172,25 @@ complete.
 - **WHEN** the snapshot for an invitation cannot be read
 - **THEN** no card is parked, one `unprepared` row is counted, and the docket says so
 
-### Requirement: The Docket Runs In Exactly One Butler
+### Requirement: The Docket Runs For Exactly One Butler
 
 ID: REQ-calendar-invitation-docket-008
 Source: bu-5ii4gj.9 (invitation docket)
 Scope: v1-mandatory
 
 The `calendar_rsvp_docket` job is calendar-module logic, not Messenger or Relationship domain logic.
-Exactly one butler SHALL run it: the one whose calendar module owns the owner's primary calendar and
-its response fence. The job SHALL refuse to run in any other butler.
+It runs in the dashboard process, which alone reads the whole fleet's calendar, on behalf of exactly
+one butler: the one whose calendar module owns the owner's primary calendar and its response fence
+(Relationship). It SHALL read policies as that butler's database role (the only runtime role granted
+SELECT), park a card only through that butler's gated `calendar_respond`, and refuse to run when that
+butler is not a configured response owner. It SHALL never prepare an answer for another butler's
+entry. At most one tick SHALL run at a time across every dashboard process, so a restart overlap or a
+second replica cannot park the same card twice.
 
-#### Scenario: A second butler refuses
-- **WHEN** the job is invoked in a butler that does not own the primary calendar's response fence
+#### Scenario: A butler that does not own the fence is refused
+- **WHEN** the job runs and the docket butler is not a configured response owner, or an entry belongs to another butler
 - **THEN** it refuses and parks nothing
+
+#### Scenario: A second concurrent tick parks nothing
+- **WHEN** a tick starts while another tick holds the docket's single-flight lock
+- **THEN** it returns without reading or parking anything

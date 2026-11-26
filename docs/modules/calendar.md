@@ -815,6 +815,8 @@ deterministic, model-free and dark until `BUTLERS_CALENDAR_RSVP_DOCKET=1`.
   response fence: it reads policies through Relationship's pool (the one role with SELECT, core_389),
   parks each card by calling Relationship's gated `calendar_respond`, refuses to run unless
   Relationship is a configured response owner, and prepares nothing for another butler's entry.
+- **Single flight.** Each tick holds a session advisory lock on Relationship's pool, so a second
+  replica or a restart overlap does nothing. A park that fails or times out is counted `unprepared`.
 - **One card per answer.** The request id is a digest of event, occurrence, etag, policy id and
   version, verdict and `send_updates`, so a rerun parks nothing new. The dossier names the policy,
   its version and each matched fact, never event text.

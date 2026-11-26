@@ -42,13 +42,14 @@ owner-approved change.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -80,6 +81,8 @@ DOCKET_LIVE_ENV = "BUTLERS_CALENDAR_RSVP_DOCKET"
 DEFAULT_CHECK_INTERVAL_S = 900.0
 DEFAULT_LOOKAHEAD_DAYS = 14
 DOCKET_ACTOR = "system:rsvp_docket"
+PARK_TIMEOUT_S = 30.0
+_LOCK_KEY = "butlers:calendar_rsvp_docket"
 MARKER_PREFIX = "rsvp-docket:"
 REJECT_REASONS = ("stale_event", "policy_changed", "policy_revoked", "policy_no_longer_matches")
 _NAMESPACE = uuid.UUID("5b1e0c0e-3f4a-4d0e-9a52-6d0c5c1f7a11")
@@ -409,10 +412,11 @@ async def _reject(pool: Any, action_id: Any, reason: str) -> bool:
 async def _park(mgr: Any, arguments: dict[str, Any], dossier: dict[str, Any]) -> dict[str, Any]:
     """Park one card through Relationship's gated ``calendar_respond``; never raises."""
     try:
-        client = await mgr.get_client(DOCKET_BUTLER)
-        result = await client.call_tool("calendar_respond", {**arguments, **dossier})
+        async with asyncio.timeout(PARK_TIMEOUT_S):
+            client = await mgr.get_client(DOCKET_BUTLER)
+            result = await client.call_tool("calendar_respond", {**arguments, **dossier})
         parsed = tool_result_payload(result)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a failure or a timeout is counted unprepared, never clean
         return {"error": "response_transport_unavailable"}
     return parsed if isinstance(parsed, dict) else {"error": "response_preparation_unavailable"}
 
@@ -422,12 +426,51 @@ async def _park(mgr: Any, arguments: dict[str, Any], dossier: dict[str, Any]) ->
 # ---------------------------------------------------------------------------
 
 
+@contextlib.asynccontextmanager
+async def _single_flight(pool: Any) -> AsyncIterator[bool]:
+    """Hold the docket's session advisory lock for one tick; ``False`` when another tick has it.
+
+    The lock lives on one connection of the docket butler's pool, so it spans every dashboard
+    process and a restart overlap. It is released when the tick ends, and by Postgres if the
+    connection dies.
+    """
+    async with pool.acquire() as conn:
+        got = await conn.fetchval("SELECT pg_try_advisory_lock(hashtextextended($1, 0))", _LOCK_KEY)
+        try:
+            yield bool(got)
+        finally:
+            if got:
+                await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", _LOCK_KEY)
+
+
 async def run_calendar_rsvp_docket(
     db: DatabaseManager,
     mgr: Any,
     *,
     now: datetime | None = None,
     lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+) -> dict[str, Any]:
+    """One single-flight pass: a tick that finds another running returns having done nothing."""
+    try:
+        pool = db.pool(DOCKET_BUTLER)
+    except Exception:  # noqa: BLE001
+        return await _run(db, mgr, now=now, lookahead_days=lookahead_days)
+    try:
+        async with _single_flight(pool) as acquired:
+            if not acquired:
+                return {"status": "another_tick_running", "complete": True, "prepared": 0}
+            return await _run(db, mgr, now=now, lookahead_days=lookahead_days)
+    except Exception:  # noqa: BLE001 - an unreachable lock is an outage: do nothing, count it
+        logger.warning("rsvp docket: single-flight lock unavailable", exc_info=True)
+        return {"status": "lock_unavailable", "complete": False, "prepared": 0}
+
+
+async def _run(
+    db: DatabaseManager,
+    mgr: Any,
+    *,
+    now: datetime | None,
+    lookahead_days: int,
 ) -> dict[str, Any]:
     """One pass. Returns a summary; ``complete`` is False whenever any read or park failed."""
     now = now or datetime.now(UTC)
