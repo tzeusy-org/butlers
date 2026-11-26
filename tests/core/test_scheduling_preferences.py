@@ -271,3 +271,18 @@ class TestLoadSchedulingPreferencesZone:
         self._patch(monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, None)
         prefs = await load_scheduling_preferences(object())
         assert prefs is not None and prefs.timezone == "UTC"
+
+    async def test_an_unreadable_general_zone_propagates_instead_of_judging_in_utc(
+        self, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, None)
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.load_configured_general_timezone",
+            AsyncMock(side_effect=RuntimeError("state down")),
+        )
+        with pytest.raises(RuntimeError):
+            await load_scheduling_preferences(object())

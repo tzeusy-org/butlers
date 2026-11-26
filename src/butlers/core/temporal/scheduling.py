@@ -209,19 +209,24 @@ async def load_scheduling_preferences(pool: asyncpg.Pool) -> SchedulingPreferenc
     The column defaults to ``UTC`` and a row saved without a zone keeps it, so a stored ``UTC`` (or
     no zone) is read as "unset" and falls back to the owner's general zone, when one was saved.
     The slot ranking and the conflict radar both call this, so they judge the same hours in the
-    same zone. Raises on a read failure; the caller decides how to fail.
+    same zone. Raises on a read failure (row or general zone); the caller decides how to fail.
     """
     row = await get_scheduling_preferences(pool)
     prefs = SchedulingPreferences.from_row(row)
     if prefs is None or prefs.timezone not in (None, "", "UTC"):
         return prefs
-    try:
-        name = await load_configured_general_timezone(pool)
-        if name:
+    # A failed read propagates: judging the hours in UTC when the owner's zone could not be read
+    # would flag and clear the wrong events, so the radar reports its hours unavailable instead.
+    name = await load_configured_general_timezone(pool)
+    if name:
+        try:
             ZoneInfo(name)
-            return replace(prefs, timezone=name)
-    except Exception:
-        logger.warning("owner general zone unreadable; declared hours keep their stored zone")
+        except Exception:
+            logger.warning(
+                "owner general zone %r is not a valid zone; keeping the stored one", name
+            )
+            return prefs
+        return replace(prefs, timezone=name)
     return prefs
 
 

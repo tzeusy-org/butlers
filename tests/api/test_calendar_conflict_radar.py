@@ -2169,3 +2169,18 @@ def test_two_distinct_series_are_two_flags():
     ]
     issues = detect_conflict_issues(events, preferences=_HOURS)
     assert len([i for i in issues if i.kind == "outside_declared_hours"]) == 2
+
+
+async def test_an_unreadable_general_zone_makes_the_hours_unavailable(app, monkeypatch):
+    _hours_patch(monkeypatch, _ROW)
+    monkeypatch.setattr(
+        "butlers.core.temporal.scheduling.load_configured_general_timezone",
+        AsyncMock(side_effect=RuntimeError("state down")),
+    )
+    early = _ws_row(entry_id="a", title="x", start=datetime(2026, 7, 1, 3, 0, tzinfo=UTC))
+    app, mock_db = _build_app(app, workspace_rows={"general": [early]})
+    scan = await query_calendar_conflicts(
+        mock_db, start=datetime(2026, 7, 1, tzinfo=UTC), end=datetime(2026, 7, 2, tzinfo=UTC)
+    )
+    assert scan.hours_available is False
+    assert [i for i in scan.issues if i.kind == "outside_declared_hours"] == []
