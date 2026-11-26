@@ -6,6 +6,7 @@ import {
   isOverlayEntry,
   overlayAmountBadge,
   claimLinkOf,
+  claimDoorHref,
   dedupOverlaysAgainstRows,
   overlayButlerAccent,
   overlayKindGlyph,
@@ -138,7 +139,7 @@ describe("claim dedup", () => {
       metadata: {
         source_type: "overlay_contribution",
         kind: "bill_due",
-        ...(claimKey ? { claim_key: claimKey, claim_door: { route: "/finance/bills", ref: "b1" } } : {}),
+        ...(claimKey ? { claim_key: claimKey, claim_door: { route: "/butlers/finance", ref: "b1" } } : {}),
       },
     }) as unknown as UnifiedCalendarEntry;
 
@@ -151,6 +152,53 @@ describe("claim dedup", () => {
     expect(kept).toEqual(["Water", "Gym"]);
   });
 
+  it("hides an overlay marker only on a day its claim owns a row: the D-3 reminder keeps the due date", () => {
+    // Bill due 22 Feb: the reminder row sits on 19 Feb, the due-date marker on 22 Feb.
+    const reminderRow = {
+      ...row({ claim_key: "finance:bill:b1" }),
+      start_at: "2026-02-19T09:00:00+08:00",
+      end_at: "2026-02-19T09:00:00+08:00",
+    } as unknown as UnifiedCalendarEntry;
+    const dueMarker = overlay("finance:bill:b1", "Due");
+    const reminderDayMarker = {
+      ...overlay("finance:bill:b1", "Same day"),
+      start_at: "2026-02-19T00:00:00+08:00",
+    } as unknown as UnifiedCalendarEntry;
+
+    const kept = dedupOverlaysAgainstRows([dueMarker, reminderDayMarker], [reminderRow]).map(
+      (e) => e.title,
+    );
+
+    expect(kept).toEqual(["Due"]);
+  });
+
+  it("covers every day of a multi-day row and stops at a midnight end", () => {
+    const stay = {
+      ...row({ claim_key: "travel:leg:l1" }),
+      start_at: "2026-02-20T22:00:00+08:00",
+      end_at: "2026-02-22T00:00:00+08:00",
+    } as unknown as UnifiedCalendarEntry;
+    const on = (day: string) =>
+      ({
+        ...overlay("travel:leg:l1", day),
+        start_at: `${day}T00:00:00+08:00`,
+      }) as unknown as UnifiedCalendarEntry;
+
+    const kept = dedupOverlaysAgainstRows(
+      [on("2026-02-20"), on("2026-02-21"), on("2026-02-22")],
+      [stay],
+    ).map((e) => e.title);
+
+    expect(kept).toEqual(["2026-02-22"]);
+  });
+
+  it("builds the door link with the record id as ?ref=", () => {
+    expect(claimDoorHref({ route: "/health", ref: null })).toBe("/health");
+    expect(claimDoorHref({ route: "/butlers/finance", ref: "b 1" })).toBe(
+      "/butlers/finance?ref=b%201",
+    );
+  });
+
   it("keeps every overlay when no row carries a claim", () => {
     const overlays = [overlay("finance:bill:b1")];
     expect(dedupOverlaysAgainstRows(overlays, [row(null)])).toBe(overlays);
@@ -161,7 +209,7 @@ describe("claim dedup", () => {
       route: "/travel",
       ref: "t1",
     });
-    expect(claimLinkOf(overlay("finance:bill:b1"))?.door?.route).toBe("/finance/bills");
+    expect(claimLinkOf(overlay("finance:bill:b1"))?.door?.route).toBe("/butlers/finance");
     expect(claimLinkOf(row({ claim_key: "k", door: { route: "https://evil.example" } }))?.door).toBeNull();
   });
 });

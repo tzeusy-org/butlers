@@ -53,9 +53,9 @@ function renderPanel(entry: UnifiedCalendarEntry) {
 
 describe("claim door", () => {
   it("links to the record a claim row was written for", () => {
-    renderPanel(row({ claim_key: "finance:bill:b1", door: { route: "/finance/bills", ref: "b1" } }));
+    renderPanel(row({ claim_key: "finance:bill:b1", door: { route: "/butlers/finance", ref: "b1" } }));
     const door = screen.getByTestId("detail-claim-door");
-    expect(door.getAttribute("href")).toBe("/finance/bills");
+    expect(door.getAttribute("href")).toBe("/butlers/finance?ref=b1");
   });
 
   it("shows no door for a row without a claim", () => {

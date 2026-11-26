@@ -1155,7 +1155,7 @@ async def test_an_overlay_entry_carries_its_claim_key_presence_and_door(app, mon
         {
             "claim_key": "finance:bill:b1",
             "presence": "reminder",
-            "door": {"route": "/finance/bills", "ref": "b1"},
+            "door": {"route": "/butlers/finance", "ref": "b1"},
         }
     ]
     row = _overlay_row(
@@ -1172,7 +1172,7 @@ async def test_an_overlay_entry_carries_its_claim_key_presence_and_door(app, mon
     by_title = {e["title"]: e["metadata"] for e in resp.json()["data"]["entries"]}
     assert by_title["Electric Co"]["claim_key"] == "finance:bill:b1"
     assert by_title["Electric Co"]["claim_presence"] == "reminder"
-    assert by_title["Electric Co"]["claim_door"] == {"route": "/finance/bills", "ref": "b1"}
+    assert by_title["Electric Co"]["claim_door"] == {"route": "/butlers/finance", "ref": "b1"}
     assert "claim_key" not in by_title["Water"] and "claim_door" not in by_title["Water"]
 
 

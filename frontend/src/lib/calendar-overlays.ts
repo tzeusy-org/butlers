@@ -92,9 +92,42 @@ export function claimLinkOf(entry: UnifiedCalendarEntry): ClaimLink | null {
   return { claimKey: record.claim_key, door: doorOf(record.door) };
 }
 
+/** The in-app link for a claim door: its route, with the record id as `?ref=` when it has one. */
+export function claimDoorHref(door: NonNullable<ClaimLink["door"]>): string {
+  if (!door.ref) return door.route;
+  return `${door.route}?ref=${encodeURIComponent(door.ref)}`;
+}
+
+/** The owner-local date (`YYYY-MM-DD`) an ISO timestamp string was rendered in. */
+function localDay(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function addDays(day: string, n: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
- * Overlay entries minus those whose claim also owns a calendar row in `rows`: a record shows once,
- * as its row. An overlay entry with no claim, or whose claim owns no row here, is kept.
+ * The local days a calendar row covers: from its start day to its end day, the end day excluded
+ * when the row ends exactly at midnight (an all-day or overnight-to-midnight span).
+ */
+function daysCovered(row: UnifiedCalendarEntry): string[] {
+  const first = localDay(row.start_at);
+  const lastIso = row.end_at && row.end_at > row.start_at ? row.end_at : row.start_at;
+  let last = localDay(lastIso);
+  if (last > first && lastIso.slice(11, 19) === "00:00:00") last = addDays(last, -1);
+  const days: string[] = [];
+  for (let day = first; day <= last && days.length < 62; day = addDays(day, 1)) days.push(day);
+  return days;
+}
+
+/**
+ * Overlay entries minus those whose claim also owns a calendar row on the overlay entry's own day:
+ * a record shows once per day, as its row. A bill's D-3 reminder row hides nothing on the due
+ * date, where its marker stays. An overlay entry with no claim, or whose claim owns no row that
+ * day, is kept.
  */
 export function dedupOverlaysAgainstRows(
   overlays: UnifiedCalendarEntry[],
@@ -104,12 +137,13 @@ export function dedupOverlaysAgainstRows(
   for (const row of rows) {
     if (isOverlayEntry(row)) continue;
     const link = claimLinkOf(row);
-    if (link) owned.add(link.claimKey);
+    if (!link) continue;
+    for (const day of daysCovered(row)) owned.add(`${link.claimKey}|${day}`);
   }
   if (owned.size === 0) return overlays;
   return overlays.filter((entry) => {
     const link = claimLinkOf(entry);
-    return !link || !owned.has(link.claimKey);
+    return !link || !owned.has(`${link.claimKey}|${localDay(entry.start_at)}`);
   });
 }
 

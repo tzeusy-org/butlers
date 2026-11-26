@@ -23,7 +23,7 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { StateDot } from "@/components/ui/StateDot";
 import { Tip } from "@/components/ui/tip";
 import { formatEventTime, sourceZoneTime } from "@/lib/calendar-grid";
-import { claimLinkOf } from "@/lib/calendar-overlays";
+import { claimDoorHref, claimLinkOf } from "@/lib/calendar-overlays";
 import { cn } from "@/lib/utils";
 import { KindTag } from "@/pages/calendar/atoms";
 import { calendarMutationErrorMessage, isCalendarMutationOk } from "@/pages/calendar/mutation-result";
@@ -274,7 +274,7 @@ export function CalendarEntryDetailPanel({
         <div className="flex flex-col gap-1">
           <span className={FIELD_LABEL_CLASS}>Record</span>
           <Link
-            to={claimLinkOf(entry)?.door?.route ?? "/"}
+            to={claimDoorHref(claimLinkOf(entry)!.door!)}
             data-testid="detail-claim-door"
             className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-fg"
           >
