@@ -338,6 +338,7 @@ def finance_claims(
     today: date_cls,
     zone: tzinfo,
     now: datetime,
+    horizon: date_cls | None = None,
     bill_days: int = BILL_REMINDER_DAYS,
 ) -> dict[str, list[dict[str, Any]]]:
     """Claims for pending bills, subscription renewals and ``cancel_by`` dates, by date. Pure.
@@ -378,20 +379,23 @@ def finance_claims(
             continue
         renew = row["next_renewal"]
         auto = bool(row["auto_renew"])
-        out.setdefault(renew.isoformat(), []).append(
-            _claim(
-                key=f"finance:subscription:{ref}",
-                version=_version(renew, row["amount"], row["currency"], auto, row["service"]),
-                kind="subscription_renewal",
-                label=str(row["service"]),
-                priority="medium" if (renew - today).days <= 2 else "low",
-                day=renew,
-                remind_days=RENEWAL_REMINDER_DAYS if auto else None,
-                zone=zone,
-                now=now,
-                ref=ref,
+        # A subscription is read for its cancel_by too, so its renewal may lie outside the window.
+        in_window = renew >= today and (horizon is None or renew <= horizon)
+        if in_window:
+            out.setdefault(renew.isoformat(), []).append(
+                _claim(
+                    key=f"finance:subscription:{ref}",
+                    version=_version(renew, row["amount"], row["currency"], auto, row["service"]),
+                    kind="subscription_renewal",
+                    label=str(row["service"]),
+                    priority="medium" if (renew - today).days <= 2 else "low",
+                    day=renew,
+                    remind_days=RENEWAL_REMINDER_DAYS if auto else None,
+                    zone=zone,
+                    now=now,
+                    ref=ref,
+                )
             )
-        )
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
         if cancel_by is not None and today <= cancel_by:
             out.setdefault(cancel_by.isoformat(), []).append(
@@ -436,8 +440,12 @@ async def reconcile_claims_in_process(
     claims: list[dict[str, Any]],
     complete: bool,
     window_start: datetime,
-) -> dict[str, int] | None:
-    """Reconcile claims into the butler's own calendar rows; never raises (the job must finish)."""
+) -> dict[str, Any]:
+    """Reconcile claims into the butler's own calendar rows; never raises (the job must finish).
+
+    On success the result carries the per-outcome counts. On failure it carries
+    ``{"error": "<ExceptionName>"}``; the caller treats that as a partial run.
+    """
     try:
         from butlers.modules.calendar import CalendarModule
 
@@ -445,9 +453,9 @@ async def reconcile_claims_in_process(
         result = await module.reconcile_domain_claims(
             butler, claims, complete, window_start=window_start
         )
-    except Exception:
+    except Exception as exc:
         logger.warning("%s calendar claims not reconciled", butler, exc_info=True)
-        return None
+        return {"error": type(exc).__name__}
     return {
         "created": len(result.created),
         "updated": len(result.updated),
@@ -455,6 +463,31 @@ async def reconcile_claims_in_process(
         "retracted": len(result.retracted),
         "unchanged": len(result.unchanged),
     }
+
+
+async def settle_claims(
+    pool: asyncpg.Pool,
+    *,
+    butler: str,
+    claims: list[dict[str, Any]],
+    complete: bool,
+    window_start: datetime,
+    today: date_cls,
+    lookahead_days: int,
+) -> tuple[dict[str, Any], bool]:
+    """Reconcile, and let a failed reconcile make the run partial.
+
+    Returns ``(claim_result, complete)``. When the reconcile raised, the window's envelopes are
+    flagged incomplete (their entries and ``generated_at`` stand) and ``complete`` is False, so the
+    overlay reads as partial instead of silently current while no claim reached the calendar.
+    """
+    claim_result = await reconcile_claims_in_process(
+        pool, butler=butler, claims=claims, complete=complete, window_start=window_start
+    )
+    if "error" in claim_result and complete:
+        await mark_overlay_envelopes_incomplete(pool, today=today, lookahead_days=lookahead_days)
+        complete = False
+    return claim_result, complete
 
 
 async def run_finance_calendar_overlay_contribution(
@@ -589,7 +622,13 @@ async def run_finance_calendar_overlay_contribution(
         entries_by_date.setdefault(date_str, []).append(entry)
 
     claims_by_date = finance_claims(
-        bills_rows, sub_rows, today=today, zone=zone, now=_utcnow(), bill_days=bill_days
+        bills_rows,
+        sub_rows,
+        today=today,
+        zone=zone,
+        now=_utcnow(),
+        horizon=horizon,
+        bill_days=bill_days,
     )
     for row in sub_rows:
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
@@ -617,12 +656,14 @@ async def run_finance_calendar_overlay_contribution(
             pool, today=today, lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS
         )
         total_entries = 0
-    claim_result = await reconcile_claims_in_process(
+    claim_result, complete = await settle_claims(
         pool,
         butler="finance",
         claims=[c for day in claims_by_date.values() for c in day],
         complete=complete,
         window_start=day_start_utc(today, zone),
+        today=today,
+        lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)

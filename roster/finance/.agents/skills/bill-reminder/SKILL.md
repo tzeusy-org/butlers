@@ -6,7 +6,7 @@ version: 1.0.0
 
 # Bill Reminder Skill
 
-This skill provides a structured, interactive workflow for reviewing upcoming bills, prioritizing by urgency, and setting calendar reminders. Use this for daily bill checks, end-of-week reviews, or on-demand bill status lookups.
+This skill provides a structured, interactive workflow for reviewing upcoming bills, prioritizing by urgency, and keeping the owner's reminder timing. Calendar reminders for pending bills come from the daily overlay job, not from this skill. Use this for daily bill checks, end-of-week reviews, or on-demand bill status lookups.
 
 ## Purpose
 
@@ -22,7 +22,6 @@ Before starting the bill reminder workflow, gather context:
    remaining due bills (already-reconciled bills are marked as `paid` and excluded from results)
 3. Understand user's reminder preference: `memory_recall(topic="bill reminder preference")`
    (default: 3 days before due date)
-4. Verify calendar is available if setting reminders
 
 ## Review Flow
 
@@ -89,7 +88,7 @@ Provide guidance on what to prioritize:
 
 1. **First**: Address overdue bills immediately. Late payments can harm credit and incur fees.
 2. **Second**: Handle bills due today or tomorrow.
-3. **Third**: Set reminders for upcoming bills so you don't miss them.
+3. **Third**: Upcoming bills already get an automatic calendar reminder; adjust the timing only if the owner asks.
 4. **Consider**: Automated payment setup for recurring bills to prevent future overdue situations.
 ```
 
@@ -124,10 +123,10 @@ If user selects "Mark as paid":
 
 #### Action: Set a Reminder
 
-If user selects "Set a reminder": every pending bill already gets an automatic calendar reminder from the daily overlay job (3 days before the due date). Say so, and only create an extra event when the owner asks for a different time:
-1. Determine reminder timing: Use user's default (from memory, typically 3 days before due date), or ask: "When would you like to be reminded? [3 days before / 1 day before / day of]?"
-2. Use `calendar_create_event(title="Bill Due: [Payee]", start_time=<reminder_date>, notes="$[amount] due [due_date]", conflict_behavior="suggest")` to create calendar event
-3. Confirm: "📅 Reminder set for [reminder_date]. You'll be reminded [duration] before the due date."
+If user selects "Set a reminder": every pending bill already gets an automatic calendar reminder from the daily overlay job, at the owner's `bill_reminder_preference` (3 days before the due date when none is stored). Do not create a calendar event for it: that would duplicate the reminder. Say so, then:
+1. If the owner wants different timing, ask: "How many days before the due date? [1 / 3 / 7]?"
+2. Store it with `memory_store_fact(subject="user", predicate="bill_reminder_preference", content="<N> days before due date", permanence="stable", importance=8.0, tags=["bill", "preference", "reminder"])`; the reminder moves on the next overlay refresh (the next morning).
+3. Confirm: "📅 Your bill reminders will come [N] days before the due date, from tomorrow's refresh."
 
 #### Action: Snooze
 
@@ -309,7 +308,6 @@ memory_store_fact(
 
 - If no bills exist for the period: "No bills due in the next [horizon]. You're all set!"
 - If a bill's due date is unclear: Ask user to clarify or store the bill with a note
-- If calendar conflict occurs: Present alternatives per calendar tool's conflict_behavior setting
 - If payee lookup fails: Use the bill name directly or ask user to clarify
 - If overdue list is very long: Prioritize by amount (highest first) and ask if user wants to batch actions
 
@@ -390,7 +388,7 @@ Bot: "February bill management overview:"
 **Trend**: Your February bills are $150 higher than January (new subscription added).
 
 **Recommendations:**
-1. Set reminders for one-time bills (repair, medical)
+1. Check the reminder timing for one-time bills (repair, medical)
 2. Consider automating recurring bills
 3. Review new subscriptions — are they all still needed?
 

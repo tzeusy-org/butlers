@@ -123,8 +123,13 @@ def e2e(fn):
     return fn
 
 
-async def _world(db, monkeypatch):
-    pool = await db("core", "memory", "finance", schema="finance")
+async def _world(db, monkeypatch, *, real_module=False):
+    # Real module: the calendar tables must sit in the butler's own schema, as they do in the
+    # daemon, because the module checks ``current_schema()`` for them.
+    schemas = (
+        {"core": "finance", "memory": "finance", "finance": "finance"} if real_module else None
+    )
+    pool = await db("core", "memory", "finance", schemas=schemas, schema="finance")
     monkeypatch.setattr("butlers.jobs.briefing._now", lambda: NOW)
     monkeypatch.setattr(job, "_utcnow", lambda: NOW)
     for table in ("bills", "subscriptions", "facts"):
@@ -135,6 +140,8 @@ async def _world(db, monkeypatch):
     mod._resolved_calendar_id = "butlers-calendar"
     # The job builds its own module for the pool; hand it this one so the provider double sees
     # the push.
+    if real_module:
+        return pool, mod
     from butlers.modules.calendar import CalendarModule
 
     monkeypatch.setattr(CalendarModule, "for_pool", classmethod(lambda cls, p, *, butler_name: mod))
@@ -277,3 +284,52 @@ async def test_a_bill_paid_before_the_window_keeps_its_row_as_history(db, monkey
     assert result["claims"]["retracted"] == 0
     assert [r["status"] for r in await _rows(pool)] == ["confirmed"]
     assert not mod._provider.delete_calls
+
+
+@e2e
+async def test_the_job_reconciles_through_the_real_for_pool_module(db, monkeypatch):
+    """No stand-in module: the job builds its own from the pool, as it does in the daemon."""
+    pool, _ = await _world(db, monkeypatch, real_module=True)
+    await _add_bill(pool, due=date(2030, 3, 10))
+
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert "error" not in result["claims"] and result["claims"]["created"] == 1
+    assert len(await _rows(pool)) == 1
+
+
+@e2e
+async def test_a_reconcile_error_makes_the_run_partial_and_names_the_error(db, monkeypatch):
+    pool, _ = await _world(db, monkeypatch)
+    await _add_bill(pool, due=date(2030, 3, 10))
+    await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    async def boom(self, *args, **kwargs):
+        raise TypeError("signature drift")
+
+    from butlers.modules.calendar import CalendarModule
+
+    monkeypatch.setattr(CalendarModule, "reconcile_domain_claims", boom)
+    result = await job.run_finance_calendar_overlay_contribution(pool, None)
+
+    assert result["claims"] == {"error": "TypeError"} and result["complete"] is False
+    stored = await state_get(pool, job.overlay_key("2030-03-10"))
+    assert stored["complete"] is False
+
+
+def test_a_renewal_outside_the_window_or_in_the_past_claims_nothing():
+    inside = _sub("in", renew=date(2030, 3, 12))
+    beyond = _sub("far", renew=date(2030, 6, 1), cancel_by=date(2030, 3, 15))
+    past = _sub("past", renew=date(2030, 2, 20), cancel_by=date(2030, 3, 15))
+
+    claims = _flat(
+        job.finance_claims(
+            [], [inside, beyond, past], today=TODAY, zone=SGT, now=NOW, horizon=date(2030, 3, 31)
+        )
+    )
+
+    assert "finance:subscription:in" in claims
+    assert "finance:subscription:far" not in claims and "finance:subscription:past" not in claims
+    # Their cancel_by dates still claim.
+    assert "finance:subscription_cancel_by:far" in claims
+    assert "finance:subscription_cancel_by:past" in claims
