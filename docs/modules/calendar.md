@@ -301,6 +301,18 @@ the agreement: the row is kept with `ended_at` stamped, so a reader can tell an 
 none, and accepting again starts a fresh one. Recurring events are not recorded yet, and `join_digest` stays empty until the
 provider mapping carries conference data.
 
+## Anchored reminders
+
+`reminder_create` can follow an event instead of an absolute time (slice R-S1 of bu-5ii4gj.10): pass
+`anchor_event_id` (the provider's event id), `anchor_original_start` (that occurrence's start) and
+`offset_minutes` (negative means before, at most 14 days either way) in place of `due_at`. The
+reminder's time is the occurrence's start plus the offset and the anchor is stored in the event's
+`metadata.anchor`. The anchor must name a live (not cancelled, not quarantined) provider occurrence
+in this butler's own calendar projection, on a user-lane calendar with the owner's own time role
+(the only copy a later slice follows), or the call is refused with that reason. An anchored reminder cannot also
+recur. Rebasing when the event moves, retiring when it is cancelled, and the fire-time check are
+later slices; until then an anchored reminder keeps its first derived time.
+
 The row also carries `current_*` columns (start, end, location and attendee digests) that follow
 the event on every write, so the agreed and the current terms can be compared in SQL. The Switchboard
 reads that comparison through `public.resolve_calendar_occurrence(butler, event_id, original_start)`
