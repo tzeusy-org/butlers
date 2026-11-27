@@ -284,6 +284,23 @@ def issue_digest(events: Sequence[ResolutionEvent], options: Sequence[Option]) -
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def state_digest(pair_id: str, events: Sequence[ResolutionEvent]) -> str:
+    """A digest over the overlap's own state only: pair identity, both provider etags and times.
+
+    This is what "keep both" is acknowledged against. It deliberately excludes the option set,
+    which moves with the clock and with unrelated calendar changes, so an acknowledgement
+    survives both and reappears only when one of the two events itself changes.
+    """
+    payload = {
+        "pair": pair_id,
+        "events": sorted(
+            (e.provider_event_id, e.etag, _iso(e.start_at), _iso(e.end_at)) for e in events
+        ),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def free_windows(
     busy: Iterable[tuple[datetime, datetime]],
     lo: datetime,

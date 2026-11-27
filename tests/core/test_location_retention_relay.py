@@ -7,11 +7,14 @@ Chronicler's service-only grant read, which no model session can be offered.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.core.domain_event_contracts import load_contract_registry
+from butlers.core.service_plane import wiring
 from butlers.core.service_plane.registry import (
     CONNECTOR_OWNTRACKS_WORKLOAD,
     LOCATION_RETENTION_GRANTS_READY,
@@ -52,6 +55,30 @@ async def test_the_connector_reaches_chronicler_with_no_arguments() -> None:
     endpoint = _RELAYS[LOCATION_RETENTION_GRANTS_READY]
     assert await relay_call(endpoint, _OWNTRACKS, {}, dispatch) == {"grants": []}
     assert calls == [("chronicler", "location_retention_grants_ready_service", {})]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"grants": []},
+        {"result": {"grants": []}},
+        {"result": {"grants": []}, "transport": {"outcome": "confirmed", "retryable": 0}},
+        {
+            "result": {"grants": []},
+            "transport": {"outcome": "confirmed", "retryable": False},
+            "error": "unexpected",
+        },
+    ],
+    ids=["bare-payload", "missing-transport", "non-boolean-confirmation", "ambiguous-result"],
+)
+async def test_the_dispatch_requires_the_exact_confirmed_envelope(
+    monkeypatch: pytest.MonkeyPatch, outcome: dict[str, Any]
+) -> None:
+    routing = importlib.import_module("butlers.tools.switchboard.routing.route")
+    monkeypatch.setattr(routing, "route", AsyncMock(return_value=outcome))
+    endpoint = _RELAYS[LOCATION_RETENTION_GRANTS_READY]
+    dispatch = wiring.relay_dispatch("POOL", endpoint)
+    assert await relay_call(endpoint, _OWNTRACKS, {}, dispatch) is None
 
 
 @pytest.mark.parametrize(

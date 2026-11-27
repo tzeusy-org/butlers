@@ -30,6 +30,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from butlers import fleet_events
 from butlers.api.fleet_events_bridge import run_fleet_events_listener
 from butlers.fleet_events import publish_fleet_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -220,7 +221,7 @@ async def test_external_producer_reaps_child_on_caller_cancellation(
 
 
 # Spec: REQ-core-fleet-events-001, REQ-core-fleet-events-007
-async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
+async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url, monkeypatch):
     class FailedNotifyConnection(asyncpg.Connection):
         async def execute(self, query, *args, **kwargs):
             if query == "SELECT pg_notify($1, $2)":
@@ -276,7 +277,10 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
         async with failed_notify_pool.acquire() as owner:
             async with owner.transaction():
                 await owner.execute(f"INSERT INTO {business_table} VALUES (1)")
-                assert await publish_fleet_event(owner, "session", {"phase": "failed"}) is False
+                # Give the deliberate SQL error and savepoint recovery time on a loaded runner.
+                with monkeypatch.context() as failure_patch:
+                    failure_patch.setattr(fleet_events, "_PUBLISH_TIMEOUT_S", 5.0)
+                    assert await publish_fleet_event(owner, "session", {"phase": "failed"}) is False
                 await owner.execute(f"INSERT INTO {business_table} VALUES (2)")
         async with daemon_pool.acquire() as reader:
             assert await reader.fetchval(f"SELECT sum(value) FROM {business_table}") == 3

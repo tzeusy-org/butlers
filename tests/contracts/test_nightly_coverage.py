@@ -37,6 +37,12 @@ def _nightly_jobs() -> dict:
 def test_covered_groups_publish_sanitized_duration_evidence(tmp_path: Path) -> None:
     jobs = _nightly_jobs()
     shards = jobs["coverage-shards"]
+    ordinary_unit = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"][
+        "check-unit"
+    ]
+    assert shards["runs-on"] == (
+        "${{ matrix.lane == 'unit' && '" + ordinary_unit["runs-on"] + "' || 'ubuntu-latest' }}"
+    )
     assert "needs" not in shards
     assert shards["strategy"]["fail-fast"] is False
     rows = shards["strategy"]["matrix"]["include"]

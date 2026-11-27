@@ -30,6 +30,9 @@ test.describe("Education source annotation browser evidence", () => {
       await expect(recalled.getByText("Referenced", { exact: true })).toHaveCount(0);
       await expect(recalled.getByRole("link")).toHaveCount(0);
     }
+    for (const location of ["recalled chapter", "unknown provenance chapter"]) {
+      await expect(row(location).getByText("Synthetic linked notes")).toHaveCount(0);
+    }
     await expect(row("unsourced recollection").getByText("No registered source named")).toBeVisible();
 
     const dangling = row("removed chapter");
