@@ -95,6 +95,7 @@ _LEGACY_FLEET_DML_RELATIONS = (
     "butler_secrets",
     "butler_subscriptions",
     "butler_tools",
+    "calendar_conflict_acknowledgements",
     "calendar_dedup_overrides",
     "calendar_dedup_rules",
     "capability_catalog_control",

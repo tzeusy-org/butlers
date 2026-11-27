@@ -213,6 +213,9 @@ Mirrored writers reserve both schema-qualified advisory keys in signed database-
 before locking or inserting facts, preventing reciprocal writers from taking opposite lock
 orders. These reservations and both answers commit or roll back with the facts and their graph
 projections. Identity and registry-relational predicates still belong to the Relationship writer.
+For property edges the writer then locks both existing fact rows by UUID before supersession.
+It re-reads their live states after those locks, so a concurrent committed retraction is not
+overwritten from an earlier snapshot; retraction still disowns its projections atomically.
 
 Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
 failure skips both closures, while an individual closure failure leaves that gap open without

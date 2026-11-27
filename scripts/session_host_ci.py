@@ -13,6 +13,8 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -86,6 +88,42 @@ class Refusal(Exception):
     the first 512 stderr bytes, replacing control/non-ASCII bytes with question marks. Invocation
     and provider material never enters that command or its diagnostics.
     """
+
+
+class _BootstrapFailure(Refusal):
+    def __init__(self, stage: str, error: Exception) -> None:
+        super().__init__("host_experiment_failed")
+        error_categories = (
+            (subprocess.CalledProcessError, "command_error"),
+            ((TimeoutError, subprocess.TimeoutExpired), "timeout"),
+            (PermissionError, "permission_denied"),
+            (tarfile.TarError, "archive_error"),
+            (UnicodeError, "decode_error"),
+            (OSError, "io_error"),
+        )
+        category = next(
+            (name for error_type, name in error_categories if isinstance(error, error_type)),
+            "unexpected_error",
+        )
+        self.diagnostic: dict[str, str | int] = {
+            "status": "refused",
+            "reason": str(self),
+            "stage": stage,
+            "error_category": category,
+        }
+        if isinstance(error, subprocess.CalledProcessError) and type(error.returncode) is int:
+            self.diagnostic["returncode"] = error.returncode
+
+
+@contextmanager
+def _bootstrap_stage(stage: str) -> Iterator[None]:
+    # Keep named refusals and discard raw bootstrap exception data.
+    try:
+        yield
+    except Refusal:
+        raise
+    except Exception as error:
+        raise _BootstrapFailure(stage, error) from None
 
 
 def failure_category(stderr: bytes) -> str:
@@ -298,91 +336,100 @@ def repeat_preflight(root: Path) -> subprocess.CompletedProcess:
 
 
 def prepare(root: Path) -> None:
-    if root.exists():
-        raise Refusal("experiment_already_exists")
-    root.mkdir(mode=0o700)
-    root.chmod(0o700)
-    if 'VERSION_ID="24.04"' not in Path("/etc/os-release").read_text():
-        raise Refusal("unsupported_runner_release")
-    restricted()
-    profile_absent()
-    generic_denied()
-    before = repeat_preflight(root / "before")
-    category = synthetic_preflight_category(before.stderr)
-    print(
-        json.dumps(
-            {
-                "phase": "before_profile",
-                "native_exit": before.returncode,
-                "category": category,
-                "stderr_sha256": hashlib.sha256(before.stderr).hexdigest(),
-                "stderr_preview": preflight_diagnostic(before.stderr),
-                "global_restriction": 1,
-                "generic_userns": "denied",
-            }
+    with _bootstrap_stage("runner_setup"):
+        if root.exists():
+            raise Refusal("experiment_already_exists")
+        root.mkdir(mode=0o700)
+        root.chmod(0o700)
+        if 'VERSION_ID="24.04"' not in Path("/etc/os-release").read_text():
+            raise Refusal("unsupported_runner_release")
+    with _bootstrap_stage("before_profile"):
+        restricted()
+        profile_absent()
+        generic_denied()
+        before = repeat_preflight(root / "before")
+        category = synthetic_preflight_category(before.stderr)
+        print(
+            json.dumps(
+                {
+                    "phase": "before_profile",
+                    "native_exit": before.returncode,
+                    "category": category,
+                    "stderr_sha256": hashlib.sha256(before.stderr).hexdigest(),
+                    "stderr_preview": preflight_diagnostic(before.stderr),
+                    "global_restriction": 1,
+                    "generic_userns": "denied",
+                }
+            )
         )
-    )
-    if before.returncode != 1 or category == "unknown_preflight_failure":
-        raise Refusal("unattributed_native_preflight")
-    package = fetch_package()
-    if len(package) > _LIMIT or hashlib.sha256(package).hexdigest() != PACKAGE_SHA256:
-        raise Refusal("package_digest_mismatch")
-    package_path = root / "profile.deb"
-    _write(package_path, package)
-    archive = checked(["dpkg-deb", "--fsys-tarfile", str(package_path)])
-    profile = runner_profile(verified_profile(package, archive))
-    path = root / "bwrap-userns-restrict"
-    _write(path, profile)
-    # No kernel policy has changed yet. Do not replace (-r) an existing profile.
-    restricted()
-    profile_absent()
-    _write(root / "load-intent.json", load_receipt())
-    try:
-        result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
-    except (OSError, subprocess.SubprocessError):
-        raise Refusal("profile_load_failed") from None
-    if result.returncode:
-        raise Refusal("profile_load_unproven")
-    if not _PROFILE_NAMES.issubset(loaded()):
-        raise Refusal("profile_load_unobserved")
-    _write(root / "loaded.json", load_receipt())
-    restricted()
-    generic_denied()
-    try:
-        after = repeat_preflight(root / "after")
-    except (OSError, subprocess.SubprocessError):
-        raise Refusal("profile_load_failed") from None
-    print(
-        json.dumps(
-            {
-                "phase": "after_profile",
-                "native_exit": after.returncode,
-                "category": "payload_reached"
-                if after.returncode == 31
-                else synthetic_preflight_category(after.stderr),
-                "stderr_sha256": hashlib.sha256(after.stderr).hexdigest(),
-                "stderr_preview": preflight_diagnostic(after.stderr),
-                "global_restriction": 1,
-                "generic_userns": "denied",
-            }
+        if before.returncode != 1 or category == "unknown_preflight_failure":
+            raise Refusal("unattributed_native_preflight")
+    with _bootstrap_stage("package_download"):
+        package = fetch_package()
+        if len(package) > _LIMIT or hashlib.sha256(package).hexdigest() != PACKAGE_SHA256:
+            raise Refusal("package_digest_mismatch")
+    with _bootstrap_stage("package_write"):
+        package_path = root / "profile.deb"
+        _write(package_path, package)
+    with _bootstrap_stage("archive_unpack"):
+        archive = checked(["dpkg-deb", "--fsys-tarfile", str(package_path)])
+    with _bootstrap_stage("profile_decode"):
+        profile = runner_profile(verified_profile(package, archive))
+    with _bootstrap_stage("profile_write"):
+        path = root / "bwrap-userns-restrict"
+        _write(path, profile)
+    with _bootstrap_stage("load_intent"):
+        # No kernel policy has changed yet. Do not replace (-r) an existing profile.
+        restricted()
+        profile_absent()
+        _write(root / "load-intent.json", load_receipt())
+    with _bootstrap_stage("profile_execution"):
+        try:
+            result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
+        except (OSError, subprocess.SubprocessError):
+            raise Refusal("profile_load_failed") from None
+        if result.returncode:
+            raise Refusal("profile_load_unproven")
+        if not _PROFILE_NAMES.issubset(loaded()):
+            raise Refusal("profile_load_unobserved")
+        _write(root / "loaded.json", load_receipt())
+        restricted()
+        generic_denied()
+        try:
+            after = repeat_preflight(root / "after")
+        except (OSError, subprocess.SubprocessError):
+            raise Refusal("profile_load_failed") from None
+        print(
+            json.dumps(
+                {
+                    "phase": "after_profile",
+                    "native_exit": after.returncode,
+                    "category": "payload_reached"
+                    if after.returncode == 31
+                    else synthetic_preflight_category(after.stderr),
+                    "stderr_sha256": hashlib.sha256(after.stderr).hexdigest(),
+                    "stderr_preview": preflight_diagnostic(after.stderr),
+                    "global_restriction": 1,
+                    "generic_userns": "denied",
+                }
+            )
         )
-    )
-    if after.returncode != 31:
-        raise Refusal("native_preflight_still_refused")
-    restricted()
-    print(
-        json.dumps(
-            {
-                "status": "scoped_profile_proven",
-                "before": category,
-                "after_exit": 31,
-                "global_restriction": 1,
-                "generic_userns": "denied",
-                "profile_sha256": PROFILE_SHA256,
-                "runner_profile_sha256": RUNNER_PROFILE_SHA256,
-            }
+        if after.returncode != 31:
+            raise Refusal("native_preflight_still_refused")
+        restricted()
+        print(
+            json.dumps(
+                {
+                    "status": "scoped_profile_proven",
+                    "before": category,
+                    "after_exit": 31,
+                    "global_restriction": 1,
+                    "generic_userns": "denied",
+                    "profile_sha256": PROFILE_SHA256,
+                    "runner_profile_sha256": RUNNER_PROFILE_SHA256,
+                }
+            )
         )
-    )
 
 
 def cleanup(root: Path) -> None:
@@ -432,6 +479,8 @@ def main() -> int:
         else:
             cleanup(root)
         return 0
+    except _BootstrapFailure as error:
+        print(json.dumps(error.diagnostic))
     except Refusal as error:
         print(json.dumps({"status": "refused", "reason": str(error)}))
     except Exception:

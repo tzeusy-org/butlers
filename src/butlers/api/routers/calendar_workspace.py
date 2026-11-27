@@ -70,6 +70,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceWritableCalendar,
     ConflictEventRef,
     ConflictIssue,
+    ConflictResolveRequest,
+    ConflictResolveResponse,
     ConflictScanResponse,
     ConflictScanWindow,
     DayBriefingButlerGroup,
@@ -99,6 +101,7 @@ from butlers.api.read_models.calendar_day_sheet import (
     query_calendar_day_sheet,
     query_calendar_day_verdict,
 )
+from butlers.api.read_models.calendar_resolution import resolution_options_live
 from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
@@ -106,6 +109,7 @@ from butlers.api.read_models.calendar_workspace import (
     _coerce_datetime,
     _dedup_workspace_rows,
     compute_overlay_freshness,
+    load_conflict_acknowledgements,
     load_dedup_rules,
     load_keep_separate_keys,
     query_calendar_conflicts,
@@ -119,6 +123,7 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_workspace_entry,
     query_household_time,
     query_scheduler_mirror_counts,
+    record_conflict_acknowledgement,
     scan_calendar_overlays,
     scan_calendar_proposals,
     shallow_asdict,
@@ -1884,6 +1889,76 @@ async def get_workspace_conflicts(
             unclassified_sources=scan.unclassified_sources,
             unclassified_events=scan.unclassified_events,
             household_context=[_household_ref(event) for event in scan.household_context],
+        )
+    )
+
+
+def _require_resolution_live() -> None:
+    """Dark: the route does not exist yet, so it answers 404 before it validates its body."""
+    if not resolution_options_live():
+        raise HTTPException(status_code=404, detail="conflict_resolution_unavailable")
+
+
+@router.post(
+    "/conflicts/resolve",
+    response_model=ApiResponse[ConflictResolveResponse],
+    dependencies=[Depends(_require_resolution_live)],
+)
+async def resolve_workspace_conflict(
+    body: ConflictResolveRequest,
+    *,
+    db: Db,
+) -> ApiResponse[ConflictResolveResponse]:
+    """Record "keep both" for one overlap, bound to the digest the owner saw.
+
+    Writes only the local acknowledgement: no provider call and no approval, so it is the one
+    option that needs no park. The overlap is re-read here and its digest compared, so an
+    acknowledgement can never attach to a changed overlap (409 ``issue_changed``). Options that
+    write to a provider are not accepted by this route yet (422).
+    """
+    if body.end <= body.start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if body.end - body.start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+
+    scan = await query_calendar_conflicts(db, start=body.start, end=body.end)
+    if not scan.available:
+        raise HTTPException(status_code=503, detail="conflict_scan_degraded")
+    issue = next((i for i in scan.issues if str(i.pair_id) == body.pair_id), None)
+    if issue is None:
+        if (await load_conflict_acknowledgements(db)).get(body.pair_id, ("", ""))[
+            0
+        ] == body.issue_digest:
+            return ApiResponse(
+                data=ConflictResolveResponse(
+                    status="already_acknowledged", pair_id=body.pair_id, option_id=body.option_id
+                )
+            )
+        raise HTTPException(status_code=409, detail="issue_changed")
+    if issue.issue_digest != body.issue_digest:
+        raise HTTPException(status_code=409, detail="issue_changed")
+    option = next((o for o in issue.options if o.id == body.option_id), None)
+    if option is None:
+        raise HTTPException(status_code=422, detail="unknown_option")
+    if option.kind != "keep_both":
+        raise HTTPException(status_code=422, detail="option_not_supported")
+    if not await record_conflict_acknowledgement(
+        db,
+        pair_id=body.pair_id,
+        issue_digest=body.issue_digest,
+        state_digest=issue.state_digest or "",
+        option_id=option.id,
+    ):
+        raise HTTPException(status_code=503, detail="acknowledgement_unavailable")
+    await log_audit_entry(
+        db,
+        "dashboard",
+        "calendar.workspace.conflicts.acknowledge",
+        {"pair_id": body.pair_id, "option_id": option.id},
+    )
+    return ApiResponse(
+        data=ConflictResolveResponse(
+            status="acknowledged", pair_id=body.pair_id, option_id=option.id
         )
     )
 
