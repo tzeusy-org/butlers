@@ -14,6 +14,7 @@
 
 import { useId, useMemo, useState } from "react";
 
+import { DOCKET_MAX_SUBMIT } from "@/api/rsvp-docket.ts";
 import type {
   Docket,
   DocketCard,
@@ -134,7 +135,7 @@ export function CalendarDocketPanel({
     setTicked(() => {
       const next = new Set(ticked);
       if (next.has(actionId)) next.delete(actionId);
-      else next.add(actionId);
+      else if (next.size < DOCKET_MAX_SUBMIT) next.add(actionId);
       return next;
     });
   }
@@ -180,6 +181,9 @@ export function CalendarDocketPanel({
     .filter(([, count]) => count > 0)
     .map(([reason, count]) => `${count} ${UNPREPARED_WORDS[reason] ?? reason.replaceAll("_", " ")}`);
   const tickedCount = ticked.size;
+  // One submit carries at most DOCKET_MAX_SUBMIT cards; the rest wait for the next one.
+  const tickAllCount = Math.min(ready.length, DOCKET_MAX_SUBMIT);
+  const waiting = Math.max(0, ready.length - DOCKET_MAX_SUBMIT);
 
   return (
     <section
@@ -201,10 +205,18 @@ export function CalendarDocketPanel({
               type="button"
               className="rounded-[3px] border border-[var(--border-strong)] px-2 py-0.5 text-[var(--mfg)] hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
               onClick={() =>
-                setTicked(tickedCount === ready.length ? new Set() : new Set(ready.map((c) => c.action_id)))
+                setTicked(
+                  tickedCount === tickAllCount
+                    ? new Set()
+                    : new Set(ready.slice(0, DOCKET_MAX_SUBMIT).map((c) => c.action_id)),
+                )
               }
             >
-              {tickedCount === ready.length ? "Untick all" : `Tick all ${ready.length} ready`}
+              {tickedCount === tickAllCount
+                ? "Untick all"
+                : ready.length > DOCKET_MAX_SUBMIT
+                  ? `Tick first ${DOCKET_MAX_SUBMIT}`
+                  : `Tick all ${ready.length} ready`}
             </button>
           ) : null}
         </span>
@@ -264,7 +276,11 @@ export function CalendarDocketPanel({
                     type="checkbox"
                     className="mt-1 size-4 shrink-0 accent-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                     checked={ticked.has(card.action_id)}
-                    disabled={!approvable || submitting}
+                    disabled={
+                      !approvable ||
+                      submitting ||
+                      (!ticked.has(card.action_id) && tickedCount >= DOCKET_MAX_SUBMIT)
+                    }
                     onChange={() => toggle(card.action_id)}
                   />
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -309,7 +325,7 @@ export function CalendarDocketPanel({
         </ul>
       )}
 
-      {result ? <SubmitReport result={result} titles={titles} /> : null}
+      {result ? <SubmitReport result={result} titles={titles} waiting={waiting} /> : null}
       {submitError ? (
         <p data-testid="docket-submit-error" role="alert" className="text-sm text-[var(--red-text)]">
           {submitError}
@@ -318,7 +334,10 @@ export function CalendarDocketPanel({
 
       <div className="flex items-center justify-end gap-3 border-t border-[var(--border)] pt-2">
         <span className="font-mono text-[11px] text-[var(--mfg)]">
-          {tickedCount === 0 ? "Tick the answers to send. Unticked ones stay pending." : `${tickedCount} ticked`}
+          {tickedCount === 0
+            ? "Tick the answers to send. Unticked ones stay pending."
+            : `${tickedCount} ticked`}
+          {waiting > 0 ? ` · up to ${DOCKET_MAX_SUBMIT} per submit` : ""}
         </span>
         <button
           type="button"
@@ -356,9 +375,11 @@ function DisagreementRow({ clash, timezone }: { clash: DocketDisagreement; timez
 function SubmitReport({
   result,
   titles,
+  waiting,
 }: {
   result: DocketSubmitResult;
   titles: Map<string, string>;
+  waiting: number;
 }) {
   const rejected = result.results.filter((r) => r.dispatched && r.execution_failure);
   const sent = result.results.filter((r) => r.dispatched && !r.execution_failure);
@@ -372,6 +393,7 @@ function SubmitReport({
         {approvedNotSent.length > 0 ? `, approved but not sent ${approvedNotSent.length}` : ""}
         {result.refused.length > 0 ? `, refused ${result.refused.length}` : ""}.
         {result.stopped ? " The batch stopped early." : ""}
+        {waiting > 0 ? ` ${waiting} more ${waiting === 1 ? "is" : "are"} waiting for the next submit.` : ""}
       </p>
       {rejected.length > 0 ? (
         <ul className="mt-1 flex flex-col gap-0.5">

@@ -309,4 +309,36 @@ describe("CalendarDocketPanel", () => {
     );
     expect((screen.getByTestId("docket-submit") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("caps a batch at 50: Tick first 50, a 51st cannot be ticked, the rest are waiting", async () => {
+    const many = Array.from({ length: 51 }, (_, i) =>
+      card({ action_id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}` }),
+    );
+    const onSubmit = renderPanel(docket({ cards: many }));
+    fireEvent.click(screen.getByRole("button", { name: "Tick first 50" }));
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.filter((b) => b.checked)).toHaveLength(50);
+    expect(boxes[50].checked).toBe(false);
+    expect(boxes[50].disabled).toBe(true);
+    fireEvent.click(boxes[50]);
+    expect(boxes[50].checked).toBe(false);
+    fireEvent.click(screen.getByTestId("docket-submit"));
+    expect(onSubmit.mock.calls[0][0]).toHaveLength(50);
+    expect((await screen.findByTestId("docket-result")).textContent).toContain(
+      "1 more is waiting for the next submit.",
+    );
+  });
+
+  it("unticking one of 50 frees the cap for the 51st", () => {
+    const many = Array.from({ length: 51 }, (_, i) =>
+      card({ action_id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}` }),
+    );
+    renderPanel(docket({ cards: many }));
+    fireEvent.click(screen.getByRole("button", { name: "Tick first 50" }));
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    fireEvent.click(boxes[0]);
+    expect(boxes[50].disabled).toBe(false);
+    fireEvent.click(boxes[50]);
+    expect(boxes[50].checked).toBe(true);
+  });
 });

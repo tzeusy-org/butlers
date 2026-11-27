@@ -98,18 +98,18 @@ export async function getDocket(): Promise<Docket> {
   return response.data;
 }
 
-/** The server bounds each card's approve-and-dispatch at this long (DISPATCH_TIMEOUT_S). */
-export const DOCKET_CARD_TIMEOUT_MS = 75_000;
-const DOCKET_SUBMIT_MARGIN_MS = 15_000;
+/** The server accepts at most this many cards in one submit (MAX_SUBMIT). */
+export const DOCKET_MAX_SUBMIT = 50;
 
-/** A real batch outlives the default request timeout: allow every card its dispatch bound. */
-export function docketSubmitTimeoutMs(itemCount: number): number {
-  return itemCount * DOCKET_CARD_TIMEOUT_MS + DOCKET_SUBMIT_MARGIN_MS;
-}
+/**
+ * The server stops starting cards after 255s (BATCH_DEADLINE_S), so a submit always answers inside
+ * this window, under Firefox's 300s header limit. The default 15s would abort a real batch.
+ */
+export const DOCKET_SUBMIT_TIMEOUT_MS = 270_000;
 
 export async function submitDocket(items: DocketSubmitItem[]): Promise<DocketSubmitResult> {
   const response = await apiFetch<Envelope<DocketSubmitResult>>("/calendar/rsvp-docket/submit", {
-    timeoutMs: docketSubmitTimeoutMs(items.length),
+    timeoutMs: DOCKET_SUBMIT_TIMEOUT_MS,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),
