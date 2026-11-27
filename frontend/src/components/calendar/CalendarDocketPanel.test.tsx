@@ -180,11 +180,47 @@ describe("CalendarDocketPanel", () => {
     expect(lines[1]).toContain("Not attempted");
   });
 
-  it("a failed submit says nothing was approved", async () => {
-    renderPanel(docket(), vi.fn().mockRejectedValue(new Error("boom")));
+  it("a transport failure says the outcome is unknown, never that nothing was approved", async () => {
+    renderPanel(docket(), vi.fn().mockRejectedValue(new Error("Request timed out after 15s")));
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByTestId("docket-submit"));
-    expect((await screen.findByTestId("docket-submit-error")).textContent).toBe("boom");
+    const text = (await screen.findByTestId("docket-submit-error")).textContent ?? "";
+    expect(text).toBe(
+      "The outcome is unknown; the docket has been refreshed. Check it before resubmitting.",
+    );
+    expect(text).not.toContain("Nothing was approved");
+  });
+
+  it("a card sent but rejected by the provider reads as rejected, not sent", async () => {
+    const onSubmit = vi.fn().mockResolvedValue({
+      results: [
+        {
+          action_id: card().action_id,
+          status: "executed",
+          dispatched: true,
+          execution_failure: { code: "provider_rejected", label: "Rejected", terminal: true },
+        },
+      ],
+      refused: [],
+    });
+    renderPanel(docket(), onSubmit);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByTestId("docket-submit"));
+    const result = await screen.findByTestId("docket-result");
+    expect(result.textContent).toContain("Sent 0, sent but rejected 1");
+    expect(screen.getByTestId("docket-rejected").textContent).toContain(
+      "Board offsite: sent but rejected (provider_rejected)",
+    );
+  });
+
+  it("says agreement is unavailable when the ledger could not be read", () => {
+    renderPanel(docket({ policy_agreement: null }));
+    expect(screen.getByTestId("docket-card").textContent).toContain("agreement unavailable");
+  });
+
+  it("card reasons are plain text, not live regions", () => {
+    renderPanel(docket({ cards: [card({ state: "changed", reason: "stale_event" })] }));
+    expect(screen.getByTestId("docket-card-reason").getAttribute("role")).toBeNull();
   });
 
   it("an empty docket with unprepared invitations is not shown as clean", () => {
@@ -227,7 +263,7 @@ describe("CalendarDocketPanel", () => {
     );
     const text = screen.getByTestId("docket-disagreement").textContent ?? "";
     expect(text).toContain("Policies disagree");
-    expect(text).toContain("policy 1 (accept) and policy 3 (decline)");
+    expect(text).toContain("policy pa v1 (accept) and policy pd v2 (decline)");
     expect(text).toContain("Nothing was prepared");
   });
 

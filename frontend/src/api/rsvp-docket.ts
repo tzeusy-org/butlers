@@ -78,7 +78,8 @@ export interface DocketCardOutcome {
   action_id: string;
   status: string;
   dispatched: boolean;
-  execution_failure: Record<string, unknown> | null;
+  /** `{code, label, terminal}` when the send failed or was rejected after approval. */
+  execution_failure: { code?: string; label?: string; terminal?: boolean } | null;
 }
 
 export interface DocketSubmitResult {
@@ -97,8 +98,18 @@ export async function getDocket(): Promise<Docket> {
   return response.data;
 }
 
+/** The server bounds each card's approve-and-dispatch at this long (DISPATCH_TIMEOUT_S). */
+export const DOCKET_CARD_TIMEOUT_MS = 75_000;
+const DOCKET_SUBMIT_MARGIN_MS = 15_000;
+
+/** A real batch outlives the default request timeout: allow every card its dispatch bound. */
+export function docketSubmitTimeoutMs(itemCount: number): number {
+  return itemCount * DOCKET_CARD_TIMEOUT_MS + DOCKET_SUBMIT_MARGIN_MS;
+}
+
 export async function submitDocket(items: DocketSubmitItem[]): Promise<DocketSubmitResult> {
   const response = await apiFetch<Envelope<DocketSubmitResult>>("/calendar/rsvp-docket/submit", {
+    timeoutMs: docketSubmitTimeoutMs(items.length),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items }),

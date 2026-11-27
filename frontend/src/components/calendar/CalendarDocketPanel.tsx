@@ -52,6 +52,9 @@ const REASON_WORDS: Record<string, string> = {
   not_attempted: "Not attempted: the batch stopped before it",
 };
 
+const UNKNOWN_OUTCOME =
+  "The outcome is unknown; the docket has been refreshed. Check it before resubmitting.";
+
 const UNPREPARED_WORDS: Record<string, string> = {
   invitations_unavailable: "invitations unreadable",
   facts_unreadable: "facts unreadable",
@@ -81,7 +84,8 @@ function answerWords(verdict: string, sendUpdates: string): string {
 }
 
 function agreementWords(docket: Docket, card: DocketCard): string | null {
-  const rows = (docket.policy_agreement ?? []).filter(
+  if (docket.policy_agreement === null) return "agreement unavailable";
+  const rows = docket.policy_agreement.filter(
     (row) => row.policy_id === card.policy_id && row.policy_version === card.policy_version,
   );
   if (rows.length === 0) return null;
@@ -144,9 +148,11 @@ export function CalendarDocketPanel({
     try {
       setResult(await onSubmit(items));
       setTicked(new Set());
-    } catch (err) {
+    } catch {
       setResult(null);
-      setSubmitError(err instanceof Error ? err.message : "The submit failed. Nothing was approved.");
+      // A transport failure or timeout says nothing about what the server did: some cards may
+      // already be approved. The docket is refetched on settle; the owner checks it.
+      setSubmitError(UNKNOWN_OUTCOME);
     }
   }
 
@@ -275,7 +281,7 @@ export function CalendarDocketPanel({
                     </p>
                     <p className="font-mono text-[11px] text-[var(--mfg)]">
                       Policy {card.policy_id.slice(0, 8)} v{card.policy_version}
-                      {agreement ? ` · you've seen: ${agreement}` : ""}
+                      {agreement === "agreement unavailable" ? ` · ${agreement}` : agreement ? ` · you've seen: ${agreement}` : ""}
                     </p>
                     {card.facts.length > 0 ? (
                       <ul className="flex flex-col gap-0.5 font-mono text-[11px] text-[var(--dim)]">
@@ -289,7 +295,6 @@ export function CalendarDocketPanel({
                     {!approvable ? (
                       <p
                         data-testid="docket-card-reason"
-                        role="status"
                         className="text-sm text-[var(--amber-text)]"
                       >
                         {card.state === "changed" ? "Changed: " : "Can't re-check: "}
@@ -331,7 +336,10 @@ export function CalendarDocketPanel({
 
 function DisagreementRow({ clash, timezone }: { clash: DocketDisagreement; timezone: string }) {
   const named = clash.policies
-    .map((p) => `policy ${p.position} (${(VERDICT_WORDS[p.verdict] ?? p.verdict).toLowerCase()})`)
+    .map(
+      (p) =>
+        `policy ${p.id.slice(0, 8)} v${p.version} (${(VERDICT_WORDS[p.verdict] ?? p.verdict).toLowerCase()})`,
+    )
     .join(" and ");
   return (
     <li data-testid="docket-disagreement" className="text-sm text-fg">
@@ -352,22 +360,35 @@ function SubmitReport({
   result: DocketSubmitResult;
   titles: Map<string, string>;
 }) {
-  const sent = result.results.filter((r) => r.dispatched);
+  const rejected = result.results.filter((r) => r.dispatched && r.execution_failure);
+  const sent = result.results.filter((r) => r.dispatched && !r.execution_failure);
   const approvedNotSent = result.results.filter((r) => !r.dispatched);
+  const name = (id: string) => titles.get(id) ?? "An invitation";
   return (
     <div data-testid="docket-result" role="status" aria-live="polite" className="text-sm text-fg">
       <p>
         Sent {sent.length}
+        {rejected.length > 0 ? `, sent but rejected ${rejected.length}` : ""}
         {approvedNotSent.length > 0 ? `, approved but not sent ${approvedNotSent.length}` : ""}
         {result.refused.length > 0 ? `, refused ${result.refused.length}` : ""}.
         {result.stopped ? " The batch stopped early." : ""}
       </p>
+      {rejected.length > 0 ? (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {rejected.map((outcome) => (
+            <li key={outcome.action_id} data-testid="docket-rejected">
+              {name(outcome.action_id)}: sent but rejected
+              {outcome.execution_failure?.code ? ` (${outcome.execution_failure.code})` : ""}.
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {approvedNotSent.length > 0 ? (
         <ul className="mt-1 flex flex-col gap-0.5">
           {approvedNotSent.map((outcome) => (
             <li key={outcome.action_id} data-testid="docket-not-sent">
-              {titles.get(outcome.action_id) ?? "An invitation"}: approved but not sent yet (
-              {outcome.status}). It can be retried from the approvals queue.
+              {name(outcome.action_id)}: approved but not sent yet ({outcome.status}). It can be
+              retried from the approvals queue.
             </li>
           ))}
         </ul>
