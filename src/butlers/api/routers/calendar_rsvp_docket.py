@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -42,6 +43,13 @@ router = APIRouter(
 MAX_SUBMIT = 50
 #: One card's approve-and-dispatch is bounded: a hung dispatch must not hold the whole batch.
 DISPATCH_TIMEOUT_S = 75.0
+#: A submit starts no card it could not finish inside this window, so the response lands under
+#: the browser's header limit (Firefox waits 300s). The rest are ``not_attempted``.
+BATCH_DEADLINE_S = 255.0
+
+
+def _clock() -> float:
+    return time.monotonic()
 
 
 class DocketFact(BaseModel):
@@ -266,6 +274,27 @@ def _disagreements(snap: docket.Snapshot, by_policy: dict[str, Any]) -> list[Doc
     return out
 
 
+def _stopped(
+    body: SubmitRequest,
+    item: SubmitItem,
+    seen: set[UUID],
+    results: list[CardOutcome],
+    refused: list[SubmitRefusal],
+    *,
+    after: bool = False,
+) -> ApiResponse[SubmitResult]:
+    """End the batch: ``item`` (unless ``after``) and every later card is ``not_attempted``."""
+    start = body.items.index(item) + (1 if after else 0)
+    for later in body.items[start:]:
+        if later.action_id in seen and later is not item:
+            continue
+        seen.add(later.action_id)
+        refused.append(SubmitRefusal(action_id=str(later.action_id), reason="not_attempted"))
+    return ApiResponse[SubmitResult](
+        data=SubmitResult(results=results, refused=refused, stopped=True)
+    )
+
+
 def _outcome(action_id: UUID, response: Any) -> CardOutcome:
     data = getattr(response, "data", response)
     failure = getattr(data, "execution_failure", None)
@@ -321,6 +350,7 @@ async def submit_docket(
     results: list[CardOutcome] = []
     refused: list[SubmitRefusal] = []
     seen: set[UUID] = set()
+    started = _clock()
     for item in body.items:
         action_id = item.action_id
         if action_id in seen:
@@ -353,6 +383,8 @@ async def submit_docket(
                 )
             )
             continue
+        if _clock() - started + DISPATCH_TIMEOUT_S > BATCH_DEADLINE_S:
+            return _stopped(body, item, seen, results, refused)
         try:
             response = await asyncio.wait_for(
                 approve_owning_action(
@@ -394,14 +426,5 @@ async def submit_docket(
             )
             # Stop here: a failing path is not asked again, and the owner is told which cards
             # were not attempted.
-            for later in body.items[body.items.index(item) + 1 :]:
-                if later.action_id in seen:
-                    continue
-                seen.add(later.action_id)
-                refused.append(
-                    SubmitRefusal(action_id=str(later.action_id), reason="not_attempted")
-                )
-            return ApiResponse[SubmitResult](
-                data=SubmitResult(results=results, refused=refused, stopped=True)
-            )
+            return _stopped(body, item, seen, results, refused, after=True)
     return ApiResponse[SubmitResult](data=SubmitResult(results=results, refused=refused))

@@ -396,3 +396,26 @@ def test_a_submit_without_an_owner_cookie_session_is_refused(monkeypatch) -> Non
     )
     assert response.status_code == 403
     world.approve.assert_not_awaited()
+
+
+def test_the_batch_starts_no_card_it_could_not_finish_before_the_deadline(monkeypatch) -> None:
+    world = _World(monkeypatch)
+    first, second, third = world.add(), world.add(), world.add()
+    ok = SimpleNamespace(data=SimpleNamespace(status="executed", dispatched=True))
+    world.approve.return_value = ok
+    # Each approve "takes" 100s: after card 1 the batch is at 100s, and 100 + 75 <= 255 still
+    # fits card 2; after card 2 it is at 200s and 200 + 75 > 255, so card 3 is not started.
+    ticks = iter([0.0, 0.0, 100.0, 200.0, 300.0, 400.0])
+    monkeypatch.setattr(route, "_clock", lambda: next(ticks))
+    data = world.submit(first, second, third).json()["data"]
+    assert approved_ids(data) == [str(first["id"]), str(second["id"])]
+    assert data["stopped"] is True
+    assert data["refused"] == [
+        {
+            "action_id": str(third["id"]),
+            "entry_id": None,
+            "event": None,
+            "reason": "not_attempted",
+        }
+    ]
+    assert world.approve.await_count == 2
