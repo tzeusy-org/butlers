@@ -73,7 +73,7 @@ DEFAULT_LOOKAHEAD_DAYS = 7
 MAX_LOOKAHEAD_DAYS = 90
 LOOKAHEAD_DAYS_ENV = "CALENDAR_OVERCOMMITMENT_LOOKAHEAD_DAYS"
 
-_QUALIFYING_KINDS = frozenset({"overlap", "overloaded_day"})
+_QUALIFYING_KINDS = frozenset({"overlap", "overloaded_day", "outside_declared_hours"})
 
 
 def resolve_lookahead_days() -> int:
@@ -126,6 +126,8 @@ def build_overcommitment_observations(scan: CalendarConflictScan) -> list[Observ
             continue
         if issue.kind == "overlap":
             observations.append(_overlap_observation(issue, scan.entry_identity_keys))
+        elif issue.kind == "outside_declared_hours":
+            observations.append(_outside_hours_observation(issue, scan.entry_identity_keys))
         else:
             observations.append(_overloaded_day_observation(issue))
     return observations
@@ -148,6 +150,28 @@ def _overlap_observation(issue: DetectedIssue, identity_keys: dict[str, str]) ->
             "severity": issue.severity,
             "overlap_minutes": minutes,
             "entry_ids": sorted([a.entry_id, b.entry_id]),
+        },
+    )
+
+
+def _outside_hours_observation(issue: DetectedIssue, identity_keys: dict[str, str]) -> Observation:
+    event = issue.events[0]
+    identity = issue.series_key or identity_keys.get(
+        event.entry_id, f"instance\x01{event.entry_id}"
+    )
+    reason = issue.reasons[0] if issue.reasons else "outside_hours"
+    return Observation(
+        fingerprint=overcommitment_fingerprint(
+            {"kind": "outside_declared_hours", "event": identity, "reason": reason}
+        ),
+        identity_version=IDENTITY_VERSION,
+        summary=f"An event on {issue.date} falls outside your declared meeting hours ({reason})",
+        metadata={
+            "kind": "outside_declared_hours",
+            "date": issue.date,
+            "severity": issue.severity,
+            "reason": reason,
+            "entry_ids": [event.entry_id],
         },
     )
 
@@ -342,6 +366,10 @@ async def run_calendar_overcommitment_check(
         return _skip("scan_failed")
     if not scan.dedup_available:
         return _skip("dedup_unavailable")
+    if not scan.hours_available:
+        # Declared hours unreadable: the hours issues are unjudged, not absent, so a clean tick
+        # that resolved their conditions would claim "all within hours".
+        return _skip("declared_hours_unavailable")
     if not scan.available:
         mark_tick_incomplete()
 

@@ -50,11 +50,14 @@ from butlers.api.read_models.calendar_resolution import (
 )
 from butlers.core.identity.attendees import RESOLVER_VERSION
 from butlers.core.temporal.calendar_provenance import (
+    FOCUS_TIME,
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_owner_attending,
     is_quarantined_invitation,
     is_status_event,
+    is_transparent,
+    owner_response_status,
 )
 from butlers.core.temporal.calendar_source_roles import (
     DEFAULT_ROLE,
@@ -70,6 +73,7 @@ from butlers.core.temporal.conflicts import (
 )
 from butlers.core.temporal.household_context import HouseholdEvent, household_events
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
+from butlers.core.temporal.scheduling import SchedulingPreferences, load_scheduling_preferences
 from butlers.modules.calendar.participants import (
     NAMEABLE_PARTICIPANTS_SQL,
     unavailable_events_sql,
@@ -1375,6 +1379,10 @@ class CalendarConflictScan:
     #: the overcommitment producer must not treat such a scan as complete, since a
     #: different collapse can change which events exist and so which issues are seen.
     dedup_available: bool = True
+    #: ``False`` when the owner's declared meeting hours could not be read: no
+    #: ``outside_declared_hours`` issue can then be judged, and a producer that resolves
+    #: conditions on a clean scan must not read the missing issues as "all within hours".
+    hours_available: bool = True
     #: ``entry_id`` -> provider identity of each scanned entry: the ``origin_ref``
     #: dedup cluster key (non-recurring: ``origin_ref``; recurring: ``origin_ref`` plus
     #: start), or the instance id for a refless row. Unlike ``entry_id``, it does not
@@ -1764,6 +1772,21 @@ async def query_calendar_conflicts(
             # Out of office and working location are statuses: busy time when opaque
             # (overlap, back to back) but zero day-load hours (bu-s11n0s.4 AC D).
             counts_toward_day_load=not is_status_event(row.get("event_type")),
+            # The declared hours govern a meeting the owner attends: not a declared status
+            # (out of office, working location, focus time), not a free event, not a declined one.
+            hours_apply=(
+                not is_status_event(row.get("event_type"))
+                and row.get("event_type") != FOCUS_TIME
+                and not is_transparent(row.get("event_metadata"))
+                and is_owner_attending(row.get("event_metadata"))
+            ),
+            owner_response=owner_response_status(row.get("event_metadata")),
+            recurring=bool(row.get("recurrence_rule")),
+            series_key=(
+                f"series\x01{row['origin_ref']}"
+                if row.get("recurrence_rule") and row.get("origin_ref")
+                else None
+            ),
         )
         for row in deduped
         if is_calendar_analysis_candidate(
@@ -1793,11 +1816,13 @@ async def query_calendar_conflicts(
         and is_owner_attending(row.get("event_metadata"))
     ]
 
+    preferences, hours_read = await _read_declared_hours(db)
     issues = detect_conflict_issues(
         candidates,
         display_tz=display_tz,
         back_to_back_gap_minutes=back_to_back_gap_minutes,
         overloaded_day_hours=overloaded_day_hours,
+        preferences=preferences,
     )
 
     identity_keys = {str(row["instance_id"]): _entry_identity_key(row) for row in deduped}
@@ -1865,6 +1890,7 @@ async def query_calendar_conflicts(
         issues=issues,
         available=not failed,
         dedup_available=rules_read and pins_read,
+        hours_available=hours_read,
         entry_identity_keys=identity_keys,
         unclassified_sources=len({str(row.get("source_id")) for row in unclassified}),
         unclassified_events=len(unclassified),
@@ -2439,6 +2465,22 @@ async def load_dedup_rules(db: DatabaseManager) -> CalendarDedupRules:
     """
     rules, _read = await _read_dedup_rules(db)
     return rules
+
+
+async def _read_declared_hours(db: DatabaseManager) -> tuple[SchedulingPreferences | None, bool]:
+    """The owner's declared meeting hours and whether the store was actually read.
+
+    No row is a genuine read (nothing declared, nothing to flag); no pool, a failed query or a
+    row that cannot be parsed is not.
+    """
+    pool = _dedup_pool(db)
+    if pool is None:
+        return None, False
+    try:
+        return await load_scheduling_preferences(pool), True
+    except Exception:
+        logger.warning("declared meeting hours unreadable; none are checked", exc_info=True)
+        return None, False
 
 
 async def _read_dedup_rules(db: DatabaseManager) -> tuple[CalendarDedupRules, bool]:

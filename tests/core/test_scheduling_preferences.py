@@ -202,3 +202,87 @@ class TestSchedulingPreferencesDB:
             )
             is True
         )
+
+
+def test_outside_reason_names_the_first_limit_broken_and_agrees_with_allows():
+    prefs = SchedulingPreferences.from_row(
+        {
+            "timezone": "UTC",
+            "earliest_meeting_time": "09:00",
+            "latest_meeting_time": "17:00",
+            "meeting_days": ["MO", "TU", "WE", "TH", "FR"],
+            "no_meeting_blocks": [{"start": "12:00", "end": "13:00"}],
+        }
+    )
+    cases = [
+        (_dt(2026, 7, 1, 10), _dt(2026, 7, 1, 11), None),
+        (_dt(2026, 7, 1, 8), _dt(2026, 7, 1, 9), "before_earliest"),
+        (_dt(2026, 7, 1, 16), _dt(2026, 7, 1, 18), "after_latest"),
+        (_dt(2026, 7, 1, 16), _dt(2026, 7, 2, 1), "after_latest"),  # past local midnight
+        (_dt(2026, 7, 4, 10), _dt(2026, 7, 4, 11), "off_day"),
+        (_dt(2026, 7, 4, 8), _dt(2026, 7, 4, 9), "off_day"),  # the day is judged first
+        (_dt(2026, 7, 1, 12), _dt(2026, 7, 1, 13), "no_meeting_block"),
+    ]
+    assert prefs is not None
+    for start, end, reason in cases:
+        assert prefs.outside_reason(start, end) == reason
+        assert prefs.allows(start, end) is (reason is None)
+
+
+class TestLoadSchedulingPreferencesZone:
+    """One reader for the radar and the slot ranking: a stored UTC default reads as unset."""
+
+    @staticmethod
+    def _patch(monkeypatch, row, general_zone):
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.get_scheduling_preferences",
+            AsyncMock(return_value=row),
+        )
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.load_configured_general_timezone",
+            AsyncMock(return_value=general_zone),
+        )
+
+    async def test_a_stored_utc_default_takes_the_owner_general_zone(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(
+            monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, "Asia/Tokyo"
+        )
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "Asia/Tokyo"
+
+    async def test_an_explicit_zone_is_kept(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(
+            monkeypatch,
+            {"timezone": "Europe/London", "earliest_meeting_time": "09:00"},
+            "Asia/Tokyo",
+        )
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "Europe/London"
+
+    async def test_no_general_zone_keeps_the_stored_one(self, monkeypatch):
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, None)
+        prefs = await load_scheduling_preferences(object())
+        assert prefs is not None and prefs.timezone == "UTC"
+
+    async def test_an_unreadable_general_zone_propagates_instead_of_judging_in_utc(
+        self, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        from butlers.core.temporal.scheduling import load_scheduling_preferences
+
+        self._patch(monkeypatch, {"timezone": "UTC", "earliest_meeting_time": "09:00"}, None)
+        monkeypatch.setattr(
+            "butlers.core.temporal.scheduling.load_configured_general_timezone",
+            AsyncMock(side_effect=RuntimeError("state down")),
+        )
+        with pytest.raises(RuntimeError):
+            await load_scheduling_preferences(object())

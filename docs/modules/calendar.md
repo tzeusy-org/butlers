@@ -146,7 +146,14 @@ The dashboard-api process runs a supervised `calendar_overcommitment` loop
 (`src/butlers/jobs/calendar_overcommitment.py`, REQ-owner-condition-ledger-007) that scans
 `[owner-local midnight today, + N days)` with the radar's own `query_calendar_conflicts` and
 reconciles `public.owner_conditions` under source `calendar:overcommitment`. Only `warning`
-`overlap` and `overloaded_day` issues qualify; `back_to_back` never does. An overlap's identity
+`overlap`, `overloaded_day` and `outside_declared_hours` issues qualify; `back_to_back` never does.
+An `outside_declared_hours` issue is one event that breaks the owner's declared meeting hours or days
+(`public.owner_scheduling_preferences`, judged in its zone): a warning while the owner has not answered
+it or it repeats, information otherwise, with a reason (`before_earliest`, `after_latest`, `off_day`,
+`no_meeting_block`). It is also the flag on the invitations inbox entry. Declined, free, all-day,
+butler-generated and declared-status (out of office, working location, focus time) events are never
+flagged, and a tick whose declared hours could not be read is skipped, not read as "within hours". Its
+identity is the event's provider identity plus the reason. An overlap's identity
 is a pair of provider identities (`origin_ref`, plus start for a recurring occurrence), not
 instance ids, because the dedup survivor rotates between butler schemas as each one syncs. The
 radar's own overlap `pair_id` uses the same provider-identity pair, so a pending fix proposal

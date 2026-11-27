@@ -321,6 +321,25 @@ describe("CalendarVerdictOpener", () => {
       expect(more).toHaveBeenCalledTimes(1);
     } finally { cleanup(); }
   });
+
+  it("labels an outside-hours flag on an invitation in words, not as a conflict", () => {
+    const issue = { kind: "outside_declared_hours" as const, date: "2026-07-01",
+      summary: "This event starts before your earliest meeting time", severity: "warning" as const,
+      proposal_ids: [], reasons: ["before_earliest"], events: [{ entry_id: "invited", title: "Invitation",
+        start_at: "2026-07-01T07:00:00Z", end_at: "2026-07-01T08:00:00Z", timezone: "UTC", status: "confirmed" }] };
+    const props = { dayVerdict: dayVerdict(), workspaceLoading: false,
+      workspaceError: false, sourceFreshnessLoading: false, sourceFreshnessError: false,
+      freshnessDetail: null, conflictScanEnabled: true, conflictLoading: false, conflictError: false,
+      conflictsAvailable: true, conflicts: [], invitations: [{ entry_id: "invited", title: "Invitation",
+        start_at: "2026-07-01T07:00:00Z", end_at: "2026-07-01T08:00:00Z", timezone: "UTC", butler_name: "general",
+        organizer: null, organizer_source: "unknown" as const, conflict_issues: [issue] }],
+      invitationsHasMore: false, onOpenInvitation: vi.fn(), onMoreInvitations: vi.fn() };
+    try {
+      mount(<MemoryRouter><CalendarVerdictOpener {...props} /></MemoryRouter>);
+      expect(screen.getByRole("button", { name: "Show outside-hours flag for Invitation" }).textContent).toBe("Outside your hours");
+      expect(screen.queryByText("Conflict evidence")).toBeNull();
+    } finally { cleanup(); }
+  });
 });
 
 describe("CalendarVerdictOpener waiting counts (bu-5ii4gj.11 N1)", () => {

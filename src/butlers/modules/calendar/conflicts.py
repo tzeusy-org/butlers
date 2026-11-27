@@ -16,7 +16,7 @@ from butlers.core.temporal.household_context import (
 from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
-    get_scheduling_preferences,
+    load_scheduling_preferences,
 )
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 
@@ -426,11 +426,10 @@ class ConflictsMixin:
         if pool is None:
             return None
         try:
-            row = await get_scheduling_preferences(pool)
+            return await load_scheduling_preferences(pool)
         except Exception:  # fail-open: never block conflict resolution on prefs
             logger.warning("Failed to load owner scheduling preferences", exc_info=True)
             return None
-        return SchedulingPreferences.from_row(row)
 
     def _resolve_free_busy_calendar_ids(self, calendar_ids: list[str] | None) -> list[str]:
         """Resolve which calendars an availability query should span.

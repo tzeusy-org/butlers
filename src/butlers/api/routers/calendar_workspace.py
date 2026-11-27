@@ -11,7 +11,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
-from typing import Any
+from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -72,6 +72,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceWritableCalendar,
     ConflictEventRef,
     ConflictIssue,
+    ConflictKind,
     ConflictResolveRequest,
     ConflictResolveResponse,
     ConflictScanResponse,
@@ -1731,12 +1732,13 @@ async def get_workspace_invitations(
         entry_id = str(row["instance_id"])
         issues = [
             ConflictIssue(
-                kind=issue.kind,
+                kind=cast(ConflictKind, issue.kind),
                 date=issue.date,
                 summary=issue.summary,
                 severity=issue.severity,
                 events=[ConflictEventRef(**vars(ref)) for ref in issue.events],
                 proposal_ids=list(issue.proposal_ids),
+                reasons=list(issue.reasons),
             )
             for issue in observed_issues
             if any(ref.entry_id == entry_id for ref in issue.events)
@@ -1857,7 +1859,7 @@ async def get_workspace_conflicts(
 
     issues = [
         ConflictIssue(
-            kind=issue.kind,  # type: ignore[arg-type]
+            kind=cast(ConflictKind, issue.kind),
             date=issue.date,
             summary=issue.summary,
             severity=issue.severity,  # type: ignore[arg-type]
@@ -1885,6 +1887,7 @@ async def get_workspace_conflicts(
             ],
             issue_digest=issue.issue_digest,
             options_reason=issue.options_reason,
+            reasons=list(issue.reasons),
         )
         for issue in scan.issues
     ]

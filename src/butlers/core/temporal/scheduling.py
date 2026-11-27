@@ -23,18 +23,22 @@ Provides:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.temporal.delivery_db import validate_timezone
 
 # iCal-style weekday codes indexed by Python's ``datetime.weekday()`` (Mon=0).
 _WEEKDAY_CODES: tuple[str, ...] = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 _VALID_WEEKDAYS = frozenset(_WEEKDAY_CODES)
+
+logger = logging.getLogger(__name__)
 
 _TABLE = "public.owner_scheduling_preferences"
 
@@ -163,32 +167,67 @@ class SchedulingPreferences:
         ``meeting_days``, or overlaps any ``no_meeting_blocks`` interval — all
         evaluated in the owner's timezone.
         """
+        return self.outside_reason(start_at, end_at) is None
+
+    def outside_reason(self, start_at: datetime, end_at: datetime) -> str | None:
+        """Why a slot falls outside the declared hours, else ``None`` (the slot is allowed).
+
+        One of ``off_day``, ``before_earliest``, ``after_latest`` or ``no_meeting_block``, checked
+        in that order, in the owner's timezone.
+        """
         start = self._localize(start_at)
         end = self._localize(end_at)
 
         if self.meeting_days is not None:
             if _WEEKDAY_CODES[start.weekday()] not in self.meeting_days:
-                return False
+                return "off_day"
 
         if self.earliest_meeting_time is not None and start.time() < self.earliest_meeting_time:
-            return False
+            return "before_earliest"
 
         if self.latest_meeting_time is not None:
             # The slot must finish within the same local day, on/before latest.
             if end.date() != start.date() or end.time() > self.latest_meeting_time:
-                return False
+                return "after_latest"
 
         if self.no_meeting_blocks:
             if end.date() != start.date():
                 # A slot spanning local midnight cannot be cleanly checked
                 # against a daily block; reject conservatively.
-                return False
+                return "no_meeting_block"
             slot_start, slot_end = start.time(), end.time()
             for block_start, block_end in self.no_meeting_blocks:
                 if slot_start < block_end and block_start < slot_end:
-                    return False
+                    return "no_meeting_block"
 
-        return True
+        return None
+
+
+async def load_scheduling_preferences(pool: asyncpg.Pool) -> SchedulingPreferences | None:
+    """The owner's declared hours with their zone resolved: the one reader every consumer uses.
+
+    The column defaults to ``UTC`` and a row saved without a zone keeps it, so a stored ``UTC`` (or
+    no zone) is read as "unset" and falls back to the owner's general zone, when one was saved.
+    The slot ranking and the conflict radar both call this, so they judge the same hours in the
+    same zone. Raises on a read failure (row or general zone); the caller decides how to fail.
+    """
+    row = await get_scheduling_preferences(pool)
+    prefs = SchedulingPreferences.from_row(row)
+    if prefs is None or prefs.timezone not in (None, "", "UTC"):
+        return prefs
+    # A failed read propagates: judging the hours in UTC when the owner's zone could not be read
+    # would flag and clear the wrong events, so the radar reports its hours unavailable instead.
+    name = await load_configured_general_timezone(pool)
+    if name:
+        try:
+            ZoneInfo(name)
+        except Exception:
+            logger.warning(
+                "owner general zone %r is not a valid zone; keeping the stored one", name
+            )
+            return prefs
+        return replace(prefs, timezone=name)
+    return prefs
 
 
 async def get_scheduling_preferences(pool: asyncpg.Pool) -> dict[str, Any] | None:

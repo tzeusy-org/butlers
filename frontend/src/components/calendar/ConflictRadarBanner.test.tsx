@@ -186,4 +186,39 @@ describe("ConflictRadarBanner", () => {
     fireEvent.click(screen.getByLabelText("Dismiss conflict radar"));
     expect(screen.queryByTestId("conflict-radar-banner")).toBeNull();
   });
+
+  it("names an event outside the declared meeting hours in the collapsed summary", () => {
+    render(
+      <ConflictRadarBanner
+        issues={[
+          overlapIssue({
+            kind: "outside_declared_hours",
+            summary: "This event starts before your earliest meeting time",
+            reasons: ["before_earliest"],
+            events: [overlapIssue().events[0]],
+          }),
+        ]}
+        available
+      />,
+    );
+    expect(screen.getByText(/1 event outside your meeting hours/)).toBeTruthy();
+  });
+
+  it("leaves an info-level outside-hours flag out of the day headline", () => {
+    render(
+      <ConflictRadarBanner
+        issues={[
+          overlapIssue({
+            kind: "outside_declared_hours",
+            severity: "info",
+            summary: "This event starts before your earliest meeting time",
+            reasons: ["before_earliest"],
+            events: [overlapIssue().events[0]],
+          }),
+        ]}
+        available
+      />,
+    );
+    expect(screen.queryByText(/outside your meeting hours/)).toBeNull();
+  });
 });

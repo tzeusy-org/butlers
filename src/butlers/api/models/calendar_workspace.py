@@ -576,7 +576,7 @@ class CalendarSuggestedSlot(BaseModel):
 # Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 # ---------------------------------------------------------------------------
 
-ConflictKind = Literal["overlap", "back_to_back", "overloaded_day"]
+ConflictKind = Literal["overlap", "back_to_back", "overloaded_day", "outside_declared_hours"]
 ConflictSeverity = Literal["info", "warning"]
 
 
@@ -639,6 +639,9 @@ class ConflictIssue(BaseModel):
     options: list[ResolutionOption] = Field(default_factory=list)
     issue_digest: str | None = None
     options_reason: str | None = None
+    #: ``outside_declared_hours`` only: which declared limit the event breaks (``before_earliest``,
+    #: ``after_latest``, ``off_day`` or ``no_meeting_block``). Empty for every other kind.
+    reasons: list[str] = Field(default_factory=list)
 
 
 class ConflictScanWindow(BaseModel):

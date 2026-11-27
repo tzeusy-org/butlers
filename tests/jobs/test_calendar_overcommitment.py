@@ -297,7 +297,9 @@ async def test_partial_scan_confirms_what_it_saw_but_never_resolves(check) -> No
     assert len(kwargs["observations"]) == 1
 
 
-@pytest.mark.parametrize("failure", ["no_pool", "timezone", "scan_raises", "dedup_unavailable"])
+@pytest.mark.parametrize(
+    "failure", ["no_pool", "timezone", "scan_raises", "dedup_unavailable", "hours_unavailable"]
+)
 async def test_unmeasurable_tick_never_reconciles(check, failure) -> None:
     pools: dict[str, Any] = {"switchboard": object()}
     if failure == "no_pool":
@@ -306,6 +308,9 @@ async def test_unmeasurable_tick_never_reconciles(check, failure) -> None:
         check["settings"].side_effect = OSError("state table unreachable")
     elif failure == "scan_raises":
         check["scan"].side_effect = RuntimeError("fan-out down")
+    elif failure == "hours_unavailable":
+        # unjudged hours are not "all within hours": no condition may resolve on this tick
+        check["scan"].return_value = CalendarConflictScan(issues=[], hours_available=False)
     else:
         check["scan"].return_value = CalendarConflictScan(issues=[], dedup_available=False)
 
@@ -489,3 +494,44 @@ async def test_read_trip_legs_is_incomplete_when_the_read_raises_or_a_schema_fai
     ok.fan_out_with_status = AsyncMock(return_value=({"travel": []}, []))
     assert await job.read_trip_legs(ok, start=start, end=end) == ([], True)
     assert ok.fan_out_with_status.await_args.kwargs["deadline_seconds"] == job._TRIP_READ_DEADLINE_S
+
+
+def _outside_hours(entry: str = "a", *, severity: str = "warning", reason: str = "before_earliest"):
+    return DetectedIssue(
+        kind="outside_declared_hours",
+        date="2026-07-01",
+        summary=f"“{_PRIVATE[0]}” starts before your earliest meeting time",
+        severity=severity,
+        events=[_ref(entry, _DAY)],
+        reasons=[reason],
+    )
+
+
+def test_an_unanswered_or_recurring_event_outside_declared_hours_is_observed_without_text() -> None:
+    (observation,) = job.build_overcommitment_observations(_scan(_outside_hours()))
+
+    assert observation.metadata["kind"] == "outside_declared_hours"
+    assert observation.metadata["reason"] == "before_earliest"
+    assert observation.metadata["entry_ids"] == ["a"]
+    assert _PRIVATE[0] not in observation.summary and _PRIVATE[0] not in str(observation.metadata)
+
+
+def test_an_informational_hours_issue_is_not_a_condition() -> None:
+    assert job.build_overcommitment_observations(_scan(_outside_hours(severity="info"))) == []
+
+
+def test_the_hours_fingerprint_follows_the_event_identity_and_the_reason() -> None:
+    one = _fingerprints(_scan(_outside_hours("a"), a="origin:1"))
+    assert one == _fingerprints(_scan(_outside_hours("a"), a="origin:1"))
+    assert one != _fingerprints(_scan(_outside_hours("a", reason="off_day"), a="origin:1"))
+    assert one != _fingerprints(_scan(_outside_hours("a"), a="origin:2"))
+
+
+def test_a_recurring_meeting_keeps_one_fingerprint_whichever_occurrence_is_flagged() -> None:
+    first = _outside_hours("a")
+    first.series_key = "series\x01origin:9"
+    later = _outside_hours("b")
+    later.series_key = "series\x01origin:9"
+    assert _fingerprints(_scan(first, a="origin:9_1")) == _fingerprints(
+        _scan(later, b="origin:9_2")
+    )

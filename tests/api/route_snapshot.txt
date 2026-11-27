@@ -1943,7 +1943,7 @@ SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
-SCHEMA ConflictIssue 8e9ee35ebc7e
+SCHEMA ConflictIssue 2f632120ea6c
 SCHEMA ConflictResolveRequest 1cb59eaf9e12
 SCHEMA ConflictResolveResponse cf08bf3a9a1b
 SCHEMA ConflictScanResponse 92f9148f7a01
