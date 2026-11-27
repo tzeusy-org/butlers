@@ -590,3 +590,95 @@ def test_an_after_preflight_that_cannot_run_is_named_profile_load_failed(host, m
     monkeypatch.setattr(ci, "repeat_preflight", preflight)
     with pytest.raises(ci.Refusal, match="^profile_load_failed$"):
         ci.prepare(root)
+
+
+@pytest.mark.parametrize(
+    ("point", "stage", "error", "category", "returncode"),
+    [
+        ("restricted", "before_profile", OSError("private fixture"), "io_error", None),
+        (
+            "repeat_preflight",
+            "before_profile",
+            subprocess.TimeoutExpired(["private fixture"], 1),
+            "timeout",
+            None,
+        ),
+        ("fetch_package", "package_download", TimeoutError("private fixture"), "timeout", None),
+        (
+            "profile.deb",
+            "package_write",
+            PermissionError("private fixture"),
+            "permission_denied",
+            None,
+        ),
+        (
+            "dpkg-deb",
+            "archive_unpack",
+            subprocess.CalledProcessError(23, ["private fixture"], output=b"private fixture"),
+            "command_error",
+            23,
+        ),
+        (
+            "verified_profile",
+            "profile_decode",
+            tarfile.ReadError("private fixture"),
+            "archive_error",
+            None,
+        ),
+        ("bwrap-userns-restrict", "profile_write", OSError("private fixture"), "io_error", None),
+        (
+            "load-intent.json",
+            "load_intent",
+            RuntimeError("private fixture"),
+            "unexpected_error",
+            None,
+        ),
+    ],
+)
+def test_unexpected_prepare_errors_report_only_closed_diagnostics(
+    host, monkeypatch, capsys, point, stage, error, category, returncode
+):
+    state, root, _, _ = host
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("RUNNER_TEMP", str(root.parent))
+    monkeypatch.setattr("sys.argv", ["session_host_ci.py", "prepare"])
+
+    def fail(*args, **kwargs):
+        raise error
+
+    if point in {"profile.deb", "bwrap-userns-restrict", "load-intent.json"}:
+        write = ci._write
+
+        def write_fixture(path, content):
+            if path.name == point:
+                fail()
+            write(path, content)
+
+        monkeypatch.setattr(ci, "_write", write_fixture)
+    elif point == "dpkg-deb":
+        checked = ci.checked
+
+        def checked_fixture(arguments):
+            if arguments[0] == point:
+                fail()
+            return checked(arguments)
+
+        monkeypatch.setattr(ci, "checked", checked_fixture)
+    else:
+        monkeypatch.setattr(ci, point, fail)
+
+    assert ci.main() == 1
+    output = capsys.readouterr().out
+    diagnostic = {
+        "status": "refused",
+        "reason": "host_experiment_failed",
+        "stage": stage,
+        "error_category": category,
+    }
+    if returncode is not None:
+        diagnostic["returncode"] = returncode
+    assert json.loads(output.splitlines()[-1]) == diagnostic
+    assert "private fixture" not in output
+    assert not any("apparmor_parser" in command for command in state["calls"])
+    assert not (root.parent / "butlers-session-host-userns" / "load-intent.json").exists()
