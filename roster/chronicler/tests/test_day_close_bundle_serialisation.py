@@ -18,8 +18,10 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.chronicler.reconciliation import DroppedIntent
+from butlers.roster_imports import roster_module
 from butlers.testing.mcp import registered_tools
-from roster.chronicler.modules import _serialise_dropped_intents
+
+_serialise_dropped_intents = roster_module("chronicler", "modules")._serialise_dropped_intents
 
 pytestmark = pytest.mark.unit
 
@@ -113,7 +115,8 @@ async def _registered_bundle(monkeypatch, episodes, events):
     from unittest.mock import AsyncMock
 
     from butlers.chronicler import storage
-    from roster.chronicler.modules import ChroniclerModule
+
+    ChroniclerModule = roster_module("chronicler", "modules").ChroniclerModule
 
     mcp = FastMCP("chronicler-bundle-test")
 
@@ -267,7 +270,8 @@ async def test_registered_day_close_checks_travel_intent_against_location_fixes(
 
     from butlers.chronicler import storage
     from butlers.chronicler.models import CorrectedPointEvent, Layer, Precision, Privacy
-    from roster.chronicler.modules import ChroniclerModule
+
+    ChroniclerModule = roster_module("chronicler", "modules").ChroniclerModule
 
     start = datetime(2026, 6, 1, 15, 30, tzinfo=UTC)  # 23:30 SGT
     end = datetime(2026, 6, 1, 21, 30, tzinfo=UTC)  # 05:30 SGT next day

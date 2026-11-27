@@ -42,23 +42,23 @@ def test_rule_promotion_trigger_registered_in_switchboard_job_registry():
 
 class TestJobArgsValidation:
     async def test_no_job_args_uses_defaults(self):
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
+            run_rule_promotion_trigger_job,
+        )
         from butlers.tools.switchboard.routing.rule_promotion import (
             DEFAULT_LOOKBACK_WINDOW,
             DEFAULT_MIN_DISTINCT_DAYS,
             DEFAULT_MIN_ELAPSED_FLOOR,
             DEFAULT_PROMOTION_THRESHOLD,
         )
-        from roster.switchboard.jobs.rule_promotion_trigger import (
-            run_rule_promotion_trigger_job,
-        )
 
         with (
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger",
                 new_callable=AsyncMock,
             ) as mock_run,
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.auto_apply_automated_suggestions",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -72,17 +72,17 @@ class TestJobArgsValidation:
         assert kwargs["lookback"] == DEFAULT_LOOKBACK_WINDOW
 
     async def test_job_args_override_defaults(self):
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 
         with (
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger",
                 new_callable=AsyncMock,
             ) as mock_run,
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.auto_apply_automated_suggestions",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -106,18 +106,18 @@ class TestJobArgsValidation:
     async def test_job_runs_auto_apply_and_merges_counts(self):
         """bu-o62bc: the job runs the auto-apply pass after the scan and merges
         its counters into the returned summary."""
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 
         pool = object()
         with (
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.run_rule_promotion_trigger",
                 new=AsyncMock(return_value={"candidates_scanned": 1}),
             ),
             patch(
-                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                "butlers.jobs._roster.switchboard.rule_promotion_trigger.auto_apply_automated_suggestions",
                 new=AsyncMock(return_value={"auto_apply_candidates": 2, "auto_apply_applied": 2}),
             ) as mock_auto,
         ):
@@ -128,7 +128,7 @@ class TestJobArgsValidation:
         assert result["auto_apply_applied"] == 2
 
     async def test_unknown_job_arg_raises(self):
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 
@@ -136,7 +136,7 @@ class TestJobArgsValidation:
             await run_rule_promotion_trigger_job(db_pool=object(), job_args={"bogus": 1})
 
     async def test_threshold_below_two_raises(self):
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 
@@ -144,7 +144,7 @@ class TestJobArgsValidation:
             await run_rule_promotion_trigger_job(db_pool=object(), job_args={"threshold": 1})
 
     async def test_negative_min_elapsed_hours_raises(self):
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 
@@ -154,7 +154,7 @@ class TestJobArgsValidation:
             )
 
     async def test_non_positive_lookback_days_raises(self):
-        from roster.switchboard.jobs.rule_promotion_trigger import (
+        from butlers.jobs._roster.switchboard.rule_promotion_trigger import (
             run_rule_promotion_trigger_job,
         )
 

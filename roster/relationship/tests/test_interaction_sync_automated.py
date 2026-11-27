@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from roster.relationship.tests.calendar_projection import database_for
-from roster.relationship.tests.test_jobs import _insert_contact_anchor, _insert_contact_info
+from .calendar_projection import database_for
+from .test_jobs import _insert_contact_anchor, _insert_contact_info
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from butlers.roster_imports import roster_module
 from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
@@ -160,7 +161,9 @@ async def test_remove_source_deletes_only_registry_key_and_leaves_dangling_refs(
 
 
 async def test_education_module_registers_source_material_tools() -> None:
-    from roster.education.modules import EducationModule, EducationModuleConfig
+    education = roster_module("education", "modules")
+    EducationModule = education.EducationModule
+    EducationModuleConfig = education.EducationModuleConfig
 
     mcp = FastMCP("source-material-registration")
     module = EducationModule()
@@ -181,7 +184,9 @@ async def test_education_module_registers_source_material_tools() -> None:
 async def test_source_material_register_schema_requires_title_and_type() -> None:
     from fastmcp import FastMCP
 
-    from roster.education.modules import EducationModule, EducationModuleConfig
+    education = roster_module("education", "modules")
+    EducationModule = education.EducationModule
+    EducationModuleConfig = education.EducationModuleConfig
 
     mcp = FastMCP("source-material-schema")
     module = EducationModule()

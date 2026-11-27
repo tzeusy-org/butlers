@@ -449,7 +449,7 @@ async def test_continuation_real_registered_empty_capture_commit_restart_and_rat
 
     from butlers.chronicler.day_close_continuation import DayCloseContinuation
     from butlers.chronicler.day_close_refresh import DayCloseRefreshService
-    from roster.chronicler.modules import ChroniclerModule
+    from butlers.modules._roster_chronicler import ChroniclerModule
 
     runtime, observer = continuation_pools
     target = date(2026, 4, 1)

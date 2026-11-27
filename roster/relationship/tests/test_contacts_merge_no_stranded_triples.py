@@ -40,7 +40,8 @@ from butlers.tools.relationship.fact_temporal import (
     PACKET_COLUMNS,
     TemporalError,
 )
-from roster.relationship.tests.evidence_schema import (
+
+from .evidence_schema import (
     simulate_temporal_cutover,
 )
 
@@ -440,7 +441,7 @@ class TestEffectiveTimeMutatorFences:
             if operation == "delete":
                 return await router.delete_entity_contact(subject, "has-email", value_hash, db=db)
             if operation == "verify":
-                from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+                from .fact_authority_fixtures import synthetic_owner
 
                 # Direct handler conformance has no HTTP admission; supply an
                 # explicitly synthetic owner, never runtime/authentication proof.

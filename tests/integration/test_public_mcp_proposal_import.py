@@ -35,7 +35,7 @@ from butlers.modules.approvals import operations
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.roster_imports import roster_module
 from butlers.testing.public_mcp import public_mcp_topology
-from roster.relationship.tests.external_review_fixtures import dashboard_review_binding
+from tests.relationship.external_review_fixtures import dashboard_review_binding
 
 importer = roster_module("relationship", "tools/public_mcp_proposal_import")
 _relationship_modules = roster_module("relationship", "modules")

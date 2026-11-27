@@ -22,11 +22,9 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
 
 import asyncpg
 import pytest
-from fastmcp import FastMCP
 
 from butlers.modules.approvals import operations
 from butlers.modules.approvals.external_proposals import (
@@ -34,18 +32,19 @@ from butlers.modules.approvals.external_proposals import (
     ExternalReviewBinding,
 )
 from butlers.modules.approvals.gate import admit_standing_rule
-from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.previews import args_digest
 from butlers.roster_imports import roster_module
-from roster.relationship.tests.external_review_fixtures import (
+from tests.relationship.external_review_fixtures import (
+    _approve,
+    _dispatch,
     dashboard_review_binding,
     record_external_proposal,
 )
-from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
+
+from .fact_authority_fixtures import synthetic_owner
 
 external = roster_module("relationship", "tools/external_fact_proposals")
 fact_authority = roster_module("relationship", "tools/fact_authority")
-relationship_modules = roster_module("relationship", "modules")
 
 pytestmark = [
     pytest.mark.integration,
@@ -107,45 +106,6 @@ async def _park(pool, people, *, proposal_id=None, conn=None):
         return proposal_id, await run(conn)
     async with pool.acquire() as acquired:
         return proposal_id, await run(acquired)
-
-
-async def _approve(pool, action_id: uuid.UUID, *, edits: dict | None = None) -> dict:
-    """The owner's dashboard decision, bound to the call its typed review displayed.
-
-    *edits* change the stored call after the review was shown, which the bound
-    approve operation must refuse.
-    """
-    async with synthetic_owner(pool), pool.acquire() as conn, conn.transaction():
-        binding = await dashboard_review_binding(conn, action_id)
-        if edits:
-            args = await conn.fetchval(
-                "SELECT tool_args FROM pending_actions WHERE id=$1", action_id
-            )
-            await conn.execute(
-                "UPDATE pending_actions SET tool_args=$2 WHERE id=$1", action_id, args | edits
-            )
-        return await operations.approve_action(conn, str(action_id), external_review=binding)
-
-
-async def _dispatch(pool, action_id: uuid.UUID) -> dict:
-    """The owning daemon's shared executor, resolving the registered tool by name."""
-    relationship = relationship_modules.RelationshipModule()
-    mcp = FastMCP("relationship")
-    await relationship.register_tools(mcp, None, SimpleNamespace(pool=pool), "relationship")
-    approvals = ApprovalsModule()
-    await approvals.on_startup({}, pool)
-
-    async def execute(tool_name: str, tool_args: dict):
-        tool: Any = await mcp.get_tool(tool_name)
-        handler: Any = tool.fn
-        return await handler(**tool_args)
-
-    approvals._tool_executor = execute
-    approvals._butler_name = "relationship"
-    try:
-        return await approvals._dispatch_approved_action_by_id(str(action_id))
-    finally:
-        await approvals.on_shutdown()
 
 
 async def _context(pool, action_id):

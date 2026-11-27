@@ -39,7 +39,6 @@ from sqlalchemy import text
 
 from butlers.modules.approvals import operations
 from butlers.roster_imports import roster_module
-from roster.relationship.tests.test_external_fact_proposals import _approve, _dispatch
 from tests.integration.test_public_mcp_proposal_import import (  # noqa: F401 -- fixtures
     World,
     admin,
@@ -48,6 +47,7 @@ from tests.integration.test_public_mcp_proposal_import import (  # noqa: F401 --
     projected,
 )
 from tests.integration.test_public_mcp_proposals import CID, SUB, client  # noqa: F401
+from tests.relationship.external_review_fixtures import _approve, _dispatch
 
 importer = roster_module("relationship", "tools/public_mcp_proposal_import")
 

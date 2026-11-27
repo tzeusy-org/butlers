@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.roster_imports import roster_module
-from roster.relationship.tests.calendar_projection import insert_message, link_identity, make_entity
+
+from .calendar_projection import insert_message, link_identity, make_entity
 
 _facts = roster_module("relationship", "tools/automated_evidence_facts")
 _jobs = roster_module("relationship", "jobs/relationship_jobs")

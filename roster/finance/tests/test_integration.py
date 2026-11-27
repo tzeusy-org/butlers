@@ -399,7 +399,7 @@ class TestSubscriptionAndTransactionWorkflow:
         )
 
         # An authenticated owner confirms the new baseline through the registered tool.
-        from roster.finance.tests.test_tools import _registered_subscription_write
+        from .test_tools import _registered_subscription_write
 
         sub_v2 = await _registered_subscription_write(
             pool=finance_pool,

@@ -25,8 +25,9 @@ from butlers.api.deps import get_db
 from butlers.api.routers import approvals as routes
 from butlers.modules.approvals.external_proposals import EXTERNAL_PROPOSAL_RULE_REFUSAL
 from butlers.roster_imports import roster_module
-from roster.relationship.tests.fact_authority_fixtures import synthetic_owner
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+
+from .fact_authority_fixtures import synthetic_owner
 
 external = roster_module("relationship", "tools/external_fact_proposals")
 

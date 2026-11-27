@@ -292,7 +292,7 @@ async def _dashboard_binding(pool, action_id: uuid.UUID) -> ExternalReviewBindin
     """The binding the dashboard route supplies after its displayed-call check.
 
     This chain has no Relationship schema, so the typed review is not read here;
-    ``roster/relationship/tests/external_review_fixtures.py`` builds the same binding
+    ``tests/relationship/external_review_fixtures.py`` builds the same binding
     from the real review reader.
     """
     stored = await pool.fetchval("SELECT tool_args FROM pending_actions WHERE id=$1", action_id)

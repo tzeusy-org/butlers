@@ -45,10 +45,11 @@ from butlers.tools.relationship.relationship_assert_fact import (
     _insert_active_fact,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import (
+
+from .evidence_schema import (
     simulate_temporal_cutover,
 )
-from roster.relationship.tests.fact_authority_fixtures import (
+from .fact_authority_fixtures import (
     approve_fixture,
     replay_fixture,
     synthetic_owner,

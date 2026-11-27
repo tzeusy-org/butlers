@@ -1180,7 +1180,7 @@ async def _insert_contact_anchor(
     pool, *, first_name: str = "Alice", last_name: str = "Smith", entity_id: str | None = None
 ) -> str:
     """Create the canonical entity/contact bridge without retired public contacts."""
-    from roster.relationship.tests.calendar_projection import make_contact_anchor
+    from .calendar_projection import make_contact_anchor
 
     if entity_id is None:
         entity_id = await _insert_public_entity(pool)
@@ -1188,7 +1188,7 @@ async def _insert_contact_anchor(
 
 
 async def _insert_public_entity(pool, *, roles: list[str] | None = None) -> str:
-    from roster.relationship.tests.calendar_projection import make_entity
+    from .calendar_projection import make_entity
 
     return str(await make_entity(pool, roles=roles))
 
@@ -1197,7 +1197,7 @@ async def _insert_contact_info(
     pool, *, contact_id: str, ci_type: str, value: str, is_primary: bool = True
 ) -> str:
     """Write canonical identity evidence with the real central fact writer."""
-    from roster.relationship.tests.calendar_projection import link_identity
+    from .calendar_projection import link_identity
 
     predicates = {
         "telegram_chat_id": "has-handle",
@@ -1238,7 +1238,7 @@ async def _insert_message_inbox(
         request_context["source_thread_identity"] = source_thread_identity
     if external_conversation_id is not None:
         request_context["external_conversation_id"] = external_conversation_id
-    from roster.relationship.tests.calendar_projection import insert_message
+    from .calendar_projection import insert_message
 
     await insert_message(
         pool, received_at=received_at, request_context=request_context, direction=direction
@@ -1260,7 +1260,7 @@ async def _insert_calendar_event(
     attendees: list[dict] | None = None,
 ) -> str:
     """Use the existing local CalendarModule writer, including source and instance."""
-    from roster.relationship.tests.calendar_projection import project_event
+    from .calendar_projection import project_event
 
     return str(
         await project_event(
@@ -1839,7 +1839,8 @@ async def test_interaction_sync_calendar_query_failure_preserves_checkpoint(
     """REQ-passive-interaction-sync-002: retain the original window and committed work."""
     from butlers.core.state import state_get, state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
-    from roster.relationship.tests.calendar_projection import (
+
+    from .calendar_projection import (
         database_for,
         link_identity,
         make_entity,
@@ -1971,7 +1972,8 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(interaction_s
 
     from butlers.core.state import state_set
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
-    from roster.relationship.tests.calendar_projection import (
+
+    from .calendar_projection import (
         database_for,
         link_identity,
         make_entity,

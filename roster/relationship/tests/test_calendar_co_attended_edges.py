@@ -14,11 +14,11 @@ from datetime import datetime
 import pytest
 
 # All tables come from named-schema migrations; setup data uses real writers.
-from roster.relationship.tests.calendar_projection import (
+from .calendar_projection import (
     link_identity,
     project_event,
 )
-from roster.relationship.tests.calendar_projection import (
+from .calendar_projection import (
     make_entity as _make_entity,
 )
 

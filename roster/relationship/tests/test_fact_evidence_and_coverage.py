@@ -40,10 +40,11 @@ from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import (
+
+from .evidence_schema import (
     MAX_TEXT_CHARS,
 )
-from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
+from .fact_authority_fixtures import approve_fixture, replay_fixture
 
 _PRED_HAS_EMAIL = "has-email"
 _PRED_HAS_PHONE = "has-phone"
