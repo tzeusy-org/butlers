@@ -41,7 +41,7 @@ router = APIRouter(
 
 MAX_SUBMIT = 50
 #: One card's approve-and-dispatch is bounded: a hung dispatch must not hold the whole batch.
-DISPATCH_TIMEOUT_S = 60.0
+DISPATCH_TIMEOUT_S = 75.0
 
 
 class DocketFact(BaseModel):

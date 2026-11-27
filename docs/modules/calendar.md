@@ -833,7 +833,7 @@ deterministic, model-free and dark until `BUTLERS_CALENDAR_RSVP_DOCKET=1`.
   pending is refused and named; the rest are applied. Unticked cards stay pending. Owner cookie
   session only, never an API key. Each card reports its own `status`, `dispatched` and
   `execution_failure`, so a card approved but not sent never reads as done. An unexpected failure
-  or a dispatch past the per-card timeout stops the batch: that card is `outcome_unknown`, the
+  or a dispatch past the per-card timeout (75s) stops the batch: that card is `outcome_unknown`, the
   rest `not_attempted`, and the cards already committed are returned.
 - **Agreement ledger.** Each run records, once per card, what the owner did with a prepared answer
   (`approved_as_prepared`, `owner_rejected`, or, when the owner answered the invitation themself and
