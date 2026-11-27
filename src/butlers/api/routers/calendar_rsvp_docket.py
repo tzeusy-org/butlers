@@ -69,8 +69,25 @@ class DocketCard(BaseModel):
     reason: str | None = None
 
 
+class DisagreeingPolicy(BaseModel):
+    id: str
+    position: int
+    verdict: str
+    send_updates: str
+    version: int
+
+
+class DocketDisagreement(BaseModel):
+    """An invitation whose matching policies disagree, so nothing was prepared for it."""
+
+    entry_id: str
+    event: DocketEvent | None = None
+    policies: list[DisagreeingPolicy]
+
+
 class DocketResponse(BaseModel):
     cards: list[DocketCard]
+    disagreed: list[DocketDisagreement] = Field(default_factory=list)
     #: Pending invitations the docket could not evaluate on this read; an empty docket with a
     #: non-zero count is not a clean docket.
     unprepared: int
@@ -189,6 +206,7 @@ async def get_docket(request: Request, db: Db) -> ApiResponse[DocketResponse]:
                 reason=reason,
             )
         )
+    disagreed = _disagreements(snap, by_policy)
     unprepared = sum(snap.unprepared.values())
     if snap.failure is not None:
         unprepared = max(unprepared, 1)
@@ -196,6 +214,7 @@ async def get_docket(request: Request, db: Db) -> ApiResponse[DocketResponse]:
     return ApiResponse[DocketResponse](
         data=DocketResponse(
             cards=out,
+            disagreed=disagreed,
             unprepared=unprepared,
             unprepared_reasons=dict(snap.unprepared),
             complete=snap.failure is None and not snap.degraded and unprepared == 0,
@@ -203,6 +222,32 @@ async def get_docket(request: Request, db: Db) -> ApiResponse[DocketResponse]:
             policy_agreement=agreement,
         )
     )
+
+
+def _disagreements(snap: docket.Snapshot, by_policy: dict[str, Any]) -> list[DocketDisagreement]:
+    out: list[DocketDisagreement] = []
+    for entry in snap.entries.values():
+        evaluation = entry.evaluation
+        if not entry.readable or evaluation is None or evaluation.status != "disagree":
+            continue
+        named = [by_policy[pid] for pid in evaluation.disagreeing if pid in by_policy]
+        out.append(
+            DocketDisagreement(
+                entry_id=entry.entry_id,
+                event=_event(snap, entry.entry_id),
+                policies=[
+                    DisagreeingPolicy(
+                        id=p.id,
+                        position=p.position,
+                        verdict=p.verdict,
+                        send_updates=p.send_updates,
+                        version=p.version,
+                    )
+                    for p in named
+                ],
+            )
+        )
+    return out
 
 
 async def _agreement(request: Request) -> list[dict[str, Any]] | None:

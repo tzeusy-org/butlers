@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
 
 START = datetime(2026, 7, 3, 9, 0, tzinfo=UTC)
 FACTS = InvitationFacts(overlaps_focus_or_out_of_office=True)
+FACTS_ANY = FACTS
 
 
 def _policy(pid="p1", *, version=1, verdict="declined", revoked=None) -> Policy:
@@ -144,6 +145,28 @@ def test_the_docket_shows_every_exact_call_with_its_policy_and_matched_facts(mon
     assert shown["args_digest"] == world.displayed(card)
     assert data["complete"] is True and data["unprepared"] == 0
     assert data["policy_agreement"] == [{"policy_id": "p1"}]
+
+
+def test_an_invitation_whose_policies_disagree_names_them_and_has_no_card(monkeypatch) -> None:
+    accept = _policy("pa", verdict="accepted")
+    decline = _policy("pd", verdict="declined")
+    world = _World(monkeypatch, policies=[accept, decline])
+    entry_id = "inv-1"
+    world.snap.entries[entry_id] = docket.EntryState(
+        entry_id,
+        {"title": "Standup", "instance_starts_at": START, "instance_ends_at": START},
+        "e1",
+        evaluate_policies([accept, decline], FACTS_ANY),
+        True,
+    )
+    data = world.client().get("/api/calendar/rsvp-docket").json()["data"]
+    assert data["cards"] == []
+    [clash] = data["disagreed"]
+    assert clash["entry_id"] == entry_id and clash["event"]["title"] == "Standup"
+    assert sorted((p["id"], p["verdict"]) for p in clash["policies"]) == [
+        ("pa", "accepted"),
+        ("pd", "declined"),
+    ]
 
 
 def test_a_changed_event_or_policy_shows_as_changed_with_its_reason(monkeypatch) -> None:

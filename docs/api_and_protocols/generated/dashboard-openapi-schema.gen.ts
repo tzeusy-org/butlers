@@ -27173,6 +27173,19 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** DisagreeingPolicy */
+        DisagreeingPolicy: {
+            /** Id */
+            id: string;
+            /** Position */
+            position: number;
+            /** Send Updates */
+            send_updates: string;
+            /** Verdict */
+            verdict: string;
+            /** Version */
+            version: number;
+        };
         /**
          * DisconnectAccountResponse
          * @description Response for DELETE /api/oauth/google/accounts/<id>.
@@ -27432,6 +27445,17 @@ export interface components {
             /** Verdict */
             verdict: string;
         };
+        /**
+         * DocketDisagreement
+         * @description An invitation whose matching policies disagree, so nothing was prepared for it.
+         */
+        DocketDisagreement: {
+            /** Entry Id */
+            entry_id: string;
+            event?: components["schemas"]["DocketEvent"] | null;
+            /** Policies */
+            policies: components["schemas"]["DisagreeingPolicy"][];
+        };
         /** DocketEvent */
         DocketEvent: {
             /** Ends At */
@@ -27456,6 +27480,8 @@ export interface components {
             complete: boolean;
             /** Degraded */
             degraded: string[];
+            /** Disagreed */
+            disagreed?: components["schemas"]["DocketDisagreement"][];
             /** Policy Agreement */
             policy_agreement?: {
                 [key: string]: unknown;
