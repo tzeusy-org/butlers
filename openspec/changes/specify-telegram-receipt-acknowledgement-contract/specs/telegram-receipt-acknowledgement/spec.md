@@ -2,215 +2,278 @@
 
 ## Purpose
 
-Defines the contract for acknowledging a Telegram owner message immediately on receipt — before
-classification or routing completes — so the owner has some signal the system is working rather than
-10-60 seconds of silence. Covers the configurable ack style (typing indicator, reaction, both, or
-none), the timing bound and keepalive cadence for the typing indicator, terminal cleanup for both
-ack styles, owner-only filtering, and the ownership boundary between the transport connector, the
-Telegram module, and Switchboard's core ingest wiring. This spec is a prerequisite contract; no
-code, configuration, or runtime described here exists yet.
+Give the owner a prompt first signal when their Telegram bot message starts a goal. The
+acknowledgement belongs to goal admission and the goal reply. The transport connector continues
+normalizing updates and has no role in deciding or sending receipts.
 
 ## ADDED Requirements
 
 ### Requirement: Ack Style Configuration
 
-`[modules.telegram.ack]` SHALL accept an optional `style` field with value `"typing"`,
-`"reaction"`, `"both"`, or `"none"`. When absent, `style` defaults to `"reaction"`.
+The goal runtime SHALL consume one owner-channel acknowledgement style with value `typing`,
+`reaction`, `both`, or `none`. The default SHALL be `reaction`. This is the
+`owner_channel_ack` policy named by bu-z0b0ah.4, retaining the original draft's four style
+values and default. The dark first-receipt foundation SHALL use the existing trusted
+construction seam without adding or changing a deployed roster setting.
 
-#### Scenario: Default preserves today's shipped behavior
+ID: REQ-telegram-receipt-acknowledgement-001
+Source: bu-z0b0ah.4 acceptance 7; original receipt draft #4092
+Scope: v1-mandatory
 
-- **WHEN** `[modules.telegram.ack]` is not present in a butler's configuration
-- **THEN** the effective ack style is `"reaction"`, matching the unconditional reaction dispatch
-  already shipped, so no currently deployed butler's behavior changes without an explicit
-  configuration change
+#### Scenario: Default requests the first reaction
+
+- **WHEN** the trusted constructor supplies no acknowledgement style for an eligible admission
+- **THEN** the effective style is `reaction` and Messenger is asked for the eyes reaction only
 
 #### Scenario: Typing-only style
 
-- **WHEN** `style = "typing"` is configured
-- **THEN** an owner-originated message triggers only the typing-indicator keepalive (see Typing
-  Indicator Timing Bound and Keepalive) — no reaction is set at any point in the message's lifecycle
+- **WHEN** the style is `typing` for an eligible admission
+- **THEN** Messenger is asked for initial typing only
 
 #### Scenario: Both style
 
-- **WHEN** `style = "both"` is configured
-- **THEN** an owner-originated message triggers the typing-indicator keepalive and the reaction
-  lifecycle concurrently, each following its own contract independently
+- **WHEN** the style is `both` for an eligible admission
+- **THEN** Messenger is asked for the eyes reaction and initial typing
 
 #### Scenario: None style
 
-- **WHEN** `style = "none"` is configured
-- **THEN** no typing indicator and no reaction are dispatched for any message, regardless of sender
+- **WHEN** the style is `none`
+- **THEN** no acknowledgement request is emitted, including for eligible admissions
 
 #### Scenario: Invalid style value
 
-- **WHEN** `[modules.telegram.ack].style` is set to a value other than `typing`, `reaction`, `both`,
-  or `none`
-- **THEN** configuration validation SHALL reject it with a structured error naming the allowed
-  values
+- **WHEN** trusted construction supplies a value outside the four supported styles
+- **THEN** it is rejected with a structured error naming the allowed values
 
 ### Requirement: Owner-Only Acknowledgement Filtering
 
-Acknowledgement dispatch (typing indicator, reaction, or both) SHALL be gated on the message's
-sender resolving to the owner, using a fast lookup independent of the full classification-time
-identity resolution pipeline. A message whose sender does not resolve to the owner — including
-system/automated triggers with no real Telegram sender, and a batched envelope with no owner
-participant — SHALL receive no acknowledgement of any configured style.
+The control plane SHALL consider only a new durable goal admitted from the authenticated
+`telegram_bot` message of the live owner. The eligible source binding SHALL come from
+server-held accepted-ingress evidence verified during admission under RFC 0038 D5. Messenger
+SHALL independently resolve the destination chat to the same unique live owner before any
+provider action under RFC 0017. An owner sender, matching display name, or primary-route marker
+alone SHALL confer no authority to act in a destination chat.
 
-#### Scenario: Owner message receives the configured ack
+ID: REQ-telegram-receipt-acknowledgement-002
+Source: RFC 0038 D5 and D7; RFC 0017 section 2.7; bu-z0b0ah.4 acceptance 5 and 8
+Scope: v1-mandatory
 
-- **WHEN** an incoming `telegram_bot` message's sender resolves to the owner's registered Telegram
-  identity via the fast pre-pipeline lookup
-- **THEN** acknowledgement dispatch proceeds per the configured ack style
+#### Scenario: Owner message receives the configured acknowledgement
 
-#### Scenario: Non-owner message receives no ack
+- **WHEN** a registered Telegram bot contributes a verified owner-originated message, entry
+  into a new goal commits, and Messenger resolves the retained reply destination to the same
+  unique live owner
+- **THEN** the configured first acknowledgement can be attempted against that original target
 
-- **WHEN** an incoming `telegram_bot` message's sender does not resolve to the owner (e.g. another
-  participant in a shared or group chat)
-- **THEN** no typing indicator and no reaction are dispatched for that message, regardless of the
-  configured ack style
+#### Scenario: Non-owner or unresolved target receives no acknowledgement
 
-#### Scenario: System-originated trigger receives no ack
+- **WHEN** the sender is unverified or is another party, the message identifies a shared chat,
+  or the chat binding is missing, ambiguous, changed, or unavailable at dispatch
+- **THEN** Messenger applies no typing or reaction and creates no approval request
 
-- **WHEN** a `telegram_bot`-channel processing request has no real Telegram sender identity to
-  resolve (e.g. an internally synthesized buffer reference)
-- **THEN** no acknowledgement of any configured style is dispatched
+#### Scenario: System and other channels receive no acknowledgement
+
+- **WHEN** admission originates with a schedule, email, dashboard, Telegram user client,
+  system action, or any source other than an authenticated owner Telegram bot message
+- **THEN** no Telegram acknowledgement is emitted
 
 #### Scenario: Batched envelope with no owner participant
 
-- **WHEN** a batched envelope's `sender.participants` contains no identity matching
-  `sender.owner_sender_id` as an actual message author in that batch
-- **THEN** no acknowledgement of any configured style is dispatched for that batch
+- **WHEN** a batched envelope carries no verified owner-originated Telegram bot message with an
+  exact admitted sender and reply destination
+- **THEN** no acknowledgement is emitted
 
-#### Scenario: Owner-only gate does not wait on classification
+#### Scenario: The owner-only gate uses verified source facts
 
-- **WHEN** the owner-only gate evaluates a message
-- **THEN** it uses a single fast, indexed lookup keyed on the raw sender channel identity (e.g.
-  `identity.resolve_owner_channel_via_definer` or an equivalent pipeline-independent check) and
-  SHALL NOT wait on or depend on `pipeline.process()`'s own classification-time identity resolution
+- **WHEN** envelope or message text asserts the owner role or supplies a reply target
+  inconsistent with the authenticated source binding
+- **THEN** the assertion cannot make the message or destination eligible
+
+### Requirement: First Acknowledgement at Goal Admission
+
+With the goal-runtime switch enabled, the control plane SHALL initiate the configured first
+acknowledgement for an eligible newly committed admission before launching its lead. The
+admission transaction SHALL finish before calling Messenger. Duplicate attempts or source
+replays SHALL NOT initiate another acknowledgement or overtake the original admission's
+bounded handoff on the ordinary launch path. An interruption MAY lose the acknowledgement.
+Recovery of an admitted goal SHALL remain possible through the existing supervisor without
+replaying a possibly delivered signal. A provider wait SHALL NOT outlive the bounded
+handoff. Under the `both` style, each selected action may be attempted once and an
+uncertain reaction does not authorize a second reaction.
+
+ID: REQ-telegram-receipt-acknowledgement-003
+Source: RFC 0038 D1, D5, D7, D14, and D17; bu-z0b0ah.4 acceptance 1, 8, 9, and 10
+Scope: v1-mandatory
+
+#### Scenario: First acknowledgement precedes the lead
+
+- **WHEN** trusted admission commits a new eligible goal and the enabled runtime handles its
+  result
+- **THEN** the configured local Messenger request is initiated before the runner can launch the
+  lead, without waiting indefinitely for a provider response
+
+#### Scenario: A concurrent duplicate cannot acknowledge or start first
+
+- **WHEN** attempts for the same durable Telegram source return the same decision, including a
+  replay concurrent with the first result
+- **THEN** the initial request is attempted at most once and a duplicate does not start a lead
+  ahead of the first admission's bounded handoff
+
+#### Scenario: Joined, refused, and disabled paths emit nothing
+
+- **WHEN** an input is joined to an existing goal or refused, or the goal-runtime switch is off
+- **THEN** there is no acknowledgement intent or provider action
+
+#### Scenario: Acknowledgement failure does not block launch
+
+- **WHEN** Messenger refuses or the first acknowledgement misses its deadline or has an
+  unknown transport outcome
+- **THEN** the lead is still eligible to run and the uncertain acknowledgement is not repeated
+
+#### Scenario: Recovery makes no speculative acknowledgement
+
+- **WHEN** the daemon restarts after admission commit and before the initial acknowledgement or
+  lead launch can be confirmed
+- **THEN** the supervisor can recover the admitted goal without replaying first acknowledgement
+
+#### Scenario: Acknowledgement telemetry is content-free
+
+- **WHEN** the control plane emits a receipt span for the goal
+- **THEN** the goal ID is its only data attribute and it carries no message, sender, chat,
+  credential, provider payload or transport exception detail
 
 ### Requirement: Typing Indicator Timing Bound
 
-When the configured ack style includes `typing`, the local dispatch of the typing-indicator
-`sendChatAction` call SHALL be initiated within 1 second of the pre-processing lifecycle hook firing
-(the same point in `_buffer_process`/the ingest background task where the existing in-progress
-reaction is fired today, before `pipeline.process()` runs). This bounds only the local call
-initiation; it is not a guarantee that Telegram renders or delivers the indicator to the owner
-within that same second — network conditions, Telegram-side availability, and the connector's
-existing rate-limit/backoff handling are outside this contract's control.
+For an eligible admission using a typing-inclusive style, Messenger SHALL initiate the local
+`sendChatAction` request within one second of the post-commit prelaunch hook. This bounds the
+local attempt only. It carries no Telegram render or delivery guarantee. The separate
+user-visible latency target belongs to M7 under bu-mq929j.
+
+ID: REQ-telegram-receipt-acknowledgement-004
+Source: bu-z0b0ah.4 acceptance 1; original receipt draft #4092; signed bu-mq929j
+Scope: v1-mandatory
 
 #### Scenario: Typing dispatch initiated promptly
 
-- **WHEN** the pre-processing lifecycle hook fires for an owner-originated message with a
-  typing-inclusive ack style configured
-- **THEN** the `sendChatAction` HTTP call is initiated within 1 second of that hook firing
+- **WHEN** the post-commit prelaunch hook fires for an eligible typing-inclusive admission
+- **THEN** a fake clock at the Messenger transport boundary observes the call initiated within
+  one second of the hook
 
-#### Scenario: Timing bound is a local dispatch attempt, not a delivery guarantee
+#### Scenario: Timing bound applies to local initiation
 
-- **WHEN** Telegram is slow to process, rate-limits, or otherwise delays rendering the dispatched
-  typing indicator to the owner
-- **THEN** this requirement is still satisfied, because it bounds only when the local call is
-  initiated — a delivery or rendering guarantee is explicitly out of scope
+- **WHEN** Telegram delays rendering after an on-time local attempt
+- **THEN** the measurement remains the time of local initiation and makes no claim about rendering
 
 ### Requirement: Typing Indicator Keepalive
 
-While an owner-originated message remains in-flight (between the pre-processing hook and the
-terminal outcome) under a typing-inclusive ack style, the typing indicator SHALL be kept alive by
-re-issuing `sendChatAction` at a 4-second cadence, grounded in the Telegram Bot API's documented
-behavior that a chat action's status is set for 5 seconds or less.
+The later lifecycle work in bu-z0b0ah.4 SHALL refresh typing for an eligible in-flight goal
+every four seconds, before Telegram's documented expiry of up to five seconds. The dark
+first-receipt foundation SHALL request initial typing without starting a recurring task.
+
+ID: REQ-telegram-receipt-acknowledgement-005
+Source: RFC 0038 D11 and D14; bu-z0b0ah.4 acceptance 2
+Scope: v1-mandatory
 
 #### Scenario: Keepalive re-issues before expiry
 
-- **WHEN** an owner-originated message has been in-flight for 4 or more seconds under a
-  typing-inclusive ack style
-- **THEN** another `sendChatAction` call has already been issued for that chat, before Telegram's
-  own documented ≤5-second expiry would otherwise clear the indicator
+- **WHEN** eligible work remains in flight for four seconds under a typing-inclusive style
+- **THEN** the lifecycle service refreshes that chat's typing, subject to the owner gate
 
-#### Scenario: Keepalive stops once the message reaches a terminal outcome
+#### Scenario: Keepalive stops once the goal ends
 
-- **WHEN** the message's processing reaches success, failure, or a caught exception
-- **THEN** no further `sendChatAction` calls are issued for that message's contribution to the
-  chat's keepalive (see Per-Chat Typing Keepalive Reference Counting for the multi-message case)
+- **WHEN** reply delivery settles, a goal fails, the owner stops it, or its lease lapses
+- **THEN** the goal contributes no further typing refreshes
 
 ### Requirement: Per-Chat Typing Keepalive Reference Counting
 
-The typing-indicator keepalive SHALL be tracked per chat, not per message, with a reference count of
-in-flight owner messages for that chat. The keepalive loop for a chat SHALL start only on the
-transition from zero to one in-flight message and SHALL stop only on the transition back to zero.
+The lifecycle service SHALL maintain one keepalive per eligible chat, counting active goal
+holds. Recurring work starts when the first hold is acquired and stops when the last is
+released. It SHALL recheck live owner eligibility before provider actions and release lost or
+expired holds without creating a retry on admission.
 
-#### Scenario: Second concurrent message in the same chat does not start a duplicate loop
+ID: REQ-telegram-receipt-acknowledgement-006
+Source: RFC 0038 D14; bu-z0b0ah.4 acceptance 2 and 6
+Scope: v1-mandatory
 
-- **WHEN** a second owner message arrives in a chat that already has one in-flight message under a
-  typing-inclusive ack style
-- **THEN** the existing keepalive loop for that chat continues unchanged — no second loop is started
+#### Scenario: Second concurrent goal in the same chat does not stack loops
 
-#### Scenario: Keepalive continues until the last concurrent message finishes
+- **WHEN** two eligible typing-inclusive goals overlap in a chat
+- **THEN** the second hold adds no additional keepalive loop
 
-- **WHEN** two owner messages are in flight in the same chat and the first reaches a terminal
-  outcome while the second is still processing
-- **THEN** the chat's keepalive loop continues (reference count is 1, not 0) and stops only when the
-  second message also reaches a terminal outcome
+#### Scenario: Keepalive continues until the last concurrent goal ends
+
+- **WHEN** one eligible goal releases its hold and another still holds the same chat
+- **THEN** the keepalive continues until the last hold is released
 
 ### Requirement: Terminal Cleanup
 
-Acknowledgement dispatch SHALL leave no acknowledgement state that persists indefinitely beyond the
-message's terminal outcome, within the limits of what the Telegram Bot API exposes.
+Lifecycle cleanup SHALL follow the settled goal outcome and release the goal's typing hold
+when reply delivery, terminal failure, owner Stop, or lease lapse ends its contribution.
+Success requires actual owner reply delivery under RFC 0038 D11. The first-receipt foundation
+SHALL NOT advance a reply or goal terminal marker.
 
-#### Scenario: Reaction and both styles replace the in-progress reaction on terminal outcome
+ID: REQ-telegram-receipt-acknowledgement-007
+Source: RFC 0038 D11 and D14; bu-z0b0ah.4 acceptance 4 and 6
+Scope: v1-mandatory
 
-- **WHEN** an owner message under a `reaction`- or `both`-inclusive ack style reaches a terminal
-  outcome
-- **THEN** the in-progress reaction is replaced by the terminal success or failure reaction (per the
-  existing `react_for_ingest` mapping) — this satisfies "no orphaned in-progress signal" via
-  replacement, not literal removal (see connector-telegram-bot's Lifecycle Reactions requirement and
-  design.md D5 for why replacement is specified instead of removal)
+#### Scenario: Reply delivery replaces eyes with a success reaction
 
-#### Scenario: Typing and both styles stop dispatching on terminal outcome
+- **WHEN** the actual owner reply is delivered for a reaction-inclusive goal and the destination
+  still resolves uniquely to the same owner
+- **THEN** the eyes reaction is replaced by thumbs-up and the later lifecycle closes any progress
+  message as specified by bu-z0b0ah.4
 
-- **WHEN** an owner message under a `typing`- or `both`-inclusive ack style reaches a terminal
-  outcome and no other message keeps that chat's reference count above zero
-- **THEN** no further `sendChatAction` calls are issued for that chat, and any residual client-side
-  typing status clears via Telegram's own documented behavior (≤5-second expiry, or immediately once
-  the butler's actual reply is sent into that chat) — the Bot API defines no explicit "clear typing"
-  call, so this bounded, documented tail is the full extent of what this requirement can promise
+#### Scenario: Failure replaces eyes with a failure reaction
 
-#### Scenario: Cleanup runs on both success and failure
+- **WHEN** a reaction-inclusive goal fails or settles partial and its chat still qualifies
+- **THEN** the eyes reaction is replaced by the alien reaction and the later lifecycle uses the
+  failure status in any progress message
 
-- **WHEN** `pipeline.process()` either completes successfully or raises an exception caught by the
-  existing call-site handling
-- **THEN** the terminal cleanup for the configured ack style runs in both cases — a failure does not
-  leave the ack in its in-progress state
+#### Scenario: Typing and both styles stop dispatching when the final hold ends
+
+- **WHEN** the last goal for a chat releases its typing hold
+- **THEN** no further refresh is issued and Telegram clears residual typing by its ordinary
+  expiration or receipt of the actual reply
+
+#### Scenario: Stop or restart leaves no orphaned loop
+
+- **WHEN** the goal is stopped, the lease lapses, or Messenger or the control plane restarts
+- **THEN** stale typing work cannot continue and the later lifecycle reconciles any persisted
+  progress message as required by bu-z0b0ah.4
 
 ### Requirement: Ownership Boundary for Acknowledgement Dispatch
 
-The transport connector (`connector-telegram-bot`) SHALL NOT send or track any acknowledgement.
-`module-telegram` SHALL own the low-level Telegram API primitives for both ack styles, called
-unconditionally by whatever invokes them. Switchboard's core ingest wiring (the existing
-pre/post-`pipeline.process()` call sites) SHALL own reading the configured ack style, evaluating the
-owner-only gate, and invoking the appropriate `module-telegram` primitives before and after
-processing.
+The transport connector SHALL continue accepting and normalizing Telegram updates. The goal
+runtime SHALL own admission-stage orchestration and style selection. Messenger SHALL own
+authorized acknowledgement egress using the Telegram module and SHALL revalidate the destination
+before sending. The Telegram module SHALL apply only owner-eligible typing and reactions under
+that boundary. The legacy classify-and-route lifecycle remains frozen under the existing
+switch. The transport and any enabled route require the separate authority recorded on the
+release outcome.
+
+ID: REQ-telegram-receipt-acknowledgement-008
+Source: RFC 0038 D1 and D7; bu-z0b0ah.4 acceptance 9 and 11
+Scope: v1-mandatory
 
 #### Scenario: Connector remains unaware of acknowledgement dispatch
 
 - **WHEN** the Telegram bot connector processes an inbound update
-- **THEN** it performs no acknowledgement dispatch and reads no ack-style configuration, consistent
-  with its existing transport-only role
+- **THEN** it sends no acknowledgement, tracks no receipt state, and reads no style policy
 
-#### Scenario: Module primitives are unconditional
+#### Scenario: Messenger permits only the verified owner destination
 
-- **WHEN** `module-telegram`'s typing-indicator or reaction primitives are invoked
-- **THEN** they perform the requested Telegram API action without independently checking ack-style
-  configuration or owner identity — those decisions are made by the caller
+- **WHEN** Messenger receives a typed first acknowledgement request with a stored reply target
+- **THEN** it verifies that transport destination before requesting Telegram module actions
 
-#### Scenario: Core wiring makes the gating decisions
+#### Scenario: The control plane makes the orchestration decision
 
-- **WHEN** Switchboard's core ingest wiring processes an owner-originated message
-- **THEN** it is the single place that reads `[modules.telegram.ack].style`, evaluates the
-  owner-only gate, and decides which `module-telegram` primitives to call before and after
-  `pipeline.process()`
+- **WHEN** verified admission of a new owner Telegram bot goal commits
+- **THEN** the control plane selects the configured prelaunch action and Messenger owns delivery
 
 ## Source References
 
-- `about/heart-and-soul/vision.md` Non-Negotiable Rule 3 (MCP-only inter-butler communication):
-  unaffected — this contract adds no inter-butler call, only a same-process call from Switchboard's
-  core wiring into a loaded module instance, the same pattern the existing reaction lifecycle uses.
-- No RFC governs this capability; see design.md D1 for why none is proposed.
+- RFC 0038 D1, D5, D7, D11, D14 and D17.
+- RFC 0017 section 2.7 and the active `generalist-lead-focused-delegation` Telegram module delta.
+- The Telegram receipt row of `generalist-lead-focused-delegation/collision-dispositions.md`.
+- bu-z0b0ah.4 and its dark first-receipt prerequisite bu-z0b0ah.9.
+- Signed bu-mq929j and the separate M6 switch release bu-enbrs2.
