@@ -11,9 +11,15 @@ from __future__ import annotations
 import asyncio
 import shutil
 
+import asyncpg
 import pytest
 
+from alembic import command
 from butlers.credential_store import ensure_secrets_schema
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.daemon import write_butler_config
+from butlers.testing.db import open_pool
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -77,3 +83,66 @@ async def test_existing_shared_pool_startup_recreates_index_without_waiting_for_
                 ) is True
             finally:
                 await transaction.rollback()
+
+
+async def test_scoped_daemon_boot_uses_shared_credentials_as_runtime_role(
+    booted_daemon, tmp_path
+) -> None:
+    booted = await booted_daemon(write_butler_config(tmp_path))
+    daemon = booted.daemon
+    store = daemon._credential_store
+    assert store is not None
+    assert await daemon.db.pool.fetchval("SELECT current_user") == "butler_general_rw"
+    assert store.has_system_global_authority
+    assert store.shared_pool is store.require_system_global_pool()
+    assert await store.shared_pool.fetchval("SELECT current_user") == "butler_general_rw"
+    assert (
+        await store.shared_pool.fetchval(
+            "SELECT pg_get_indexdef('public.ix_butler_secrets_category'::regclass)"
+        )
+        == "CREATE INDEX ix_butler_secrets_category ON public.butler_secrets USING btree (category)"
+    )
+    await ensure_secrets_schema(store.shared_pool)
+    # A successful boot must not come from granting the runtime role owner powers.
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await store.shared_pool.execute(
+            "CREATE INDEX ix_pa06wh_probe ON public.butler_secrets (category)"
+        )
+
+
+@pytest.mark.parametrize("public_first", [False, True], ids=["scoped-upgrade", "public-first"])
+async def test_shared_index_upgrade_replay_and_downgrade(postgres_container, public_first) -> None:
+    schema = None if public_first else "general"
+    url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core"],
+        {"core": schema} if schema else {},
+        {"core": "core_374"},
+    )
+    pool = await open_pool(url)
+    try:
+
+        async def index_oid():
+            return await pool.fetchval(
+                "SELECT to_regclass('public.ix_butler_secrets_category')::oid"
+            )
+
+        before = await index_oid()
+        assert (before is not None) == public_first
+        await run_migrations(url, chain="core", schema=schema)
+        installed = await index_oid()
+        assert installed is not None
+        if public_first:
+            assert installed == before
+        await run_migrations(url, chain="core", schema="health")
+        assert await index_oid() == installed
+
+        config = _build_alembic_config(url, ["core"], target_schema=schema)
+        await asyncio.to_thread(command.downgrade, config, "core_374")
+        assert await index_oid() == installed
+        await run_migrations(url, chain="core", schema=schema)
+        assert await index_oid() == installed
+    finally:
+        await pool.close()
