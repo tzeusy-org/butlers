@@ -17,6 +17,7 @@ shared with other butlers.
 
 ID: REQ-education-source-grounding-001
 Source: Education MANIFESTO.md amendment (source-grounded instruction)
+Scope: v1-mandatory
 
 #### Scenario: Registering source material
 
@@ -63,6 +64,7 @@ to the source) from every state other than "referenced".
 
 ID: REQ-education-source-grounding-002
 Source: Education MANIFESTO.md amendment (source-grounded instruction)
+Scope: v1-mandatory
 
 #### Scenario: Teaching session adds a source citation to a node
 
@@ -110,6 +112,7 @@ them and continue learning.
 
 ID: REQ-education-source-grounding-003
 Source: Education MANIFESTO.md amendment (source-grounded instruction)
+Scope: v1-mandatory
 
 #### Scenario: Reading pathway suggested after concept explanation
 
