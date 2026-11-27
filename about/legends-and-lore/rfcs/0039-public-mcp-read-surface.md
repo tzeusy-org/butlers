@@ -2021,7 +2021,8 @@ cannot split a match.
 - *Credential rules* (redacted and counted, in every domain): Luhn-valid
   13- to 19-digit runs, matched after removing spaces and dashes (a full card
   number is payment credential material, and finance stores only
-  `last_four`); `AKIA…`, `ghp_…`, `xox…`, `sk-…` and JWT-shaped tokens; PEM
+  `last_four`), except a run inside a UUID-shaped token, which is an
+  identifier the caller needs intact (bu-8kbzmt); `AKIA…`, `ghp_…`, `xox…`, `sk-…` and JWT-shaped tokens; PEM
   blocks; URLs whose authority carries userinfo with a password
   (`scheme://user:pass@host`, the shape of a SimpleFIN access URL) or userinfo
   of 20 or more token characters with no password (`scheme://<token>@host`;
