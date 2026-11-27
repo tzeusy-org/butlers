@@ -14,7 +14,9 @@ import { format } from "date-fns";
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
 import { CalendarQuarantinePanel } from "@/components/calendar/CalendarQuarantinePanel";
-import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePanel";
+import { CalendarResponsePanelView } from "@/components/calendar/CalendarResponsePanel";
+import { NeedsYouQueue } from "@/components/calendar/NeedsYouQueue";
+import { useInvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -42,6 +44,7 @@ import {
 } from "@/pages/calendar/use-calendar-url-state";
 import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspace-data";
 import { usePendingMeetingDebriefs } from "@/hooks/use-meeting-debriefs";
+import { useNeedsYouQueue } from "@/pages/calendar/use-needs-you-queue";
 import { useEntrySelection } from "@/pages/calendar/use-entry-selection";
 import { useQuickAddCreate } from "@/pages/calendar/use-quick-add-create";
 import { headlineLabel } from "@/pages/calendar/workspace-model";
@@ -150,6 +153,38 @@ export default function CalendarWorkspacePage() {
     overlaysQuery.data?.data.overlay_freshness,
     defaultTimezone,
   );
+  const responses = useInvitationResponses({
+    entries: context.invitations ?? [],
+    onObserved: (receipt) => {
+      if (receipt.status === "applied" && receipt.projection_available) {
+        void queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
+        void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+        void queryClient.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
+      }
+    },
+    unavailable:
+      !context.invitationsAvailable || invitationsQuery.isPending || invitationsQuery.isPlaceholderData,
+  });
+  const needsYou = useNeedsYouQueue({
+    invitations: {
+      rows: context.invitations,
+      complete:
+        context.invitationsAvailable &&
+        !invitationsQuery.isError &&
+        (context.invitationSourcesDegraded?.length ?? 0) === 0 &&
+        !invitationsQuery.hasNextPage,
+    },
+    conflicts: {
+      rows: context.conflictIssues,
+      complete: context.radarEnabled && !context.conflictsQuery.isError && context.conflictsAvailable,
+      notRead: !context.radarEnabled,
+    },
+    proposals: { rows: panels.proposalRows, complete: !panels.proposalsError },
+    debriefs: {
+      rows: debriefsQuery.data?.debriefs,
+      complete: !debriefsQuery.isError && debriefsQuery.data?.debriefs_available === true,
+    },
+  });
   const dayBriefing = dayBriefingQuery.data?.data;
   const canvasHidden = panels.activityOpen || panels.proposalsOpen;
 
@@ -231,21 +266,18 @@ export default function CalendarWorkspacePage() {
         }
       />
 
-      <CalendarResponsePanel
-        entries={context.invitations ?? []}
-        onObserved={(receipt) => {
-          if (receipt.status === "applied" && receipt.projection_available) {
-            void queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
-            void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
-            void queryClient.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
-          }
+      <NeedsYouQueue
+        queue={needsYou}
+        invitations={context.invitations ?? []}
+        responses={responses}
+        onOpenEntry={(entryId, kind) => {
+          void selection.openInvitation(entryId, kind === "invitation" ? "Invitation details" : "Event details");
         }}
-        unavailable={
-          !context.invitationsAvailable ||
-          invitationsQuery.isPending ||
-          invitationsQuery.isPlaceholderData
-        }
+        onAcceptProposal={(proposalId) => panels.acceptProposalMutation.mutate({ proposalId })}
+        onDismissProposal={(proposalId) => panels.dismissProposalMutation.mutate({ proposalId })}
       />
+
+      <CalendarResponsePanelView controller={responses} />
 
       {freshnessPlaque ? (
         <SourceDegradedNote
