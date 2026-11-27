@@ -56,6 +56,7 @@ _PER_BUTLER_CORE_TABLES = frozenset(
         "event_chains",
         "metric_baselines",
         "metric_deviation_episodes",
+        "reminder_receipts",
         "route_inbox",
         "runtime_config",
         "scheduled_tasks",

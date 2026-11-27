@@ -70,6 +70,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceWritableCalendar,
     ConflictEventRef,
     ConflictIssue,
+    ConflictResolveRequest,
+    ConflictResolveResponse,
     ConflictScanResponse,
     ConflictScanWindow,
     DayBriefingButlerGroup,
@@ -84,6 +86,7 @@ from butlers.api.models.calendar_workspace import (
     HouseholdEventRef,
     HouseholdSubjectGroup,
     HouseholdTimeResponse,
+    OverlayFreshness,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -98,12 +101,15 @@ from butlers.api.read_models.calendar_day_sheet import (
     query_calendar_day_sheet,
     query_calendar_day_verdict,
 )
+from butlers.api.read_models.calendar_resolution import resolution_options_live
 from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
     CalendarProposalRow,
     _coerce_datetime,
     _dedup_workspace_rows,
+    compute_overlay_freshness,
+    load_conflict_acknowledgements,
     load_dedup_rules,
     load_keep_separate_keys,
     query_calendar_conflicts,
@@ -117,6 +123,7 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_workspace_entry,
     query_household_time,
     query_scheduler_mirror_counts,
+    record_conflict_acknowledgement,
     scan_calendar_overlays,
     scan_calendar_proposals,
     shallow_asdict,
@@ -218,6 +225,13 @@ _WORKSPACE_SOURCE_TYPE_FACETS = frozenset(
 # SGT default below is only the read-side fallback when the owner zone cannot be read, and the
 # anchor for the other overlay reads that take no owner zone.
 _OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
+
+
+def _overlay_now() -> datetime:
+    """The instant overlay freshness is judged at (a seam: tests pin it)."""
+    return datetime.now(UTC)
+
+
 # Namespace for deterministic, stable overlay entry IDs. Overlay entries have no
 # natural DB id (they live inside a JSONB envelope), so the entry_id is derived
 # from (butler, date, index, kind, label) — stable across reads of the same view.
@@ -1029,11 +1043,11 @@ async def _fetch_overlay_entries(
     end: datetime,
     butlers: list[str] | None,
     display_tz: ZoneInfo | None,
-) -> tuple[list[UnifiedCalendarEntry], bool, bool]:
+) -> tuple[list[UnifiedCalendarEntry], bool, bool, list[OverlayFreshness]]:
     """Fetch + project cached overlay contributions, never raising.
 
-    Returns ``(entries, has_domain_context, available)``; ``available`` is ``False`` when the
-    view could not be read, which is not the same as "no domain context" (bu-5ii4gj.4).
+    Returns ``(entries, has_domain_context, available, freshness)``; ``available`` is ``False``
+    when the view could not be read, which is not the same as "no domain context" (bu-5ii4gj.4).
     ``has_domain_context`` is ``True`` when at least one **valid** contribution envelope exists
     for a date within ``[start, end)`` — even when that envelope has no entries (``has_entries``
     false) — so the FE can distinguish "no domain context for this range" from
@@ -1041,6 +1055,11 @@ async def _fetch_overlay_entries(
     ``state`` table, or any query failure yields ``([], False, False)`` — never a 500.
     """
     overlays, available = await scan_calendar_overlays(db, butlers=butlers)
+    freshness = [
+        OverlayFreshness(**item)
+        for item in compute_overlay_freshness(overlays, available=available, now=_overlay_now())
+    ]
+    not_current = {f.butler: f for f in freshness if f.state in ("stale", "partial")}
 
     entries: list[UnifiedCalendarEntry] = []
     has_domain_context = False
@@ -1056,8 +1075,19 @@ async def _fetch_overlay_entries(
             # A valid in-range envelope signals domain context for the range even
             # when it projects zero entries (has_entries=false → honest empty-state).
             has_domain_context = True
+            for entry in projected_entries:
+                flagged = not_current.get(entry.butler_name or "")
+                if flagged is not None:
+                    # Never wear current-data authority: stale or incomplete producers are named.
+                    entry.metadata = {
+                        **(entry.metadata or {}),
+                        flagged.state: True,
+                        "stale_since": flagged.stale_since.isoformat()
+                        if flagged.stale_since
+                        else None,
+                    }
             entries.extend(projected_entries)
-    return entries, has_domain_context, available
+    return entries, has_domain_context, available, freshness
 
 
 def _group_overlay_entries_by_butler_kind(
@@ -1325,7 +1355,12 @@ async def get_day_briefing(
     start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
     end_at = start_at + timedelta(days=1)
 
-    overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
+    (
+        overlay_entries,
+        has_domain_context,
+        overlays_available,
+        freshness,
+    ) = await _fetch_overlay_entries(
         db, start=start_at, end=end_at, butlers=butlers, display_tz=display_tz
     )
 
@@ -1335,6 +1370,7 @@ async def get_day_briefing(
         timezone=tz.key,
         has_domain_context=has_domain_context,
         overlays_available=overlays_available,
+        overlay_freshness=freshness,
         has_entries=bool(overlay_entries),
         groups=groups,
         entries=overlay_entries,
@@ -1420,7 +1456,12 @@ async def get_workspace(
         # empty entries list with ``has_domain_context=false``, never a 500.
         # Overlays are read-only domain context, not provider/butler sources, so
         # freshness/lanes are empty.
-        overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
+        (
+            overlay_entries,
+            has_domain_context,
+            overlays_available,
+            freshness,
+        ) = await _fetch_overlay_entries(
             db, start=start, end=end, butlers=butlers, display_tz=display_tz
         )
         data = CalendarWorkspaceReadResponse(
@@ -1431,6 +1472,7 @@ async def get_workspace(
             has_more=False,
             has_domain_context=has_domain_context,
             overlays_available=overlays_available,
+            overlay_freshness=freshness,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
@@ -1847,6 +1889,76 @@ async def get_workspace_conflicts(
             unclassified_sources=scan.unclassified_sources,
             unclassified_events=scan.unclassified_events,
             household_context=[_household_ref(event) for event in scan.household_context],
+        )
+    )
+
+
+def _require_resolution_live() -> None:
+    """Dark: the route does not exist yet, so it answers 404 before it validates its body."""
+    if not resolution_options_live():
+        raise HTTPException(status_code=404, detail="conflict_resolution_unavailable")
+
+
+@router.post(
+    "/conflicts/resolve",
+    response_model=ApiResponse[ConflictResolveResponse],
+    dependencies=[Depends(_require_resolution_live)],
+)
+async def resolve_workspace_conflict(
+    body: ConflictResolveRequest,
+    *,
+    db: Db,
+) -> ApiResponse[ConflictResolveResponse]:
+    """Record "keep both" for one overlap, bound to the digest the owner saw.
+
+    Writes only the local acknowledgement: no provider call and no approval, so it is the one
+    option that needs no park. The overlap is re-read here and its digest compared, so an
+    acknowledgement can never attach to a changed overlap (409 ``issue_changed``). Options that
+    write to a provider are not accepted by this route yet (422).
+    """
+    if body.end <= body.start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if body.end - body.start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+
+    scan = await query_calendar_conflicts(db, start=body.start, end=body.end)
+    if not scan.available:
+        raise HTTPException(status_code=503, detail="conflict_scan_degraded")
+    issue = next((i for i in scan.issues if str(i.pair_id) == body.pair_id), None)
+    if issue is None:
+        if (await load_conflict_acknowledgements(db)).get(body.pair_id, ("", ""))[
+            0
+        ] == body.issue_digest:
+            return ApiResponse(
+                data=ConflictResolveResponse(
+                    status="already_acknowledged", pair_id=body.pair_id, option_id=body.option_id
+                )
+            )
+        raise HTTPException(status_code=409, detail="issue_changed")
+    if issue.issue_digest != body.issue_digest:
+        raise HTTPException(status_code=409, detail="issue_changed")
+    option = next((o for o in issue.options if o.id == body.option_id), None)
+    if option is None:
+        raise HTTPException(status_code=422, detail="unknown_option")
+    if option.kind != "keep_both":
+        raise HTTPException(status_code=422, detail="option_not_supported")
+    if not await record_conflict_acknowledgement(
+        db,
+        pair_id=body.pair_id,
+        issue_digest=body.issue_digest,
+        state_digest=issue.state_digest or "",
+        option_id=option.id,
+    ):
+        raise HTTPException(status_code=503, detail="acknowledgement_unavailable")
+    await log_audit_entry(
+        db,
+        "dashboard",
+        "calendar.workspace.conflicts.acknowledge",
+        {"pair_id": body.pair_id, "option_id": option.id},
+    )
+    return ApiResponse(
+        data=ConflictResolveResponse(
+            status="acknowledged", pair_id=body.pair_id, option_id=option.id
         )
     )
 

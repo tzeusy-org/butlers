@@ -238,7 +238,9 @@ async def run_day_sheet_push(
         failures, since_last = await failed_attempts(pool, dedup_key=dedup_key)
         if since_last is not None and since_last < retry_backoff(failures):
             return {"outcome": "skipped", "reason": "retry_backoff"}
-        reason = await owner_notify.check_owner_notify_suppression(pool, log_context=JOB_NAME)
+        reason = await owner_notify.check_owner_notify_suppression(
+            pool, log_context=JOB_NAME, now=now
+        )
         if reason is not None:
             return {"outcome": "skipped", "reason": reason}
 
@@ -260,6 +262,7 @@ async def run_day_sheet_push(
                 message=f"Tomorrow Prep\n{render_day_sheet_text(sheet)}",
                 log_context=JOB_NAME,
                 dedup_key=dedup_key,
+                now=now,
             )
         finally:
             reset_current_switchboard_client(token)

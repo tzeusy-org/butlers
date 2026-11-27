@@ -34,6 +34,7 @@ KEPT = {
     (f"{_W}/day-briefing", "get"),
     (f"{_W}/invitations", "get"),
     (f"{_W}/conflicts", "get"),
+    (f"{_W}/conflicts/resolve", "post"),
     (f"{_W}/household-time", "get"),
     (f"{_W}/search", "get"),
     (f"{_W}/entries/{{entry_id}}", "get"),

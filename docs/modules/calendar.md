@@ -127,6 +127,19 @@ unreadable or stale calendar is unknown and never free; the last known text is h
 memory only. The dashboard shows it in the shell header and on the Overview through `useNow`
 (`["now"]`, invalidated by `calendar` bus events and at the line's `fresh_until`).
 
+Anchored reminders also follow their event (slice R-S2, `reminder_follow.py`, core_383). When a
+provider event is written to the projection, a cancelled event or one the owner declined retires
+its anchored reminders (cancelled, reason `anchor_cancelled`), and a moved occurrence rebases them
+to the new start plus the offset and moves the stored anchor with it. Each change writes one
+`reminder_receipts` row in the same transaction, keyed on the transition (old start to new start), so
+a replayed sync changes nothing twice and a move, move back and move again each write their own
+receipt. Once per successful sync pass (not per projected event) every unannounced receipt is
+proposed as one insight candidate through the broker, never a direct notify: a timed line when the
+reminder is under two hours away (falling back to the digest while the timed lane is dark), a
+digest line otherwise. A receipt is tried at most five times: a broker that is down costs one failed
+call per pass, and one that answers `error` or `skipped` has refused it and is not asked again. The
+candidate carries no premise. Recurring anchors are not followed yet.
+
 ### Overcommitment owner conditions
 
 The dashboard-api process runs a supervised `calendar_overcommitment` loop
@@ -301,18 +314,6 @@ the agreement: the row is kept with `ended_at` stamped, so a reader can tell an 
 none, and accepting again starts a fresh one. Recurring events are not recorded yet, and `join_digest` stays empty until the
 provider mapping carries conference data.
 
-## Anchored reminders
-
-`reminder_create` can follow an event instead of an absolute time (slice R-S1 of bu-5ii4gj.10): pass
-`anchor_event_id` (the provider's event id), `anchor_original_start` (that occurrence's start) and
-`offset_minutes` (negative means before, at most 14 days either way) in place of `due_at`. The
-reminder's time is the occurrence's start plus the offset and the anchor is stored in the event's
-`metadata.anchor`. The anchor must name a live (not cancelled, not quarantined) provider occurrence
-in this butler's own calendar projection, on a user-lane calendar with the owner's own time role
-(the only copy a later slice follows), or the call is refused with that reason. An anchored reminder cannot also
-recur. Rebasing when the event moves, retiring when it is cancelled, and the fire-time check are
-later slices; until then an anchored reminder keeps its first derived time.
-
 The row also carries `current_*` columns (start, end, location and attendee digests) that follow
 the event on every write, so the agreed and the current terms can be compared in SQL. The Switchboard
 reads that comparison through `public.resolve_calendar_occurrence(butler, event_id, original_start)`
@@ -350,6 +351,27 @@ amends it in place. It goes on the timed lane when the occurrence starts within 
 lane's shared per-day cap of six still applies, enforced by the timed cycle) and falls back to the
 digest lane while the timed lane is dark; it never calls notify. The line is built from the title
 through `inert_text` and the delivery defang, and never carries description text.
+
+## Anchored reminders
+
+`reminder_create` can follow an event instead of an absolute time (slice R-S1 of bu-5ii4gj.10): pass
+`anchor_event_id` (the provider's event id), `anchor_original_start` (that occurrence's start) and
+`offset_minutes` (negative means before, at most 14 days either way) in place of `due_at`. The
+reminder's time is the occurrence's start plus the offset and the anchor is stored in the event's
+`metadata.anchor`. The anchor must name a live (not cancelled, not quarantined) provider occurrence
+in this butler's own calendar projection, on a user-lane calendar with the owner's own time role
+(the only copy a later slice follows), or the call is refused with that reason. An anchored reminder cannot also
+recur. Rebasing when the event moves and retiring when it is cancelled are later slices.
+
+At fire time the reminder tick rechecks an anchored reminder's occurrence in this schema's
+projection (slice R-S3). While the occurrence is live at its original start the reminder is sent as
+usual. If its event was cancelled, or the occurrence moved or was cancelled, the reminder is held:
+neither sent nor marked sent, so a move back sends it and the rebase or retire path owns the rest.
+If no projection row names the event, or the read fails, it still fires, with an
+"(as of HH:MM <owner zone>; event not rechecked)" suffix in the owner's zone, never dropped silently.
+Absolute reminders are never rechecked. Recurring anchors are rechecked on their instance (the
+anchor stores the instance's start when the reminder was set; an instance that moves again holds
+the reminder).
 
 ## Connector sync
 

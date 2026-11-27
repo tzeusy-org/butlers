@@ -81,9 +81,6 @@ function SourceRefRow({
         {state === "referenced" && source && (
           <span className="text-sm font-medium">{source.title}</span>
         )}
-        {state === "model-recalled" && source && (
-          <span className="text-sm font-medium">Recalled from {source.title}</span>
-        )}
         {state === "model-recalled" && !source && (
           <span className="text-sm text-muted-foreground">No registered source named</span>
         )}

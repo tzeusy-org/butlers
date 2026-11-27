@@ -216,3 +216,37 @@ describe("DayBriefingCard", () => {
     expect(onSelect.mock.calls[0][0].title).toBe("Electric Co");
   });
 });
+
+describe("DayBriefingCard freshness", () => {
+  it("names a stale butler and says the list may not reflect recent changes", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow"
+        groups={[]}
+        hasDomainContext
+        hasEntries={false}
+        timezone="Asia/Singapore"
+        freshness={[
+          { butler: "finance", state: "stale", stale_since: "2026-02-24T10:00:00+00:00" },
+          { butler: "travel", state: "ok", generated_at: "2026-02-24T09:00:00+00:00" },
+        ]}
+      />,
+    );
+    const plaque = screen.getByTestId("day-briefing-stale");
+    expect(plaque.textContent).toContain("Finance context stale since Feb 24, 6:00 PM");
+    expect(plaque.textContent).not.toContain("Travel");
+  });
+
+  it("shows no plaque when every butler is current", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow"
+        groups={[]}
+        hasDomainContext
+        hasEntries={false}
+        freshness={[{ butler: "finance", state: "ok" }]}
+      />,
+    );
+    expect(screen.queryByTestId("day-briefing-stale")).toBeNull();
+  });
+});

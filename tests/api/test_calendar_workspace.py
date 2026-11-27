@@ -186,6 +186,9 @@ def _overlay_row(
     entries: list[dict] | None = None,
     has_entries: bool | None = None,
     envelope_butler: str | None = "__match__",
+    generated_at: datetime | None = None,
+    cadence_seconds: int = 86400,
+    complete: bool | None = None,
 ) -> dict:
     """Build a ``calendar.v_overlay_contributions`` row (column + JSONB value).
 
@@ -195,16 +198,18 @@ def _overlay_row(
     """
     payload_entries = entries or []
     payload_butler = butler if envelope_butler == "__match__" else envelope_butler
-    return {
-        "butler": butler,
-        "key": f"calendar/overlay/{date}",
-        "value": {
-            "butler": payload_butler,
-            "date": date,
-            "has_entries": (len(payload_entries) > 0) if has_entries is None else has_entries,
-            "entries": payload_entries,
-        },
+    value = {
+        "butler": payload_butler,
+        "date": date,
+        "has_entries": (len(payload_entries) > 0) if has_entries is None else has_entries,
+        "entries": payload_entries,
     }
+    if generated_at is not None:
+        value["generated_at"] = generated_at.isoformat()
+        value["cadence_seconds"] = cadence_seconds
+    if complete is not None:
+        value["complete"] = complete
+    return {"butler": butler, "key": f"calendar/overlay/{date}", "value": value}
 
 
 def _build_app(
@@ -1066,6 +1071,99 @@ async def test_workspace_overlays_projects_in_range(app):
     # Overlays are read-only domain context — no provider sources/lanes.
     assert body["source_freshness"] == []
     assert body["lanes"] == []
+
+
+_OVERLAY_NOW = datetime(2026, 2, 22, 12, 0, tzinfo=UTC)
+
+
+def _pin_overlay_now(monkeypatch):
+    monkeypatch.setattr(_cw, "_overlay_now", lambda: _OVERLAY_NOW)
+
+
+async def test_workspace_overlays_name_a_stale_producer_and_never_call_its_entries_current(
+    app, monkeypatch
+):
+    """Finance's job last ran 49h ago (cadence 24h): stale, named, and its entries marked."""
+    _pin_overlay_now(monkeypatch)
+    entry = [{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}]
+    stale = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=entry,
+        generated_at=_OVERLAY_NOW - timedelta(hours=49),
+    )
+    fresh = _overlay_row(
+        butler="travel",
+        date="2026-02-22",
+        entries=[{"kind": "departure", "label": "To Tokyo", "priority": "high", "meta": {}}],
+        generated_at=_OVERLAY_NOW - timedelta(hours=2),
+    )
+    app, _, _ = _build_app(
+        app, overlay_rows={"finance": [stale, fresh]}, calendar_butlers=["finance", "travel"]
+    )
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    body = resp.json()["data"]
+    states = {f["butler"]: f for f in body["overlay_freshness"]}
+    assert states["finance"]["state"] == "stale"
+    assert states["finance"]["stale_since"] is not None
+    assert states["travel"]["state"] == "ok"
+    assert states["health"]["state"] == "missing" and states["relationship"]["state"] == "missing"
+    by_butler = {e["butler_name"]: e for e in body["entries"]}
+    assert by_butler["finance"]["metadata"]["stale"] is True
+    assert "stale" not in by_butler["travel"]["metadata"]
+    assert body["has_domain_context"] is True  # the envelopes exist; they are just not current
+
+
+async def test_an_incomplete_envelope_is_named_partial_and_its_entries_marked(app, monkeypatch):
+    _pin_overlay_now(monkeypatch)
+    entry = [{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}]
+    partial = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=entry,
+        generated_at=_OVERLAY_NOW - timedelta(hours=1),
+        complete=False,
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [partial]}, calendar_butlers=["finance"])
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    body = resp.json()["data"]
+    assert {f["butler"]: f["state"] for f in body["overlay_freshness"]}["finance"] == "partial"
+    assert body["entries"][0]["metadata"]["partial"] is True
+    assert "stale" not in body["entries"][0]["metadata"]
+
+
+async def test_an_envelope_with_no_generated_at_reads_as_stale(app, monkeypatch):
+    _pin_overlay_now(monkeypatch)
+    old = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=[{"kind": "bill_due", "label": "Electric Co", "priority": "high", "meta": {}}],
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [old]}, calendar_butlers=["finance"])
+
+    body = (await _get_day_briefing(app)).json()["data"]
+
+    assert {f["butler"]: f["state"] for f in body["overlay_freshness"]}["finance"] == "stale"
+
+
+async def test_a_failed_overlay_read_names_every_contributor_as_failed(app, monkeypatch):
+    _pin_overlay_now(monkeypatch)
+    app, _, _ = _build_app(app, overlays_raise=True, calendar_butlers=["finance"])
+
+    body = (await _get_day_briefing(app)).json()["data"]
+
+    assert body["overlays_available"] is False
+    assert {f["state"] for f in body["overlay_freshness"]} == {"failed"}
+    assert {f["butler"] for f in body["overlay_freshness"]} == {
+        "finance",
+        "health",
+        "relationship",
+        "travel",
+    }
 
 
 async def test_workspace_overlays_fail_open_on_missing_view(app):

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -1701,3 +1701,246 @@ async def test_the_endpoint_serialises_options_and_the_digest(app, live):
     assert overlap["issue_digest"]
     assert overlap["options"][-1]["kind"] == "keep_both"
     assert all("title" not in o["rationale_fields"] for o in overlap["options"])
+
+
+# ---------------------------------------------------------------------------
+# Keep both: acknowledgement store, suppression, resolve route (bu-5ii4gj.11 R2a)
+# ---------------------------------------------------------------------------
+
+
+class _AckPool(_Pool):
+    """In-memory stand-in for ``public.calendar_conflict_acknowledgements`` on the zone pool."""
+
+    def __init__(self):
+        super().__init__("UTC")
+        self.rows: dict[str, tuple[str, str, str]] = {}
+
+    async def fetch(self, sql, *args):
+        if "calendar_conflict_acknowledgements" not in sql:
+            return []
+        return [
+            {"pair_id": k, "issue_digest": v[0], "state_digest": v[1]} for k, v in self.rows.items()
+        ]
+
+    async def execute(self, sql, pair_id, digest, state, option_id):
+        self.rows[pair_id] = (digest, state, option_id)
+
+
+def _with_acks(db):
+    pool = _AckPool()
+    db.pool = MagicMock(return_value=pool)
+    return pool
+
+
+_POST_WINDOW = {"start": "2026-07-01T00:00:00Z", "end": "2026-07-02T00:00:00Z"}
+
+
+async def _post(app, **body):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.post(
+            "/api/calendar/workspace/conflicts/resolve", json={**_POST_WINDOW, **body}
+        )
+
+
+def _fresh_world(app):
+    block, meeting = _options_world(
+        app, last_synced_at=datetime.now(UTC), last_success_at=datetime.now(UTC)
+    )
+    app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
+    return app, db, _with_acks(db)
+
+
+async def _offered(app):
+    resp = await _get(app)
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    keep = next(o for o in overlap["options"] if o["kind"] == "keep_both")
+    return overlap["issue_digest"], keep
+
+
+async def test_keep_both_is_recorded_and_the_overlap_goes_quiet(app, live):
+    app, _, pool = _fresh_world(app)
+    digest, keep = await _offered(app)
+
+    resp = await _post(
+        app,
+        pair_id=keep["exact_call"]["args"]["pair_id"],
+        option_id=keep["id"],
+        issue_digest=digest,
+    )
+
+    assert resp.status_code == 200 and resp.json()["data"]["status"] == "acknowledged"
+    assert pool.rows[keep["exact_call"]["args"]["pair_id"]][0] == digest
+    assert pool.rows[keep["exact_call"]["args"]["pair_id"]][1]  # the events-only digest is stored
+    quiet = (await _get(app)).json()["data"]["issues"]
+    assert [i for i in quiet if i["kind"] == "overlap"] == []
+
+
+async def test_a_repeated_keep_both_is_idempotent(app, live):
+    app, _, _ = _fresh_world(app)
+    digest, keep = await _offered(app)
+    body = {
+        "pair_id": keep["exact_call"]["args"]["pair_id"],
+        "option_id": keep["id"],
+        "issue_digest": digest,
+    }
+    await _post(app, **body)
+
+    again = await _post(app, **body)
+
+    assert again.status_code == 200
+    assert again.json()["data"]["status"] == "already_acknowledged"
+
+
+async def test_a_changed_overlap_is_never_acknowledged_on_a_stale_digest(app, live):
+    app, _, pool = _fresh_world(app)
+    _, keep = await _offered(app)
+
+    resp = await _post(
+        app,
+        pair_id=keep["exact_call"]["args"]["pair_id"],
+        option_id=keep["id"],
+        issue_digest="stale",
+    )
+
+    assert resp.status_code == 409 and resp.json()["detail"] == "issue_changed"
+    assert pool.rows == {}
+
+
+async def _kept_world(app):
+    """A scan of one overlap, then its acknowledgement stored as the route would store it."""
+    block, meeting = _options_world(app, last_synced_at=_NOW, last_success_at=_NOW)
+    rows = [block, meeting]
+    _, db = _build_app(app, workspace_rows={"general": rows})
+    pool = _with_acks(db)
+    scan = await query_calendar_conflicts(db, **_WINDOW, now=_NOW)
+    (issue,) = [i for i in scan.issues if i.kind == "overlap"]
+    pool.rows[str(issue.pair_id)] = (issue.issue_digest, issue.state_digest, "keep_both")
+    return db, rows, meeting
+
+
+async def _overlaps(db, now=_NOW):
+    scan = await query_calendar_conflicts(db, **_WINDOW, now=now)
+    return [i for i in scan.issues if i.kind == "overlap"]
+
+
+async def test_an_acknowledgement_lapses_when_an_event_changes(app, live):
+    db, _, meeting = await _kept_world(app)
+    assert await _overlaps(db) == []
+
+    meeting["event_etag"] = "etag-mtg-moved"
+
+    assert len(await _overlaps(db)) == 1
+
+
+async def test_keep_both_still_suppresses_on_a_filtered_read(app, live):
+    db, _, _ = await _kept_world(app)
+
+    scan = await query_calendar_conflicts(db, **_WINDOW, now=_NOW, butlers=["general"])
+
+    assert [i for i in scan.issues if i.kind == "overlap"] == []
+
+
+async def test_the_passage_of_time_does_not_void_keep_both(app, live):
+    db, _, _ = await _kept_world(app)
+
+    # The option slots move with the clock, so the issue digest differs; the events do not.
+    assert await _overlaps(db, now=_NOW + timedelta(minutes=50)) == []
+
+
+async def test_an_unrelated_event_in_the_free_window_does_not_void_keep_both(app, live):
+    db, rows, _ = await _kept_world(app)
+
+    rows.append(_ws_row(entry_id="late", title="Review", start=_DAY + timedelta(minutes=105)))
+
+    assert await _overlaps(db) == []
+
+
+async def test_a_provider_writing_option_is_not_accepted_here(app, live):
+    app, _, pool = _fresh_world(app)
+    resp0 = await _get(app)
+    (overlap,) = [i for i in resp0.json()["data"]["issues"] if i["kind"] == "overlap"]
+    move = next(o for o in overlap["options"] if o["kind"] != "keep_both")
+
+    resp = await _post(
+        app,
+        pair_id=overlap["options"][-1]["exact_call"]["args"]["pair_id"],
+        option_id=move["id"],
+        issue_digest=overlap["issue_digest"],
+    )
+
+    assert resp.status_code == 422 and pool.rows == {}
+
+
+def _future_world(app, *, synced_at=None):
+    """The overlap two days from now, so a move has somewhere to go ("now" is real here)."""
+    day = (datetime.now(UTC) + timedelta(days=2)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    synced = synced_at or datetime.now(UTC)
+    block, meeting = _options_world(app, last_synced_at=synced, last_success_at=synced)
+    for row, offset in ((block, 0), (meeting, 30)):
+        row["instance_starts_at"] = day + timedelta(minutes=offset)
+        row["instance_ends_at"] = day + timedelta(minutes=offset + 60)
+    app, db = _build_app(app, workspace_rows={"general": [block, meeting]})
+    pool = _with_acks(db)
+    window = {
+        "start": (day - timedelta(days=1)).isoformat(),
+        "end": (day + timedelta(days=1)).isoformat(),
+    }
+    return app, pool, window
+
+
+async def _offered_option(app, kind, window):
+    resp = await _get(app, window)
+    (overlap,) = [i for i in resp.json()["data"]["issues"] if i["kind"] == "overlap"]
+    option = next(o for o in overlap["options"] if o["kind"] == kind)
+    pair = overlap["options"][-1]["exact_call"]["args"]["pair_id"]
+    return overlap, option, pair
+
+
+async def test_the_route_is_absent_while_the_flag_is_dark(app):
+    app, _, _ = _fresh_world(app)
+
+    resp = await _post(app, pair_id="p", option_id="o", issue_digest="d")
+
+    assert resp.status_code == 404
+
+
+async def test_the_dark_route_answers_404_even_for_an_invalid_body(app):
+    app, _, _ = _fresh_world(app)
+
+    resp = await _post(app, pair_id="", option_id="o")  # no digest, empty pair id: would be 422
+
+    assert resp.status_code == 404
+
+
+async def test_a_post_a_few_seconds_after_the_get_still_matches_its_digest(app, live):
+    """The digest must not drift with the clock inside one grid step (GET then POST -> 200)."""
+    from butlers.api.routers import calendar_workspace as router
+
+    # The morning of the overlap, mid grid step: "now" is what the first slot starts after.
+    base = (datetime.now(UTC) + timedelta(days=2)).replace(
+        hour=8, minute=2, second=0, microsecond=0
+    )
+    app, pool, window = _future_world(app, synced_at=base)
+    real_scan = router.query_calendar_conflicts
+    clock = {"now": base}
+
+    async def scan(db, **kwargs):
+        return await real_scan(db, now=clock["now"], **kwargs)
+
+    with patch.object(router, "query_calendar_conflicts", scan):
+        overlap, _, pair = await _offered_option(app, "keep_both", window)
+        clock["now"] = base + timedelta(seconds=7)
+        resp = await _post(
+            app,
+            pair_id=pair,
+            option_id="keep_both",
+            issue_digest=overlap["issue_digest"],
+            **window,
+        )
+
+    assert resp.status_code == 200 and resp.json()["data"]["status"] == "acknowledged"
+    assert pair in pool.rows
