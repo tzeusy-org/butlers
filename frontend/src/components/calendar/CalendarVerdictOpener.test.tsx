@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { format } from "date-fns";
 import { dayViewDoor } from "@/lib/calendar-doors";
@@ -81,6 +81,16 @@ function render(overrides: Partial<React.ComponentProps<typeof CalendarVerdictOp
 }
 
 describe("CalendarVerdictOpener", () => {
+  // The fixtures describe Fri 27 Nov; pin the clock to the evening before so "next" stays
+  // in the future no matter when the suite runs.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-26T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("states a calm day only when the verdict is earned empty and every source is available", () => {
     const html = render();
 
