@@ -9,7 +9,7 @@ version: 1.0.0
 This skill guides the finance butler through normalizing messy bank-imported merchant
 names (e.g., `"WHOLEFDS MKT #10456 AUSTIN TX"`) into clean, consistent labels
 (e.g., `"Whole Foods"`). The canonical form is stored in the `normalized_merchant`
-metadata overlay field; the original `merchant` field is never modified.
+ledger enrichment column; the original `merchant` field is never modified.
 
 ---
 
@@ -51,24 +51,23 @@ distinct raw merchant strings.
 
 ### MUST: Write to normalized_merchant overlay only
 
-Normalization MUST write to the `normalized_merchant` metadata field via
+Normalization MUST write to the `normalized_merchant` ledger column via
 `bulk_update_transactions`. It MUST NOT modify the original `merchant` field, and
-MUST NOT touch `subject`, `predicate`, `content`, or `embedding` columns. The
+MUST NOT edit historical memory facts. The
 original `merchant` value is the immutable provenance anchor and deduplication key.
 
 ---
 
-## Metadata Overlay Contract
+## Ledger Enrichment Contract
 
-The finance butler's fact layer is **write-once** on core columns. Normalization
-uses the metadata overlay pattern instead:
+Normalization preserves the raw ledger columns and sets transaction-ID-bound enrichment:
 
 | Field | Role |
 |---|---|
 | `merchant` | Original raw bank string — never modified, preserved for provenance |
 | `normalized_merchant` | Clean canonical name set by this skill — preferred for display and aggregation |
 
-Query and display tools (`spending_summary`, `list_transactions`, dashboard) prefer
+Spending aggregation and dashboard reads prefer
 `normalized_merchant` when present and fall back to `merchant` when absent. You do
 not need to update any query logic — the overlay is transparently consumed.
 
@@ -127,7 +126,7 @@ For every merchant in the list that matches a known alias, call
 `bulk_update_transactions` immediately — no LLM review needed:
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {
         "match": {"merchant_pattern": "WHOLEFDS%"},
         "set": {"normalized_merchant": "Whole Foods"},
@@ -137,7 +136,7 @@ bulk_update_transactions(updates=[
         "set": {"normalized_merchant": "Amazon"},
     },
     # ... one entry per known alias
-])
+]))
 ```
 
 Track which merchants from the list have been handled so they are excluded from
@@ -166,7 +165,7 @@ Produce a mapping list: `[(raw_pattern, canonical_name), ...]`
 For each group from Step 4, call `bulk_update_transactions`:
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {
         "match": {"merchant_pattern": "SQ *BLUE BOTTLE%"},
         "set": {"normalized_merchant": "Blue Bottle Coffee"},
@@ -176,7 +175,7 @@ bulk_update_transactions(updates=[
         "set": {"normalized_merchant": "Netflix"},
     },
     # ... one entry per canonical group
-])
+]))
 ```
 
 **Pattern guidance for `merchant_pattern`:**
@@ -185,7 +184,7 @@ bulk_update_transactions(updates=[
 - For Square-prefixed merchants: `"SQ *BLUE BOTTLE%"` or `"SQ*BLUE BOTTLE%"` covers both space variants
 - Avoid overly broad patterns like `"AMAZON%"` if it would also match unrelated merchants; prefer `"AMZN MKTP US%"` or `"AMAZON.COM%"` for precision
 
-Accumulate the `total_matched` and `total_updated` counts returned by each
+Accumulate the `updated_total` count returned by each
 `bulk_update_transactions` call.
 
 ### Step 6: Report to User
@@ -259,7 +258,7 @@ while True:
         limit=500,
         offset=offset,
     )
-    # ... process result.merchants (Steps 2–5 for this batch)
+    # ... process result.items (Steps 2–5 for this batch)
     if offset + 500 >= result.total:
         break
     offset += 500
@@ -283,7 +282,7 @@ returns 22 merchants.
 result = list_distinct_merchants(unnormalized_only=True, min_count=2)
 # Returns:
 # total: 22
-# merchants: [
+# items: [
 #   {merchant: "WHOLEFDS MKT #10456 AUSTIN TX",   count: 14, total_amount: "623.40"},
 #   {merchant: "WHOLEFDS MKT #10457 AUSTIN TX",   count:  3, total_amount: "142.10"},
 #   {merchant: "WHOLE FOODS #10456",               count:  2, total_amount:  "89.50"},
@@ -310,10 +309,10 @@ Known alias found: `AMZN MKTP US%` → `"Amazon"`
 ### Step 3: Auto-Apply Known Aliases
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {"match": {"merchant_pattern": "AMZN MKTP US%"}, "set": {"normalized_merchant": "Amazon"}},
-])
-# Returns: {total_matched: 13, total_updated: 13}
+]))
+# Returns: {updated_total: 13, results: [...]}
 ```
 
 Mark the two Amazon variants as handled.
@@ -333,15 +332,15 @@ Remaining 20 merchants (22 minus 2 Amazon variants). The LLM groups:
 ### Step 5: Apply
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {"match": {"merchant_pattern": "WHOLEFDS%"},        "set": {"normalized_merchant": "Whole Foods"}},
     {"match": {"merchant_pattern": "WHOLE FOODS%"},     "set": {"normalized_merchant": "Whole Foods"}},
     {"match": {"merchant_pattern": "NETFLIX%"},         "set": {"normalized_merchant": "Netflix"}},
     {"match": {"merchant_pattern": "SQ *BLUE BOTTLE%"}, "set": {"normalized_merchant": "Blue Bottle Coffee"}},
     {"match": {"merchant_pattern": "SPOTIFY%"},         "set": {"normalized_merchant": "Spotify"}},
     # ... remaining mappings ...
-])
-# Returns cumulative: {total_matched: 344, total_updated: 344}
+]))
+# Returns cumulative: {updated_total: 344, results: [...]}
 ```
 
 ### Step 6: Report
@@ -392,7 +391,7 @@ memory_store_fact(
 | Situation | Action |
 |---|---|
 | `list_distinct_merchants` returns `total: 0` with `unnormalized_only=True` | Report "All merchants already normalized." and stop |
-| `bulk_update_transactions` returns `total_matched: 0` for a pattern | Pattern may be too specific; broaden with `%` or check for leading/trailing spaces in raw merchant string |
+| `bulk_update_transactions` returns `updated_total: 0` for a pattern | Pattern may be too specific; broaden with `%` or check for leading/trailing spaces in raw merchant string |
 | Memory search returns no results | Proceed directly to LLM normalization; memory will be populated after Step 7 |
 | `total > 500` merchants | Paginate in batches of 500 (see Pagination Reference above) |
 | Merchant name is ambiguous (could be two different businesses) | Keep separate — do not collapse unless you are certain they are the same merchant |
@@ -408,3 +407,11 @@ memory_store_fact(
   merchant alias facts in Step 7.
 - **`tool-reference`**: Consult for exact parameter names and types for
   `list_distinct_merchants` and `bulk_update_transactions`.
+
+
+Ledger contract: `list_distinct_merchants` reads active `finance.transactions` rows.
+`bulk_update_transactions` accepts `ops` as a JSON-encoded array at the MCP boundary
+and writes the matched ledger rows' enrichment columns. It preserves the raw merchant
+and category and never edits historical transaction facts. Match patterns use the raw
+merchant name returned alongside `normalized_merchant`; use that raw value even when
+the proposed display name is normalized. Results contain `updated_total` and `results`.

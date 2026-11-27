@@ -27,10 +27,6 @@ _models = roster_module("finance", "api/models", api_source=__file__)
 AccountModel = _models.AccountModel
 CostClaimModel = _models.CostClaimModel
 BillModel = _models.BillModel
-BulkTransactionErrorDetail = _models.BulkTransactionErrorDetail
-BulkTransactionItem = _models.BulkTransactionItem
-BulkTransactionRequest = _models.BulkTransactionRequest
-BulkTransactionResponse = _models.BulkTransactionResponse
 BulkUpdateOpResultModel = _models.BulkUpdateOpResultModel
 BulkUpdateRequestModel = _models.BulkUpdateRequestModel
 BulkUpdateResponseModel = _models.BulkUpdateResponseModel
@@ -67,47 +63,9 @@ def _pool(db: DatabaseManager):
 
 
 # ---------------------------------------------------------------------------
-# Facts overlay join (split-brain read fix — bu-v3a4x.1 / bu-v3a4x.2)
-# ---------------------------------------------------------------------------
-#
-# Bulk-metadata edits, merchant normalization, and category inference write to
-# the bitemporal `facts` overlay (scope='finance', predicate transaction_*),
-# NOT to `finance.transactions`. The dashboard reads `finance.transactions`, so
-# without this join the overlay values (normalized_merchant / inferred_category
-# / bulk-metadata edits) are invisible and the projection columns are always
-# null. We keep `finance.transactions` as the base store of record and MERGE the
-# overlay on read.
-#
-# Overlay key: a transaction is linked to its facts row by the SAME natural key
-# the fact's idempotency hash is derived from — (posted_at, merchant, currency,
-# absolute amount). facts stores valid_at=posted_at, metadata->>'merchant' (raw),
-# metadata->>'currency' (uppercase), metadata->>'amount' (NUMERIC(14,2) string,
-# always positive). finance.transactions.amount is SIGNED, so we match on ABS().
-# Both amount columns are NUMERIC(14,2), so the ::numeric cast comparison is
-# precision-safe. Only the latest active fact (created_at DESC) is surfaced.
-_OVERLAY_JOIN = (
-    " LEFT JOIN LATERAL ("
-    "   SELECT f.metadata AS overlay_metadata"
-    "   FROM facts f"
-    "   WHERE f.scope = 'finance'"
-    "     AND f.validity = 'active'"
-    "     AND f.predicate IN ('transaction_debit', 'transaction_credit')"
-    "     AND f.valid_at = t.posted_at"
-    "     AND f.metadata->>'merchant' = t.merchant"
-    "     AND upper(f.metadata->>'currency') = upper(t.currency)"
-    "     AND (f.metadata->>'amount')::numeric = abs(t.amount)"
-    "   ORDER BY f.created_at DESC"
-    "   LIMIT 1"
-    " ) ovl ON true"
-)
-
-# Effective (overlay-preferred) expressions for filtering/grouping. The overlay
-# value wins when present; otherwise the base column is used.
-_EFFECTIVE_MERCHANT = "COALESCE(ovl.overlay_metadata->>'normalized_merchant', t.merchant)"
-_EFFECTIVE_CATEGORY = "COALESCE(ovl.overlay_metadata->>'inferred_category', t.category)"
-
-# Overlay keys that are projected onto dedicated TransactionModel fields rather
-# than left in the merged `metadata` blob.
+# Transaction enrichment is bound to the primary-key ledger row.
+_EFFECTIVE_MERCHANT = "COALESCE(t.normalized_merchant, t.merchant)"
+_EFFECTIVE_CATEGORY = "COALESCE(t.inferred_category, t.category)"
 _OVERLAY_PROJECTED_KEYS = ("normalized_merchant", "inferred_category")
 
 
@@ -126,30 +84,9 @@ def _coerce_jsonb(value: object) -> dict:
     return {}
 
 
-def _overlay_transaction_model(r) -> TransactionModel:
-    """Build a TransactionModel, merging the facts overlay over the base row.
-
-    The base ``finance.transactions`` row is the store of record. The facts
-    overlay (``overlay_metadata``) carries normalized_merchant / inferred_category
-    and any bulk-metadata edits. Overlay values win on conflict; base metadata is
-    preserved where the overlay is absent. The two projected overlay fields are
-    surfaced on dedicated model fields and stripped from the merged ``metadata``
-    blob to keep the response shape stable.
-    """
-    base_meta = _coerce_jsonb(r["metadata"])
-    overlay_meta = _coerce_jsonb(r["overlay_metadata"])
-
-    # Surface the projected overlay fields, falling back to any value already on
-    # the base metadata (legacy rows that wrote the overlay inline).
-    normalized_merchant = overlay_meta.get("normalized_merchant") or base_meta.get(
-        "normalized_merchant"
-    )
-    inferred_category = overlay_meta.get("inferred_category") or base_meta.get("inferred_category")
-
-    # Merge overlay edits onto the base metadata blob (overlay wins), then drop
-    # the projected keys so they only appear on their dedicated fields.
-    merged_meta = {**base_meta, **overlay_meta}
-    merged_meta = sanitized_metadata(merged_meta)
+def _transaction_model(r) -> TransactionModel:
+    """Project ledger enrichment and preserve the existing metadata response shape."""
+    merged_meta = sanitized_metadata(_coerce_jsonb(r["metadata"]))
     for key in _OVERLAY_PROJECTED_KEYS:
         merged_meta.pop(key, None)
 
@@ -157,13 +94,13 @@ def _overlay_transaction_model(r) -> TransactionModel:
         id=str(r["id"]),
         posted_at=str(r["posted_at"]),
         merchant=r["merchant"],
-        normalized_merchant=normalized_merchant,
+        normalized_merchant=r["normalized_merchant"],
         description=r["description"],
         amount=str(r["amount"]),
         currency=r["currency"],
         direction=r["direction"],
         category=r["category"],
-        inferred_category=inferred_category,
+        inferred_category=r["inferred_category"],
         payment_method=r["payment_method"],
         account_id=str(r["account_id"]) if r["account_id"] else None,
         receipt_url=r["receipt_url"],
@@ -246,10 +183,7 @@ async def list_transactions(
     # Soft-delete exclusion (spec: finance-crud-operations §"Filtered transaction
     # listing"). Every transaction read SHALL exclude soft-deleted rows.
     #
-    # Reads are overlay-aware (bu-v3a4x.1): merchant/category filters resolve
-    # against the facts overlay (normalized_merchant / inferred_category) first,
-    # falling back to the base columns. Base-table columns are `t.`-qualified
-    # because the overlay LATERAL join is always present.
+    # Filters prefer transaction-ID-bound enrichment, then the raw ledger fields.
     conditions: list[str] = ["t.deleted_at IS NULL"]
     args: list[object] = []
     idx = 1
@@ -293,7 +227,7 @@ async def list_transactions(
 
     total = (
         await pool.fetchval(
-            f"SELECT count(*) FROM finance.transactions t{_OVERLAY_JOIN}{where}",
+            f"SELECT count(*) FROM finance.transactions t{where}",
             *args,
         )
         or 0
@@ -303,8 +237,8 @@ async def list_transactions(
         f"SELECT t.id, t.posted_at, t.merchant, t.description, t.amount, t.currency,"
         f" t.direction, t.category, t.payment_method, t.account_id, t.receipt_url,"
         f" t.external_ref, t.source_message_id, t.metadata, t.created_at, t.updated_at,"
-        f" ovl.overlay_metadata AS overlay_metadata"
-        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}"
+        f" t.normalized_merchant, t.inferred_category"
+        f" FROM finance.transactions t{where}"
         f" ORDER BY t.posted_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
@@ -312,7 +246,7 @@ async def list_transactions(
         limit,
     )
 
-    data = [_overlay_transaction_model(r) for r in rows]
+    data = [_transaction_model(r) for r in rows]
 
     return PaginatedResponse[TransactionModel](
         data=data,
@@ -734,9 +668,7 @@ async def get_spending_summary(
     # the 'Top category' KPI and the spend total honest. Exclusion applies to
     # every group_by dimension, not just category.
     #
-    # Reads are overlay-aware (bu-v3a4x.1): the effective category/merchant
-    # resolve against the facts overlay first, so normalized merchants and
-    # inferred categories drive both the exclusion filter and the grouping.
+    # Effective ledger enrichment drives both exclusion and grouping.
     conditions: list[str] = [
         "t.direction = 'debit'",
         "t.deleted_at IS NULL",
@@ -768,7 +700,7 @@ async def get_spending_summary(
         f"SELECT COALESCE(SUM(t.amount), 0) AS total,"
         f" CASE WHEN COUNT(DISTINCT t.currency) = 1 THEN MIN(t.currency) ELSE NULL END AS currency,"
         f" COUNT(DISTINCT t.currency) AS currency_count"
-        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}",
+        f" FROM finance.transactions t{where}",
         *args,
     )
     total_spend = str(total_row["total"])
@@ -777,7 +709,7 @@ async def get_spending_summary(
 
     group_rows = await pool.fetch(
         f"SELECT t.currency, {group_expr} AS key, SUM(t.amount) AS amount, COUNT(*) AS count"
-        f" FROM finance.transactions t{_OVERLAY_JOIN}{where}"
+        f" FROM finance.transactions t{where}"
         f" GROUP BY t.currency, {group_expr}"
         f" ORDER BY t.currency, SUM(t.amount) DESC",
         *args,
@@ -940,79 +872,6 @@ async def get_upcoming_bills(
 
 
 # ---------------------------------------------------------------------------
-# POST /transactions/bulk — bulk transaction ingestion
-# ---------------------------------------------------------------------------
-
-
-@router.post("/transactions/bulk", response_model=BulkTransactionResponse)
-async def bulk_ingest_transactions(
-    http_request: Request,
-    request: BulkTransactionRequest = Body(...),
-    *,
-    db: Db,
-) -> BulkTransactionResponse:
-    """Bulk-ingest normalized transaction objects.
-
-    Accepts 1–500 items per request. Rows are recorded in finance.transactions
-    (the store GET /transactions reads) through record_transaction, so dedupe is
-    shared with the MCP tool. Returns exact counts: imported (fresh inserts),
-    skipped (duplicates), and errors.
-
-    error_details entries include an index and reason:
-    - "duplicate" — already exists (composite or source_message_id dedup)
-    - "invalid_date" — unparseable posted_at
-    - "invalid_amount" — non-numeric amount
-    """
-    if len(request.transactions) == 0 or len(request.transactions) > 500:
-        raise HTTPException(
-            status_code=422,
-            detail=f"transactions must contain 1–500 items; got {len(request.transactions)}",
-        )
-
-    pool = _pool(db)
-    txn_dicts = [item.model_dump() for item in request.transactions]
-
-    try:
-        result = await _load_transactions_tools().bulk_record_transactions(
-            pool,
-            transactions=txn_dicts,
-            account_id=request.account_id,
-            source=request.source,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    error_details = [
-        BulkTransactionErrorDetail(index=e["index"], reason=e["reason"])
-        for e in result.get("error_details", [])
-    ]
-
-    # Explicit audit — middleware also fires; this carries the semantic operation label.
-    await emit_dashboard_audit(
-        db,
-        butler="finance",
-        operation="transaction_bulk_ingest",
-        method="POST",
-        path="/api/finance/transactions/bulk",
-        request=http_request,
-        body={
-            "account_id": str(request.account_id) if request.account_id else None,
-            "source": request.source,
-            "count": len(request.transactions),
-        },
-        response_status=200,
-    )
-
-    return BulkTransactionResponse(
-        total=result["total"],
-        imported=result["imported"],
-        skipped=result["skipped"],
-        errors=result["errors"],
-        error_details=error_details,
-    )
-
-
-# ---------------------------------------------------------------------------
 # GET /merchants/distinct — distinct merchants with aggregate stats
 # ---------------------------------------------------------------------------
 
@@ -1022,13 +881,6 @@ def _load_transactions_tools():
     import importlib
 
     return importlib.import_module("butlers.tools.finance.transactions")
-
-
-def _load_facts_tools():
-    """Return the canonical finance facts module, retaining the call-time patch seam."""
-    import importlib
-
-    return importlib.import_module("butlers.tools.finance.facts")
 
 
 @router.get("/merchants/distinct", response_model=PaginatedResponse[DistinctMerchantModel])
@@ -1042,11 +894,11 @@ async def list_distinct_merchants(
     *,
     db: Db,
 ) -> PaginatedResponse[DistinctMerchantModel]:
-    """Return distinct merchants from active transaction facts with aggregate stats."""
+    """Return distinct merchants from active ledger transactions with aggregate stats."""
     pool = _pool(db)
 
-    _facts_mod = _load_facts_tools()
-    result = await _facts_mod.list_distinct_merchants(
+    _transactions_mod = _load_transactions_tools()
+    result = await _transactions_mod.list_distinct_merchants(
         pool,
         start_date=start_date,
         end_date=end_date,
@@ -1084,11 +936,11 @@ async def bulk_update_transactions(
     *,
     db: Db,
 ) -> BulkUpdateResponseModel:
-    """Apply bulk metadata overlay to matching transaction facts.
+    """Apply bulk metadata overlay to matching ledger transactions.
 
     Each op specifies an ILIKE merchant_pattern and a set of overlay fields
-    (normalized_merchant, inferred_category). The original fact content
-    (merchant, category, subject, predicate, content, embedding) is never modified.
+    (normalized_merchant, inferred_category). Raw merchant/category and historical
+    memory facts remain unchanged.
     """
     pool = _pool(db)
 
@@ -1107,9 +959,9 @@ async def bulk_update_transactions(
             detail=f"Too many ops: {len(ops_raw)} exceeds max 200",
         )
 
-    _facts_mod = _load_facts_tools()
+    _transactions_mod = _load_transactions_tools()
     try:
-        result = await _facts_mod.bulk_update_transactions(pool, ops=ops_raw)
+        result = await _transactions_mod.bulk_update_transactions(pool, ops=ops_raw)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

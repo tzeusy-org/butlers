@@ -371,7 +371,7 @@ async def test_registered_subscription_fact_writer_is_inventoried_outside_curren
 ) -> None:
     """The actual MCP surface cannot drift beyond the reviewed source inventory."""
     from butlers.modules._roster_finance.tools import register_tools
-    from butlers.tools.finance import facts
+    from butlers.tools.finance import property_facts as facts
 
     fact_writer = AsyncMock(return_value={"id": "fact-1"})
     monkeypatch.setattr(facts, "track_subscription_fact", fact_writer)

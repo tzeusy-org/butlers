@@ -48,7 +48,6 @@ from butlers.modules.memory import storage
 from butlers.modules.memory.content_authority import HELD_FACT_SQL
 from butlers.modules.memory.search import resolve_catalog_read_policy
 from butlers.modules.memory.tools.reading import memory_get, memory_recall, memory_search
-from butlers.tools.finance.facts import bulk_update_transactions
 from butlers.tools.health import conditions, medications, research
 from butlers.tools.health.conditions import condition_update, symptom_update
 from butlers.tools.health.diet import meal_update
@@ -642,11 +641,6 @@ def _update_symptom(pool, fact_id):
     return symptom_update(pool, str(fact_id), name=_UPDATE_TEXT)
 
 
-def _update_transactions(pool, _fact_id):
-    operation = {"match": {"merchant_pattern": "Acme"}, "set": {"inferred_category": _UPDATE_TEXT}}
-    return bulk_update_transactions(pool, [operation])
-
-
 @pytest.mark.parametrize(
     ("update", "predicate", "scope", "metadata"),
     [
@@ -659,13 +653,6 @@ def _update_transactions(pool, _fact_id):
             id="measurement_update",
         ),
         pytest.param(_update_symptom, "symptom", "health", {}, id="symptom_update"),
-        pytest.param(
-            _update_transactions,
-            "transaction_debit",
-            "finance",
-            {"merchant": "Acme"},
-            id="bulk_update_transactions",
-        ),
     ],
 )
 @_db

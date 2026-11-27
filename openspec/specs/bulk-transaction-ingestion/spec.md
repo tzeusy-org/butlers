@@ -1,18 +1,19 @@
 # Bulk Transaction Ingestion
 
 ## Purpose
-Bulk import endpoint and MCP tool for recording multiple normalized transactions in a single call, with composite deduplication for sources that lack email provenance.
+Bulk import MCP tool for recording multiple normalized transactions in a single call, with composite deduplication for sources that lack email provenance.
 
 ## Requirements
 
-### Requirement: Bulk transaction ingestion HTTP endpoint
-The dashboard API SHALL expose a bulk transaction import endpoint that accepts an array of normalized transaction objects, records them in `finance.transactions` via `record_transaction` (the store `GET /transactions` reads), and returns per-row results.
+### Requirement: Bulk transaction ingestion
+The Finance daemon SHALL expose bulk ingestion through `bulk_record_transactions`
+and stored statement ingestion through `import_transactions`. The retired dashboard
+`POST /api/finance/transactions/bulk` route SHALL NOT be exposed.
 
 #### Scenario: Successful bulk import
-- **WHEN** a POST request is sent to `/api/finance/transactions/bulk` with a JSON body containing a `transactions` array of 1–500 normalized transaction objects
-- **THEN** each transaction MUST be recorded in `finance.transactions` via `record_transaction` with the same amount/direction/precision conventions
-- **AND** the response MUST include `total`, `imported`, `skipped`, and `errors` integer counts, where `imported` counts only freshly inserted rows and duplicates count only in `skipped`
-- **AND** HTTP status MUST be 200 on success (even if some rows were skipped or errored)
+- **WHEN** `bulk_record_transactions` receives 1–500 normalized transaction objects
+- **THEN** each transaction MUST be recorded in `finance.transactions` through the canonical writer
+- **AND** the response MUST include `total`, `imported`, `skipped`, and `errors`, counting only fresh rows as imported
 
 #### Scenario: Composite deduplication for CSV-sourced rows
 - **WHEN** a transaction in the bulk request has no `source_message_id`
@@ -32,7 +33,7 @@ The dashboard API SHALL expose a bulk transaction import endpoint that accepts a
 
 #### Scenario: Batch size limit
 - **WHEN** a bulk request contains more than 500 transactions
-- **THEN** the endpoint MUST return HTTP 422 with a descriptive error message
+- **THEN** the tool MUST raise a descriptive validation error
 - **AND** no transactions MUST be persisted
 
 #### Scenario: Account ID association
@@ -50,15 +51,15 @@ The finance butler MUST expose a `bulk_record_transactions` MCP tool that wraps 
 
 #### Scenario: MCP tool invocation
 - **WHEN** `bulk_record_transactions` is called with a `transactions` array of normalized objects
-- **THEN** it MUST process them identically to the HTTP endpoint (same dedup, same per-row error handling, same response shape)
-- **AND** the tool MUST accept optional `account_id` and `source` parameters matching the HTTP endpoint
+- **THEN** it MUST process them identically to the canonical ledger writer (same deduplication and per-row error handling)
+- **AND** the tool MUST accept optional `account_id` and `source` parameters for the batch
 
 #### Scenario: MCP tool batch limit
 - **WHEN** `bulk_record_transactions` is called with more than 500 transactions
 - **THEN** it MUST return an error result (not silently truncate)
 
 ### Requirement: Normalized transaction object schema
-All bulk ingestion paths (HTTP and MCP) MUST accept the same normalized transaction schema.
+All normalized bulk ingestion calls MUST accept the same normalized transaction schema.
 
 #### Scenario: Required and optional fields
 - **WHEN** a normalized transaction object is submitted
@@ -77,12 +78,12 @@ All bulk ingestion paths (HTTP and MCP) MUST accept the same normalized transact
 Transactions are structured ledger rows in `finance.transactions`; no embedding is computed or stored for them. Bulk ingestion MUST NOT introduce a per-row embedding step.
 
 #### Scenario: Bulk ingestion performance target
-- **WHEN** a batch of 500 transactions is submitted to the bulk endpoint
-- **THEN** the endpoint MUST complete within 10 seconds under normal conditions
+- **WHEN** a batch of 500 transactions is submitted to `bulk_record_transactions`
+- **THEN** the tool MUST complete within 10 seconds under normal conditions
 - **AND** the response MUST NOT time out for batches up to the 500-row limit
 
 ### Requirement: Partial failure and re-run semantics
-Re-running an import after a partial failure (e.g., API went down mid-import) MUST produce a clear, non-confusing result.
+Re-running an import after a partial failure (e.g., daemon stopped mid-import) MUST produce a clear, non-confusing result.
 
 #### Scenario: Re-run after partial failure
 - **WHEN** a CSV import script is re-run after a previous partial failure

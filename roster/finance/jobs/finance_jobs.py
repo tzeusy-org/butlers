@@ -2253,7 +2253,7 @@ async def _month_over_month_trend(
             """
             SELECT
                 currency,
-                COALESCE(metadata->>'inferred_category', category) AS category,
+                COALESCE(inferred_category, category) AS category,
                 COALESCE(
                     SUM(ABS(amount)) FILTER (WHERE posted_at >= $1 AND posted_at < $2),
                     0
@@ -2265,11 +2265,11 @@ async def _month_over_month_trend(
             FROM finance.transactions
             WHERE direction = 'debit'
               AND deleted_at IS NULL
-              AND COALESCE(metadata->>'inferred_category', category)
+              AND COALESCE(inferred_category, category)
                   NOT IN ('transfer', 'uncategorized')
               AND posted_at >= $1
               AND posted_at < $3
-            GROUP BY currency, COALESCE(metadata->>'inferred_category', category)
+            GROUP BY currency, COALESCE(inferred_category, category)
             """,
             prior_month_start,
             prior_month_end,

@@ -8,7 +8,7 @@ version: 1.0.0
 
 This skill guides the finance butler through assigning spending categories to
 transactions that lack an explicit category. Categories are inferred per-merchant
-and stored in the `inferred_category` metadata overlay field. The original
+and stored in the `inferred_category` ledger enrichment column. The original
 `category` field (set during CSV import or email ingestion) is never modified.
 
 ---
@@ -51,27 +51,26 @@ distinct merchant names.
 
 ### MUST: Write to inferred_category overlay only
 
-Category inference MUST write to the `inferred_category` metadata field via
+Category inference MUST write to the `inferred_category` ledger column via
 `bulk_update_transactions`. It MUST NOT overwrite the original `category` field,
-and MUST NOT touch `subject`, `predicate`, `content`, or `embedding` columns.
+and MUST NOT edit historical memory facts.
 
 ---
 
-## Metadata Overlay Contract
+## Ledger Enrichment Contract
 
-The finance butler's fact layer is **write-once** on core columns. Category
-inference uses the metadata overlay pattern instead:
+Category inference preserves the raw ledger columns and sets transaction-ID-bound enrichment:
 
 | Field | Role |
 |---|---|
 | `category` | Original explicit category from CSV or email ingestion — never modified |
-| `inferred_category` | LLM-assigned category set by this skill — preferred when no explicit category exists |
+| `inferred_category` | LLM-assigned category set by this skill — preferred by effective-category reads when present |
 
-Query and display tools (`spending_summary`, `list_transactions`, dashboard) apply
+Spending aggregation and dashboard reads apply
 the following precedence when resolving a transaction's effective category:
 
 ```
-category (explicit) > inferred_category (LLM-assigned) > uncategorized
+inferred_category (when present) > category (raw)
 ```
 
 You do not need to update any query logic — the overlay is transparently consumed.
@@ -161,7 +160,7 @@ For every merchant in the list that matches a known category mapping, call
 `bulk_update_transactions` immediately — no LLM review needed:
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {
         "match": {"merchant_pattern": "Netflix%"},
         "set": {"inferred_category": "subscriptions"},
@@ -171,7 +170,7 @@ bulk_update_transactions(updates=[
         "set": {"inferred_category": "groceries"},
     },
     # ... one entry per known merchant→category mapping
-])
+]))
 ```
 
 Track which merchants from the list have been handled so they are excluded from
@@ -212,7 +211,7 @@ Produce a list of assignments: `[(merchant_pattern, category), ...]`
 For each assignment from Step 4, call `bulk_update_transactions`:
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {
         "match": {"merchant_pattern": "Trader Joe%"},
         "set": {"inferred_category": "groceries"},
@@ -222,18 +221,18 @@ bulk_update_transactions(updates=[
         "set": {"inferred_category": "transport"},
     },
     # ... one entry per merchant
-])
+]))
 ```
 
 **Pattern guidance for `merchant_pattern`:**
 - Use SQL ILIKE syntax: `%` matches any sequence, `_` matches one character
-- When operating on normalized merchants (post-normalization run), prefer exact
-  prefix matches — the names are already clean: `"Netflix%"`, `"Whole Foods%"`
+- Use the raw `merchant` value for match patterns, even after normalization;
+  `normalized_merchant` supplies context for the proposed category
 - When operating on raw merchants (normalization skipped), use broader patterns
   to catch bank-string variants: `"NETFLIX%"`, `"WHOLEFDS%"`, `"WHOLE FOODS%"`
 - Keep patterns specific enough to avoid cross-merchant collisions
 
-Accumulate the `total_matched` and `total_updated` counts returned by each
+Accumulate the `updated_total` count returned by each
 `bulk_update_transactions` call.
 
 ### Step 6: Report to User
@@ -323,7 +322,7 @@ while True:
         limit=500,
         offset=offset,
     )
-    # Process result.merchants through Steps 3–5 for this batch
+    # Process result.items through Steps 3–5 for this batch
     # (known_mappings already loaded before the loop — do NOT re-run Step 2 here)
 
     if offset + 500 >= result.total:
@@ -349,7 +348,7 @@ returns 18 normalized merchants ready for categorization.
 result = list_distinct_merchants(min_count=1)
 # Returns:
 # total: 18
-# merchants: [
+# items: [
 #   {merchant: "WHOLEFDS MKT #10456", normalized_merchant: "Whole Foods",    count: 17, total_amount: "765.50"},
 #   {merchant: "AMZN MKTP US*2K4H3G0", normalized_merchant: "Amazon",        count: 13, total_amount: "500.61"},
 #   {merchant: "NETFLIX.COM",           normalized_merchant: "Netflix",       count:  3, total_amount:  "47.97"},
@@ -379,11 +378,11 @@ Known mappings found:
 ### Step 3: Auto-Apply Known Mappings
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {"match": {"merchant_pattern": "Whole Foods%"}, "set": {"inferred_category": "groceries"}},
     {"match": {"merchant_pattern": "Netflix%"},     "set": {"inferred_category": "subscriptions"}},
-])
-# Returns: {total_matched: 20, total_updated: 20}
+]))
+# Returns: {updated_total: 20, results: [...]}
 # (17 Whole Foods + 3 Netflix)
 ```
 
@@ -407,7 +406,7 @@ Remaining 16 merchants. The LLM assigns:
 ### Step 5: Apply
 
 ```python
-bulk_update_transactions(updates=[
+bulk_update_transactions(ops=json.dumps([
     {"match": {"merchant_pattern": "Amazon%"},         "set": {"inferred_category": "shopping"}},
     {"match": {"merchant_pattern": "Blue Bottle%"},    "set": {"inferred_category": "dining"}},
     {"match": {"merchant_pattern": "Spotify%"},        "set": {"inferred_category": "subscriptions"}},
@@ -416,8 +415,8 @@ bulk_update_transactions(updates=[
     {"match": {"merchant_pattern": "Trader Joe%"},     "set": {"inferred_category": "groceries"}},
     {"match": {"merchant_pattern": "PG&E%"},           "set": {"inferred_category": "utilities"}},
     # ... remaining 9 merchants ...
-])
-# Returns cumulative: {total_matched: 471, total_updated: 471}
+]))
+# Returns cumulative: {updated_total: 471, results: [...]}
 ```
 
 ### Step 6: Report
@@ -476,7 +475,7 @@ memory_store_fact(
 | Situation | Action |
 |---|---|
 | `list_distinct_merchants` returns `total: 0` | Report "No merchants found." and stop |
-| `bulk_update_transactions` returns `total_matched: 0` for a pattern | Pattern may be too specific or merchant has no transactions; skip and note in report |
+| `bulk_update_transactions` returns `updated_total: 0` for a pattern | Pattern may be too specific or merchant has no transactions; skip and note in report |
 | Memory search returns no results | Proceed directly to LLM categorization; memory will be populated after Step 7 |
 | `total > 500` merchants | Paginate in batches of 500 (see Pagination Reference above) |
 | Merchant name is ambiguous (could be multiple categories) | Use the most common interpretation; note ambiguity in report; use `other` only as a last resort |
@@ -497,3 +496,11 @@ memory_store_fact(
   canonical predicate for merchant→category mappings.
 - **`tool-reference`**: Consult for exact parameter names and types for
   `list_distinct_merchants` and `bulk_update_transactions`.
+
+
+Ledger contract: `list_distinct_merchants` reads active `finance.transactions` rows.
+`bulk_update_transactions` accepts `ops` as a JSON-encoded array at the MCP boundary
+and writes the matched ledger rows' enrichment columns. It preserves the raw merchant
+and category and never edits historical transaction facts. Match patterns use the raw
+merchant name returned alongside `normalized_merchant`; use that raw value even when
+the proposed display name is normalized. Results contain `updated_total` and `results`.

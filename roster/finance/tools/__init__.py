@@ -49,15 +49,11 @@ except (ImportError, AttributeError):
 
 # --- SPO fact-layer (bu-ddb.4) ---
 try:
-    from butlers.tools.finance.facts import (  # type: ignore[attr-defined]
-        list_transaction_facts,
-        spending_summary_facts,
+    from butlers.tools.finance.property_facts import (  # type: ignore[attr-defined]
         track_account_fact,
         track_subscription_fact,
     )
 except (ImportError, AttributeError):
-    list_transaction_facts = None  # type: ignore[assignment]
-    spending_summary_facts = None  # type: ignore[assignment]
     track_account_fact = None  # type: ignore[assignment]
     track_subscription_fact = None  # type: ignore[assignment]
 
@@ -168,18 +164,6 @@ except (ImportError, AttributeError):
     alert_list = None  # type: ignore[assignment]
     detect_price_changes = None  # type: ignore[assignment]
 
-# --- SPO backfill (bu-ofv8) ---
-try:
-    from butlers.tools.finance.backfill import (  # type: ignore[attr-defined]
-        BackfillResult,
-        SkippedRow,
-        backfill_spo_transactions,
-    )
-except (ImportError, AttributeError):
-    backfill_spo_transactions = None  # type: ignore[assignment]
-    BackfillResult = None  # type: ignore[assignment]
-    SkippedRow = None  # type: ignore[assignment]
-
 __all__ = [
     # spending
     "VALID_GROUP_BY_MODES",
@@ -193,10 +177,8 @@ __all__ = [
     "track_bill",
     "upcoming_bills",
     # SPO fact-layer (bu-ddb.4)
-    "list_transaction_facts",
     "track_account_fact",
     "track_subscription_fact",
-    "spending_summary_facts",
     # Bulk ingestion (bu-8c8c)
     "bulk_record_transactions",
     # Transaction CRUD extensions (finance-intelligence)
@@ -234,10 +216,6 @@ __all__ = [
     "alert_configure",
     "alert_list",
     "detect_price_changes",
-    # SPO backfill (bu-ofv8)
-    "backfill_spo_transactions",
-    "BackfillResult",
-    "SkippedRow",
     # Bill↔payment reconciliation (bu-fo2uv Track B)
     "reconcile_bills",
     "match_transaction_to_bills",

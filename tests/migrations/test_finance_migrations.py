@@ -18,7 +18,267 @@ import pytest
 
 from butlers.testing.migration import load_migration
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+
+
+@pytest.fixture
+def overlay_predecessor(fresh_db):
+    """Production finance predecessor, including the actual historical facts schema."""
+    return fresh_db(
+        "core",
+        "memory",
+        "finance",
+        schemas={"memory": "finance", "finance": "finance"},
+        revisions={"finance": "finance_022"},
+    )
+
+
+async def _overlay_seed(pool, *, merchant="Synthetic Cafe", account_id=None, metadata=None):
+    return await pool.fetchval(
+        """INSERT INTO transactions
+           (posted_at, merchant, amount, currency, direction, category, account_id, metadata)
+           VALUES ($1, $2, 12.50, 'USD', 'debit', 'uncategorized', $3, $4) RETURNING id""",
+        datetime(2026, 1, 15, tzinfo=UTC),
+        merchant,
+        account_id,
+        metadata or {},
+    )
+
+
+async def _overlay_fact(pool, *, merchant="Synthetic Cafe", account_id=None, metadata=None):
+    return await pool.fetchval(
+        """INSERT INTO facts(subject, predicate, scope, valid_at, content, metadata)
+           VALUES ('owner', 'transaction_debit', 'finance', $1, 'synthetic', $2)
+           RETURNING id""",
+        datetime(2026, 1, 15, tzinfo=UTC),
+        {
+            "merchant": merchant,
+            "amount": "12.50",
+            "currency": "usd",
+            **({"account_id": str(account_id)} if account_id else {}),
+            **(metadata or {}),
+        },
+    )
+
+
+async def test_transaction_overlay_cutover_preserves_read_contract(overlay_predecessor, db):
+    """Rehearse the production upgrade, then read through the actual Finance role and API."""
+    from butlers.migrations import run_migrations
+    from butlers.roster_imports import roster_module
+
+    pool = await db.open(overlay_predecessor, schema="finance")
+    assert await pool.fetchval("SELECT '[1,2]'::vector::text") == "[1,2]"
+    txn = await _overlay_seed(pool, metadata={"base_only": "kept", "collision": "base"})
+    await _overlay_fact(pool, metadata={"normalized_merchant": "Old name"})
+    latest = await _overlay_fact(
+        pool,
+        metadata={
+            "normalized_merchant": "Synthetic Coffee",
+            "inferred_category": "dining",
+            "collision": "overlay",
+            "overlay_only": "kept",
+        },
+    )
+    await pool.execute(
+        "UPDATE facts SET created_at = created_at + interval '1 second' WHERE id=$1", latest
+    )
+    inline = await _overlay_seed(
+        pool,
+        merchant="Inline",
+        metadata={
+            "normalized_merchant": "Inline display",
+            "inferred_category": "shopping",
+            "receipt": "kept",
+        },
+    )
+    await _overlay_seed(pool, merchant="Plain")
+    facts_before = await pool.fetchval("SELECT jsonb_agg(to_jsonb(f) ORDER BY id) FROM facts f")
+    await run_migrations(overlay_predecessor, "finance", schema="finance")
+    # An independent acquisition proves a committed migration, not just a connection-local result.
+    reader = await db.open(overlay_predecessor, schema="finance")
+    row = await reader.fetchrow("SELECT * FROM transactions WHERE id=$1", txn)
+    assert row["normalized_merchant"] == "Synthetic Coffee"
+    assert row["inferred_category"] == "dining"
+    assert row["display_merchant"] == "Synthetic Coffee"
+    assert row["display_category"] == "dining"
+    assert row["legacy_overlay_fact_id"] == latest
+    assert row["metadata"]["base_only"] == row["metadata"]["overlay_only"] == "kept"
+    assert row["metadata"]["collision"] == "overlay"
+    assert (
+        await reader.fetchval("SELECT normalized_merchant FROM transactions WHERE id=$1", inline)
+        == "Inline display"
+    )
+    assert (
+        await reader.fetchval("SELECT jsonb_agg(to_jsonb(f) ORDER BY id) FROM facts f")
+        == facts_before
+    )
+    # Revocation makes any accidental fact join fail, with a positive denied-read control.
+    await reader.execute("REVOKE SELECT ON facts FROM butler_finance_rw")
+
+    async def finance_role(connection):
+        await connection.execute("SET ROLE butler_finance_rw")
+
+    runtime = await db.open(overlay_predecessor, schema="finance", init=finance_role)
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await runtime.fetchval("SELECT count(*) FROM facts")
+
+    import httpx
+    from fastapi import FastAPI
+
+    from butlers.api.deps import get_db
+    from butlers.testing.db_manager import db_manager
+
+    app = FastAPI()
+    app.include_router(roster_module("finance", "api/router").router)
+    app.dependency_overrides[get_db] = lambda: db_manager({"finance": runtime})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/finance/transactions", params={"merchant": "Synthetic Coffee"}
+        )
+        assert response.status_code == 200
+        assert response.json()["meta"]["total"] == 1
+        projected = response.json()["data"][0]
+        assert projected["normalized_merchant"] == "Synthetic Coffee"
+        assert projected["inferred_category"] == "dining"
+        assert projected["metadata"] == {
+            "base_only": "kept",
+            "collision": "overlay",
+            "overlay_only": "kept",
+            "merchant": "Synthetic Cafe",
+            "amount": "12.50",
+            "currency": "usd",
+        }
+        summary = await client.get(
+            "/api/finance/spending-summary",
+            params={
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-31",
+                "group_by": "category",
+            },
+        )
+        assert summary.status_code == 200
+        assert {group["key"] for group in summary.json()["groups"]} == {"dining", "shopping"}
+    # Canonical read paths run under the ordinary daemon role, after bootstrap and real migrations.
+    async with reader.acquire() as conn:
+        await conn.execute("SET ROLE butler_finance_rw")
+        try:
+            result = await roster_module("finance", "tools/transactions").list_transactions(conn)
+            assert len(result["items"]) == 3
+        finally:
+            await conn.execute("RESET ROLE")
+    # Replaying the installer must not overwrite enrichment written since cutover.
+    await reader.execute("UPDATE transactions SET normalized_merchant='New name' WHERE id=$1", txn)
+    mod = load_migration(_FINANCE_MIGRATIONS / "023_transaction_overlay_cutover.py")
+    async with reader.acquire() as conn, conn.transaction():
+        await _apply(conn, mod, "upgrade")
+    await reader.execute("SELECT mcp_install_finance_projection(true)")
+    assert (
+        await reader.fetchval("SELECT normalized_merchant FROM transactions WHERE id=$1", txn)
+        == "New name"
+    )
+    assert (
+        await reader.fetchval("SELECT display_merchant FROM transactions WHERE id=$1", txn)
+        == "New name"
+    )
+
+
+async def test_transaction_overlay_accounts_and_ambiguous_refusal(overlay_predecessor, db):
+    """An account-specific fact cannot bleed; an accountless ambiguous fact rolls back."""
+    from butlers.migrations import run_migrations
+
+    pool = await db.open(overlay_predecessor, schema="finance")
+    accounts = [
+        await pool.fetchval(
+            "INSERT INTO accounts(institution,type,currency) VALUES($1,'checking','USD') RETURNING id",
+            name,
+        )
+        for name in ("Synthetic Bank A", "Synthetic Bank B")
+    ]
+    txns = [await _overlay_seed(pool, account_id=account) for account in accounts]
+    fact = await _overlay_fact(pool, metadata={"normalized_merchant": "Ambiguous"})
+    with pytest.raises(Exception, match="finance_overlay_ambiguous"):
+        await run_migrations(overlay_predecessor, "finance", schema="finance")
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM transactions WHERE normalized_merchant IS NOT NULL"
+        )
+        == 0
+    )
+    assert await pool.fetchval("SELECT count(*) FROM facts WHERE id=$1", fact) == 1
+    # Correct only the isolated fixture's missing provenance, then replay the real migration.
+    await pool.execute(
+        "UPDATE facts SET metadata=metadata || jsonb_build_object('account_id',$1::text) WHERE id=$2",
+        str(accounts[0]).upper(),
+        fact,
+    )
+    await run_migrations(overlay_predecessor, "finance", schema="finance")
+    assert (
+        await pool.fetchval("SELECT normalized_merchant FROM transactions WHERE id=$1", txns[0])
+        == "Ambiguous"
+    )
+    assert (
+        await pool.fetchval("SELECT normalized_merchant FROM transactions WHERE id=$1", txns[1])
+        is None
+    )
+
+
+@pytest.mark.parametrize("conflict", ["account", "metadata"])
+async def test_transaction_overlay_divergence_refuses_without_data_loss(
+    overlay_predecessor, db, conflict
+):
+    from butlers.migrations import run_migrations
+
+    pool = await db.open(overlay_predecessor, schema="finance")
+    txn = await _overlay_seed(pool, metadata={"original": "kept"})
+    fact = await _overlay_fact(pool, metadata={"normalized_merchant": "Synthetic display"})
+    if conflict == "account":
+        await pool.execute(
+            "UPDATE facts SET metadata=metadata || jsonb_build_object('account_id',$1::text) WHERE id=$2",
+            "00000000-0000-0000-0000-000000000123",
+            fact,
+        )
+        expected = "finance_overlay_account_conflict"
+    else:
+        await pool.execute(
+            "UPDATE transactions SET metadata='[\"legacy\"]'::jsonb WHERE id=$1", txn
+        )
+        expected = "finance_overlay_metadata_invalid"
+    before = await pool.fetchval("SELECT to_jsonb(t) FROM transactions t WHERE id=$1", txn)
+    history = await pool.fetchval("SELECT to_jsonb(f) FROM facts f WHERE id=$1", fact)
+    with pytest.raises(Exception, match=expected):
+        await run_migrations(overlay_predecessor, "finance", schema="finance")
+    assert await pool.fetchval("SELECT to_jsonb(t) FROM transactions t WHERE id=$1", txn) == before
+    assert await pool.fetchval("SELECT to_jsonb(f) FROM facts f WHERE id=$1", fact) == history
+
+
+async def test_transaction_overlay_malformed_history_and_downgrade(overlay_predecessor, db):
+    """Unmatchable history stays intact; a populated rollback never discards enrichment."""
+    from butlers.migrations import run_migrations
+
+    pool = await db.open(overlay_predecessor, schema="finance")
+    txn = await _overlay_seed(pool)
+    fact = await _overlay_fact(pool, metadata={"amount": "not-money", "normalized_merchant": "Bad"})
+    orphan = await _overlay_fact(pool, merchant="History only")
+    await run_migrations(overlay_predecessor, "finance", schema="finance")
+    assert (
+        await pool.fetchval("SELECT normalized_merchant FROM transactions WHERE id=$1", txn) is None
+    )
+    assert await pool.fetchval("SELECT count(*) FROM facts WHERE id=ANY($1)", [fact, orphan]) == 2
+    mod = load_migration(_FINANCE_MIGRATIONS / "023_transaction_overlay_cutover.py")
+    async with pool.acquire() as conn, conn.transaction():
+        await _apply(conn, mod, "downgrade")
+        await _apply(conn, mod, "upgrade")
+    await pool.execute("UPDATE transactions SET inferred_category='dining' WHERE id=$1", txn)
+    with pytest.raises(asyncpg.RaiseError, match="finance_overlay_downgrade_refused"):
+        async with pool.acquire() as conn, conn.transaction():
+            await _apply(conn, mod, "downgrade")
+    assert (
+        await pool.fetchval("SELECT inferred_category FROM transactions WHERE id=$1", txn)
+        == "dining"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Migration loader helpers (shared by all migration test classes below)

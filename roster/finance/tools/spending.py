@@ -122,7 +122,7 @@ async def spending_summary(
     # dashboard total. The exclusion applies to every group_by dimension, not just category.
     conditions: list[str] = [
         "direction = 'debit'",
-        "COALESCE(metadata->>'inferred_category', category) NOT IN ('transfer', 'uncategorized')",
+        "COALESCE(inferred_category, category) NOT IN ('transfer', 'uncategorized')",
         "posted_at::date >= $1",
         "posted_at::date <= $2",
     ]
@@ -132,7 +132,7 @@ async def spending_summary(
     idx = 3
 
     if category_filter is not None:
-        conditions.append(f"COALESCE(metadata->>'inferred_category', category) = ${idx}")
+        conditions.append(f"COALESCE(inferred_category, category) = ${idx}")
         params.append(category_filter)
         idx += 1
 
@@ -178,7 +178,7 @@ async def spending_summary(
 
     elif group_by == "category":
         # Overlay-aware category, matching the dashboard API group expression.
-        group_expr = "COALESCE(metadata->>'inferred_category', category)"
+        group_expr = "COALESCE(inferred_category, category)"
         grouped_rows = await pool.fetch(
             f"""
             SELECT currency, {group_expr} AS key,
@@ -194,7 +194,7 @@ async def spending_summary(
 
     elif group_by == "merchant":
         # Overlay-aware merchant, matching the dashboard API group expression.
-        group_expr = "COALESCE(metadata->>'normalized_merchant', merchant)"
+        group_expr = "COALESCE(normalized_merchant, merchant)"
         grouped_rows = await pool.fetch(
             f"""
             SELECT currency, {group_expr} AS key,

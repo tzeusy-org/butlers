@@ -41,8 +41,6 @@ _BASE_STORE_WRITERS = {"store_fact", "store_episode", "store_rule"}
 #: function is in ``STAMPS_SEPARATELY``.
 STAMPS = {
     "roster/finance/tools/alerts.py::alert_configure",
-    "roster/finance/tools/facts.py::bulk_record_transactions",
-    "roster/finance/tools/facts.py::bulk_update_transactions",
     "roster/health/tools/conditions.py::symptom_update",
     "roster/health/tools/diet.py::meal_update",
     "roster/health/tools/measurements.py::measurement_update",
@@ -160,7 +158,6 @@ COPIES_FORWARD = {
 
 #: Reads ids, counts or expiry from the store (dedupe, supersession lookups), no text.
 READS_NO_TEXT = {
-    "roster/finance/tools/facts.py::record_transaction_fact",
     "roster/relationship/jobs/relationship_jobs.py::run_interaction_sync",
     "roster/relationship/tools/gifts.py::gift_add_for_entity",
     "roster/relationship/tools/interactions.py::interaction_log",
@@ -176,7 +173,6 @@ READS_NO_TEXT = {
 #: exposure. All reach the store through the statements above or a stamped ``store_*``.
 AUDITED_WRITER_TOOLS = {
     "bulk_record_transactions",
-    "bulk_update_transactions",
     "commitment_resolve_from_utterance",
     "condition_add",
     "condition_update",

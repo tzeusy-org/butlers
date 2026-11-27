@@ -68,8 +68,8 @@ async def _insert_tx(
         """
         INSERT INTO transactions
             (merchant, amount, currency, direction, category, posted_at, account_id,
-             source_message_id, metadata, deleted_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10)
+             source_message_id, metadata, deleted_at, inferred_category)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid, $8, $9, $10, $11)
         """,
         merchant,
         Decimal(amount),
@@ -81,6 +81,7 @@ async def _insert_tx(
         source_message_id,
         metadata if metadata is not None else {},
         deleted_at,
+        (metadata or {}).get("inferred_category"),
     )
 
 
@@ -286,9 +287,8 @@ async def test_spending_summary_category_filter_matches_inferred_category_overla
 
     A row whose raw category is benign but whose ``inferred_category`` overlay
     matches the filter must be included, and a row whose raw category matches
-    the filter but whose overlay says otherwise must be excluded — parity with
-    facts.py's COALESCE(metadata->>'inferred_category', metadata->>'category')
-    category_filter expression.
+    the filter but whose enrichment column says otherwise must be excluded.
+    The fixture seeds that column just as the canonical writer does.
     """
     from butlers.tools.finance.spending import spending_summary
 
@@ -436,7 +436,7 @@ async def test_spending_summary_excludes_inferred_transfer_overlay(finance_pool)
 
     A row whose raw category is benign but whose ``inferred_category`` overlay is
     'transfer' must still be excluded, matching the dashboard's
-    COALESCE(metadata->>'inferred_category', category) expression.
+    COALESCE(inferred_category, category) expression.
     """
     from butlers.tools.finance.spending import spending_summary
 

@@ -1450,7 +1450,7 @@ def test_core_318_backfills_existing_rows_once_and_downgrades_last(
 
 
 def test_finance_overlay_backfill_and_writer_parity(fresh_db) -> None:
-    """A real accepted transaction must expose exactly the legacy reader overlay."""
+    """Legacy inline enrichment migrates to the same display, then columns own display."""
     url = fresh_db(
         "core",
         "finance",
@@ -1486,7 +1486,10 @@ def test_finance_overlay_backfill_and_writer_parity(fresh_db) -> None:
             ).scalar_one()
             assert after.get("display_merchant") == row["expected_merchant"]
             assert after.get("display_category") == row["expected_category"]
-            assert {key: after[key] for key in before} == before
+            assert {key: after[key] for key in before if key != "normalized_merchant"} == {
+                key: value for key, value in before.items() if key != "normalized_merchant"
+            }
+            assert after["normalized_merchant"] == "Shown merchant"
             for metadata, merchant, category in (
                 ({}, "RAW merchant", "groceries"),
                 ({"normalized_merchant": "", "inferred_category": ""}, "", ""),
@@ -1503,12 +1506,27 @@ def test_finance_overlay_backfill_and_writer_parity(fresh_db) -> None:
             ):
                 current = conn.execute(
                     text(
-                        "UPDATE finance.transactions SET metadata=CAST(:meta AS jsonb) "
+                        "UPDATE finance.transactions SET metadata=CAST(:meta AS jsonb), "
+                        "normalized_merchant=:merchant, inferred_category=:category "
                         "WHERE id=:id RETURNING display_merchant,display_category"
                     ),
-                    {"meta": json.dumps(metadata), "id": before["id"]},
+                    {
+                        "meta": json.dumps(metadata),
+                        "merchant": merchant,
+                        "category": category,
+                        "id": before["id"],
+                    },
                 ).one()
                 assert tuple(current) == (merchant, category)
+            current = conn.execute(
+                text(
+                    "UPDATE finance.transactions SET metadata='{}'::jsonb "
+                    "WHERE id=:id RETURNING display_merchant,display_category"
+                ),
+                {"id": before["id"]},
+            ).one()
+            assert tuple(current) == ("Replaced", "other")
+            conn.execute(text("SELECT finance.mcp_install_finance_projection(false)"))
     finally:
         engine.dispose()
 

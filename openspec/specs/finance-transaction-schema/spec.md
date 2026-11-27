@@ -136,31 +136,37 @@ The `finance.transactions` table SHALL enforce idempotent ingestion via three ti
 - **WHEN** a transaction has neither `external_id` nor `source_message_id`
 - **THEN** `uq_txn_composite_dedupe` SHALL enforce `UNIQUE (account_id, posted_at, amount, merchant)` with partial condition `WHERE external_id IS NULL AND source_message_id IS NULL`
 
-### Requirement: SPO transaction backfill
+### Requirement: Single transaction ledger
 
-The finance butler SHALL provide an on-demand, idempotent backfill, `backfill_spo_transactions(pool, batch_size=500, scope='finance')` in `roster/finance/tools/backfill.py`, that copies active transaction facts (`predicate IN ('transaction_debit', 'transaction_credit')`, `validity = 'active'`, matching `scope`) from the facts table into `finance.transactions`. It is a runtime tool, not Alembic migration SQL.
+`finance.transactions` SHALL be the only transaction ledger. Enrichment SHALL be
+bound to its transaction ID through `normalized_merchant` and `inferred_category`
+columns. Runtime transaction tools and dashboard reads SHALL NOT read or write
+transaction facts. Existing facts SHALL remain unchanged as memory history.
 
-#### Scenario: Facts are extracted defensively
-- **WHEN** the backfill processes a transaction fact
-- **THEN** it SHALL extract `merchant`, `amount`, `currency`, `category`, `description`, `payment_method`, `account_id`, `source_message_id`, `external_ref`, and `receipt_url` from the fact's JSONB metadata, deriving `direction` from metadata or the predicate name when absent
-- **AND** a fact that fails extraction or casting SHALL be recorded as a `SkippedRow` with its reason and skipped, not raised as a hard error
-- **AND** each inserted row SHALL carry `backfilled_from_fact_id` in its `metadata`
+#### Scenario: Transaction writes and enrichment
+- **WHEN** a transaction is recorded, imported, normalized, or categorized
+- **THEN** the mutation SHALL target its ledger row, without a transaction fact mirror
+- **AND** raw merchant/category, account scoping, tiered deduplication, and metadata SHALL be preserved
+- **AND** dashboard filtering and spending groups SHALL prefer the enrichment columns over raw fields
+- **AND** the public scalar display projection SHALL derive from the same enrichment columns
+- **AND** enrichment edits under exposed goal lineage SHALL retain the writer pointer on the ledger row
 
-#### Scenario: Backfill deduplicates against existing transactions
-- **WHEN** a fact matches an existing `finance.transactions` row on the same tiered key `record_transaction` uses (`source_message_id` with merchant, amount, and `posted_at`; else `external_ref` with `account_id`; else the `posted_at`, merchant, amount, and currency composite)
-- **THEN** the backfill SHALL NOT insert a second row
-- **AND** running the backfill again SHALL insert nothing new
+#### Scenario: Compatibility migration
+- **WHEN** the cutover migration runs against existing ledger rows and legacy facts
+- **THEN** it SHALL copy the latest matching active finance transaction fact's enrichment
+  and merge its metadata over base metadata, preserving the previous response shape
+- **AND** matching SHALL use posted time, raw merchant, currency, and absolute amount,
+  narrowed by account provenance when supplied
+- **AND** a fact matching multiple ledger rows SHALL refuse the upgrade atomically
+  rather than spread enrichment across accounts or choose a transaction arbitrarily
+- **AND** conflicting explicit account provenance or non-object ledger metadata SHALL refuse without changing stored history
+- **AND** malformed or unmatched facts SHALL remain historical facts without creating ledger rows
+- **AND** inline legacy metadata SHALL supply enrichment when no matching fact does
+- **AND** replay SHALL preserve enrichment changed after the first successful cutover
+- **AND** a populated downgrade SHALL refuse to discard enrichment or provenance
 
-#### Scenario: Backfilled rows take the default source
-- **WHEN** the backfill inserts a row
-- **THEN** it SHALL NOT set the `source` column, so the row inherits the table default `'manual'`
-
-### Requirement: [TARGET-STATE] SPO transaction mirror retirement
-
-Once the dedicated-table write path has run stably, the finance butler SHALL stop mirroring transaction writes to the facts table and SHALL retire the SPO-based transaction tools, keeping existing facts as read-only history.
-
-#### Scenario: Mirror write and SPO tools are retired
-- **WHEN** the SPO mirror is retired
-- **THEN** `record_transaction` SHALL no longer mirror writes to the facts table
-- **AND** existing transaction facts SHALL remain in place, read-only, for memory recall
-- **AND** `record_transaction_fact` and `list_transaction_facts` SHALL be removed from the MCP tool surface
+#### Scenario: Retired transaction source tools
+- **WHEN** Finance tools are registered
+- **THEN** `record_transaction_fact`, `list_transaction_facts`, `spending_summary_facts`,
+  and the runtime SPO transaction backfill SHALL NOT be exposed
+- **AND** account, subscription, bill, and other non-transaction memory tools SHALL remain available

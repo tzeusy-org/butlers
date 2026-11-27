@@ -57,14 +57,28 @@ cancellation, or all-clear. The producer mapping lives in
   than per-parent queries.
 - `roster/finance/tools/transactions.py` runs composite same-day dedup only with extra provenance
   (`account_id` or `source_message_id`); source-less manual rows stay distinct.
-- `roster/finance/tools/facts.py::_TRANSACTION_PREDICATES` must stay a `list`: it is interpolated
-  with `!r` into `ARRAY{...}::text[]`, and a tuple renders `ARRAY(...)`.
-- Transaction ingestion has two paths with different dedupe: `POST /api/finance/transactions/bulk`
-  writes facts directly (`tools/facts.py::bulk_record_transactions`, deduping `source_message_id`
-  per predicate and hashing signed amounts, so opposite-sign imports of one event can persist as
-  both debit and credit), while the MCP tool goes through `record_transaction` and mirrors to facts.
-  Retries can leave soft-deleted ledger rows whose mirrored facts stay `active`; reconciliation
-  retracts facts matching a deleted row on merchant, amount, currency, `posted_at` and direction.
+- Transactions have one ledger, `finance.transactions`. The daemon import path remains
+  `butlers.tools.finance.transactions`; `bulk_record_transactions` and stored-CSV
+  `import_transactions` share its deduplication. The dashboard bulk-import POST route is retired;
+  frontend and CSV skills use daemon import, while bulk enrichment PATCH remains supported.
+- Merchant normalization/category inference update the transaction row's `normalized_merchant`
+  and `inferred_category`. Dashboard filters/groups and spending summaries use these columns;
+  raw merchant/category and other metadata remain intact. Non-transaction memory helpers live in
+  `tools/property_facts.py`; account, subscription, bill and alert facts are unchanged.
+- `finance_023` follows `finance_022`. It copies the latest active matching legacy fact by
+  timestamp, merchant, currency and absolute amount, narrowing by an explicit account UUID.
+  Accountless facts matching multiple ledger rows refuse the whole upgrade, as do
+  explicit account conflicts and non-object ledger metadata that would corrupt a merge. Duplicate facts for
+  one transaction use latest `created_at`, then UUID for a deterministic tie; unmatched/malformed
+  facts remain unchanged history. It never imports historical facts as new ledger rows. Existing
+  inline enrichment and merged response metadata survive, as do exposed writer pointers.
+  The scalar public projection and its strict bootstrap installer also switch to the
+  ledger columns, so subsequent enrichment appears on both read surfaces.
+- Cut over with legacy transaction/enrichment writers drained: the migration locks both stores
+  during its snapshot, but it is not an ongoing synchronizer for writes by an old process after
+  that snapshot. Run the migration as the ordinary migration owner, then start the new code.
+  No live cutover is performed by this source change. Reapplying the installer preserves later
+  enrichment, and downgrade refuses populated enrichment/provenance instead of deleting it.
 - `merchant_mappings` columns are `raw_pattern`, `normalized_merchant`, `learned_from_count` and
   `source`; the legacy `merchant`, `merchant_pattern` and `sample_count` columns do not exist.
 

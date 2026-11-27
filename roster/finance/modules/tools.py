@@ -38,10 +38,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     from butlers.tools.finance import bills as _bills
     from butlers.tools.finance import budgets as _budgets
     from butlers.tools.finance import data_import as _data_import
-    from butlers.tools.finance import facts as _facts
     from butlers.tools.finance import feed_reconciliation as _feed_reconciliation
     from butlers.tools.finance import overview as _overview
     from butlers.tools.finance import pattern_recognition as _pattern_recognition
+    from butlers.tools.finance import property_facts as _facts
     from butlers.tools.finance import reconciliation as _reconciliation
     from butlers.tools.finance import spending as _spending
     from butlers.tools.finance import subscriptions as _subscriptions
@@ -497,40 +497,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     # =================================================================
 
     @_tool("facts")
-    async def list_transaction_facts(
-        start_date: str | None = None,
-        end_date: str | None = None,
-        category: str | None = None,
-        merchant: str | None = None,
-        account_id: str | None = None,
-        min_amount: float | None = None,
-        max_amount: float | None = None,
-        direction: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        """Return a paginated, filtered list of transaction facts from the SPO store.
-
-        direction: 'debit' (money out) or 'credit' (money in / refund), or None for both.
-        Results are sorted by valid_at DESC.
-        """
-        if direction is not None and direction not in ("debit", "credit"):
-            raise ValueError("direction must be one of 'debit', 'credit', or None")
-        return await _facts.list_transaction_facts(
-            module._get_pool(),
-            start_date=(datetime.fromisoformat(start_date) if start_date is not None else None),
-            end_date=(datetime.fromisoformat(end_date) if end_date is not None else None),
-            category=category,
-            merchant=merchant,
-            account_id=account_id,
-            min_amount=min_amount,
-            max_amount=max_amount,
-            direction=direction,
-            limit=limit,
-            offset=offset,
-        )
-
-    @_tool("facts")
     async def track_account_fact(
         institution: str,
         type: str,
@@ -593,37 +559,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     # NOTE: `track_bill_fact` is intentionally NOT registered as a standalone MCP
     # tool. Bill writes flow through `track_bill`, which fires the SPO mirror via
-    # the private `facts._write_bill_fact` helper. Exposing a separate bill-fact
+    # the private `property_facts._write_bill_fact` helper. Exposing a separate bill-fact
     # tool was a footgun (direct calls bypass track_bill's table upsert +
     # reconciliation), so the registration was removed (Track E2 / bu-z0nzz).
-
-    @_tool("facts")
-    async def spending_summary_facts(
-        start_date: str | None = None,
-        end_date: str | None = None,
-        group_by: str | None = None,
-        category_filter: str | None = None,
-        account_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Aggregate outflow (debit) spending from SPO transaction facts over a date range.
-
-        Returns the same currency-honest shape as spending_summary() but reads
-        from the fact store, including canonical by_currency buckets and the
-        legacy scalar degradation marker.
-        Amounts in groups are string-encoded for NUMERIC precision.
-        group_by: category | merchant | week | month, or None (single bucket).
-        Defaults to the current calendar month when start_date/end_date are omitted.
-        When group_by='category', uses inferred_category overlay when present.
-        When group_by='merchant', uses normalized_merchant overlay when present.
-        """
-        return await _facts.spending_summary_facts(
-            module._get_pool(),
-            start_date=start_date,
-            end_date=end_date,
-            group_by=group_by,
-            category_filter=category_filter,
-            account_id=account_id,
-        )
 
     # =================================================================
     # Merchant normalization and bulk update tools
@@ -638,9 +576,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         limit: int = 500,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Return distinct merchants from active transaction facts with aggregate stats.
+        """Return distinct merchants from active ledger transactions with aggregate stats.
 
-        Groups by normalized_merchant when present, falling back to original merchant.
+        Groups by each (raw merchant, normalized_merchant) pair.
         Returns: {items: [{merchant, normalized_merchant, count, total_amount}],
         total, limit, offset}
 
@@ -650,7 +588,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         limit: Max results per page (default 500, max 1000)
         offset: Pagination offset
         """
-        return await _facts.list_distinct_merchants(
+        return await _transactions.list_distinct_merchants(
             module._get_pool(),
             start_date=start_date,
             end_date=end_date,
@@ -664,7 +602,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     async def bulk_update_transactions(
         ops: str,
     ) -> dict[str, Any]:
-        """Apply bulk metadata overlay to matching transaction facts.
+        """Apply bulk metadata overlay to matching ledger transactions.
 
         ops: JSON string — array of update operations, each with shape:
           {"match": {"merchant_pattern": "<ILIKE>"}, "set": {"normalized_merchant": "...",
@@ -673,7 +611,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         Constraints:
         - Maximum 200 ops per call.
         - Only 'normalized_merchant' and 'inferred_category' keys may be set.
-        - Uses JSONB overlay so original merchant/category columns are NEVER modified.
+        - Updates enrichment columns by transaction ID; raw merchant/category remain unchanged.
         - merchant_pattern uses ILIKE (case-insensitive, % wildcards supported).
 
         Returns: {updated_total, results: [{pattern, set, matched, updated}]}
@@ -681,7 +619,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         import json as _json
 
         parsed_ops = _json.loads(ops)
-        return await _facts.bulk_update_transactions(
+        return await _transactions.bulk_update_transactions(
             module._get_pool(),
             ops=parsed_ops,
         )

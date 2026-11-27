@@ -1,6 +1,6 @@
 """Real-PG behavior of finance bulk import (bu-ylnw9q).
 
-Both bulk paths must land rows in ``finance.transactions`` (what GET /transactions
+Daemon bulk and stored-CSV imports must land rows in ``finance.transactions`` (what GET /transactions
 reads) and report exact imported / skipped counts when duplicates are present.
 """
 
@@ -10,7 +10,7 @@ import asyncio
 import importlib.util
 import shutil
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -63,8 +63,7 @@ async def _as_finance_rw(conn: asyncpg.Connection) -> None:
 
 @pytest.fixture
 async def finance_pool(db):
-    # The memory chain provides ``facts``: the SPO mirror writes it and the transaction list
-    # joins its correction overlay.
+    # Include historical memory facts to prove ledger writes leave them unchanged.
     return await db(
         "core",
         "memory",
@@ -199,7 +198,7 @@ async def test_blob_csv_deduplicates_shared_scope_batches_and_concurrent_replays
     assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 3
 
 
-async def test_rest_bulk_rows_list_and_counts_are_exact(finance_pool):
+async def test_mcp_bulk_rows_list_and_counts_are_exact(finance_pool):
     from fastapi import FastAPI
 
     router_mod = _load_router()
@@ -212,22 +211,225 @@ async def test_rest_bulk_rows_list_and_counts_are_exact(finance_pool):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            "/api/finance/transactions/bulk",
-            json={
-                "transactions": [
-                    _row("Alpha", "r-1"),
-                    _row("Alpha", "r-1"),  # in-batch duplicate
-                    _row("Beta", "r-2"),
-                ],
-                "source": "csv_import",
-            },
+        body = await bulk_record_transactions(
+            finance_pool,
+            transactions=[
+                _row("Alpha", "r-1")
+                | {
+                    "metadata": {
+                        "normalized_merchant": "Alpha display",
+                        "inferred_category": "dining",
+                        "order_id": "synthetic-order",
+                    }
+                },
+                _row("Alpha", "r-1"),
+                _row("Beta", "r-2") | {"posted_at": "2026-01-16T10:00:00Z"},
+            ],
+            source="csv_import",
         )
         listed = await client.get("/api/finance/transactions")
 
-    assert resp.status_code == 200
-    body = resp.json()
+    assert listed.status_code == 200
     assert (body["total"], body["imported"], body["skipped"], body["errors"]) == (3, 2, 1, 0)
     assert body["error_details"] == [{"index": 1, "reason": "duplicate"}]
     merchants = sorted(t["merchant"] for t in listed.json()["data"])
     assert merchants == ["Alpha", "Beta"]
+    assert [row["merchant"] for row in listed.json()["data"]] == ["Beta", "Alpha"]
+    alpha = next(row for row in listed.json()["data"] if row["merchant"] == "Alpha")
+    assert alpha["normalized_merchant"] == "Alpha display"
+    assert alpha["inferred_category"] == "dining"
+    assert alpha["metadata"]["order_id"] == "synthetic-order"
+    assert "normalized_merchant" not in alpha["metadata"]
+    assert "inferred_category" not in alpha["metadata"]
+    assert all(t["metadata"]["import_source"] == "csv_import" for t in listed.json()["data"])
+
+
+async def test_ledger_enrichment_api_and_exposed_writer_preserve_history(finance_pool):
+    """MCP enrichment, REST edits, filters and analytics share transaction-ID fields."""
+    from uuid import uuid4
+
+    from fastapi import FastAPI
+
+    from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
+    from butlers.testing.db_manager import db_manager
+
+    spending_summary = roster_module("finance", "tools/spending").spending_summary
+    bulk_update_transactions = roster_module(
+        "finance", "tools/transactions"
+    ).bulk_update_transactions
+
+    history_id = await finance_pool.fetchval(
+        """INSERT INTO facts(subject,predicate,scope,content,metadata,valid_at)
+           VALUES ('owner','transaction_debit','finance','synthetic history',
+                   '{"merchant":"History only","amount":"9.00","currency":"USD"}',now())
+           RETURNING id"""
+    )
+    history = await finance_pool.fetchval("SELECT to_jsonb(f) FROM facts f WHERE id=$1", history_id)
+    imported = await bulk_record_transactions(
+        finance_pool, [_row("Alpha RAW", "e-1"), _row("Beta", "e-2")]
+    )
+    assert imported["imported"] == 2
+    # A fresh write has a positive ledger witness and cannot add/modify transaction facts.
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 2
+    assert (
+        await finance_pool.fetchval(
+            "SELECT count(*) FROM facts WHERE predicate LIKE 'transaction_%'"
+        )
+        == 1
+    )
+
+    goal, invocation = uuid4(), uuid4()
+    lineage = VerifiedLineage(
+        goal_id=goal,
+        invocation_id=invocation,
+        depth=0,
+        origin="owner",
+        exposed=True,
+        capability="bulk_update_transactions",
+        args_digest="test",
+        call_id=uuid4(),
+    )
+    with lineage_scope(lineage):
+        result = await bulk_update_transactions(
+            finance_pool,
+            [
+                {
+                    "match": {"merchant_pattern": "Alpha%"},
+                    "set": {
+                        "normalized_merchant": "Synthetic Coffee",
+                        "inferred_category": "dining",
+                    },
+                }
+            ],
+        )
+    assert result["updated_total"] == 1
+    stored = await finance_pool.fetchrow("SELECT * FROM transactions WHERE merchant='Alpha RAW'")
+    assert (stored["taint_goal_id"], stored["taint_invocation_id"]) == (goal, invocation)
+
+    router_mod = _load_router()
+    app = FastAPI()
+    app.include_router(router_mod.router)
+    app.dependency_overrides[get_db] = lambda: db_manager({"finance": finance_pool})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.patch(
+            "/api/finance/transactions/bulk-metadata",
+            json={
+                "ops": [
+                    {
+                        "match": {"merchant_pattern": "Alpha%"},
+                        "set": {"inferred_category": "shopping"},
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["updated_total"] == 1
+        selected = await client.get(
+            "/api/finance/transactions",
+            params={
+                "merchant": "Synthetic Coffee",
+                "category": "shopping",
+            },
+        )
+        assert selected.status_code == 200
+        assert selected.json()["meta"]["total"] == 1
+        row = selected.json()["data"][0]
+        assert (row["merchant"], row["category"]) == ("Alpha RAW", "groceries")
+        assert (row["normalized_merchant"], row["inferred_category"]) == (
+            "Synthetic Coffee",
+            "shopping",
+        )
+        summary = await client.get(
+            "/api/finance/spending-summary",
+            params={
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-31",
+                "group_by": "category",
+            },
+        )
+        assert summary.status_code == 200
+        assert any(group["key"] == "shopping" for group in summary.json()["groups"])
+        distinct = await client.get("/api/finance/merchants/distinct")
+        assert distinct.status_code == 200
+        assert any(
+            item["normalized_merchant"] == "Synthetic Coffee" for item in distinct.json()["data"]
+        )
+        removed = await client.post(
+            "/api/finance/transactions/bulk", json={"transactions": [_row("Removed", "no")]}
+        )
+        assert removed.status_code == 404
+
+    # Owner edits leave the previously exposed writer pointer in place.
+    stored = await finance_pool.fetchrow("SELECT * FROM transactions WHERE id=$1", stored["id"])
+    assert (stored["taint_goal_id"], stored["taint_invocation_id"]) == (goal, invocation)
+    assert (stored["display_merchant"], stored["display_category"]) == (
+        "Synthetic Coffee",
+        "shopping",
+    )
+    assert (
+        await finance_pool.fetchval("SELECT to_jsonb(f) FROM facts f WHERE id=$1", history_id)
+        == history
+    )
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 2
+    spend = await spending_summary(finance_pool, "2026-01-01", "2026-01-31", group_by="merchant")
+    assert any(group["key"] == "Synthetic Coffee" for group in spend["groups"])
+    match_transaction_to_bills = roster_module(
+        "finance", "tools/reconciliation"
+    ).match_transaction_to_bills
+
+    match = await match_transaction_to_bills(
+        finance_pool,
+        dict(stored),
+        bills=[
+            {
+                "id": uuid4(),
+                "payee": "Synthetic Coffee",
+                "currency": "USD",
+                "amount": Decimal("12.50"),
+                "due_date": date(2026, 1, 20),
+                "statement_period_end": None,
+            }
+        ],
+    )
+    assert match["tier"] == "auto_settle"
+    prior = {
+        **_row("Prior ledger", "e-prior", "-6.25"),
+        "posted_at": "2025-12-15T10:00:00Z",
+        "category": "transfer",
+        "metadata": {"inferred_category": "shopping"},
+    }
+    with lineage_scope(lineage):
+        assert (await bulk_record_transactions(finance_pool, [prior]))["imported"] == 1
+    prior_row = await finance_pool.fetchrow(
+        "SELECT * FROM transactions WHERE merchant='Prior ledger'"
+    )
+    assert (prior_row["taint_goal_id"], prior_row["taint_invocation_id"]) == (goal, invocation)
+    trend = await roster_module("finance", "jobs/finance_jobs")._month_over_month_trend(
+        finance_pool, last_month_start=date(2026, 1, 1), last_month_end=date(2026, 2, 1)
+    )
+    assert trend is not None
+    assert "shopping +100%" in trend["notable"]
+    split = await roster_module("finance", "tools/transactions").split_transaction(
+        finance_pool,
+        str(stored["id"]),
+        [
+            {"amount": "7.50", "category": "groceries"},
+            {"amount": "5.00", "category": "dining"},
+        ],
+    )
+    assert len(split["splits"]) == 2
+    for child in split["splits"]:
+        assert child["normalized_merchant"] == child["display_merchant"] == "Synthetic Coffee"
+        assert child["inferred_category"] == child["display_category"] == "shopping"
+        assert str(child["taint_goal_id"]) == str(goal)
+        assert str(child["taint_invocation_id"]) == str(invocation)
+    updated = await roster_module("finance", "tools/transactions").update_transaction(
+        finance_pool,
+        split["splits"][0]["id"],
+        metadata={"normalized_merchant": "Owner display", "receipt": "kept"},
+    )
+    assert updated["normalized_merchant"] == updated["display_merchant"] == "Owner display"
+    assert updated["metadata"]["receipt"] == "kept"
+    assert updated["taint_goal_id"] == str(goal)

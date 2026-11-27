@@ -140,7 +140,7 @@ def _payee_match(
     """Match bill payee against a transaction merchant name.
 
     Uses the normalized forms; also checks the pre-normalized merchant string
-    from ``T.metadata->>'normalized_merchant'`` when available.
+    from the ledger's ``normalized_merchant`` when available.
 
     Returns
     -------
@@ -227,8 +227,7 @@ async def match_transaction_to_bills(
     txn:
         Transaction dict as returned by ``record_transaction``.  Required keys:
         ``id``, ``direction``, ``merchant``, ``currency``, ``amount`` (absolute),
-        ``posted_at`` (ISO string or datetime).  Optional: ``metadata`` dict with
-        ``normalized_merchant``.
+        ``posted_at`` (ISO string or datetime). Optional: ``normalized_merchant``.
     bills:
         Optional pre-fetched list of pending/overdue bill dicts.  When provided,
         candidate filtering by currency is performed in-memory and no DB query
@@ -269,11 +268,8 @@ async def match_transaction_to_bills(
     except (AttributeError, TypeError):
         txn_date = txn_posted_at.date()  # type: ignore[union-attr]
 
-    # Extract optional pre-normalized merchant from metadata
-    txn_normalized: str | None = None
-    meta = txn.get("metadata")
-    if isinstance(meta, dict):
-        txn_normalized = meta.get("normalized_merchant")
+    # Ledger rows are authoritative, including an explicitly cleared value.
+    txn_normalized = txn.get("normalized_merchant")
 
     if bills is None:
         # Standalone path (Track C inline hook): guard against a txn that already
@@ -569,6 +565,7 @@ async def reconcile_bills(
             "currency": txn_row["currency"],
             "amount": abs(Decimal(str(txn_row["amount"]))),
             "posted_at": txn_row["posted_at"],
+            "normalized_merchant": txn_row.get("normalized_merchant"),
             "metadata": txn_row.get("metadata"),
         }
 

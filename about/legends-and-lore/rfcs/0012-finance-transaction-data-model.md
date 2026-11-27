@@ -5,7 +5,7 @@
 
 ## Summary
 
-The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The SPO fact layer (`public.facts`) receives a fire-and-forget mirror write for memory/recall compatibility but is never the primary query target for financial analytics. Seven supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. The phased move from SPO-primary storage is specified in `openspec/specs/finance-data-migration/spec.md`.
+The finance butler stores transactions in a dedicated `finance.transactions` table with typed columns, B-tree indexes, and tiered deduplication -- not in the SPO fact layer. The transaction mirror is retired: existing SPO facts remain memory history, while enrichment is bound to transaction IDs in the ledger. Seven supporting tables (`accounts`, `categories`, `merchant_mappings`, `recurring_groups`, `balance_snapshots`, `budgets`, `transaction_corrections`) and a materialized `spending_summaries` view provide the infrastructure for intelligence features. The current storage contract is specified in `openspec/specs/finance-transaction-schema/spec.md`.
 
 ## Motivation
 
@@ -486,16 +486,18 @@ No `DELETE FROM finance.transactions` statement exists anywhere in the codebase.
 
 `bulk_recategorize(merchant_pattern, new_category, create_rule)`: `UPDATE SET category = $1 WHERE merchant ILIKE $2 AND is_category_locked = false AND deleted_at IS NULL`. Record corrections for each updated row. If `create_rule = true`, upsert `merchant_mappings` with the pattern and category. Return count of updated transactions.
 
-### SPO Mirror Strategy
+### Historical SPO Compatibility
 
-The dedicated table is the primary store. The SPO fact layer is a secondary mirror for memory/recall compatibility.
+The dedicated table is the sole transaction ledger. Existing SPO facts remain historical memory records.
 
-- `record_transaction` writes to `finance.transactions` first, then fires a background task to mirror to `public.facts` with `predicate='transaction_{direction}'`, `valid_at=posted_at`, `entity_id=owner_entity_id`, `scope='finance'`, and metadata containing all transaction fields.
-- Mirror write is fire-and-forget. If it fails, the error is logged but the dedicated table write is not rolled back.
+- `record_transaction` and bulk import write only the dedicated transaction ledger.
+- `normalized_merchant` and `inferred_category` live on that transaction's row. The compatibility migration copies the latest unambiguous legacy overlay, including returned metadata and exposed writer pointers; ambiguous natural keys refuse rather than cross account boundaries.
+- Existing transaction facts remain unchanged for historical memory recall. Account, subscription, and bill property facts remain supported; the transaction fact CRUD, runtime backfill, and dashboard bulk-import route are retired.
+
 - Intelligence tools query `finance.transactions` exclusively.
 - Memory tools (`memory_recall`, `memory_search`) continue querying `public.facts`.
 
-Retirement of the mirror is governed by `openspec/specs/finance-data-migration/spec.md`.
+The cutover contract is governed by `openspec/specs/finance-transaction-schema/spec.md`.
 
 ### Dividing Line: Dedicated Table vs. SPO Facts
 
