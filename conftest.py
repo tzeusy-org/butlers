@@ -650,6 +650,10 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
     the entrypoint drops to ``postgres`` it exits on "sem_open failed ...
     Permission denied" (run 39770283852).
     """
+    # A database-scoped autovacuum worker has no login fields in pg_stat_activity.
+    # Keep automatic maintenance out of these short-lived clusters so it cannot
+    # trip the Relationship cutover guard during unrelated fixture setup.
+    container.with_command("postgres -c autovacuum=off")
     offset = environ.get("FAKETIME")
     library = next(
         (

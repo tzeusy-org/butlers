@@ -1229,9 +1229,8 @@ def test_core_acl_and_relationship_chain(postgres_container):
     assert not _table_exists_in_schema(db_url, "public", "_reminders_backup"), (
         "_reminders_backup table should have been dropped by rel_020"
     )
-    # The relationship head (rel_035 today, the effective-time expand) runs after
-    # the historical direct-DML migrations and keeps the deployed writer's legacy conflict target beside
-    # the new occurrence index; no cutover migration is in the chain.
+    # The full chain traverses both the expand and cutover revisions and
+    # arrives at head with the occurrence index as the active conflict target.
     engine = create_engine(db_url)
     try:
         with engine.connect() as conn:
@@ -1246,7 +1245,7 @@ def test_core_acl_and_relationship_chain(postgres_container):
             }
     finally:
         engine.dispose()
-    assert tuple(indexes) == (True, True)
+    assert tuple(indexes) == (False, True)
     # alembic_version also holds the core head here, so check membership of the
     # resolved relationship head rather than assert_at_chain_head's single row.
     assert get_chain_head("relationship") in versions

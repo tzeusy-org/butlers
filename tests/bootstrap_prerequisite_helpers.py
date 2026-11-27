@@ -195,9 +195,11 @@ def exercise_historical_bootstrap(postgres_container, tmp_path: Path, prepare, b
         admin.dispose()
     old_config = historical["_build_alembic_config"](normal_url, chains=["core"])
     command.upgrade(old_config, "core_122")
-    asyncio.run(
-        historical["run_migrations"](normal_url, chain="relationship", schema="relationship")
+    relationship_config = historical["_build_alembic_config"](
+        normal_url, chains=["relationship"], target_schema="relationship"
     )
+    # pinned-revision: keep the historical bootstrap at its pre-cutover Relationship state.
+    command.upgrade(relationship_config, "rel_046")
     command.upgrade(old_config, "core_195")
     normal = create_engine(normal_url)
     try:

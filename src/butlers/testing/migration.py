@@ -188,6 +188,9 @@ def _create_test_migration_role(admin_url: str, role: str, password: str) -> Non
                 ),
                 {"password": password},
             )
+            # The disposable login runs the same quiescence checks as a
+            # production migration login while retaining its other NOINHERIT grants.
+            conn.exec_driver_sql(f'GRANT pg_read_all_stats TO "{role}" WITH INHERIT TRUE')
     finally:
         engine.dispose()
 

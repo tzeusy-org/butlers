@@ -22,6 +22,7 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.pool import NullPool
 
 from alembic import command
 from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_connection
@@ -62,7 +63,9 @@ _NORMAL_ROLE_PASSWORDS = {
 def postgres_container():
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("pgvector/pgvector:pg17") as postgres:
+    with PostgresContainer("pgvector/pgvector:pg17").with_command(
+        "postgres -c autovacuum=off"
+    ) as postgres:
         yield postgres
 
 
@@ -261,7 +264,23 @@ def _configure_direct_acl_subjects(admin_url: str) -> None:
         engine.dispose()
 
 
-def _run_real_core_chain_with_relationship_prerequisite(shared_url: str) -> None:
+def _run_relationship_prerequisite(admin_url: str, shared_url: str) -> None:
+    """Give the test migration login census visibility only for the real cutover."""
+    # The admin session itself must disconnect before the migration census.
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    try:
+        with admin.connect() as connection:
+            connection.exec_driver_sql("GRANT pg_read_all_stats TO butlers")
+        try:
+            asyncio.run(run_migrations(shared_url, chain="relationship", schema="relationship"))
+        finally:
+            with admin.connect() as connection:
+                connection.exec_driver_sql("REVOKE pg_read_all_stats FROM butlers")
+    finally:
+        admin.dispose()
+
+
+def _run_real_core_chain_with_relationship_prerequisite(admin_url: str, shared_url: str) -> None:
     """Migrate the actual core chain through its cross-chain prerequisite.
 
     ``core_150`` grants access to the relationship fact table. The real
@@ -271,15 +290,15 @@ def _run_real_core_chain_with_relationship_prerequisite(shared_url: str) -> None
     """
     config = _build_alembic_config(shared_url, chains=["core"])
     command.upgrade(config, "core_122")
-    asyncio.run(run_migrations(shared_url, chain="relationship", schema="relationship"))
+    _run_relationship_prerequisite(admin_url, shared_url)
     asyncio.run(run_migrations(shared_url, chain="core"))
 
 
-def _run_core_chain_through_restore_drill_predecessor(shared_url: str) -> None:
+def _run_core_chain_through_restore_drill_predecessor(admin_url: str, shared_url: str) -> None:
     """Reach the real core_195 state without applying core_196 itself."""
     config = _build_alembic_config(shared_url, chains=["core"])
     command.upgrade(config, "core_122")
-    asyncio.run(run_migrations(shared_url, chain="relationship", schema="relationship"))
+    _run_relationship_prerequisite(admin_url, shared_url)
     command.upgrade(config, "core_195")
 
 
@@ -797,7 +816,7 @@ def test_privileged_rerun_preserves_existing_admin_interface_owner(
         "finalizer_owner": _ALTERNATE_BOOTSTRAP_ROLE,
     }
 
-    _run_core_chain_through_restore_drill_predecessor(shared_url)
+    _run_core_chain_through_restore_drill_predecessor(admin_url, shared_url)
     command.upgrade(_build_alembic_config(shared_url, chains=["core"]), "core_196")
 
 
@@ -806,11 +825,17 @@ def test_normal_migration_role_temp_catalog_shadow_cannot_subvert_restore_instal
 ) -> None:
     """The normal migration role's temporary ``pg_proc`` cannot shadow catalog checks."""
     admin_url, shared_url, *_ = _bootstrap_database(postgres_container)
-    _run_core_chain_through_restore_drill_predecessor(shared_url)
+    _run_core_chain_through_restore_drill_predecessor(admin_url, shared_url)
 
     shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
     try:
         with shared_engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')"
+                ).scalar_one()
+                is False
+            )
             assert connection.execute(
                 text("SELECT has_database_privilege(current_user, current_database(), 'TEMPORARY')")
             ).scalar_one()
@@ -902,7 +927,7 @@ def test_privileged_rerun_repairs_legacy_executor_interface_search_paths(
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )
-    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    _run_real_core_chain_with_relationship_prerequisite(admin_url, shared_url)
 
     procedures = (
         "restore_drill_executor.is_due(integer)",
@@ -1003,7 +1028,7 @@ def test_executor_interface_never_runs_a_public_decoy_after_rerun(
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )
-    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    _run_real_core_chain_with_relationship_prerequisite(admin_url, shared_url)
     database = _database_from_url(admin_url)
     password_file = tmp_path / "restore-drill-executor-password"
     password_file.write_text(_EXECUTOR_PASSWORD + "\n", encoding="utf-8")
@@ -1153,7 +1178,7 @@ def test_shared_authority_poison_cannot_be_finalized_or_reblessed_on_bootstrap_r
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )
-    _run_core_chain_through_restore_drill_predecessor(shared_url)
+    _run_core_chain_through_restore_drill_predecessor(admin_url, shared_url)
     _grant_legacy_shared_authority_staging(admin_url)
     _precreate_shared_authority_interface(shared_url)
 
@@ -1258,7 +1283,7 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
         shared_engine.dispose()
 
     with pytest.raises(BootstrapPrerequisiteError):
-        _run_real_core_chain_with_relationship_prerequisite(shared_url)
+        _run_real_core_chain_with_relationship_prerequisite(admin_url, shared_url)
     # The independent fixed installer still refuses shared-owned precreation
     # when only the new early check is neutralized; preserve its exact old error.
     with (
@@ -1269,7 +1294,7 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
             match="restore-drill authority interface must be absent before fixed bootstrap installation",
         ),
     ):
-        _run_real_core_chain_with_relationship_prerequisite(shared_url)
+        _run_real_core_chain_with_relationship_prerequisite(admin_url, shared_url)
 
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
@@ -1395,7 +1420,7 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         postgres_container
     )
     _configure_direct_acl_subjects(admin_url)
-    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    _run_real_core_chain_with_relationship_prerequisite(admin_url, shared_url)
 
     password_file = tmp_path / "restore-drill-executor-password"
     # One terminal LF is intentional: it exercises the same contract enforced

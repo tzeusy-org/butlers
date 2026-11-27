@@ -47,8 +47,11 @@ backends on `current_database()` other than its own (`pg_stat_activity`), and re
 if any exists. It runs as the migration login role, never a `butler_*_rw` runtime role, and that
 role needs `pg_read_all_stats` (or superuser): without it PostgreSQL masks other roles' sessions, so a
 naive count could see zero clients beside live writers. G therefore refuses
-`db_activity_unverifiable` when the privilege is missing or any other row's database, user or
-backend type is unreadable. It holds the lock through the DDL and commit, so a client that connects after the check
+`db_activity_unverifiable` when the privilege is missing, the activity read is denied, or another
+row's identity is unreadable. The normal PostgreSQL autovacuum launcher, background writer,
+checkpointer, logical replication launcher and WAL writer have no database or client socket as
+cluster-global server processes. G checks those positive identities alongside the rest of the
+census. It holds the lock through the DDL and commit, so a client that connects after the check
 cannot touch the table until G commits. Session counting cannot tell readers from writers, so any
 other client refuses G, and the rollout stops every client of the database first. That stops every
 butler: whole-assistant downtime for the migration is accepted.
@@ -92,9 +95,10 @@ transaction. Otherwise it refuses `temporal_rollback_prohibited`; recovery rolls
 | --- | --- |
 | `lock_unavailable` | The `NOWAIT` lock on `relationship.entity_facts` fails |
 | `active_writer` | Another client backend is connected to the target database |
-| `db_activity_unverifiable` | Migrating role lacks `pg_read_all_stats`, or another session row is masked |
+| `db_activity_unverifiable` | Migration login lacks effective statistics access, the activity read is denied, or a row's identity is masked, incomplete or unknown |
 | `cutover_index_state_invalid` | The legacy index or occurrence index is missing, changed or invalid |
 | `temporal_rollback_prohibited` | Downgrade after the first temporal write |
+| `offline_cutover_unsupported` | An offline migration reaches G |
 
 Every refusal happens before DDL and leaves indexes, data and the applied revision unchanged.
 
@@ -102,8 +106,8 @@ Every refusal happens before DDL and leaves indexes, data and the applied revisi
 
 1. Confirm the release carrying G passed required checks, and that the migration login role has
    `pg_read_all_stats`.
-2. Take a backup of the target database and verify it restores, because after G recovery is
-   roll-forward only.
+2. Take a backup of the target database and verify it restores. After the first temporal write,
+   use roll-forward recovery.
 3. Stop every client of the target database and keep it stopped: scale every Deployment to 0,
    suspend CronJobs, and pause anything (Helm, ArgoCD) that would restore replicas.
 4. Run the migration once, alone, as its own one-shot run.
