@@ -99,6 +99,11 @@ class DetectedIssue:
     #: scan that could not compile any left them empty (``stale_source``).
     options: list[Any] = field(default_factory=list)
     issue_digest: str | None = None
+    #: Events-only digest "keep both" is acknowledged against (never serialised).
+    state_digest: str | None = None
+    #: Per option id, the owning copy's instance id and the etag the options were compiled
+    #: against (never serialised): the resolve route parks a move bound to exactly these.
+    option_context: dict[str, dict[str, Any]] = field(default_factory=dict)
     options_reason: str | None = None
 
 

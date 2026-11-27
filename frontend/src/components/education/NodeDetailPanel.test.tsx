@@ -208,7 +208,7 @@ describe("NodeDetailPanel source annotations and concept type (bu-istke.5)", () 
 
     expect(screen.getByText("Model-recalled")).toBeTruthy();
     expect(screen.queryByText("Referenced")).toBeNull();
-    expect(screen.getByText(`Recalled from ${SOURCE.title}`)).toBeTruthy();
+    expect(screen.queryByText(SOURCE.title, { exact: false })).toBeNull();
     expect(
       screen.getByText(/did not read the source, so treat this location as unverified/),
     ).toBeTruthy();
