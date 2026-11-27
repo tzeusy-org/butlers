@@ -473,3 +473,22 @@ def test_health_metric_names_are_scanned():
     )
     assert out["metrics"] == ["measurement_weight", "token [redacted:github_token]"]
     assert scan.counted == 1
+
+
+# bu-8kbzmt: a Luhn-valid digit run inside a UUID is part of an identifier, not a card number.
+@pytest.mark.parametrize(
+    "uuid",
+    [
+        "b5d61f25-3742-4417-9518-5da3878a52b2",
+        "9befdb99-3549-5338-9858-006d2e3f4a5b",
+    ],
+)
+def test_luhn_runs_inside_a_uuid_are_left_alone(uuid):
+    text, scan = _text("search", None, f"entity {uuid} and proposal:{uuid}")
+    assert text == f"entity {uuid} and proposal:{uuid}" and scan.counted == 0
+
+
+def test_a_card_number_next_to_a_uuid_is_still_redacted():
+    uuid = "b5d61f25-3742-4417-9518-5da3878a52b2"
+    text, scan = _text("search", None, f"{uuid} card {CARD}")
+    assert text == f"{uuid} card [redacted:luhn]" and scan.counted == 1
