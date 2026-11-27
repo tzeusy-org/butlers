@@ -1,0 +1,8 @@
+# REQ-staffer-qa-003: explicit empty domain ceiling, not an absent contract.
+# This declaration neither registers a reader nor activates goal admission.
+work_kind = "qa_triage_v1"
+version = 1
+staffer = "qa"
+owner_domain = "qa"
+capabilities = []
+resources = {}

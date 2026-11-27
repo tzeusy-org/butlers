@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from butlers.core.qa.dashboard_inbox import DashboardClaim
 
 
 @dataclass
@@ -92,3 +96,5 @@ class QaFinding:
     source_file: str = field(default="")
     source_session_trigger_source: str | None = None
     structured_evidence: dict | None = None
+    # Infrastructure-only fenced custody; never reconstructed from report text.
+    dashboard_claim: DashboardClaim | None = None

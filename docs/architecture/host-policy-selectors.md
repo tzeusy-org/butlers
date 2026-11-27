@@ -157,6 +157,13 @@ make these identities configurable or establish runtime authority by static scan
 
 ## Enforcement and static limits
 
+The dark QA dashboard handoff (`bu-u5euwb.17`) adds one direct comparison in
+`QaTriageEvidence.load`: the acknowledged finding must retain `switchboard` as
+its canonical relay source. It is classified as canonical identity/authority/
+provenance under the QA discovery contract and adopted REQ-staffer-qa-003.
+This fixed identity is not configurable host policy. The check does not
+authenticate a service request; the missing QA peer boundary remains closed.
+
 Run `make check-host-policy-selectors` or `python3 scripts/check_host_policy_selectors.py`.
 `make check-guards` and the mandatory hosted `guards` job both run this command. The hosted
 finalizer includes its outcome, so failure, cancellation or a skipped check cannot pass.

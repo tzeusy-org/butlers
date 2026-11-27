@@ -120,6 +120,15 @@ def test_caused_and_runtime_obligation_ceiling():
 
 
 def test_staffer_contract_is_closed():
+    # The adopted QA work kind has an explicit empty domain/resource ceiling.
+    # Empty still requires a current catalog binding and starts exposed.
+    qa = StafferContract("qa", "qa", "verified-qa-profile", (), "catalog-v1")
+    empty = derive_admission(Evidence("staffer", "qa:triage", staffer=qa), catalog())
+    assert empty.origin == "staffer" and empty.exposed and empty.ceiling == ()
+    with pytest.raises(EvidenceRefused):
+        derive_admission(
+            Evidence("staffer", "qa:triage", staffer=replace(qa, catalog_digest="stale")), catalog()
+        )
     contract = StafferContract("qa", "qa", "git-v1", (Grant("health.read"),), "catalog-v1")
     plan = derive_admission(Evidence("staffer", "qa", staffer=contract), catalog())
     assert plan.origin == "staffer" and plan.exposed
