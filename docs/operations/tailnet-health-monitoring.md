@@ -1,54 +1,34 @@
 # Tailnet Health Monitoring
 
-> **Purpose:** Record the repository-proven production health route and give an
+> **Purpose:** Record the repository-proven live dev health route and give an
 > authorized operator a bounded Uptime Kuma configuration handoff.
 > **Scope:** This is documentation only. It does not authorize a monitor,
 > tailnet, TLS, deployment, notification, or runtime change.
 
-## Canonical production route
+## Canonical dev route
 
-The only production route covered by this runbook is:
-
-```text
-https://<TAILNET_DNS_NAME>/butlers-api/api/health
-```
-
-This route is derived from checked-in configuration, not from a live probe:
-
-- The Helm chart's shared `publicUrl.apiPrefix` is `butlers-api`; dev overrides
-  it with `butlers-dev-api` in `values.dev.yaml`.
-- The host Tailscale Serve mapping targets the dashboard NodePort: `31200` in
-  checked-in production values, `32200` in dev. The mapping is documented in
-  [Kubernetes Deployment](kubernetes-deployment.md#ingress); the chart does not
-  configure Tailscale Serve itself.
-- The dashboard application exposes `GET /api/health`; Serve strips the public
-  mount prefix before the request reaches that route.
-- Retained Compose production mode also selects `API_PREFIX="butlers-api"`,
-  but uses its loopback-published API port instead of a NodePort.
-
-The source proof deliberately does not claim that a particular host, certificate,
-or running Serve state is currently healthy. Those are live facts requiring a
-separately authorized observation.
-
-### Monitor the stack that is actually running
-
-"Canonical" above describes the production *route derivation*, not an instruction
-to monitor production on a host where production is not up. The dev chart values
-select the `butlers-dev-api` prefix, so the dev stack's equivalent route is:
+The monitored target is the live `butlers-dev` system:
 
 ```text
 https://<TAILNET_DNS_NAME>/butlers-dev-api/api/health
 ```
 
-Point the monitor at whichever stack is meant to be always-up on the target host.
-Monitoring a stack that is deliberately down produces a permanently failing check,
-which trains the operator to ignore the alert and is worse than no monitor at all.
-Confirm which stack is running before configuring, and substitute the matching
-prefix into the prompt below.
+This route is derived from checked-in configuration, not from a live probe:
 
-The current dev workflow targets the k3s `butlers-dev` release, so its monitor
-route is `/butlers-dev-api/api/health`. This documentation does not verify a
-running release or the current monitor configuration.
+- The dev Helm values select `publicUrl.apiPrefix: butlers-dev-api` and the
+  dashboard NodePort `32200`. The host Tailscale Serve mapping is documented in
+  [Kubernetes Deployment](kubernetes-deployment.md#ingress); the chart does not
+  configure Tailscale Serve itself.
+- The dashboard application exposes `GET /api/health`; Serve strips the public
+  mount prefix before the request reaches that route.
+- Production has never been deployed and is deferred (OD18). The retained chart
+  design uses NodePort `31200` and the route
+  `https://<TAILNET_DNS_NAME>/butlers-api/api/health`; retained Compose production
+  mode uses that prefix with its loopback-published API port instead of a NodePort.
+
+The owner supplied a content-blind receipt for the off-host dev monitor in
+bu-m033r8. This documentation does not verify current host, certificate, Serve,
+or monitor state; those are live facts requiring a separately authorized observation.
 
 ## Health response contract
 
@@ -69,13 +49,9 @@ diagnostics to this endpoint.
 
 ```text
 Configure exactly one Uptime Kuma HTTP(s) pull monitor for the tailnet-only
-health endpoint of the stack that is actually running on the target host
-(see "Monitor the stack that is actually running" above):
+health endpoint of the live `butlers-dev` system:
 
-https://<TAILNET_DNS_NAME>/<API_PREFIX>/api/health
-
-where <API_PREFIX> is butlers-api for the production stack or butlers-dev-api
-for the dev stack. Do not configure a monitor against a stack that is down.
+https://<TAILNET_DNS_NAME>/butlers-dev-api/api/health
 
 Use strict TLS certificate and hostname validation. The monitor must remain
 tailnet-only: do not use a public, LAN, or loopback URL and do not weaken TLS
