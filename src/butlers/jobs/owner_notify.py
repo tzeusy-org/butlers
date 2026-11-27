@@ -21,6 +21,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 import asyncpg
@@ -183,12 +184,15 @@ async def send_owner_telegram_checked(
     boundary: OwnerNotifyBoundary | None = None,
     priority: str = "medium",
     metadata: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> OwnerNotifyResult:
     """Send to the verified owner and report whether transport began.
 
     A prebuilt envelope carries its existing presentation and must name the
     resolved owner chat. The optional dedup key belongs to the caller's retry
-    policy and is recorded on the one attention row.
+    policy and is recorded on the one attention row. ``now``, when given, is the
+    instant the quiet-hours and context-bus gates are judged at; a job with an
+    injected clock passes its own so the outcome does not depend on the wall clock.
     """
     bound = boundary or OwnerNotifyBoundary(
         check_owner_notify_suppression,
@@ -216,7 +220,9 @@ async def send_owner_telegram_checked(
     client = None
     try:
         reason = (
-            await bound.suppression(pool, log_context=log_context)
+            await bound.suppression(
+                pool, log_context=log_context, **({} if now is None else {"now": now})
+            )
             if bound.suppression is not None
             else None
         )
@@ -277,6 +283,7 @@ async def send_owner_telegram(
     boundary: OwnerNotifyBoundary | None = None,
     priority: str = "medium",
     metadata: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> NotifyOutcome:
     """Send to the verified owner and return the recorded outcome."""
     result = await send_owner_telegram_checked(
@@ -288,5 +295,6 @@ async def send_owner_telegram(
         boundary=boundary,
         priority=priority,
         metadata=metadata,
+        now=now,
     )
     return result.outcome
