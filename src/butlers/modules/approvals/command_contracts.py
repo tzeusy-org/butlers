@@ -110,6 +110,16 @@ REPLAN_UNDO_COMMAND = ExecutableApprovalCommand(
     producer_source=("src/butlers/modules/calendar/replan_undo.py", "open"),
 )
 
+#: The owner's resolution of a calendar overlap by moving an event (bu-5ii4gj.11 R2b): an
+#: approvals card whose call is the exact ``calendar_update_event``, parked by the dashboard
+#: route on the butler that owns the event and replayed there by the calendar approval path.
+RESOLUTION_MOVE_COMMAND = ExecutableApprovalCommand(
+    name="calendar_update_event",
+    owner_butler=ANY_HOSTING_BUTLER,
+    argument_names=calendar_call_argument_names("calendar_update_event"),
+    producer_source=("src/butlers/modules/calendar/resolution_move.py", "park_resolution_move"),
+)
+
 CONNECTOR_ROTATE_TOKEN_PRODUCER = NonReplayableApprovalProducer(
     name="connector_rotate_token",
     owner_butler="switchboard",
@@ -126,6 +136,7 @@ EXECUTABLE_DIRECT_COMMANDS: tuple[ExecutableApprovalCommand, ...] = (
     CONNECTOR_DISCONNECT_COMMAND,
     MEMORY_RECLASSIFY_COMMAND,
     REPLAN_UNDO_COMMAND,
+    RESOLUTION_MOVE_COMMAND,
     UNKNOWN_SENDER_IGNORE_COMMAND,
 )
 
@@ -136,6 +147,7 @@ NON_MESSENGER_PRODUCER_INVENTORY: tuple[
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
     MEMORY_RECLASSIFY_COMMAND,
     REPLAN_UNDO_COMMAND,
+    RESOLUTION_MOVE_COMMAND,
     UNKNOWN_SENDER_IGNORE_COMMAND,
 )
 
@@ -214,6 +226,7 @@ __all__ = [
     "NON_MESSENGER_PRODUCER_INVENTORY",
     "NonReplayableApprovalProducer",
     "REPLAN_UNDO_COMMAND",
+    "RESOLUTION_MOVE_COMMAND",
     "UNKNOWN_SENDER_IGNORE_COMMAND",
     "validate_owner_command_registry",
 ]

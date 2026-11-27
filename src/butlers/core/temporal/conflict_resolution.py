@@ -19,8 +19,8 @@ Authority classes
 
 Slots sit on a 15-minute grid (``SLOT_GRID``), so two reads a few seconds apart give the same
 options and the same digest. A recurring event is only ever acted on per occurrence
-(``recurrence_scope='this'``); a series edit is never an option; a recurring event whose
-occurrence is unknown gets no move at all. A stale
+(the provider's instance id, never the series); a series edit is never an option; a recurring
+event whose occurrence is unknown gets no move at all. A stale
 calendar source offers nothing, ``keep_both`` included: ``reason='stale_source'``. A movable
 event with no free slot sets ``reason='no_free_slot'`` while the other options stay.
 """
@@ -73,6 +73,10 @@ class ResolutionEvent:
     recurring: bool = False
     #: Set when the event recurs: the occurrence's original start. Options then act on it alone.
     instance_start_at: datetime | None = None
+    #: Set when the event recurs: the provider's own id for that one occurrence (Google's
+    #: ``<series id>_<original start>``). A move writes that instance, never the series, so it is
+    #: sent with the instance's own etag and no ``recurrence_scope``.
+    instance_event_id: str | None = None
 
     @property
     def duration(self) -> timedelta:
@@ -150,9 +154,8 @@ def _move_call(event: ResolutionEvent, slot: tuple[datetime, datetime], request_
     }
     if event.calendar_id:
         args["calendar_id"] = event.calendar_id
-    if event.instance_start_at is not None:
-        args["recurrence_scope"] = "this"
-        args["instance_start_at"] = _iso(event.instance_start_at)
+    if event.instance_event_id:
+        args["event_id"] = event.instance_event_id
     return {"tool": "calendar_update_event", "args": args}
 
 
@@ -180,7 +183,7 @@ def options_for(
     reason: str | None = None
     for event in sorted((first, second), key=lambda e: e.entry_id):
         if event.event_class in ("butlers_block", "owner_organized"):
-            if event.recurring and event.instance_start_at is None:
+            if event.recurring and not event.instance_event_id:
                 continue  # an occurrence we cannot name is never edited, and never the series
             slot = earliest_slot(free_slots, event.duration, not_before=not_before)
             if slot is None:

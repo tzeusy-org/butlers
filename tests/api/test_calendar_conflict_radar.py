@@ -285,12 +285,18 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None, workspace_failed
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general", "relationship"]
     mock_db.butlers_with_module = MagicMock(return_value=["general", "relationship"])
+    mock_db.configured_butlers_with_module = MagicMock(return_value=["general", "relationship"])
 
     async def _fan_out(query: str, args=(), butler_names=None):
         if "FROM calendar_event_instances AS i" in query:
             rows = workspace_rows
         elif "FROM calendar_event_proposals AS p" in query:
             rows = proposal_rows
+        elif "FROM calendar_event_instances WHERE id=$1" in query:
+            rows = {
+                k: [{"id": r["instance_id"]} for r in v if r["instance_id"] == args[0]]
+                for k, v in workspace_rows.items()
+            }
         elif "FROM calendar_sources AS s" in query:
             rows = {
                 k: list({r["source_key"]: r for r in v}.values()) for k, v in workspace_rows.items()
@@ -1714,6 +1720,7 @@ class _AckPool(_Pool):
     def __init__(self):
         super().__init__("UTC")
         self.rows: dict[str, tuple[str, str, str]] = {}
+        self.card_status = "pending"
 
     async def fetch(self, sql, *args):
         if "calendar_conflict_acknowledgements" not in sql:
@@ -1721,6 +1728,11 @@ class _AckPool(_Pool):
         return [
             {"pair_id": k, "issue_digest": v[0], "state_digest": v[1]} for k, v in self.rows.items()
         ]
+
+    async def fetchval(self, sql, *args):
+        if "pending_actions" in sql:
+            return self.card_status
+        return await super().fetchval(sql, *args)
 
     async def execute(self, sql, pair_id, digest, state, option_id):
         self.rows[pair_id] = (digest, state, option_id)
@@ -1857,17 +1869,65 @@ async def test_an_unrelated_event_in_the_free_window_does_not_void_keep_both(app
     assert await _overlaps(db) == []
 
 
-async def test_a_provider_writing_option_is_not_accepted_here(app, live):
-    app, _, pool = _fresh_world(app)
-    resp0 = await _get(app)
-    (overlap,) = [i for i in resp0.json()["data"]["issues"] if i["kind"] == "overlap"]
-    move = next(o for o in overlap["options"] if o["kind"] != "keep_both")
+async def test_a_move_parks_an_approvals_card_and_writes_nothing_else(app, live):
+    app, pool, window = _future_world(app)
+    overlap, move, pair = await _offered_option(app, "move_block", window)
+    action_id = uuid4()
+    with patch(
+        "butlers.modules.calendar.resolution_move.park_resolution_move",
+        new=AsyncMock(return_value=(action_id, True)),
+    ) as park:
+        resp = await _post(
+            app, pair_id=pair, option_id=move["id"], issue_digest=overlap["issue_digest"], **window
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {
+        "status": "parked",
+        "pair_id": pair,
+        "option_id": move["id"],
+        "action_id": str(action_id),
+    }
+    kwargs = park.await_args.kwargs
+    assert kwargs["etag"] == "etag-block"  # the etag the options were compiled against
+    assert kwargs["call_args"] == move["exact_call"]["args"]
+    assert kwargs["issue_digest"] == overlap["issue_digest"] and kwargs["butler_name"] == "general"
+    assert pool.rows == {}  # parking a move is not acknowledging the overlap
+
+
+async def test_a_move_on_a_stale_digest_parks_nothing(app, live):
+    app, _, window = _future_world(app)
+    _, move, pair = await _offered_option(app, "move_block", window)
+    with patch(
+        "butlers.modules.calendar.resolution_move.park_resolution_move", new=AsyncMock()
+    ) as park:
+        resp = await _post(app, pair_id=pair, option_id=move["id"], issue_digest="stale", **window)
+
+    assert resp.status_code == 409 and resp.json()["detail"] == "issue_changed"
+    park.assert_not_awaited()
+
+
+async def test_a_card_the_owner_already_decided_is_not_reopened(app, live):
+    app, pool, window = _future_world(app)
+    overlap, move, pair = await _offered_option(app, "move_block", window)
+    pool.card_status = "rejected"
+    with patch(
+        "butlers.modules.calendar.resolution_move.park_resolution_move",
+        new=AsyncMock(return_value=(uuid4(), False)),
+    ):
+        resp = await _post(
+            app, pair_id=pair, option_id=move["id"], issue_digest=overlap["issue_digest"], **window
+        )
+
+    assert resp.status_code == 409 and resp.json()["detail"] == "card_closed"
+
+
+async def test_a_response_option_is_not_accepted_yet(app, live):
+    app, pool, window = _future_world(app)
+    overlap, decline, pair = await _offered_option(app, "decline", window)
 
     resp = await _post(
-        app,
-        pair_id=overlap["options"][-1]["exact_call"]["args"]["pair_id"],
-        option_id=move["id"],
-        issue_digest=overlap["issue_digest"],
+        app, pair_id=pair, option_id=decline["id"], issue_digest=overlap["issue_digest"], **window
     )
 
     assert resp.status_code == 422 and pool.rows == {}

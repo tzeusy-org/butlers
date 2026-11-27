@@ -615,9 +615,11 @@ class ConflictResolveRequest(BaseModel):
 
 
 class ConflictResolveResponse(BaseModel):
-    status: Literal["acknowledged", "already_acknowledged"]
+    status: Literal["acknowledged", "already_acknowledged", "parked"]
     pair_id: str
     option_id: str
+    #: The approvals card a move was parked as; the owner decides it in the approvals surface.
+    action_id: UUID | None = None
 
 
 class ConflictIssue(BaseModel):

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -81,6 +81,21 @@ def _classify(row: Mapping[str, Any], metadata: dict[str, Any]) -> cr.EventClass
     return "owner_organized" if _is_true(mine.get("organizer")) or own_address else "invited"
 
 
+def _instance_event_id(row: Mapping[str, Any]) -> str | None:
+    """Google's id for one occurrence of a series: ``<series id>_<original start>``.
+
+    All-day occurrences carry the date, timed ones the UTC instant. ``None`` when the series id
+    or the occurrence start is unknown, so the compiler offers nothing rather than guess.
+    """
+    series = row.get("origin_ref")
+    start = row.get("instance_starts_at")
+    if not series or not isinstance(start, datetime):
+        return None
+    if row.get("all_day"):
+        return f"{series}_{start:%Y%m%d}"
+    return f"{series}_{start.astimezone(UTC):%Y%m%dT%H%M%SZ}"
+
+
 def resolution_event(row: Mapping[str, Any], *, entry_id: str | None = None) -> cr.ResolutionEvent:
     """One side of an overlap from a workspace row: class, owner response, attendee count."""
     metadata = _metadata(row)
@@ -105,6 +120,7 @@ def resolution_event(row: Mapping[str, Any], *, entry_id: str | None = None) -> 
         recurring=recurring,
         # The instance's own start is the occurrence key; the series is never offered an edit.
         instance_start_at=row["instance_starts_at"] if recurring else None,
+        instance_event_id=_instance_event_id(row) if recurring else None,
     )
 
 
@@ -235,6 +251,11 @@ async def attach_resolution_options(
                 context[ref.entry_id] = {
                     "instance_id": str(best["instance_id"]),
                     "etag": best.get("event_etag"),
+                    # A series' occurrence is written as its own instance, but the etag the owner
+                    # saw is the series': the executor checks that one before it writes.
+                    "series_event_id": (
+                        str(best["origin_ref"]) if best.get("recurrence_rule") else None
+                    ),
                 }
             # Every overlap gets its state digest, whether or not options can be offered: "keep
             # both" must keep suppressing on a filtered, partial or zone-less read.
