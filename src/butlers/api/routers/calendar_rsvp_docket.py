@@ -16,6 +16,7 @@ not tick is untouched. This is not a goal-runtime decision set.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -39,6 +40,8 @@ router = APIRouter(
 )
 
 MAX_SUBMIT = 50
+#: One card's approve-and-dispatch is bounded: a hung dispatch must not hold the whole batch.
+DISPATCH_TIMEOUT_S = 60.0
 
 
 class DocketFact(BaseModel):
@@ -117,9 +120,22 @@ class SubmitRefusal(BaseModel):
     reason: str
 
 
+class CardOutcome(BaseModel):
+    """What the approve path did for one card. ``dispatched`` is false for a card that was approved
+    but not sent (``status`` stays ``approved``), so the page never reads it as done."""
+
+    action_id: str
+    status: str
+    dispatched: bool
+    execution_failure: dict[str, Any] | None = None
+
+
 class SubmitResult(BaseModel):
-    approved: list[str]
+    results: list[CardOutcome]
     refused: list[SubmitRefusal]
+    #: True when the batch stopped early on an unexpected failure; the remaining cards are in
+    #: ``refused`` as ``not_attempted`` and the failing one as ``outcome_unknown``.
+    stopped: bool = False
 
 
 def _event(snap: docket.Snapshot, entry_id: str) -> DocketEvent | None:
@@ -250,6 +266,19 @@ def _disagreements(snap: docket.Snapshot, by_policy: dict[str, Any]) -> list[Doc
     return out
 
 
+def _outcome(action_id: UUID, response: Any) -> CardOutcome:
+    data = getattr(response, "data", response)
+    failure = getattr(data, "execution_failure", None)
+    if failure is not None and hasattr(failure, "model_dump"):
+        failure = failure.model_dump(mode="json")
+    return CardOutcome(
+        action_id=str(action_id),
+        status=str(getattr(data, "status", "approved")),
+        dispatched=bool(getattr(data, "dispatched", False)),
+        execution_failure=failure if isinstance(failure, dict) else None,
+    )
+
+
 async def _agreement(request: Request) -> list[dict[str, Any]] | None:
     """Agreement counts per policy and version through the dashboard definer; ``None`` if down."""
     authority = getattr(request.state, "owner_authority", None)
@@ -266,7 +295,10 @@ async def _agreement(request: Request) -> list[dict[str, Any]] | None:
 
 @router.post("/submit", response_model=ApiResponse[SubmitResult])
 async def submit_docket(
-    body: SubmitRequest, db: Db, mcp_mgr: MCPClientManager = Depends(get_mcp_manager)
+    body: SubmitRequest,
+    request: Request,
+    db: Db,
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[SubmitResult]:
     """Approve the ticked cards one by one; refuse and name any that changed."""
     from butlers.api.audit_emit import authenticated_principal
@@ -280,10 +312,13 @@ async def submit_docket(
         authenticated_principal()
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="owner_required") from exc
+    # Batch approval is a dashboard act: an owner cookie session, never an API key.
+    if getattr(request.state, "owner_authority", None) is None:
+        raise HTTPException(status_code=403, detail="owner_cookie_required")
     pool, policies, cards, snap = await _context(db)
     by_policy = {p.id: p for p in policies}
     open_by_id = {card["id"]: card for card in cards}
-    approved: list[str] = []
+    results: list[CardOutcome] = []
     refused: list[SubmitRefusal] = []
     seen: set[UUID] = set()
     for item in body.items:
@@ -319,22 +354,25 @@ async def submit_docket(
             )
             continue
         try:
-            await approve_owning_action(
-                parsed_id=action_id,
-                actor_id=_decision_actor_id(None, callback_authenticated=False),
-                edits=None,
-                action_butler=docket.docket_butler(),
-                target_pool=pool,
-                db_mgr=db,
-                mcp_mgr=mcp_mgr,
-                expected_tool_args=card["tool_args"],
-                expected_tool_name="calendar_respond",
-                promotion_eligible=False,
-                decision_memory_writer=_decision_memory_writer_for(
-                    db, docket.docket_butler(), pool
+            response = await asyncio.wait_for(
+                approve_owning_action(
+                    parsed_id=action_id,
+                    actor_id=_decision_actor_id(None, callback_authenticated=False),
+                    edits=None,
+                    action_butler=docket.docket_butler(),
+                    target_pool=pool,
+                    db_mgr=db,
+                    mcp_mgr=mcp_mgr,
+                    expected_tool_args=card["tool_args"],
+                    expected_tool_name="calendar_respond",
+                    promotion_eligible=False,
+                    decision_memory_writer=_decision_memory_writer_for(
+                        db, docket.docket_butler(), pool
+                    ),
                 ),
+                timeout=DISPATCH_TIMEOUT_S,
             )
-            approved.append(str(action_id))
+            results.append(_outcome(action_id, response))
         except HTTPException as exc:
             refused.append(
                 SubmitRefusal(
@@ -344,4 +382,26 @@ async def submit_docket(
                     reason=f"approval_refused:{exc.status_code}",
                 )
             )
-    return ApiResponse[SubmitResult](data=SubmitResult(approved=approved, refused=refused))
+        except Exception:  # noqa: BLE001 - incl. the dispatch timeout: the decision may be committed
+            logger.warning("rsvp docket: approve failed unexpectedly", exc_info=True)
+            refused.append(
+                SubmitRefusal(
+                    action_id=str(action_id),
+                    entry_id=entry_id,
+                    event=_event(snap, entry_id),
+                    reason="outcome_unknown",
+                )
+            )
+            # Stop here: a failing path is not asked again, and the owner is told which cards
+            # were not attempted.
+            for later in body.items[body.items.index(item) + 1 :]:
+                if later.action_id in seen:
+                    continue
+                seen.add(later.action_id)
+                refused.append(
+                    SubmitRefusal(action_id=str(later.action_id), reason="not_attempted")
+                )
+            return ApiResponse[SubmitResult](
+                data=SubmitResult(results=results, refused=refused, stopped=True)
+            )
+    return ApiResponse[SubmitResult](data=SubmitResult(results=results, refused=refused))

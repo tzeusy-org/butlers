@@ -1903,6 +1903,7 @@ SCHEMA Callback e23f0afbc25c
 SCHEMA CaptureIntakeContext 926b4b66df26
 SCHEMA CaptureStatus f436da8c8071
 SCHEMA CaptureTarget 2da7a121faad
+SCHEMA CardOutcome 72e9b8f68ba2
 SCHEMA CareDuty c9651dd96026
 SCHEMA CareDutyListResponse ad6bc892b222
 SCHEMA CareOccurrence dc29c460c679
@@ -2657,7 +2658,7 @@ SCHEMA SubmitCorrectionRequest 891301f2a52c
 SCHEMA SubmitItem 75de17bbc331
 SCHEMA SubmitRefusal 93f292701347
 SCHEMA SubmitRequest 0e2c73a4f2ba
-SCHEMA SubmitResult 92460bec3368
+SCHEMA SubmitResult 8d740c59f1ab
 SCHEMA SubscriptionEntry 725ee0231704
 SCHEMA SubscriptionModel 44a54b4001a6
 SCHEMA SubsourceCheckpoint 687be81cf735

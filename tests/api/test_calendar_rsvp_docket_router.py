@@ -44,6 +44,10 @@ def _policy(pid="p1", *, version=1, verdict="declined", revoked=None) -> Policy:
     )
 
 
+def approved_ids(result: dict) -> list[str]:
+    return [r["action_id"] for r in result["results"]]
+
+
 class _World:
     """Open docket cards plus a snapshot of the current invitations."""
 
@@ -201,7 +205,7 @@ def test_a_submit_approves_each_ticked_card_individually_and_leaves_the_rest(mon
     ticked_a, ticked_b, left = world.add(), world.add(), world.add()
     result = world.submit(ticked_a, ticked_b).json()["data"]
     assert result["refused"] == []
-    assert sorted(result["approved"]) == sorted([str(ticked_a["id"]), str(ticked_b["id"])])
+    assert sorted(approved_ids(result)) == sorted([str(ticked_a["id"]), str(ticked_b["id"])])
     assert world.approve.await_count == 2
     for call in world.approve.await_args_list:
         assert call.kwargs["expected_tool_name"] == "calendar_respond"
@@ -209,7 +213,7 @@ def test_a_submit_approves_each_ticked_card_individually_and_leaves_the_rest(mon
         assert call.kwargs["action_butler"] == docket.docket_butler()
         assert call.kwargs["edits"] is None
         assert call.kwargs["expected_tool_args"]["entry_id"]
-    assert str(left["id"]) not in result["approved"]
+    assert str(left["id"]) not in approved_ids(result)
     assert {c.kwargs["parsed_id"] for c in world.approve.await_args_list} == {
         ticked_a["id"],
         ticked_b["id"],
@@ -220,7 +224,7 @@ def test_a_changed_card_is_refused_and_named_while_the_others_are_applied(monkey
     world = _World(monkeypatch)
     good, moved = world.add(), world.add(etag="e2", title="Moved meeting")
     result = world.submit(good, moved).json()["data"]
-    assert result["approved"] == [str(good["id"])]
+    assert approved_ids(result) == [str(good["id"])]
     [refusal] = result["refused"]
     assert refusal["action_id"] == str(moved["id"]) and refusal["reason"] == "stale_event"
     assert refusal["entry_id"] == moved["marker"]["entry_id"]
@@ -235,7 +239,7 @@ def test_a_card_that_no_longer_matches_its_policy_is_refused(monkeypatch) -> Non
         [_policy()], InvitationFacts(overlaps_focus_or_out_of_office=False)
     )
     result = world.submit(card).json()["data"]
-    assert result["approved"] == []
+    assert approved_ids(result) == []
     assert result["refused"][0]["reason"] == "policy_no_longer_matches"
     world.approve.assert_not_awaited()
 
@@ -257,7 +261,7 @@ def test_an_unreadable_fact_refuses_rather_than_approves(monkeypatch) -> None:
     world = _World(monkeypatch)
     card = world.add(readable=False)
     result = world.submit(card).json()["data"]
-    assert result["approved"] == [] and result["refused"][0]["reason"] == "facts"
+    assert approved_ids(result) == [] and result["refused"][0]["reason"] == "facts"
     world.approve.assert_not_awaited()
 
 
@@ -281,7 +285,7 @@ def test_a_refusal_by_the_approve_path_is_named_and_does_not_stop_the_rest(monke
     first, second = world.add(), world.add()
     world.approve.side_effect = [HTTPException(409, "call changed"), SimpleNamespace(data=None)]
     result = world.submit(first, second).json()["data"]
-    assert result["approved"] == [str(second["id"])]
+    assert approved_ids(result) == [str(second["id"])]
     assert result["refused"][0]["reason"] == "approval_refused:409"
 
 
@@ -320,4 +324,75 @@ def test_a_card_whose_call_moved_since_display_is_refused(monkeypatch) -> None:
     body = {"items": [{"action_id": str(card["id"]), "args_digest": shown}]}
     result = world.client().post("/api/calendar/rsvp-docket/submit", json=body).json()["data"]
     assert result["refused"][0]["reason"] == "call_changed"
+    world.approve.assert_not_awaited()
+
+
+def test_a_card_approved_but_not_sent_is_not_reported_as_dispatched(monkeypatch) -> None:
+    world = _World(monkeypatch)
+    card = world.add()
+    world.approve.return_value = SimpleNamespace(
+        data=SimpleNamespace(
+            status="approved",
+            dispatched=False,
+            execution_failure=SimpleNamespace(
+                model_dump=lambda mode="json": {"code": "daemon_unreachable"}
+            ),
+        )
+    )
+    [outcome] = world.submit(card).json()["data"]["results"]
+    assert outcome == {
+        "action_id": str(card["id"]),
+        "status": "approved",
+        "dispatched": False,
+        "execution_failure": {"code": "daemon_unreachable"},
+    }
+
+
+def test_an_unexpected_failure_stops_the_batch_and_keeps_what_already_committed(
+    monkeypatch,
+) -> None:
+    world = _World(monkeypatch)
+    first, second, third = world.add(), world.add(), world.add()
+    ok = SimpleNamespace(data=SimpleNamespace(status="executed", dispatched=True))
+    world.approve.side_effect = [ok, RuntimeError("db went away"), ok]
+    data = world.submit(first, second, third).json()["data"]
+    assert approved_ids(data) == [str(first["id"])]
+    assert data["stopped"] is True
+    assert {r["action_id"]: r["reason"] for r in data["refused"]} == {
+        str(second["id"]): "outcome_unknown",
+        str(third["id"]): "not_attempted",
+    }
+    assert world.approve.await_count == 2
+
+
+def test_a_hung_dispatch_times_out_as_outcome_unknown(monkeypatch) -> None:
+    import asyncio
+
+    world = _World(monkeypatch)
+    card = world.add()
+
+    async def hang(**_):
+        await asyncio.sleep(5)
+
+    world.approve.side_effect = hang
+    monkeypatch.setattr(route, "DISPATCH_TIMEOUT_S", 0.05)
+    data = world.submit(card).json()["data"]
+    assert data["refused"][0]["reason"] == "outcome_unknown" and data["stopped"] is True
+
+
+def test_a_submit_without_an_owner_cookie_session_is_refused(monkeypatch) -> None:
+    world = _World(monkeypatch)
+    card = world.add()
+    app = FastAPI()
+    app.include_router(route.router)
+    app.dependency_overrides[get_db] = lambda: MagicMock()
+    app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+    # The router's own owner gate admits this caller (an API key, say); the cookie rule is the
+    # handler's, so lift the gate to prove it holds on its own.
+    app.dependency_overrides[route.require_dashboard_owner_control] = lambda: None
+    response = TestClient(app).post(
+        "/api/calendar/rsvp-docket/submit",
+        json={"items": [{"action_id": str(card["id"]), "args_digest": world.displayed(card)}]},
+    )
+    assert response.status_code == 403
     world.approve.assert_not_awaited()

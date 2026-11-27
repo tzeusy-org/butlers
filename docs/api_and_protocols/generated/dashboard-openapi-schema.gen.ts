@@ -23013,6 +23013,23 @@ export interface components {
             version: number;
         };
         /**
+         * CardOutcome
+         * @description What the approve path did for one card. ``dispatched`` is false for a card that was approved
+         *     but not sent (``status`` stays ``approved``), so the page never reads it as done.
+         */
+        CardOutcome: {
+            /** Action Id */
+            action_id: string;
+            /** Dispatched */
+            dispatched: boolean;
+            /** Execution Failure */
+            execution_failure?: {
+                [key: string]: unknown;
+            } | null;
+            /** Status */
+            status: string;
+        };
+        /**
          * CareDuty
          * @description One declared care duty. The subject and carer are entities, never users.
          */
@@ -40088,10 +40105,15 @@ export interface components {
         };
         /** SubmitResult */
         SubmitResult: {
-            /** Approved */
-            approved: string[];
             /** Refused */
             refused: components["schemas"]["SubmitRefusal"][];
+            /** Results */
+            results: components["schemas"]["CardOutcome"][];
+            /**
+             * Stopped
+             * @default false
+             */
+            stopped?: boolean;
         };
         /**
          * SubscriptionEntry
