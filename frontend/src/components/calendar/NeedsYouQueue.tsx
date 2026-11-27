@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import type { CalendarInvitationEntry, ConflictIssue, ResolutionOption } from "@/api/types";
 import { optionLabel } from "@/components/calendar/conflict-option-label";
+import { supportedOptions } from "@/pages/calendar/use-conflict-resolution";
 import type { InvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
@@ -151,7 +152,7 @@ export function NeedsYouQueue({
     }
     if (selected.kind === "conflict" && onResolveConflict) {
       const issue = conflictByItemId.get(selected.id);
-      const options = issue?.options ?? [];
+      const options = issue ? supportedOptions(issue) : [];
       // An overlap the server did not bind a digest and id to, one already answered, or one being
       // answered has no resolve keys: a key without an action is unbound, never a silent no-op.
       const open =
@@ -160,20 +161,22 @@ export function NeedsYouQueue({
         !isResolvingConflict &&
         !(issue.pair_id && conflictReceipts?.has(issue.pair_id));
       if (issue && open) {
-        const bind = (key: string, option: ResolutionOption, id: string, prefix: string) =>
+        // Only the verb is lowercased in the palette form; the event's own title keeps its case.
+        const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
+        const bind = (key: string, option: ResolutionOption, id: string, text: string) =>
           list.push({
             key,
-            description: `${prefix}${optionLabel(issue, option)}`,
+            description: text,
             handler: () => onResolveConflict(issue, option),
-            command: { id, label: `Needs you: ${prefix}${optionLabel(issue, option)}`.toLowerCase() },
+            command: { id, label: `Needs you: ${lowerFirst(text)}` },
           });
         options.slice(0, 9).forEach((option, index) =>
-          bind(String(index + 1), option, `needs-you-conflict-option-${index + 1}`, ""),
+          bind(String(index + 1), option, `needs-you-conflict-option-${index + 1}`, optionLabel(issue, option)),
         );
         const move = options.find((o) => o.kind === "move_block" || o.kind === "move_own");
-        if (move) bind("m", move, "needs-you-conflict-move", "");
+        if (move) bind("m", move, "needs-you-conflict-move", optionLabel(issue, move));
         const keep = options.find((o) => o.kind === "keep_both");
-        if (keep) bind("x", keep, "needs-you-conflict-dismiss", "Dismiss: ");
+        if (keep) bind("x", keep, "needs-you-conflict-dismiss", "Dismiss (keep both)");
       }
     }
     return list;

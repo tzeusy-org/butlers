@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 /**
- * Needs-you queue: the overlap verbs (bu-5ii4gj.11.2). 1-9 carry out the nth offered option, m the
- * first move, x keeps both (recorded server-side, so it survives a reload) and leaves a receipt.
+ * Needs-you queue: the overlap verbs (bu-5ii4gj.11.2). 1-9 carry out the nth option the route
+ * accepts, m the first move, x keeps both (recorded server-side, so it survives a reload) and leaves
+ * a receipt. On this stack the route accepts keep both only: a key for any other kind would be
+ * refused with a 422, so none is bound (the mock below refuses them the way the route does).
  */
 
 import { useEffect } from "react";
@@ -69,6 +71,7 @@ function issue(overrides: Partial<ConflictIssue> = {}): ConflictIssue {
     options: [
       option("o-move", "move_block"),
       option("o-decline", "decline"),
+      option("o-ask", "ask_organizer"),
       option("o-keep", "keep_both"),
     ],
     ...overrides,
@@ -146,69 +149,62 @@ function view(issues: ConflictIssue[] = [issue()]) {
   return { ...utils, rerenderWith: (list: ConflictIssue[]) => utils.rerender(tree(list)) };
 }
 
+const KINDS: Record<string, string> = {
+  "o-move": "move_block",
+  "o-own": "move_own",
+  "o-decline": "decline",
+  "o-ask": "ask_organizer",
+  "o-keep": "keep_both",
+};
+
+/** The route as it is on this stack: keep both only, anything else is a 422. */
 const answered = (status: string) =>
-  vi.mocked(resolveCalendarConflict).mockResolvedValue({
-    data: { status, pair_id: "pair-1", option_id: "x" },
-    meta: {},
-  } as never);
+  vi.mocked(resolveCalendarConflict).mockImplementation((async (body: { option_id: string }) => {
+    if (KINDS[body.option_id] !== "keep_both") throw new ApiError("invalid", "unsupported", 422);
+    return { data: { status, pair_id: "pair-1", option_id: body.option_id }, meta: {} };
+  }) as never);
 
 async function select(user: ReturnType<typeof userEvent.setup>) {
   await user.keyboard("j");
 }
 
-it("1-3 each carry out that option, bound to the digest and the scan window", async () => {
-  answered("parked");
-  view();
-  const user = userEvent.setup();
-  await select(user);
-  await user.keyboard("2");
-  expect(resolveCalendarConflict).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(resolveCalendarConflict).mock.calls[0][0]).toEqual({
-    pair_id: "pair-1",
-    option_id: "o-decline",
-    issue_digest: "digest-1",
-    ...WINDOW,
-  });
-});
-
-it("1 carries out the first option", async () => {
-  answered("parked");
-  view();
-  const user = userEvent.setup();
-  await select(user);
-  await user.keyboard("1");
-  expect(vi.mocked(resolveCalendarConflict).mock.calls[0][0]).toMatchObject({ option_id: "o-move" });
-});
-
-it("3 carries out the third option, which here is keep both", async () => {
+it("1 carries out the first SUPPORTED option, bound to the digest and the scan window", async () => {
   answered("acknowledged");
   view();
   const user = userEvent.setup();
   await select(user);
-  await user.keyboard("3");
-  expect(vi.mocked(resolveCalendarConflict).mock.calls[0][0]).toMatchObject({ option_id: "o-keep" });
+  await user.keyboard("1");
+  expect(resolveCalendarConflict).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(resolveCalendarConflict).mock.calls[0][0]).toEqual({
+    pair_id: "pair-1",
+    option_id: "o-keep",
+    issue_digest: "digest-1",
+    ...WINDOW,
+  });
+  expect(toast.error).not.toHaveBeenCalled(); // never a 422 from an unsupported kind
 });
 
-it("a digit beyond the offered options does nothing", async () => {
+it("digits number the supported options only, so the labels stay contiguous", async () => {
   view();
   const user = userEvent.setup();
   await select(user);
+  expect(keys.current.filter((k) => /^[1-9]$/.test(k))).toEqual(["1"]);
+  await user.keyboard("2");
+  await user.keyboard("3");
   await user.keyboard("4");
-  await user.keyboard("9");
   expect(resolveCalendarConflict).not.toHaveBeenCalled();
 });
 
-it("m carries out the first move option", async () => {
-  answered("parked");
-  view([issue({ options: [option("o-decline", "decline"), option("o-own", "move_own"), option("o-keep", "keep_both")] })]);
+it("an ask_organizer option gets no key", async () => {
+  view([issue({ options: [option("o-ask", "ask_organizer")] })]);
   const user = userEvent.setup();
   await select(user);
-  await user.keyboard("m");
-  expect(vi.mocked(resolveCalendarConflict).mock.calls[0][0]).toMatchObject({ option_id: "o-own" });
+  expect(keys.current.filter((k) => /^[1-9mx]$/.test(k))).toEqual([]);
+  expect(sheet.current.join(" ")).not.toContain("Ask the organizer");
 });
 
-it("m is unbound when no move is offered", async () => {
-  view([issue({ options: [option("o-decline", "decline"), option("o-keep", "keep_both")] })]);
+it("before R3 lands a move option gets no key: m is unbound", async () => {
+  view([issue({ options: [option("o-own", "move_own"), option("o-keep", "keep_both")] })]);
   const user = userEvent.setup();
   await select(user);
   expect(keys.current).not.toContain("m");
@@ -255,7 +251,7 @@ it("x keeps nothing on the client: a reload that still offers the overlap shows 
 });
 
 it("x is unbound when keep both is not offered", async () => {
-  view([issue({ options: [option("o-move", "move_block")] })]);
+  view([issue({ options: [option("o-decline", "decline")] })]);
   const user = userEvent.setup();
   await select(user);
   expect(keys.current).not.toContain("x");
@@ -283,10 +279,9 @@ it("every resolve key reaches the ? sheet and the palette, and no key is registe
   view();
   const user = userEvent.setup();
   await select(user);
-  expect(sheet.current.some((d) => d.startsWith("Move Lunch to "))).toBe(true);
-  expect(sheet.current).toEqual(expect.arrayContaining(["Decline Lunch", "Dismiss: Keep both"]));
+  expect(sheet.current).toEqual(expect.arrayContaining(["Keep both", "Dismiss (keep both)"]));
   expect(palette.current).toEqual(
-    expect.arrayContaining(["needs you: decline lunch", "needs you: dismiss: keep both"]),
+    expect.arrayContaining(["Needs you: keep both", "Needs you: dismiss (keep both)"]),
   );
   expect(new Set(keys.current).size).toBe(keys.current.length);
 });

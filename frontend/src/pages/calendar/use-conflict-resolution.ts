@@ -13,6 +13,18 @@ import type { ConflictIssue, ConflictResolveResponse, ResolutionOption } from "@
 import { optionLabel } from "@/components/calendar/conflict-option-label.ts";
 import { useResolveCalendarConflict } from "@/hooks/use-calendar-workspace";
 
+/**
+ * The option kinds the resolve route on this stack accepts. A key for any other kind would post
+ * a request the server refuses with a 422, so the queue binds none. Widened to the move, decline
+ * and tentative kinds when R3 (the route's other kinds) lands underneath.
+ */
+export const SUPPORTED_KINDS: ReadonlySet<ResolutionOption["kind"]> = new Set(["keep_both"]);
+
+/** The offered options the route accepts, in the order offered (digits number these only). */
+export function supportedOptions(issue: ConflictIssue): ResolutionOption[] {
+  return (issue.options ?? []).filter((option) => SUPPORTED_KINDS.has(option.kind));
+}
+
 /** What the server answered, in the owner's words. */
 export function conflictReceiptText(result: ConflictResolveResponse): string {
   switch (result.status) {
