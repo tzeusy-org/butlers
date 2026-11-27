@@ -63,3 +63,29 @@ Scope: v1-mandatory
 - **WHEN** an investigation commits a change but every claim in its notes is unsupported (or, with a recorded bundle, its notes are missing or unparsable)
 - **THEN** nothing is retained or published, and the attempt ends `failed` with a `diagnosis_unsupported` reason
 - **AND** the breaker counts it as an execution success and the fingerprint is held like a retained proposal
+
+### Requirement: The Owner Can Export A Retained Patch For Adoption
+
+The dashboard API SHALL expose, per case, the retained sealed patch: the bound branch name, base
+and head commits, the digest, the changed paths, the validated diff and, on request, the exact
+sealed object bytes. The changed paths SHALL be derived from the sealed export's own objects, never from the agent
+worktree, and the display diff SHALL be re-checked by the anonymizer when served. The route SHALL
+re-verify the export's integrity before serving it and SHALL
+answer 404 when nothing is retained, 410 when the export was pruned, and 409 when it fails its
+integrity or anonymization check, and 503 when the datastore cannot be read. It SHALL carry no credential, SHALL NOT publish anything, and SHALL label an
+export sealed before investigator isolation. The case dossier SHALL show the patch's identity
+(branch, commits, digest, paths) for a proposal retained and proven unpublished.
+
+ID: REQ-qa-investigation-dispatch-019
+Source: bu-ejow5p.7.2 (run 25)
+Scope: v1-mandatory
+
+#### Scenario: A pruned export
+
+- **WHEN** the owner requests the proposal of a case whose export bytes were pruned
+- **THEN** the route answers 410 and the dossier says the patch is no longer available for export
+
+#### Scenario: A pre-isolation export
+
+- **WHEN** the retained export was sealed before investigator isolation
+- **THEN** the route labels it and the dossier warns that it needs the owner's explicit approval before it is pushed

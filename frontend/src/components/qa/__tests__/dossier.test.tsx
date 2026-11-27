@@ -17,6 +17,7 @@ const qaHookMocks = vi.hoisted(() => ({
   removeDismissalMutate: vi.fn(),
   useQaCase: vi.fn(),
   useQaCaseJournal: vi.fn(),
+  useQaCaseProposal: vi.fn(),
 }));
 
 vi.mock("@/components/ui/time", () => ({
@@ -37,6 +38,7 @@ vi.mock("@/components/qa/utils", async () => {
 vi.mock("@/hooks/use-qa", () => ({
   useQaCase: qaHookMocks.useQaCase,
   useQaCaseJournal: qaHookMocks.useQaCaseJournal,
+  useQaCaseProposal: qaHookMocks.useQaCaseProposal,
   useRemoveDismissal: () => ({
     mutate: qaHookMocks.removeDismissalMutate,
     isPending: false,
@@ -201,6 +203,7 @@ describe("QA case dossier composition", () => {
     qaHookMocks.removeDismissalMutate.mockReset();
     qaHookMocks.useQaCase.mockReturnValue(caseResponse(fullCase));
     qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse(journal));
+    qaHookMocks.useQaCaseProposal.mockReturnValue({ data: undefined, isLoading: false, isError: true });
   });
 
   it("test_dossier_renders_full_case", () => {
@@ -394,6 +397,9 @@ describe("QA case dossier composition", () => {
 
     renderDossier("case-1");
 
+    // The retained patch is offered for export only for a proposal proven unpublished.
+    expect(screen.getByTestId("qa-proposal-export-unavailable")).toBeTruthy();
+
     expect(
       screen.getByText("The investigation produced a local proposal, but publication failed."),
     ).toBeTruthy();
@@ -408,6 +414,29 @@ describe("QA case dossier composition", () => {
     expect(
       screen.queryByText("The classifier now treats this failure as provider unavailable."),
     ).toBeNull();
+  });
+
+  it.each([
+    ["none", true, true],
+    ["none", undefined, false],
+    ["ambiguous", true, false],
+  ] as const)("gates retained export without a display diff for %s and %s", (state, retained, shown) => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        proposal_state: state,
+        unpublished_proposal_retained: retained,
+        proposal_diff_snapshot: [],
+        investigation_notes: null,
+        pr: null,
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(Boolean(screen.queryByTestId("qa-proposal-export-unavailable"))).toBe(shown);
   });
 
   it("never claims an unresolved publication outcome as unpublished", () => {

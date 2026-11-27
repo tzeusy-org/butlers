@@ -6987,6 +6987,23 @@ export interface QaJournalEvent {
 }
 
 /** Full case payload for the QA dossier renderer — GET /api/qa/cases/:id */
+/** GET /api/qa/cases/:id/proposal: the retained sealed patch (bundle bytes only with ?bundle=true). */
+export interface QaProposalExport {
+  case_id: string;
+  branch_name: string;
+  base_sha: string;
+  head_sha: string;
+  commits: string[];
+  digest: string;
+  paths: string[];
+  diff: QaInvestigationNotes["diff_snapshot"];
+  diff_truncated: boolean;
+  bundle_b64?: string | null;
+  bundle_bytes: number;
+  /** Sealed before investigator isolation: needs a per-PR owner approval before any publisher pushes it. */
+  sealed_before_isolation: boolean;
+}
+
 export interface QaCaseDossier {
   case: QaCaseSummary;
   state_track_stage:
@@ -6996,6 +7013,8 @@ export interface QaCaseDossier {
    * PR exists ("unpublished"), retained with an unresolved publication outcome ("ambiguous"), or absent.
    */
   proposal_state: "none" | "unpublished" | "ambiguous" | "published";
+  /** A retained proposal with confirmed absence of a pull request. */
+  unpublished_proposal_retained?: boolean;
   /** Retained commit diff, projected independently so malformed narrative notes cannot hide a real local proposal. */
   proposal_diff_snapshot: QaInvestigationNotes["diff_snapshot"];
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */

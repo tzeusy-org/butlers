@@ -328,6 +328,7 @@ OP GET /api/projections/{projection_id}/glance 31798c257069
 OP GET /api/qa/cases 2f788812c5da
 OP GET /api/qa/cases/{case_id} 9bdab5836e89
 OP GET /api/qa/cases/{case_id}/journal d03323a3ee23
+OP GET /api/qa/cases/{case_id}/proposal 5f2ea0064aac
 OP GET /api/qa/circuit-breaker 76aafc5e6e3c
 OP GET /api/qa/dismissals 4f25d1200caa
 OP GET /api/qa/findings/by-attempt/{attempt_id} 652c6721c999
@@ -1045,6 +1046,7 @@ ROUTE APIRoute GET '/api/projections/{projection_id}/glance' name=get_glance op=
 ROUTE APIRoute GET '/api/qa/cases' name=list_cases op=list_cases_api_qa_cases_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/cases/{case_id}' name=get_case op=get_case_api_qa_cases__case_id__get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/cases/{case_id}/journal' name=get_case_journal op=get_case_journal_api_qa_cases__case_id__journal_get tags=qa schema=True
+ROUTE APIRoute GET '/api/qa/cases/{case_id}/proposal' name=get_case_proposal op=get_case_proposal_api_qa_cases__case_id__proposal_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/circuit-breaker' name=get_circuit_breaker_status op=get_circuit_breaker_status_api_qa_circuit_breaker_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/dismissals' name=list_dismissals op=list_dismissals_api_qa_dismissals_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/findings/by-attempt/{attempt_id}' name=get_finding_by_attempt op=get_finding_by_attempt_api_qa_findings_by_attempt__attempt_id__get tags=qa schema=True
@@ -1629,6 +1631,7 @@ SCHEMA ApiResponse_QaFindingRecord_ dc4b99284e9b
 SCHEMA ApiResponse_QaGitAuthorStatus_ d6fc18614ad3
 SCHEMA ApiResponse_QaKnownIssueLink_ 86bce5be79b2
 SCHEMA ApiResponse_QaPatrolDetail_ c3390ea292eb
+SCHEMA ApiResponse_QaProposalExport_ d0fb1dd189f1
 SCHEMA ApiResponse_QaRepoConfig_ ee6bbd89cac8
 SCHEMA ApiResponse_QaRepoSyncResponse_ 2019787da9eb
 SCHEMA ApiResponse_QaSummary_ ae41e23ed741
@@ -2452,7 +2455,7 @@ SCHEMA PublicMcpSummary 2b840c550458
 SCHEMA QaActiveBreakdown d40c17eb9585
 SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd
-SCHEMA QaCaseDossier 3d30d332b3f1
+SCHEMA QaCaseDossier 17d2c6bb9b2d
 SCHEMA QaCaseSummary 0ea7d983c5d7
 SCHEMA QaCircuitBreaker 8bf3e6ef1ca1
 SCHEMA QaCredentialsStatus 456016a13c44
@@ -2469,6 +2472,7 @@ SCHEMA QaMetaReviewFinding 1a712e44641b
 SCHEMA QaPatrolDetail d38d7a03b3e4
 SCHEMA QaPatrolSummary d8e159e02dc5
 SCHEMA QaPrSummary 560ca14d74a4
+SCHEMA QaProposalExport 0430df7bdce4
 SCHEMA QaRepoConfig db996ebbcef2
 SCHEMA QaRepoConfigUpdate 200637e918ed
 SCHEMA QaRepoSyncResponse 926bbbab295c

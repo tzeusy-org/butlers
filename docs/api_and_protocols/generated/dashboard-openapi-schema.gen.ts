@@ -10839,6 +10839,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/qa/cases/{case_id}/proposal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case Proposal
+         * @description Serve the retained sealed patch for one case, integrity-checked, for owner adoption.
+         *
+         *     ``paths`` are derived from the sealed export's own objects (the files whose content it
+         *     carries), never from the agent worktree. ``diff`` is the display snapshot recorded in the
+         *     case notes: it is for reading, not for deciding what a push contains (the sealed bytes are).
+         */
+        get: operations["get_case_proposal_api_qa_cases__case_id__proposal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/qa/circuit-breaker": {
         parameters: {
             query?: never;
@@ -18637,6 +18661,11 @@ export interface components {
         /** ApiResponse[QaPatrolDetail] */
         ApiResponse_QaPatrolDetail_: {
             data: components["schemas"]["QaPatrolDetail"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
+        /** ApiResponse[QaProposalExport] */
+        ApiResponse_QaProposalExport_: {
+            data: components["schemas"]["QaProposalExport"];
             meta?: components["schemas"]["ApiMeta"];
         };
         /** ApiResponse[QaRepoConfig] */
@@ -35396,6 +35425,11 @@ export interface components {
              * @default 0
              */
             tracked_occurrences_since_link?: number;
+            /**
+             * Unpublished Proposal Retained
+             * @default false
+             */
+            unpublished_proposal_retained?: boolean;
         };
         /**
          * QaCaseSummary
@@ -35907,6 +35941,43 @@ export interface components {
             started_at: string;
             /** Status */
             status: string;
+        };
+        /**
+         * QaProposalExport
+         * @description A retained, validated QA patch the owner can publish under their own identity.
+         *
+         *     ``bundle_b64`` (with ``?bundle=true``) is the sealed export's exact object bytes in the
+         *     retention framing (``<oid> <kind> <size>\n<data>`` per object); the client
+         *     re-derives every object id and the ``digest`` before using it. Nothing here is a credential.
+         */
+        QaProposalExport: {
+            /** Base Sha */
+            base_sha: string;
+            /** Branch Name */
+            branch_name: string;
+            /** Bundle B64 */
+            bundle_b64?: string | null;
+            /** Bundle Bytes */
+            bundle_bytes: number;
+            /**
+             * Case Id
+             * Format: uuid
+             */
+            case_id: string;
+            /** Commits */
+            commits: string[];
+            /** Diff */
+            diff: components["schemas"]["DiffLine"][];
+            /** Diff Truncated */
+            diff_truncated: boolean;
+            /** Digest */
+            digest: string;
+            /** Head Sha */
+            head_sha: string;
+            /** Paths */
+            paths: string[];
+            /** Sealed Before Isolation */
+            sealed_before_isolation: boolean;
         };
         /**
          * QaPrSummary
@@ -57663,6 +57734,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedResponse_QaJournalEvent_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_proposal_api_qa_cases__case_id__proposal_get: {
+        parameters: {
+            query?: {
+                /** @description Include the sealed object bytes. */
+                bundle?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_QaProposalExport_"];
                 };
             };
             /** @description Validation Error */

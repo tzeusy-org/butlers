@@ -676,6 +676,36 @@ async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
     assert body["pr"] is None
 
 
+@pytest.mark.parametrize(
+    ("overrides", "unpublished_proposal_retained"),
+    [
+        ({}, True),
+        ({"pr_absence_proven": False}, False),
+        ({"pr_absence_proven": None}, False),
+        ({"export_retained": False, "refusal_recorded": True}, False),
+        ({"export_retained": None}, False),
+        ({"branch_name": None}, False),
+        ({"pr_number": 42}, False),
+    ],
+    ids=["retained", "uncertain", "unknown", "refused", "missing", "unbound", "pr-evidence"],
+)
+async def test_case_detail_exposes_export_without_changing_proposal_state(
+    overrides: dict[str, Any], unpublished_proposal_retained: bool
+) -> None:
+    retained = {"branch_name": "qa/synthetic", "export_retained": True, "pr_absence_proven": True}
+    row = _make_case_row(status="failed", **(retained | overrides))
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{row['id']}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["proposal_state"] == "none"
+    assert body["proposal_diff_snapshot"] == []
+    assert body["pr"] is None
+    assert body.get("unpublished_proposal_retained", False) is unpublished_proposal_retained
+
+
 async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> None:
     attempt_id = _uuid7_with_timestamp(1_771_234_567_900)
     diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
