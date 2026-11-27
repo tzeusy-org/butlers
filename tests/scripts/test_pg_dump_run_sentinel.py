@@ -156,6 +156,11 @@ health_absent=0
 health_conditional=0
 health_execute=1
 health_hint_seen=0
+close_snapshot_control() {
+  exec 0<&-
+  : > "${log}.control-closed"
+  exit 9
+}
 while IFS= read -r line; do
   # Model just the two psql conditional blocks that the real holder sends.
   # SQL results are injected explicitly; no database semantics are claimed.
@@ -164,6 +169,7 @@ while IFS= read -r line; do
     "\\gset")
       if [ "${health_hint_seen}" = "1" ]; then
         printf '%s\\n' 'health-catalogue-hint' >> "${log}.health"
+        if [ "${FAKE_HOLDER_CLOSE:-}" = "catalogue" ]; then close_snapshot_control; fi
         if [ "${FAKE_HEALTH_QUERY_FAILURE:-}" = "catalogue" ]; then exit 9; fi
         if [ "${FAKE_HEALTH_CENSUS:-2}" = "0" ]; then health_absent=1; fi
       fi
@@ -218,6 +224,7 @@ while IFS= read -r line; do
           if [ "${FAKE_HEALTH_QUERY_FAILURE:-}" = "proof" ]; then exit 9; fi
           printf '%s\\n' "${FAKE_HEALTH_PROOF:-2}" > "${output_file}"
           printf '%s\\n' 'snapshot-job-health-policy-verified' >> "${log}"
+          if [ "${FAKE_HOLDER_CLOSE:-}" = "commit" ]; then close_snapshot_control; fi
           ;;
       esac
       output_file=""
@@ -238,6 +245,20 @@ done
 exec /bin/mv "$@"
 """
 
+# Have the real shell wait for the synthetic holder to close its reader before
+# attempting the selected normal write. The wrapper changes only ordering.
+_ORDER_HOLDER_CLOSE = """
+printf() {
+  case "${FAKE_HOLDER_CLOSE}:$1" in
+    "catalogue:BEGIN TRANSACTION "*|"commit:COMMIT;"*)
+      while [ ! -f "${FAKE_PSQL_LOG}.control-closed" ]; do sleep 0.01; done
+      ;;
+  esac
+  command printf "$@"
+}
+. "$1"
+"""
+
 
 def _install_stub(bin_dir: Path, name: str, body: str) -> None:
     stub = bin_dir / name
@@ -248,6 +269,8 @@ def _install_stub(bin_dir: Path, name: str, body: str) -> None:
 def _run(
     backup_dir: Path,
     bin_dir: Path,
+    *,
+    holder_close: str | None = None,
     **env_overrides: str,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
@@ -257,9 +280,11 @@ def _run(
     env["FAKE_PSQL_LOG"] = str(backup_dir / ".fake-psql-events")
     env["FAKE_REAL_GZIP"] = shutil.which("gzip") or "/bin/gzip"
     env.update(env_overrides)
-    return subprocess.run(
-        [_SHELL, str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=60
-    )
+    args = [_SHELL, str(_SCRIPT)]
+    if holder_close is not None:
+        env["FAKE_HOLDER_CLOSE"] = holder_close
+        args = [_SHELL, "-c", _ORDER_HOLDER_CLOSE, "snapshot-control-test", str(_SCRIPT)]
+    return subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
 
 
 def _receipt(backup_dir: Path) -> dict:
@@ -474,6 +499,35 @@ def test_the_script_parses_under_busybox_ash():
     assert proc.returncode == 0, proc.stderr
 
 
+@pytest.mark.parametrize("holder_close", ["catalogue", "commit"])
+def test_closed_snapshot_control_records_refusal(
+    backup_dir: Path, bin_dir: Path, holder_close: str
+):
+    """Record a failed run when the holder exits before a control write."""
+    good = _run(backup_dir, bin_dir)
+    assert good.returncode == 0, good.stderr
+    (previous_artifact,) = _dumps(backup_dir)
+    previous_bytes = previous_artifact.read_bytes()
+    assert _receipt(backup_dir)["result"] == "success"
+    (backup_dir / ".fake-psql-events.health").unlink()
+
+    refused = _run(backup_dir, bin_dir, holder_close=holder_close)
+
+    assert (backup_dir / ".fake-psql-events.control-closed").is_file()
+    receipt = _receipt(backup_dir)
+    assert receipt["result"] == "failed"
+    assert receipt["exit_code"] == refused.returncode == 1, refused.stderr
+    assert receipt["reason"] == "pg_dump_failed"
+    assert receipt["artifact"] is None
+    assert _dumps(backup_dir) == [previous_artifact]
+    assert previous_artifact.read_bytes() == previous_bytes
+    events = (backup_dir / ".fake-psql-events.health").read_text().splitlines()
+    if holder_close == "catalogue":
+        assert events == ["health-catalogue-hint"]
+    else:
+        assert "health-export" in events
+
+
 def test_health_snapshot_absence_is_explicit_and_uncertain_proofs_refuse(
     tmp_path: Path, bin_dir: Path
 ):
@@ -554,7 +608,7 @@ def test_health_snapshot_absence_is_explicit_and_uncertain_proofs_refuse(
         assert refused.returncode != 0
         assert _dumps(folder) == artifacts
         assert artifacts[0].read_bytes() == before
-        assert _receipt(folder)["result"] == "failed"
+        assert _receipt(folder)["result"] == "failed", label
         events = (folder / ".fake-psql-events.health").read_text().splitlines()
         assert "health-export" not in events
         assert "health-restore-authorization" not in events
