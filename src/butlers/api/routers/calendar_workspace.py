@@ -36,6 +36,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarAuditResponse,
     CalendarButlerEventPreviewRequest,
     CalendarButlerEventPreviewResponse,
+    CalendarChange,
+    CalendarChangesResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
     CalendarInvitationEntry,
@@ -97,6 +99,11 @@ from butlers.api.models.calendar_workspace import (
 )
 from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from butlers.api.read_models.calendar_changes import (
+    CHANGES_MAX_AGE,
+    CHANGES_SKEW,
+    query_calendar_changes,
+)
 from butlers.api.read_models.calendar_day_sheet import (
     query_calendar_day_sheet,
     query_calendar_day_verdict,
@@ -1971,6 +1978,67 @@ def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
         start_at=event.starts_at,
         end_at=event.ends_at,
         all_day=event.all_day,
+    )
+
+
+@router.get("/changes", response_model=ApiResponse[CalendarChangesResponse])
+async def get_workspace_changes(
+    since: datetime | None = Query(
+        None, description="Return changes observed after this instant (default: seven days ago)"
+    ),
+    *,
+    db: Db,
+) -> ApiResponse[CalendarChangesResponse]:
+    """Organizer-made changes to start, end, status or location since ``since`` (N3).
+
+    Read from the connector's revision journal through a narrow reader; the owner's own edits and
+    events the owner declined are not returned. A failed read answers ``changes_available=false``
+    with no items (never an empty "no changes"). ``since`` defaults to seven days ago; if given it
+    must carry a timezone and be at most 14 days old, plus five minutes of clock skew (HTTP 400
+    otherwise; the slack beyond 14 days is clamped to 14 days). A future value reads as now. The
+    window is never shortened silently. Only events still ahead are returned, one item per
+    organizer change across the owner's calendars, never a baseline or a new invitation.
+    ``truncated`` says more exist than the cap. ``owners_complete=false`` says the owner's account
+    addresses were unreadable, so the list may include the owner's own edits (an upper bound).
+    """
+    now = datetime.now(UTC)
+    if since is None:
+        since = now - timedelta(days=7)
+    if since.tzinfo is None:
+        raise HTTPException(status_code=400, detail="since must include a timezone")
+    since = min(since, now)  # a client clock ahead of the server reads as now, not an error
+    if now - since > CHANGES_MAX_AGE + CHANGES_SKEW:
+        raise HTTPException(status_code=400, detail="since is older than 14 days")
+    read = await query_calendar_changes(db, since=since)
+    return ApiResponse[CalendarChangesResponse](
+        data=CalendarChangesResponse(
+            changes=[
+                CalendarChange(
+                    event_id=c.event_id,
+                    calendar_id=c.calendar_id,
+                    entry_id=UUID(c.entry_id) if c.entry_id else None,
+                    title=c.title,
+                    observed_at=c.observed_at,
+                    prior_known=c.prior_known,
+                    all_day=c.all_day,
+                    fields=c.fields,
+                    prior_start_at=c.prior_start,
+                    new_start_at=c.new_start,
+                    prior_end_at=c.prior_end,
+                    new_end_at=c.new_end,
+                    prior_status=c.prior_status,
+                    new_status=c.new_status,
+                    prior_location=c.prior_location,
+                    new_location=c.new_location,
+                    organizer_self=c.organizer_self,
+                )
+                for c in read.changes
+            ],
+            changes_available=read.available,
+            truncated=read.truncated,
+            owners_complete=read.owners_complete,
+            since=since,
+        )
     )
 
 

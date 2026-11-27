@@ -114,6 +114,7 @@ OP GET /api/butlers/{name}/state/{key} 3274c3eb0d57
 OP GET /api/calendar/accounts 27d1cf4a2b27
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
+OP GET /api/calendar/workspace/changes 2712ce44dcbb
 OP GET /api/calendar/workspace/conflicts 6e4f58219019
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
@@ -844,6 +845,7 @@ ROUTE APIRoute GET '/api/butlers/{name}/state/{key:path}' name=get_state op=get_
 ROUTE APIRoute GET '/api/calendar/accounts' name=list_calendar_accounts op=list_calendar_accounts_api_calendar_accounts_get tags=calendar,accounts schema=True
 ROUTE APIRoute GET '/api/calendar/workspace' name=get_workspace op=get_workspace_api_calendar_workspace_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/audit' name=get_calendar_audit op=get_calendar_audit_api_calendar_workspace_audit_get tags=calendar,workspace schema=True
+ROUTE APIRoute GET '/api/calendar/workspace/changes' name=get_workspace_changes op=get_workspace_changes_api_calendar_workspace_changes_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/conflicts' name=get_workspace_conflicts op=get_workspace_conflicts_api_calendar_workspace_conflicts_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/day-briefing' name=get_day_briefing op=get_day_briefing_api_calendar_workspace_day_briefing_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/day-sheet' name=get_day_sheet op=get_day_sheet_api_calendar_workspace_day_sheet_get tags=calendar,workspace schema=True
@@ -1515,6 +1517,7 @@ SCHEMA ApiResponse_ButlerMemoryStats_ 180658524c19
 SCHEMA ApiResponse_CalendarAccountsResponse_ 8203394ddc8f
 SCHEMA ApiResponse_CalendarAuditResponse_ b92d8f3da2c1
 SCHEMA ApiResponse_CalendarButlerEventPreviewResponse_ 170264803bae
+SCHEMA ApiResponse_CalendarChangesResponse_ 3c6675d3a6cc
 SCHEMA ApiResponse_CalendarDayBriefingResponse_ d6190c24e70c
 SCHEMA ApiResponse_CalendarInvitationsResponse_ af0da9e833e9
 SCHEMA ApiResponse_CalendarOrganizerDecisionResponse_ 58bc0e6b216f
@@ -1844,6 +1847,8 @@ SCHEMA CalendarAuditEntry e25e58e53fd3
 SCHEMA CalendarAuditResponse bdd2cdba856d
 SCHEMA CalendarButlerEventPreviewRequest b5e1880e194c
 SCHEMA CalendarButlerEventPreviewResponse 70865507f5c1
+SCHEMA CalendarChange 3e4f7018682a
+SCHEMA CalendarChangesResponse 59b2e565e5ab
 SCHEMA CalendarConflictEntry cc439ab2fa5a
 SCHEMA CalendarDayBriefingResponse ea57a7a52c1e
 SCHEMA CalendarInvitationEntry 7154fadc8eb3

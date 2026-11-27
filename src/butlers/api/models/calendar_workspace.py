@@ -681,6 +681,50 @@ class HouseholdTimeResponse(BaseModel):
     available: bool = True
 
 
+class CalendarChange(BaseModel):
+    """One organizer-made change to an event the owner planned around (bu-5ii4gj.11 N3)."""
+
+    event_id: str
+    calendar_id: str
+    #: The calendar entry to open as evidence; ``None`` when the projection has not seen the event.
+    entry_id: UUID | None = None
+    #: From the projection, never the journal; ``None`` when the event is not projected.
+    title: str | None = None
+    observed_at: datetime
+    prior_known: bool
+    all_day: bool = False
+    #: ``time``, ``status`` and/or ``location``; empty when no prior version was journaled.
+    fields: list[str] = Field(default_factory=list)
+    prior_start_at: datetime | None = None
+    new_start_at: datetime | None = None
+    prior_end_at: datetime | None = None
+    new_end_at: datetime | None = None
+    prior_status: str | None = None
+    new_status: str | None = None
+    prior_location: str | None = None
+    new_location: str | None = None
+    #: ``False`` when the organizer is someone else; ``None`` ("organizer unknown") when the
+    #: journal row keeps structure only. A change the owner made themselves is never returned.
+    organizer_self: bool | None = None
+
+
+class CalendarChangesResponse(BaseModel):
+    """Response payload for GET /api/calendar/workspace/changes.
+
+    ``changes_available=False`` means the journal read failed: ``changes`` is empty because nothing
+    was read, which the queue must show as unknown, never as no changes.
+    """
+
+    changes: list[CalendarChange] = Field(default_factory=list)
+    changes_available: bool = True
+    #: ``True`` when more changes exist than were returned.
+    truncated: bool = False
+    #: ``False`` when the owner's account addresses could not be read (an upper bound:
+    #: the list may include the owner's own edits).
+    owners_complete: bool = True
+    since: datetime
+
+
 class ConflictScanResponse(BaseModel):
     """Response payload for GET /api/calendar/workspace/conflicts.
 
