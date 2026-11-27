@@ -1,6 +1,6 @@
 /**
- * The two mutually exclusive overlay panels of the calendar page: the Activity
- * audit log and the butler-extracted Proposals lane.
+ * The mutually exclusive overlay panels of the calendar page: the Activity audit log, the
+ * butler-extracted Proposals lane and the invitation Docket.
  */
 
 import { useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import {
   useCalendarWorkspaceAudit,
   useDismissCalendarProposal,
 } from "@/hooks/use-calendar-workspace";
+import { useRsvpDocket, useSubmitRsvpDocket } from "@/hooks/use-rsvp-docket";
 import type { CalendarPanel } from "@/pages/calendar/CalendarToolbar";
 
 export const AUDIT_PAGE_SIZE = 50;
@@ -24,12 +25,14 @@ interface CalendarPanelsArgs {
 export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPanelsArgs) {
   const [activityOpen, setActivityOpen] = useState(false);
   const [proposalsOpen, setProposalsOpen] = useState(false);
+  const [docketOpen, setDocketOpen] = useState(false);
   const [auditOffset, setAuditOffset] = useState(0);
 
   // The panels are mutually exclusive: opening one closes the other.
   function togglePanel(panel: CalendarPanel) {
     setActivityOpen(panel === "activity" ? (prev) => !prev : false);
     setProposalsOpen(panel === "proposals" ? (prev) => !prev : false);
+    setDocketOpen(panel === "docket" ? (prev) => !prev : false);
     if (panel === "activity") setAuditOffset(0);
   }
 
@@ -48,6 +51,9 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
     () => (proposalsOpen ? (proposalsQuery.data?.data.entries ?? []) : []),
     [proposalsOpen, proposalsQuery.data?.data],
   );
+  // The docket is read only while its panel is open: the server re-judges every card on each read.
+  const docketQuery = useRsvpDocket({ enabled: docketOpen });
+  const submitDocketMutation = useSubmitRsvpDocket();
   const acceptProposalMutation = useAcceptCalendarProposal();
   const dismissProposalMutation = useDismissCalendarProposal();
 
@@ -61,6 +67,9 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
   return {
     activityOpen,
     proposalsOpen,
+    docketOpen,
+    docketQuery,
+    submitDocketMutation,
     auditOffset,
     setAuditOffset,
     togglePanel,
