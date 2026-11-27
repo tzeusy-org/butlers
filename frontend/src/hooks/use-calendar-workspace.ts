@@ -26,6 +26,7 @@ import {
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
   parseCalendarQuickAdd,
+  resolveCalendarConflict,
   previewCalendarWorkspaceButlerEvent,
   searchCalendarWorkspace,
   syncCalendarWorkspace,
@@ -485,6 +486,18 @@ export function useCalendarChanges(since: string, options?: CalendarWorkspaceQue
     queryFn: () => getCalendarChanges(since),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? busAwareInterval,
+  });
+}
+
+/** Resolve an overlap by one of its offered options, then re-read the scan and the grid. */
+export function useResolveCalendarConflict() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: resolveCalendarConflict,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] });
+      void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+    },
   });
 }
 

@@ -83,7 +83,8 @@ export function compareNeedsYou(a: NeedsYouItem, b: NeedsYouItem): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-function overlapKey(issue: ConflictIssue): string {
+/** The id part of a conflict item: the sorted entry ids of its events. */
+export function overlapKey(issue: ConflictIssue): string {
   return issue.events
     .map((event) => event.entry_id)
     .sort()

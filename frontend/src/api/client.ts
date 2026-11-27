@@ -56,6 +56,8 @@ import type {
   NowCard,
   ConflictScanParams,
   CalendarChangesResponse,
+  ConflictResolveRequest,
+  ConflictResolveResponse,
   ConflictScanResponse,
   CalendarInvitationsParams,
   CalendarOrganizerDecisionRequest,
@@ -1805,6 +1807,16 @@ export function setPrimaryCalendar(
       method: "PUT",
       body: JSON.stringify(body),
     },
+  );
+}
+
+/** Resolve one overlap by an option the scan offered, bound to the digest the owner saw. */
+export function resolveCalendarConflict(
+  body: ConflictResolveRequest,
+): Promise<ApiResponse<ConflictResolveResponse>> {
+  return apiFetch<ApiResponse<ConflictResolveResponse>>(
+    "/calendar/workspace/conflicts/resolve",
+    { method: "POST", body: JSON.stringify(body) },
   );
 }
 

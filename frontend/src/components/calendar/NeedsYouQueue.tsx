@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
-import type { CalendarInvitationEntry } from "@/api/types";
+import type { CalendarInvitationEntry, ConflictIssue, ResolutionOption } from "@/api/types";
+import { optionLabel } from "@/components/calendar/conflict-option-label";
 import type { InvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
@@ -8,6 +9,7 @@ import { describeChange } from "@/pages/calendar/change-text";
 import {
   KIND_LABEL,
   needsYouCountText,
+  overlapKey,
   type NeedsYouItem,
   type NeedsYouQueue as Queue,
 } from "@/pages/calendar/needs-you-queue";
@@ -45,6 +47,13 @@ export interface NeedsYouQueueProps {
   timezone: string;
   /** The owner's account addresses were unreadable: changes may include their own edits. */
   changesMayIncludeOwn?: boolean;
+  /** The overlap issues the queue's conflict items came from: their options and digests. */
+  conflicts?: readonly ConflictIssue[];
+  /** Carry out one offered option of an overlap, bound to the digest the owner saw. */
+  onResolveConflict?: (issue: ConflictIssue, option: ResolutionOption) => void;
+  isResolvingConflict?: boolean;
+  /** What the server answered for an overlap answered this session, by `pair_id`. */
+  conflictReceipts?: ReadonlyMap<string, string>;
   onMarkChangesSeen: () => void;
   onOpenEntry: (entryId: string, kind: NeedsYouItem["kind"]) => void;
   onAcceptProposal: (proposalId: string) => void;
@@ -58,6 +67,10 @@ export function NeedsYouQueue({
   responses,
   timezone,
   changesMayIncludeOwn = false,
+  conflicts = [],
+  onResolveConflict,
+  isResolvingConflict = false,
+  conflictReceipts,
   onMarkChangesSeen,
   onOpenEntry,
   onAcceptProposal,
@@ -70,6 +83,16 @@ export function NeedsYouQueue({
   const invitationById = useMemo(
     () => new Map(invitations.map((entry) => [entry.entry_id, entry] as const)),
     [invitations],
+  );
+
+  const conflictByItemId = useMemo(
+    () =>
+      new Map<string, ConflictIssue>(
+        conflicts
+          .filter((issue) => issue.kind === "overlap" && issue.events.length > 0)
+          .map((issue) => [`conflict:${overlapKey(issue)}`, issue] as const),
+      ),
+    [conflicts],
   );
 
   const { respond, receipts } = responses;
@@ -126,8 +149,47 @@ export function NeedsYouQueue({
         },
       );
     }
+    if (selected.kind === "conflict" && onResolveConflict) {
+      const issue = conflictByItemId.get(selected.id);
+      const options = issue?.options ?? [];
+      // An overlap the server did not bind a digest and id to, one already answered, or one being
+      // answered has no resolve keys: a key without an action is unbound, never a silent no-op.
+      const open =
+        issue !== undefined &&
+        Boolean(issue.issue_digest && issue.pair_id) &&
+        !isResolvingConflict &&
+        !(issue.pair_id && conflictReceipts?.has(issue.pair_id));
+      if (issue && open) {
+        const bind = (key: string, option: ResolutionOption, id: string, prefix: string) =>
+          list.push({
+            key,
+            description: `${prefix}${optionLabel(issue, option)}`,
+            handler: () => onResolveConflict(issue, option),
+            command: { id, label: `Needs you: ${prefix}${optionLabel(issue, option)}`.toLowerCase() },
+          });
+        options.slice(0, 9).forEach((option, index) =>
+          bind(String(index + 1), option, `needs-you-conflict-option-${index + 1}`, ""),
+        );
+        const move = options.find((o) => o.kind === "move_block" || o.kind === "move_own");
+        if (move) bind("m", move, "needs-you-conflict-move", "");
+        const keep = options.find((o) => o.kind === "keep_both");
+        if (keep) bind("x", keep, "needs-you-conflict-dismiss", "Dismiss: ");
+      }
+    }
     return list;
-  }, [selected, invitationById, receipts, respond, onOpenEntry, onAcceptProposal, onDismissProposal]);
+  }, [
+    selected,
+    invitationById,
+    receipts,
+    respond,
+    onOpenEntry,
+    onAcceptProposal,
+    onDismissProposal,
+    conflictByItemId,
+    onResolveConflict,
+    isResolvingConflict,
+    conflictReceipts,
+  ]);
 
   const { hints } = useListTriage({
     ids,
@@ -159,11 +221,15 @@ export function NeedsYouQueue({
       ) : null}
       <ul className="mt-2 space-y-1">
         {queue.items.map((item) => {
-          const receipt = receiptText(
-            item.entryId !== null && item.kind === "invitation"
-              ? receipts.get(item.entryId)?.status
-              : undefined,
-          );
+          const conflictPair =
+            item.kind === "conflict" ? conflictByItemId.get(item.id)?.pair_id : undefined;
+          const receipt =
+            (conflictPair ? conflictReceipts?.get(conflictPair) : undefined) ??
+            receiptText(
+              item.entryId !== null && item.kind === "invitation"
+                ? receipts.get(item.entryId)?.status
+                : undefined,
+            );
           return (
             <li key={item.id}>
               <button
