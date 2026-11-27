@@ -80,6 +80,16 @@ function render(overrides: Partial<React.ComponentProps<typeof CalendarVerdictOp
   );
 }
 
+// The fixtures are dated around 27 Nov 2026, and "tomorrow" is judged against the clock. Pin it
+// (Date only, so timers and user events still run) to midday SGT the day before, for every test.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-26T04:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("CalendarVerdictOpener", () => {
   // The fixtures describe Fri 27 Nov; pin the clock to the evening before so "next" stays
   // in the future no matter when the suite runs.
