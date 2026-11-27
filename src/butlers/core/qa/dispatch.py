@@ -418,6 +418,8 @@ class QaDispatchConfig:
     publisher: QaPublisher | None = None
     """Trusted deterministic publisher.  ``None`` (the production default) disables
     publication: a committed investigation fails ``publication_unavailable``."""
+    proposal_repository: str | None = None
+    """Managed-clone origin captured before the investigation starts."""
 
 
 # ---------------------------------------------------------------------------
@@ -1839,6 +1841,7 @@ async def _run_investigation_session(
             identity=identity,
             isolated=config.job_isolation is not None,
             sealed_export=sealed_export,
+            repository=config.proposal_repository,
         )
         if refusal is None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
@@ -2113,7 +2116,7 @@ async def check_open_pr_statuses(
     rows = await pool.fetch(
         """
         SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count,
-               branch_name, last_follow_up_at
+               branch_name, last_follow_up_at, publication_provenance
         FROM public.healing_attempts
         WHERE status = 'pr_open'
           AND qa_patrol_id IS NOT NULL
@@ -2384,6 +2387,7 @@ async def check_open_pr_statuses(
             if (
                 spawner is not None
                 and config is not None
+                and row.get("publication_provenance") != "owner_published"
                 and _needs_followup
                 and _follow_up_dispatch_due(
                     now=now,
@@ -3002,8 +3006,41 @@ class MainRefreshError(RuntimeError):
     """Trusted initial preparation could not bind a fresh main commit."""
 
 
-async def _refresh_main_commit(repo_root: Path) -> str:
+async def _refresh_main_commit(repo_root: Path, *, repository: str | None = None) -> str:
     """Fetch canonical main and return a verified immutable commit identity."""
+    if repository is not None and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise MainRefreshError("repository identity unavailable")
+    if repository is not None:
+        # The agent can change the clone's url.*.insteadOf settings. Fetch in a fresh
+        # repository first, then require the imported object to have that same identity.
+        with tempfile.TemporaryDirectory(prefix="qa-base-") as directory:
+            isolated = Path(directory)
+            await _run_main_git(isolated, "init", "--bare", ".")
+            await _run_main_git(
+                isolated,
+                "fetch",
+                *FETCH_COMMAND_ARGS,
+                "--no-tags",
+                f"https://github.com/{repository}",
+                "+refs/heads/main:refs/remotes/origin/main",
+            )
+            trusted = await _run_main_git(
+                isolated, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"
+            )
+            await _run_main_git(
+                repo_root,
+                "fetch",
+                *FETCH_COMMAND_ARGS,
+                "--no-tags",
+                str(isolated),
+                "+refs/remotes/origin/main:refs/remotes/origin/main",
+            )
+            imported = await _run_main_git(
+                repo_root, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"
+            )
+            if not re.fullmatch(r"[0-9a-f]{40}", trusted) or imported != trusted:
+                raise MainRefreshError("main commit identity unavailable")
+            return trusted
     output = b""
     for args in (
         (
@@ -3039,6 +3076,30 @@ async def _refresh_main_commit(repo_root: Path) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise MainRefreshError("main commit identity unavailable")
     return commit
+
+
+async def _run_main_git(cwd: Path, *args: str) -> str:
+    """Run one credential-free preparation command with bounded, content-free failure."""
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=isolated_git_env(),
+        )
+        output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode != 0:
+            raise MainRefreshError("main refresh unavailable")
+        return output.decode("ascii", errors="replace").strip()
+    except (OSError, TimeoutError) as exc:
+        raise MainRefreshError("main refresh unavailable") from exc
+    finally:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
 
 async def dispatch_qa_investigation(
@@ -3459,7 +3520,12 @@ async def dispatch_qa_investigation(
 
         # Freshness is admission, never a local-main fallback (REQ-testing-043).
         try:
-            _base_ref = await _refresh_main_commit(repo_root)
+            if config.proposal_repository and config.publisher is None:
+                _base_ref = await _refresh_main_commit(
+                    repo_root, repository=config.proposal_repository
+                )
+            else:
+                _base_ref = await _refresh_main_commit(repo_root)
         except MainRefreshError:
             logger.warning("QA dispatch refused: main refresh unavailable")
             await update_attempt_status(

@@ -334,6 +334,38 @@ async def test_managed_clone_git_runs_no_planted_hook_or_secret(tmp_path: Path, 
 
 
 @pytest.mark.asyncio
+async def test_owner_proposal_fetch_is_pinned_to_captured_repository(tmp_path: Path):
+    proc = MagicMock(returncode=0)
+    proc.communicate = AsyncMock(
+        side_effect=[(b"", b""), (b"", b""), (b"a" * 40, b""), (b"", b""), (b"a" * 40, b"")]
+    )
+    with patch.object(
+        qa_dispatch.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=proc
+    ) as execute:
+        result = await qa_dispatch._refresh_main_commit(tmp_path, repository="acme/butlers")
+    assert result == "a" * 40
+    fetch_args = execute.await_args_list[1].args
+    assert "https://github.com/acme/butlers" in fetch_args
+    assert "origin" not in fetch_args
+    assert execute.await_args_list[1].kwargs["cwd"] != str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_owner_proposal_rejects_a_changed_imported_base(tmp_path: Path):
+    proc = MagicMock(returncode=0)
+    proc.communicate = AsyncMock(
+        side_effect=[(b"", b""), (b"", b""), (b"a" * 40, b""), (b"", b""), (b"b" * 40, b"")]
+    )
+    with (
+        patch.object(
+            qa_dispatch.asyncio, "create_subprocess_exec", new_callable=AsyncMock, return_value=proc
+        ),
+        pytest.raises(qa_dispatch.MainRefreshError),
+    ):
+        await qa_dispatch._refresh_main_commit(tmp_path, repository="acme/butlers")
+
+
+@pytest.mark.asyncio
 async def test_head_lookup_is_pinned_to_the_stored_repository_from_a_neutral_cwd(tmp_path: Path):
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(b'[{"number": 7, "url": "u"}]', b""))
