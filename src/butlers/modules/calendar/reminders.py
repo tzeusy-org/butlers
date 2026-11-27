@@ -193,6 +193,8 @@ class RemindersMixin:
                   AND ce.recurrence_rule IS NULL
                   AND ce.status = $4
                   AND ce.starts_at <= $3
+                  -- a ``block`` claim is time held on the calendar, not something to remind about
+                  AND COALESCE(ce.metadata->'claim'->>'presence', '') <> 'block'
                   AND (
                       ce.metadata->>'last_notified_at' IS NULL
                       OR (ce.metadata->>'last_notified_at')::timestamptz < ce.starts_at
