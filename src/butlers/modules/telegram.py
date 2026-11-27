@@ -15,8 +15,10 @@ import logging
 import re
 import time
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -68,6 +70,10 @@ REACTION_TO_EMOJI = {
     REACTION_SUCCESS: "\U0001f44d",
     REACTION_FAILURE: "\U0001f47e",
 }
+
+
+class _TelegramReplyOptions(TypedDict, total=False):
+    render_links_inert: bool
 
 
 @dataclass
@@ -448,6 +454,20 @@ class TelegramModule(Module):
         target = telegram_chat_target(chat_id)
         await require_custody_clear(self._permission_pool(), None if target is None else [target])
 
+    @asynccontextmanager
+    async def _hold_chat_lock(self, chat_id: str) -> AsyncIterator[None]:
+        lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
+        self._chat_locks[chat_id] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, users = self._chat_locks[chat_id]
+            if users == 1:
+                del self._chat_locks[chat_id]
+            else:
+                self._chat_locks[chat_id] = (lock, users - 1)
+
     async def _send_message(
         self,
         chat_id: str,
@@ -457,8 +477,13 @@ class TelegramModule(Module):
         *,
         render_links_inert: bool = False,
         server_built_reply_markup: bool = False,
+        batch_message_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """Call Telegram sendMessage API.
+
+        The file batch already holds the chat lock when it supplies its receipt
+        list. Record each acknowledged lead chunk immediately so the batch can
+        report it even if the lead audit is interrupted.
 
         Permissions-matrix enforcement (public.permissions: notify): Telegram is
         an owner-facing notify channel (the notify() core tool itself delivers
@@ -483,11 +508,12 @@ class TelegramModule(Module):
             await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
             await self._require_custody_clear(chat_id)
             chunks = split_telegram_text(text, inert=render_links_inert)
-            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
-            self._chat_locks[chat_id] = (lock, users + 1)
-            message_ids: list[int] = []
+            message_ids = [] if batch_message_ids is None else batch_message_ids
+            chat_lock = (
+                self._hold_chat_lock(chat_id) if batch_message_ids is None else nullcontext()
+            )
             try:
-                async with lock:
+                async with chat_lock:
                     deadline = time.monotonic() + 30
                     pending = deque((chunk, False, _TelegramRetryBudget()) for chunk in chunks)
                     while pending:
@@ -527,15 +553,9 @@ class TelegramModule(Module):
                 if message_ids:
                     raise TelegramPartialDeliveryError(message_ids) from exc
                 raise
-            finally:
-                _, users = self._chat_locks[chat_id]
-                if users == 1:
-                    del self._chat_locks[chat_id]
-                else:
-                    self._chat_locks[chat_id] = (lock, users - 1)
             message_id = message_ids[-1]
             if len(message_ids) > 1:
-                data = {**data, "result": {**data["result"], "message_ids": message_ids}}
+                data = {**data, "result": {**data["result"], "message_ids": list(message_ids)}}
 
         except Exception as exc:
             if isinstance(exc, CustodyEgressRefused):
@@ -570,7 +590,7 @@ class TelegramModule(Module):
             raise
 
         audit_summary["provider_message_id"] = message_id
-        audit_summary["provider_message_ids"] = message_ids
+        audit_summary["provider_message_ids"] = list(message_ids)
         await write_audit_entry(
             self._audit_pool,
             self._butler_name,
@@ -619,40 +639,31 @@ class TelegramModule(Module):
                 and text_units(text) <= CAPTION_LIMIT
             )
             anchor = reply_to_message_id
-            if text_chunks and not caption_first:
-                lead_text = text
-                if render_links_inert:
-                    # Captions cannot be rendered inert; fold them into the
-                    # inert text instead of dropping or sending them live.
-                    lead_text += "".join(
-                        f"\n\n{item.filename}: {item.caption}" for item in resolved if item.caption
+            async with self._hold_chat_lock(chat_id):
+                if text_chunks and not caption_first:
+                    lead_text = text
+                    if render_links_inert:
+                        # Captions cannot be rendered inert; keep them in the inert lead.
+                        lead_text += "".join(
+                            f"\n\n{item.filename}: {item.caption}"
+                            for item in resolved
+                            if item.caption
+                        )
+                    await self._send_message(
+                        chat_id,
+                        lead_text,
+                        reply_to_message_id=reply_to_message_id,
+                        render_links_inert=render_links_inert,
+                        batch_message_ids=message_ids,
                     )
-                sent = await self._send_message(
-                    chat_id,
-                    lead_text,
-                    reply_to_message_id=reply_to_message_id,
-                    render_links_inert=render_links_inert,
-                )
-                result = sent.get("result", {})
-                message_ids.extend(result.get("message_ids") or [result["message_id"]])
-                anchor = message_ids[-1]
-            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
-            self._chat_locks[chat_id] = (lock, users + 1)
-            try:
-                async with lock:
-                    deadline = time.monotonic() + 120
-                    for index, item in enumerate(resolved):
-                        caption = text if index == 0 and caption_first else item.caption
-                        if render_links_inert:
-                            caption = None
-                        data = await self._upload_file(chat_id, item, caption, anchor, deadline)
-                        message_ids.append(data["result"]["message_id"])
-            finally:
-                _, users = self._chat_locks[chat_id]
-                if users == 1:
-                    del self._chat_locks[chat_id]
-                else:
-                    self._chat_locks[chat_id] = (lock, users - 1)
+                    anchor = message_ids[-1]
+                deadline = time.monotonic() + 120
+                for index, item in enumerate(resolved):
+                    caption = text if index == 0 and caption_first else item.caption
+                    if render_links_inert:
+                        caption = None
+                    data = await self._upload_file(chat_id, item, caption, anchor, deadline)
+                    message_ids.append(data["result"]["message_id"])
         except (Exception, asyncio.CancelledError) as exc:
             if isinstance(exc, TelegramPartialDeliveryError):
                 message_ids = list(exc.message_ids)
@@ -819,12 +830,13 @@ class TelegramModule(Module):
         render_links_inert: bool = False,
     ) -> dict[str, Any]:
         """Reply to a specific Telegram message."""
+        options: _TelegramReplyOptions = {"render_links_inert": True} if render_links_inert else {}
         return await self._send_message(
             chat_id,
             text,
             reply_to_message_id=message_id,
             reply_markup=reply_markup,
-            **({"render_links_inert": True} if render_links_inert else {}),
+            **options,
         )
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:

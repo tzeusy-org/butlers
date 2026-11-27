@@ -729,9 +729,18 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
             telegram, "_blob_store", MagicMock(scheme="s3", bucket="butlers", get=get_blob)
         )
         upload = AsyncMock(return_value={"ok": True, "result": {"message_id": 992}})
-        send = AsyncMock(return_value={"ok": True, "result": {"message_id": 991}})
+        lead_post = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                request=httpx.Request("POST", "https://telegram.test/sendMessage"),
+                json={"ok": True, "result": {"message_id": 991}},
+            )
+        )
+        monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+        monkeypatch.setattr(
+            telegram, "_get_client", MagicMock(return_value=MagicMock(post=lead_post))
+        )
         monkeypatch.setattr(telegram, "_upload_file", upload)
-        monkeypatch.setattr(telegram, "_send_message", send)
         recipient = "12345" if inert else "9001"
         request = _valid_notify_request()
         request["delivery"].update(
@@ -759,7 +768,7 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
                 _switchboard_pool(), source_butler="health", notify_request=request
             )
         upload.assert_not_awaited()
-        send.assert_not_awaited()
+        lead_post.assert_not_awaited()
         parked = [row for row in await actions.rows() if row["status"] == "pending"]
         assert len(parked) == 1, inert
         row = parked[0]
@@ -777,11 +786,15 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
             assert "error" not in result, result
             assert status == "executed"
             assert failures == []
-            send.assert_awaited_once_with(
-                "12345",
-                "[health] Your statement.",
-                reply_to_message_id=None,
-                render_links_inert=True,
+            lead_text = "[health] Your statement."
+            lead_post.assert_awaited_once_with(
+                "https://telegram.test/sendMessage",
+                json={
+                    "chat_id": "12345",
+                    "text": lead_text,
+                    "entities": [{"type": "pre", "offset": 0, "length": len(lead_text)}],
+                    "link_preview_options": {"is_disabled": True},
+                },
             )
             uploads = [call.args for call in upload.await_args_list]
             assert [(item.data, caption, anchor) for _, item, caption, anchor, _ in uploads] == [
@@ -790,7 +803,7 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
             ]
         else:
             upload.assert_not_awaited()
-            send.assert_not_awaited()
+            lead_post.assert_not_awaited()
             # A failed replay stays approved (retryable) and records why.
             assert status == "approved"
             assert len(failures) == 1
