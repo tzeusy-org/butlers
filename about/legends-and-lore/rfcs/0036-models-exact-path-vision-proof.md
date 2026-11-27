@@ -9,6 +9,19 @@ The storage/API, restricted ingress/retention, and diagnostic executor sections 
 This publication incorporates the exact adopted contract sections User experience and state model through Specification scenarios, preserving all clauses. Historical funnel/review text stays provenance, not future implementation authority.
 
 
+## Proposed amendment 1 — proof executor conforms to RFC 0038 D18
+
+The exact draft head requires independent conformance review. Bu-o7lumy AC5 reserves adoption and merge for the owner. The adoption digest above and the original OpenSpec provenance continue to identify the prior adopted contract.
+
+[RFC 0038 D18](0038-goal-runtime-and-capability-authorization.md#d18-model-use-outside-goals) names RFC 0036 vision probes in the Model functions bullet. Its RFC 0036 disposition row confirms that classification. The prior feasibility measure in PR #4360 (bu-s1u4br.1) tested the older CLI/MCP diagnostic profile. A runtime tuple needs separate evidence that it can enforce the D18 profile.
+
+Upon adoption, deterministic code makes one tool-less, single-turn, structured-output call per control on the exact authorized runtime type, model ID, runtime/CLI version and account path. Only the positive control carries the synthetic image inline. The adapter must enforce the structured output schema, fixed maximum output, spend reservation and tool and turn restrictions before any provider request. A tuple without those guarantees ends Not run with a named reason. Only the deterministic comparator reads the typed result as third-party content. Promotion requires the exact private answer from the positive and exactly `NO_IMAGE` from both negatives. Existing stop conditions can leave later controls unlaunched.
+
+Purpose-bound admission, the three controls, durable reservation and launch limits, private comparison, content-blind receipts, the restore epoch and exact-row Apply/Refresh all remain required. The model function targets its authorized row directly and retains the enabled-row, runtime availability, authorization, quota and timeout checks. Ordinary routing retains its existing rules for managed and unchanged historical rows. Controls use no goal invocation, Spawner diagnostic session, MCP session, retry, resume or failover. The existing control-count and cancellation guarantees apply to the bounded calls.
+
+The existing `attachment_view` wire-shape tests cover what the server emits. Runtime-side forwarding of an MCP image block into inference remains an explicitly unproven residual. The inline proof and server-side tests establish separate properties. The proof remains evidence-only until the owner's explicit exact-row Apply/Refresh succeeds.
+
+Upon adoption, the amended executor takes precedence over the earlier CLI/MCP transport passages in Exact path and controls, Restricted dispatch and durable storage authority, and Diagnostic executor feasibility. Those passages record the prior adoption and measurement. The other custody, reservation and evidence guarantees remain in force. Per-run owner authorization still governs real-provider evidence. Landed PR #4891 already reconciled the generalist disposition ledger to D18.
 
 Models rows retain their existing layout and text Verify action. Add compact capability chips using validated ModelFeature names; absent vision = Unknown, false = Declared unsupported, true = Declared supported. Separate evidence fields show latest check outcome and applied proof applicability. Latest check may be Ready to apply, failed or inconclusive; applied proof may be absent, applicable or stale. A fresh unapplied pass does not hide a stale applied proof or claim restored routing eligibility. Never collapse declaration and proof into a single green check. Historical core248 declarations may show Historical declaration with provenance; no fabricated timestamp or current verified badge.
 
@@ -125,6 +138,8 @@ Nearest tests: tests/scripts/test_pg_dump_backup.py; tests/scripts/test_pg_resto
 <a id="vision-diagnostic-executor"></a>
 
 # Diagnostic executor feasibility: source facts, not live capability claims
+
+> Proposed amendment 1 treats this measure as feasibility history for the CLI/MCP diagnostic profile. A runtime tuple needs separate evidence before it can run the D18 model-function profile.
 
 [Observed] Repository Codex invoke at core/runtimes/codex.py:1909 accepts max_turns but normal command includes --dangerously-bypass-approvals-and-sandbox at1958; MCP discovery retry begins2230. Those normal paths are NOT diagnostic enforcement. OpenCode invoke accepts max_turns at946 with no source use beyond documentation and includes automatic migration retry. Installed local Codex path resolves to standalone0.157.1; executable existence/version naming is not enforcement attestation. No authenticated CLI/provider invocation performed. OpenCode binary exists; version not asserted from mtime.
 
