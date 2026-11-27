@@ -559,13 +559,22 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
     ):
         problems.append("recipient_params")
     elif (
-        {"to", "recipient", "recipients", "chat_id", "chat_jid", "attendees"}.intersection(
-            properties
+        (
+            {"to", "recipient", "recipients", "chat_id", "chat_jid", "attendees"}.intersection(
+                properties
+            )
+            or descriptor.canonical_name
+            in {"ha_call_service", "remind", "delegate_answer", "calendar_respond"}
         )
-        or descriptor.canonical_name
-        in {"ha_call_service", "remind", "delegate_answer", "calendar_respond"}
-    ) and not (
-        recipients.argument_names or recipients.undeterminable or recipients.default_owner_condition
+        and not (
+            recipients.argument_names
+            or recipients.undeterminable
+            or recipients.default_owner_condition
+        )
+        and not (
+            # These fields describe an undelivered mailbox draft, not communication parties.
+            descriptor.canonical_name == "gmail_save_draft" and descriptor.effect_class == "record"
+        )
     ):
         problems.append("recipient_params")
     content = descriptor.content_params

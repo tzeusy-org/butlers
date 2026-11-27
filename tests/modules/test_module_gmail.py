@@ -8,10 +8,13 @@ write are the three seams patched on the module.
 from __future__ import annotations
 
 import base64
+import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
+from email import policy
+from email.parser import BytesParser
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,6 +42,10 @@ GMAIL_TOOLS = {
     "gmail_search",
     "gmail_get_thread",
     "gmail_modify_threads",
+    "gmail_list_drafts",
+    "gmail_get_draft",
+    "gmail_save_draft",
+    "gmail_send_reply",
 }
 MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 OWNER = "owner@example.test"
@@ -85,6 +92,11 @@ class FakeGmail:
         self.token_body: dict[str, Any] = {"error": "invalid_grant"}
         self.modify_failures: dict[str, int] = {}
         self.minted = 0
+        self.drafts: dict[str, dict[str, Any]] = {}
+        self.sent: list[dict[str, Any]] = []
+        self.send_status = 200
+        self.send_timeout = False
+        self.messages = {"m1": {**_message("m1"), "threadId": "t1"}}
 
     @property
     def gmail_calls(self) -> list[httpx.Request]:
@@ -105,6 +117,26 @@ class FakeGmail:
                 200, json={"access_token": f"tok-{self.minted}", "expires_in": 3600}
             )
         assert request.headers["authorization"].startswith("Bearer tok-")
+        prefix = "/gmail/v1/users/me/"
+        if path == prefix + "messages/send":
+            self.sent.append(json.loads(request.read()))
+            if self.send_timeout:
+                raise httpx.ReadTimeout("synthetic timeout", request=request)
+            return httpx.Response(self.send_status, json={"id": "sent1", "threadId": "t1"})
+        if path.startswith(prefix + "messages/"):
+            message = self.messages.get(path.rsplit("/", 1)[-1])
+            return httpx.Response(200, json=message) if message else httpx.Response(404)
+        if path == prefix + "drafts" and request.method == "GET":
+            return httpx.Response(200, json={"drafts": [{"id": k} for k in self.drafts]})
+        if path.startswith(prefix + "drafts"):
+            draft_id = path.rsplit("/", 1)[-1] if path != prefix + "drafts" else "d1"
+            if request.method == "DELETE":
+                self.drafts.pop(draft_id, None)
+                return httpx.Response(204)
+            if request.method in {"POST", "PUT"}:
+                self.drafts[draft_id] = {"id": draft_id, **json.loads(request.read())}
+            draft = self.drafts.get(draft_id)
+            return httpx.Response(200, json=draft) if draft else httpx.Response(404)
         if path == "/gmail/v1/users/me/labels":
             return httpx.Response(200, json={"labels": self.labels})
         if path == "/gmail/v1/users/me/threads":
@@ -240,7 +272,7 @@ class TestRegistration:
         assert module.dependencies == []
         assert "gmail" in default_registry().available_modules
 
-    async def test_switch_on_registers_the_four_tools(self, monkeypatch) -> None:
+    async def test_switch_on_registers_the_owner_mailbox_tools(self, monkeypatch) -> None:
         monkeypatch.setattr("butlers.core.goal_lineage._enforced", True)
         module = GmailModule()
         mcp = FastMCP("gmail-tools")
@@ -686,3 +718,288 @@ class TestIngestIsolation:
             "gmail.googleapis.com",
             "oauth2.googleapis.com",
         }
+
+
+def reply_args(**changes):
+    return {
+        "account": OWNER,
+        "thread_id": "t1",
+        "in_reply_to_message_id": "m1",
+        "in_reply_to_sender": "Ann <ann@example.test>",
+        "in_reply_to_date": "Mon, 2 Nov 2026 09:00:00 +0000",
+        "to": ["ann@example.test"],
+        "cc": ["cc@example.test"],
+        "subject": "Re: Hello",
+        "body": "Exact body without an added newline: café",
+        **changes,
+    }
+
+
+def call_lineage(tool, args, *, approved=False, exposed=False, origin="owner", effect_id=None):
+    from butlers.core.capability_json import arguments_digest
+
+    return replace(
+        _lineage(exposed=exposed, origin=origin),
+        capability=tool,
+        args_digest=arguments_digest(args),
+        approval_ref="approval-1" if approved else None,
+        effect_id=effect_id or uuid.uuid4(),
+    )
+
+
+def decode_mime(message):
+    return BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(message["raw"]))
+
+
+class TestDrafts:
+    async def test_read_scrubs_content_and_withholds_on_scrubber_failure(
+        self, tools, fake, monkeypatch
+    ):
+        from butlers.modules.gmail.mime import build_message
+
+        fake.drafts["d1"] = {
+            "id": "d1",
+            "message": build_message(
+                OWNER,
+                {
+                    "to": [OWNER],
+                    "subject": "Verification code",
+                    "body": "Your verification code is 482913",
+                },
+                {},
+            ),
+        }
+        got = await tools["gmail_get_draft"](account=OWNER, draft_id="d1")
+        assert got["status"] == "ok" and "482913" not in repr(got)
+        assert got["message"]["subject"] == "Verification code"
+
+        def refuse(*args, **kwargs):
+            raise RuntimeError("synthetic scrub failure")
+
+        monkeypatch.setattr("butlers.modules.gmail.scrub_text", refuse)
+        withheld = await tools["gmail_get_draft"](account=OWNER, draft_id="d1")
+        assert withheld["message"] == {"content_withheld": True}
+        assert "482913" not in repr(withheld)
+
+    async def test_save_list_get_and_update_reply_draft(self, tools, fake):
+        args = reply_args()
+        args.pop("in_reply_to_sender")
+        args.pop("in_reply_to_date")
+        with lineage_scope(call_lineage("gmail_save_draft", args)):
+            saved = await tools["gmail_save_draft"](**args)
+        assert saved["status"] == "ok"
+        raw = fake.drafts[saved["draft_id"]]["message"]
+        mime = decode_mime(raw)
+        assert raw["threadId"] == "t1"
+        assert str(mime["From"]) == OWNER
+        assert str(mime["To"]) == "ann@example.test"
+        assert str(mime["Cc"]) == "cc@example.test"
+        assert mime["In-Reply-To"] == "<m1@mail.example.test>"
+        assert mime["References"] == "<m1@mail.example.test>"
+        assert mime.get_content() == args["body"]
+        assert mime["Message-ID"] is None
+        listed = await tools["gmail_list_drafts"](account=OWNER)
+        assert listed["drafts"] == [{"id": saved["draft_id"]}]
+        got = await tools["gmail_get_draft"](account=OWNER, draft_id=saved["draft_id"])
+        assert got["message"]["body"] == args["body"]
+        args.update(draft_id=saved["draft_id"], body="Replacement")
+        with lineage_scope(call_lineage("gmail_save_draft", args)):
+            assert (await tools["gmail_save_draft"](**args))["status"] == "ok"
+        assert decode_mime(fake.drafts[saved["draft_id"]]["message"]).get_content() == "Replacement"
+        assert fake.sent == []
+
+    @pytest.mark.parametrize("origin,exposed", [("owner", True), ("third_party", False)])
+    async def test_exposed_draft_requires_exact_approval(self, tools, fake, origin, exposed):
+        args = {"account": OWNER, "to": [OWNER], "subject": "Private", "body": "draft"}
+        with lineage_scope(call_lineage("gmail_save_draft", args, origin=origin, exposed=exposed)):
+            result = await tools["gmail_save_draft"](**args)
+        assert result["error"] == "approval_required"
+        assert fake.requests == []
+        with lineage_scope(
+            call_lineage("gmail_save_draft", args, approved=True, origin=origin, exposed=exposed)
+        ):
+            assert (await tools["gmail_save_draft"](**args))["status"] == "ok"
+        assert len(fake.drafts) == 1 and fake.sent == []
+
+
+class FakeSendReceipts:
+    """Committed receipt seam; SQL and transaction behavior run on real PostgreSQL below."""
+
+    def __init__(self):
+        self.rows = {}
+
+    async def get(self, effect):
+        return self.rows.get(effect)
+
+    async def reserve(self, effect, account, thread, message_id, digest):
+        if effect in self.rows:
+            return None
+        row = dict(
+            effect_id=effect,
+            account=account,
+            thread_id=thread,
+            message_id=message_id,
+            call_digest=digest,
+            state="dispatching",
+            gmail_message_id=None,
+            draft_cleanup=None,
+        )
+        self.rows[effect] = row
+        return row
+
+    async def settle(self, effect, state, gmail_message_id=None):
+        self.rows[effect].update(state=state, gmail_message_id=gmail_message_id)
+        return self.rows[effect]
+
+    async def cleanup(self, effect, outcome):
+        self.rows[effect]["draft_cleanup"] = outcome
+        return self.rows[effect]
+
+
+@pytest.fixture
+def send_store(monkeypatch):
+    store = FakeSendReceipts()
+    monkeypatch.setattr("butlers.modules.gmail.actions.SendReceipts", lambda pool: store)
+    return store
+
+
+class TestReplies:
+    async def test_send_pins_every_header_and_returns_original_receipt(
+        self, tools, fake, send_store
+    ):
+        args = reply_args()
+        lineage = call_lineage("gmail_send_reply", args, approved=True, exposed=True)
+        with lineage_scope(lineage):
+            sent = await tools["gmail_send_reply"](**args)
+            repeated = await tools["gmail_send_reply"](**args)
+        assert sent == repeated and sent["status"] == "sent"
+        assert len(fake.sent) == 1
+        assert fake.sent[0]["threadId"] == "t1"
+        mime = decode_mime(fake.sent[0])
+        assert str(mime["From"]) == OWNER
+        assert str(mime["To"]) == args["to"][0] and str(mime["Cc"]) == args["cc"][0]
+        assert str(mime["Subject"]) == args["subject"]
+        assert mime["In-Reply-To"] == "<m1@mail.example.test>"
+        assert mime["References"] == "<m1@mail.example.test>"
+        assert lineage.effect_id.hex in mime["Message-ID"] and mime["Date"]
+        assert mime.get_content_type() == "text/plain" and mime.get_content() == args["body"]
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"thread_id": "t2"},
+            {"subject": "Different"},
+            {"to": []},
+            {"cc": ["a@example.test"] * 20},
+            {"to": ["bad"]},
+            {"to": ["a@example.test\r\nBcc: leak@example.test"]},
+            {"subject": "Re: Hello\nInjected: header"},
+            {"body": "x" * 50_001},
+            {"account": OTHER},
+            {"in_reply_to_sender": "forged@example.test"},
+            {"in_reply_to_date": "a different date"},
+            {"replaces_draft_id": "../else"},
+        ],
+    )
+    async def test_validation_refuses_before_any_write(self, tools, fake, send_store, change):
+        args = reply_args(**change)
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            result = await tools["gmail_send_reply"](**args)
+        assert result["status"] == "error"
+        assert fake.sent == [] and send_store.rows == {}
+        assert all(
+            r.method == "GET" or r.url.host == "oauth2.googleapis.com" for r in fake.requests
+        )
+
+    @pytest.mark.parametrize(
+        "status,times_out,expected",
+        [
+            (400, False, "failed"),
+            (403, False, "failed"),
+            (429, False, "failed"),
+            (503, False, "unknown"),
+            (200, True, "unknown"),
+        ],
+    )
+    async def test_definite_and_ambiguous_outcomes_never_resend(
+        self, tools, fake, send_store, status, times_out, expected
+    ):
+        fake.send_status, fake.send_timeout = status, times_out
+        args = reply_args()
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            first = await tools["gmail_send_reply"](**args)
+            repeated = await tools["gmail_send_reply"](**args)
+        assert first["status"] == expected and repeated["status"] == expected
+        assert len(fake.sent) == 1
+
+    async def test_dispatching_after_crash_never_resends_and_needs_exact_sent_evidence(
+        self, tools, fake, send_store
+    ):
+        args = reply_args()
+        lineage = call_lineage("gmail_send_reply", args, approved=True)
+        expected_id = f"<butlers.{lineage.effect_id.hex}@example.test>"
+        await send_store.reserve(lineage.effect_id, OWNER, "t1", expected_id, lineage.args_digest)
+        message = {**_message("accepted", labels=["SENT"]), "threadId": "t1"}
+        fake.threads["t1"] = {"id": "t1", "messages": [message]}
+        with lineage_scope(lineage):
+            unknown = await tools["gmail_send_reply"](**args)
+            assert unknown["status"] == "unknown"  # SENT alone is insufficient.
+            for header in message["payload"]["headers"]:
+                if header["name"] == "Message-ID":
+                    header["value"] = expected_id
+            message["labelIds"] = ["INBOX"]
+            assert (await tools["gmail_send_reply"](**args))["status"] == "unknown"
+            message["labelIds"] = ["SENT"]
+            assert (await tools["gmail_send_reply"](**args))["status"] == "sent"
+        assert fake.sent == []
+
+    @pytest.mark.parametrize("changed", [False, True])
+    async def test_cleanup_preserves_changed_draft(self, tools, fake, send_store, changed):
+        from butlers.modules.gmail.mime import build_message
+
+        args = reply_args(replaces_draft_id="d1")
+        fake.drafts["d1"] = {
+            "id": "d1",
+            "message": build_message(
+                OWNER, {**args, "body": "Owner edit"} if changed else args, {}
+            ),
+        }
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            result = await tools["gmail_send_reply"](**args)
+        assert result["status"] == "sent"
+        assert result["draft_cleanup"] == ("draft_kept_changed" if changed else "draft_removed")
+        assert ("d1" in fake.drafts) is changed
+        assert len(fake.sent) == 1
+
+    async def test_receipt_commit_failure_sends_nothing(self, tools, fake, send_store):
+        send_store.reserve = AsyncMock(side_effect=RuntimeError("synthetic commit failure"))
+        args = reply_args()
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            result = await tools["gmail_send_reply"](**args)
+        assert result["error"] == "receipt_unavailable" and fake.sent == []
+
+    async def test_cleanup_recording_failure_preserves_confirmed_send(
+        self, tools, fake, send_store
+    ):
+        send_store.cleanup = AsyncMock(side_effect=RuntimeError("synthetic cleanup commit failure"))
+        args = reply_args(replaces_draft_id="d1")
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            result = await tools["gmail_send_reply"](**args)
+        assert result["status"] == "sent" and len(fake.sent) == 1
+        assert next(iter(send_store.rows.values()))["state"] == "sent"
+
+    async def test_thread_headers_are_preserved_and_injection_refused(
+        self, tools, fake, send_store
+    ):
+        args = reply_args()
+        target_headers = fake.messages["m1"]["payload"]["headers"]
+        target_headers.append({"name": "References", "value": "<prior@example.test>"})
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            assert (await tools["gmail_send_reply"](**args))["status"] == "sent"
+        assert (
+            decode_mime(fake.sent[0])["References"] == "<prior@example.test> <m1@mail.example.test>"
+        )
+        target_headers[-1]["value"] = "<prior@example.test>\r\nBcc: leak@example.test"
+        with lineage_scope(call_lineage("gmail_send_reply", args, approved=True)):
+            assert (await tools["gmail_send_reply"](**args))["error"] == "invalid_argument"
+        assert len(fake.sent) == 1

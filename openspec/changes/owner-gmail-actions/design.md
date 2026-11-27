@@ -22,6 +22,9 @@ revoked through the shared rule and returns `account_revoked`.
 | `gmail_search` | read | untrusted | `account` | none |
 | `gmail_get_thread` | read | untrusted | `account`, `thread_id` | none |
 | `gmail_modify_threads` | record | untrusted | `account`, `thread_ids` | none |
+| `gmail_list_drafts`, `gmail_get_draft` | read | untrusted | `account` | none |
+| `gmail_save_draft` | record | trusted receipt | `account` | none |
+| `gmail_send_reply` | communicate | trusted receipt | `account` | key_required |
 
 All four are `owner_authority=False` and carry every S1 category. `gmail_modify_threads` is
 `record` because archive, read state, star, important and existing user labels are reversible
@@ -29,6 +32,26 @@ changes to the owner's own mailbox state (security.md, "Approval Gates"). It is 
 is naturally idempotent and keeps no effect receipts; the broker still records the effect in the
 effect ledger (D12). Store writers: `external:gmail` lists `gmail_modify_threads` as its record
 capability and `GmailModule._modify_threads` as its native writer.
+
+The draft/reply additions also declare `owner_authority=False`. Draft reads carry all S1
+categories; save/send return ordinary metadata receipts with no content category. Save has no
+recipient parameters because a draft delivers nothing, with an explicit non-delivery catalog
+validation exemption. The broker parks exposed/third-party saves as per-event-only. Send names
+both `to` and `cc` and pins all safety arguments, including subject/body. A custom renderer in
+the existing preview registry shows account, target context and replacement draft in addition
+to delivered content; it does not use the narrower generic content-only renderer.
+
+Sends require `in_reply_to_sender` and `in_reply_to_date`, copied from the target message read,
+so the deterministic preview can show that exact context without another Gmail read while
+rendering. Dispatch verifies both against the selected message before writing anything. The
+domain commits a metadata-only `msg_005` receipt before its single messages.send attempt. A
+Gmail-specific HTTP-forwarder mapping mirrors sent/failed/unknown into the effect ledger.
+Unknown reconciliation requires an exact SENT Message-ID match and never repeats the send.
+Cleanup is digest-guarded and the migration refuses to drop retained receipts.
+
+The canonical shared owner-edit/audit-snapshot integration belongs to prerequisite `bu-mmdsl7`.
+This source package preserves the existing goal-effect edit refusal and does not claim that
+edited-send acceptance is complete.
 
 ### D3. Exposed and third-party modify: the owner rule in the broker
 

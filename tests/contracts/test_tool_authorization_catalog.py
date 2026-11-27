@@ -789,6 +789,28 @@ async def test_finance_fixed_warning_read_is_registered_sensitive_and_never_owne
     assert descriptor.llm_presentable is False
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_gmail_dark_startup_and_gated_receipt_catalog(monkeypatch, enabled) -> None:
+    """Gmail stays absent when dark and publishes a valid gated surface when enabled."""
+    monkeypatch.setattr("butlers.core.goal_lineage._enforced", enabled)
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    catalog = await _roster_catalog("messenger")
+    if not enabled:
+        assert not any(name.startswith("gmail_") for name in catalog)
+        assert "email_send_message" in catalog
+        return
+    validate_authorization_catalog(catalog, store_writers=STORE_WRITERS)
+    reply = catalog["gmail_send_reply"]
+    assert reply.approval_policy["configured_gate"] is True
+    assert reply.idempotency == "key_required"
+    for name in ("gmail_save_draft", "gmail_send_reply"):
+        descriptor = catalog[name]
+        assert descriptor.output_trust == "untrusted"
+        assert "external:gmail" in descriptor.read_stores
+        assert "external:gmail" in descriptor.write_stores
+    assert "external:gmail" in catalog["gmail_get_draft"].read_stores
+
+
 async def test_declared_approval_modes_survive_real_roster_publication(monkeypatch) -> None:
     """D4/D13 mode is declared by the tool, independent of configured gate facts."""
     from butlers.core.catalog_publication import decode_publication, publication

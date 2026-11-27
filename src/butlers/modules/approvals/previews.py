@@ -126,7 +126,10 @@ def dashboard_call_preview(tool_name: str, tool_args: Any) -> dict[str, Any] | N
         "displayed_call": {"tool_name": tool_name, "args_digest": args_digest(tool_args)},
     }
     # Keep an exact, fully shown preview rather than truncating an approved call.
-    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 16_384:
+    # Gmail permits a 50,000-character body. The dashboard must show the whole bounded
+    # draft; only the compact Telegram card uses its much smaller fit budget.
+    budget = 350_000 if tool_name == "gmail_send_reply" else 16_384
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > budget:
         return None
     return result
 
@@ -314,6 +317,42 @@ def _email_reply_preview(args: Mapping[str, Any]) -> CallPreview:
     return CallPreview(title="Reply to email thread", facts=tuple(facts))
 
 
+def _gmail_reply_preview(args: Mapping[str, Any]) -> CallPreview:
+    shown = frozenset(
+        {
+            "account",
+            "to",
+            "cc",
+            "subject",
+            "body",
+            "thread_id",
+            "in_reply_to_message_id",
+            "in_reply_to_sender",
+            "in_reply_to_date",
+            "replaces_draft_id",
+        }
+    )
+    _reject_unshown(args, shown)
+    facts = [
+        PreviewFact("Account", _require_text(args, "account")),
+        PreviewFact("To", _recipients(args, "to", required=True) or ""),
+    ]
+    if cc := _recipients(args, "cc", required=False):
+        facts.append(PreviewFact("Cc", cc))
+    for key, label in (
+        ("thread_id", "Thread"),
+        ("in_reply_to_message_id", "Reply message"),
+        ("in_reply_to_sender", "Reply sender"),
+        ("in_reply_to_date", "Reply date"),
+        ("subject", "Subject"),
+    ):
+        facts.append(PreviewFact(label, _require_text(args, key)))
+    if draft := _optional_text(args, "replaces_draft_id"):
+        facts.append(PreviewFact("Replace draft if unchanged", draft))
+    facts.append(PreviewFact("Body", _require_text(args, "body", allow_empty=True)))
+    return CallPreview("Reply as Gmail owner", tuple(facts))
+
+
 def _telegram_reaction_preview(args: Mapping[str, Any]) -> CallPreview:
     if set(args) - {"chat_id", "message_id", "emoji"} - _DOSSIER_KEYS:
         raise PreviewError("reaction has unshown arguments")
@@ -388,6 +427,7 @@ register_preview("email_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
 register_preview("telegram_reply_to_message", _telegram_reply_preview)
 register_preview("email_reply_to_thread", _email_reply_preview)
+register_preview("gmail_send_reply", _gmail_reply_preview, effect_class="communicate")
 register_preview(
     "telegram_react_to_message", _telegram_reaction_preview, effect_class="communicate"
 )

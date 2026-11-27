@@ -1,14 +1,15 @@
 """Gmail module: the owner's own mailbox, searched, read, archived and labelled.
 
-Four tools, registered only after the RFC 0038 switch (``enforcement_enabled()``):
+Owner-mailbox tools register only after the RFC 0038 switch (``enforcement_enabled()``):
 
 - ``gmail_list_mailboxes``: the connected Google accounts and each one's usable labels
 - ``gmail_search``: Gmail query syntax over one account, at most 50 threads per call
 - ``gmail_get_thread``: one thread's messages, decoded plain text, attachment metadata only
 - ``gmail_modify_threads``: archive, mark read, star, mark important, user labels
 
-This module never sends, drafts, trashes or deletes mail, never writes ``ingest.v1`` envelopes
-and never admits a goal. Tokens come from the shared Google credential path and never appear
+The same switch also admits draft list/get/save and approval-gated plaintext in-thread replies.
+It never trashes mail, writes ``ingest.v1`` envelopes or admits a goal.
+Tokens come from the shared Google credential path and never appear
 in a result. Every subject, snippet and body is third-party text: it is bearer-scrubbed, and a
 scrubber failure withholds the content rather than returning it raw. See docs/modules/gmail.md.
 
@@ -19,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 import httpx
@@ -43,6 +43,9 @@ from butlers.google_credentials import (
 )
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.modules.base import Module, ToolMeta
+from butlers.modules.gmail.actions import GmailActions
+from butlers.modules.gmail.mime import GmailError as _GmailError
+from butlers.modules.gmail.mime import valid_id as _valid_id
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +61,6 @@ BODY_CHAR_LIMIT = 20_000
 #: Reads retry once on 429 and 5xx after this many seconds.
 RETRY_BACKOFF_S = 1.0
 
-#: Gmail ids are short hex or base64url tokens; anything else could escape the URL path.
-_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 #: RFC 0038 D5 origins; a lineage naming anything else is refused.
 _KNOWN_ORIGINS = frozenset({"owner", "obligation", "third_party", "staffer"})
 _MODIFY_TOOL = "gmail_modify_threads"
@@ -74,14 +75,6 @@ class GmailConfig(BaseModel):
     """``[modules.gmail]``: no settings today; the account is a per-call argument."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class _GmailError(Exception):
-    """A typed provider failure; ``code`` is the closed error vocabulary of the tools."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 class _TokenState:
@@ -103,7 +96,7 @@ def _status_code(status: int) -> str:
     return "provider_error"
 
 
-class GmailModule(Module):
+class GmailModule(GmailActions, Module):
     """Owner-mailbox tools over Gmail REST; see the module docstring."""
 
     name = "gmail"  # pyright: ignore[reportAssignmentType]
@@ -136,6 +129,40 @@ class GmailModule(Module):
                     "thread_ids": True,
                     "add_labels": True,
                     "remove_labels": True,
+                }
+            ),
+            "gmail_list_drafts": ToolMeta(arg_sensitivities={"account": True}),
+            "gmail_get_draft": ToolMeta(arg_sensitivities={"account": True, "draft_id": True}),
+            "gmail_save_draft": ToolMeta(
+                arg_sensitivities={
+                    name: True
+                    for name in (
+                        "account",
+                        "draft_id",
+                        "thread_id",
+                        "in_reply_to_message_id",
+                        "to",
+                        "cc",
+                        "subject",
+                        "body",
+                    )
+                }
+            ),
+            "gmail_send_reply": ToolMeta(
+                arg_sensitivities={
+                    name: True
+                    for name in (
+                        "account",
+                        "thread_id",
+                        "in_reply_to_message_id",
+                        "in_reply_to_sender",
+                        "in_reply_to_date",
+                        "to",
+                        "cc",
+                        "subject",
+                        "body",
+                        "replaces_draft_id",
+                    )
                 }
             ),
         }
@@ -273,11 +300,13 @@ class GmailModule(Module):
                     return response.json()
                 except ValueError as exc:
                     raise _GmailError("provider_error") from exc
+            if response.status_code == 204 and method == "DELETE":
+                return {}
             retryable = response.status_code == 429 or response.status_code >= 500
             if retryable and retry and attempt == 0:
                 await asyncio.sleep(RETRY_BACKOFF_S)
                 continue
-            raise _GmailError(_status_code(response.status_code))
+            raise _GmailError(_status_code(response.status_code), response.status_code)
         raise _GmailError("provider_error")  # pragma: no cover
 
     # -- scrubbing -------------------------------------------------------------------
@@ -607,9 +636,95 @@ class GmailModule(Module):
             """
             return await module._modify_threads(account, thread_ids, add_labels, remove_labels)
 
+        @mcp.tool(name="gmail_list_drafts")
+        async def gmail_list_drafts(
+            account: str, max_results: int = 20, page_token: str | None = None
+        ) -> dict[str, Any]:
+            """List up to 50 Gmail draft references; use next_page_token to continue.
 
-def _valid_id(value: Any) -> bool:
-    return isinstance(value, str) and _ID_RE.fullmatch(value) is not None
+            Drafts are private, untrusted mailbox content. Unknown/inactive accounts and
+            missing gmail.modify refuse; no message is delivered.
+            """
+            return await module._list_drafts(account, max_results, page_token)
+
+        @mcp.tool(name="gmail_get_draft")
+        async def gmail_get_draft(account: str, draft_id: str) -> dict[str, Any]:
+            """Read a draft's scrubbed recipients, subject and plaintext body without sending.
+
+            Content is untrusted and withheld if scrubbing fails; a missing draft returns
+            not_found. A read exposes the invocation like every Gmail content read.
+            """
+            return await module._get_draft(account, draft_id)
+
+        @mcp.tool(name="gmail_save_draft")
+        async def gmail_save_draft(
+            account: str,
+            to: list[str],
+            subject: str,
+            body: str,
+            cc: list[str] | None = None,
+            draft_id: str | None = None,
+            thread_id: str | None = None,
+            in_reply_to_message_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Create a new Gmail draft or replace draft_id; this delivers nothing.
+
+            Optional thread_id and in_reply_to_message_id must be paired and name the
+            message being replied to. Use 1-20 explicit bare To/Cc addresses, a matching
+            single-line subject and at most 50,000 plaintext body characters. No HTML,
+            Bcc or attachments. Exposed and third-party goals park for exact owner approval.
+            Draft writes never retry automatically; inspect drafts after an uncertain result.
+            """
+            return await module._save_draft(
+                {
+                    "account": account,
+                    "to": to,
+                    "subject": subject,
+                    "body": body,
+                    "cc": cc,
+                    "draft_id": draft_id,
+                    "thread_id": thread_id,
+                    "in_reply_to_message_id": in_reply_to_message_id,
+                }
+            )
+
+        @mcp.tool(name="gmail_send_reply")
+        async def gmail_send_reply(
+            account: str,
+            thread_id: str,
+            in_reply_to_message_id: str,
+            in_reply_to_sender: str,
+            in_reply_to_date: str,
+            to: list[str],
+            subject: str,
+            body: str,
+            cc: list[str] | None = None,
+            replaces_draft_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Send one exact plaintext reply in an existing Gmail thread, approval-gated.
+
+            Copy in_reply_to_sender/date from gmail_get_thread so the owner sees the pinned
+            target context; dispatch verifies both against that message. Explicit To/Cc,
+            subject and body are the entire approved content (1-20 recipients, <=50,000 body
+            characters). No new-message send, Bcc, HTML or attachments. The verified effect
+            ID is the durable send identity; sent/failed/unknown receipts never send again.
+            Unknown outcomes require exact SENT Message-ID evidence or owner reconciliation.
+            A replacement draft is deleted only when its current content still matches.
+            """
+            return await module._send_reply(
+                {
+                    "account": account,
+                    "thread_id": thread_id,
+                    "in_reply_to_message_id": in_reply_to_message_id,
+                    "in_reply_to_sender": in_reply_to_sender,
+                    "in_reply_to_date": in_reply_to_date,
+                    "to": to,
+                    "subject": subject,
+                    "body": body,
+                    "cc": cc,
+                    "replaces_draft_id": replaces_draft_id,
+                }
+            )
 
 
 def _internal_date(message: dict[str, Any]) -> int:

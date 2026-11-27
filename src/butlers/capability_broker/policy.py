@@ -102,6 +102,12 @@ def decide(
         return REFUSE
     if principal.exposed and kind == "record" and capability.owner_authority:
         return REFUSE
+    # A Gmail draft reaches no recipient, but exposed/third-party proposals must remain
+    # parked with lineage until the owner approves this exact mailbox write (D13).
+    if capability.name == "gmail_save_draft" and (
+        principal.exposed or principal.origin == "third_party"
+    ):
+        return PER_EVENT
     # Per-event only: no standing rule, inherited approval or owner shortcut.
     if grant.park_only or capability.always_per_event or kind == "administer":
         return PER_EVENT

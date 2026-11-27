@@ -252,6 +252,11 @@ def build_approval_request_envelope(
             "channel": "telegram",
             "message": card.message,
             "recipient": owner_recipient,
+            **(
+                {"render_links_inert": True}
+                if action.get("tool_name") == "gmail_send_reply"
+                else {}
+            ),
         },
         "actions": actions,
     }

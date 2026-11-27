@@ -6,6 +6,16 @@
 
 ## Overview
 
+Gmail owner replies use the existing exact-call preview registry. Their cards show the selected
+account, every To/Cc recipient, subject, target sender/date, thread/message identifiers,
+replacement draft and full plaintext body. URLs are defanged and their envelopes set
+`render_links_inert=true`; an oversized Telegram card offers only Open. The dashboard shows the
+complete bounded body as inert plaintext with its argument digest. Exposed/third-party Gmail
+draft saves always park for per-event approval, with lineage and no standing-rule exemption.
+See [Gmail](gmail.md) for send fences, uncertainty and cleanup. The shared canonical owner-edit
+and audit snapshot prerequisite is `bu-mmdsl7`; existing goal-effect edit refusals remain until
+that path is available.
+
 ![Approval Flow](./approval-flow.svg)
 
 The Approvals module is an execution-control module that butlers load locally. It intercepts configured high-impact tool invocations before execution, parks unapproved invocations as durable pending actions, and supports manual approve/reject/expire workflows plus standing approval rules for auto-approval of repeatable safe patterns.

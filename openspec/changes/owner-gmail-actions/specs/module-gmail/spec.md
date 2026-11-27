@@ -158,7 +158,7 @@ Scope: v1-mandatory
 
 ### Requirement: Registration is flag-gated on Messenger
 
-The module SHALL register its four tools only while the RFC 0038 switch is on
+The module SHALL register its mailbox, draft and reply tools only while the RFC 0038 switch is on
 (`enforcement_enabled()`), and SHALL register none while it is off. Each tool SHALL carry the D4
 descriptor in the change design (RFC 0038 D4 to D7).
 
@@ -169,3 +169,126 @@ Scope: v1-mandatory
 #### Scenario: Switch off
 - **WHEN** enforcement is off
 - **THEN** no `gmail_*` tool is registered
+
+### Requirement: Private Gmail drafts
+
+`gmail_list_drafts` and `gmail_get_draft` SHALL read drafts in one active account with
+`gmail.modify`, returning untrusted sensitive data. Lists SHALL be paginated with at most 50
+entries; read content SHALL be bearer-scrubbed, failing closed when scrubbing fails.
+`gmail_save_draft` SHALL create or replace a plaintext draft with explicit To/Cc, subject and
+body, optionally replying to a message in a named thread. A draft SHALL deliver nothing.
+Exposed or third-party-origin saves SHALL park with exact arguments and goal lineage for
+per-event approval; no standing rule SHALL approve them. An unexposed owner-origin save SHALL
+be an ordinary record effect. Drafts SHALL carry no effect-derived Message-ID.
+
+ID: REQ-module-gmail-009
+Source: bu-kqme7f.6; RFC 0038 D4, D6, D13
+Scope: v1-mandatory
+
+#### Scenario: Save a private owner draft
+- **WHEN** an unexposed owner goal saves a draft
+- **THEN** Gmail receives the exact To, Cc, subject and body and no messages.send call
+
+#### Scenario: Exposed or third-party draft
+- **WHEN** an exposed or third-party-origin goal saves a draft, even with an exact standing rule
+- **THEN** the effect parks with lineage and Gmail receives no draft write before owner approval
+
+### Requirement: Bounded plaintext in-thread replies
+
+`gmail_send_reply` SHALL send only in an existing thread, using explicit To/Cc and a pinned
+plaintext subject/body. Before any Gmail write it SHALL validate an active account with
+`gmail.modify`, 1-20 bare recipient addresses with nonempty To, a single-line nonblank subject
+of at most 998 characters, and a body of at most 50,000 characters. The target message SHALL
+belong to the selected thread/account; its Message-ID, References (or In-Reply-To fallback),
+subject, sender and date SHALL match the pinned reply context and reject unsafe headers.
+Subject comparison SHALL strip repeated Re/Fw/Fwd prefixes and surrounding whitespace.
+The MIME SHALL have From, To, optional Cc, Subject, Date, effect-derived Message-ID,
+In-Reply-To and References. The decoded body SHALL equal the pinned body, with no added quote
+or newline. Gmail messages.send SHALL receive the MIME raw data and threadId.
+Bcc, HTML, attachments, forwarding, send-as aliases and new-message sends SHALL be unavailable.
+Non-owner communication SHALL retain the broker and Messenger approval gates; every named To
+and Cc party SHALL resolve uniquely to the live owner to receive the owner classification.
+An exposed standing rule SHALL pin subject and body as well as all supplied safety arguments.
+
+ID: REQ-module-gmail-010
+Source: bu-kqme7f.6; REQ-capability-authorization-006; REQ-capability-authorization-016; REQ-butler-messenger-007
+Scope: v1-mandatory
+
+#### Scenario: Correct threading
+- **WHEN** the owner approves a stored reply
+- **THEN** its exact plaintext content is sent with the target threadId, In-Reply-To and References
+
+#### Scenario: Invalid or changed target
+- **WHEN** the target message is off-thread, its pinned sender/date changed, or the subject differs
+- **THEN** no Gmail write occurs
+
+#### Scenario: Non-owner Cc
+- **WHEN** To resolves to the owner but Cc includes another or unresolved party
+- **THEN** the reply parks unless an eligible owner-created standing rule approves it
+
+### Requirement: Durable at-most-once reply handoff
+
+`gmail_send_reply` SHALL use the verified effect_id as its send identity. It SHALL commit a
+unique metadata-only receipt in Messenger before calling messages.send once, with no automatic
+send retry. Reservation failure SHALL send nothing. A repeated key SHALL return its stored
+receipt; changed arguments under that key SHALL refuse. Success SHALL record the Gmail id as
+sent; definite 4xx rejection SHALL record failed; timeouts, connection loss, 5xx, malformed
+acknowledgements or a crash after reservation SHALL remain unknown and SHALL never resend.
+The broker SHALL mirror sent/failed/unknown truth rather than treating an MCP response as proof
+of delivery. Reconciliation SHALL mark sent only for exactly one SENT message in the pinned
+thread with the exact generated Message-ID. Missing or mismatched evidence SHALL preserve
+unknown for owner reconciliation. Receipts SHALL contain no recipients, subject or body.
+Downgrade SHALL lock the table and refuse while any receipt exists.
+
+ID: REQ-module-gmail-011
+Source: bu-kqme7f.6; REQ-capability-authorization-009; RFC 0038 D11, D12
+Scope: v1-mandatory
+
+#### Scenario: Repeated or interrupted send
+- **WHEN** a committed send reservation is encountered again after success or interruption
+- **THEN** messages.send is not called again
+
+#### Scenario: Exact reconciliation
+- **WHEN** exactly one SENT message in the selected thread carries the effect-derived Message-ID
+- **THEN** an unknown receipt may settle to sent; any other evidence leaves it unknown
+
+### Requirement: Guarded replacement draft cleanup
+
+After a confirmed send naming replaces_draft_id, the module SHALL read that draft and delete it
+only when its thread and the digest of all current To/Cc, subject and plaintext body equal the
+sent content. Changed drafts SHALL remain with draft_kept_changed; unavailable or uncertain
+cleanup SHALL report draft_kept_unavailable without changing the send outcome. Cleanup SHALL
+never blindly delete a draft edited in Gmail after approval.
+
+ID: REQ-module-gmail-012
+Source: bu-kqme7f.6
+Scope: v1-mandatory
+
+#### Scenario: Owner changed the replacement draft
+- **WHEN** Gmail's draft body differs from the sent body
+- **THEN** the draft is retained and the sent receipt reports draft_kept_changed
+
+### Requirement: Exact inert approval preview
+
+The existing approval preview registry SHALL show the stored account, every To/Cc recipient,
+subject, thread/message identifiers, replied-to sender/date, any replacement draft and the full
+body as plaintext. Telegram SHALL offer only Open when the complete call exceeds its fit
+budget, never approval of truncated content. Its envelope SHALL set render_links_inert=true;
+URLs in the card SHALL be defanged. The dashboard SHALL show the full bounded body and every
+recipient unredacted as inert plaintext, bound to the exact argument digest. Approval SHALL
+execute the stored call once, or the owner's edit through the canonical shared goal-effect edit
+path, never a call reissued by the model. Stop SHALL cancel parked replies. The canonical owner
+edit and audit snapshot integration remains required by bu-mmdsl7; until it lands, the existing
+shared API SHALL continue refusing goal-effect edits rather than bypassing the effect digest.
+
+ID: REQ-module-gmail-013
+Source: bu-kqme7f.6; bu-mmdsl7; REQ-capability-authorization-010; REQ-butler-messenger-003; RFC 0038 D13
+Scope: v1-mandatory
+
+#### Scenario: Oversized Telegram preview
+- **WHEN** the whole stored reply does not fit the Telegram card
+- **THEN** only Open is offered and the dashboard shows the complete body before approval
+
+#### Scenario: Stop before approval
+- **WHEN** a parked reply's goal stops before its approval dispatches
+- **THEN** the effect is cancelled and Gmail receives no send

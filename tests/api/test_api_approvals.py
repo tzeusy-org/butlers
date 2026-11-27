@@ -3799,3 +3799,31 @@ def test_dossier_shows_the_exact_recipient_but_not_credentials():
         "api_key": "[REDACTED]",
         "subject": "Hello",
     }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Plain <b>literal</b> https://outside.example.test\nAll of this body",
+        "x" * 50_000,
+    ],
+    ids=["literal-text", "maximum-body"],
+)
+async def test_gmail_detail_shows_all_recipients_and_full_plaintext_body(app, body):
+    from tests.modules.test_module_gmail import reply_args
+
+    args = reply_args(body=body)
+    action = _make_pending_row()
+    action.update(tool_name="gmail_send_reply", tool_args=args)
+    app, _ = _app_with_mock_db(app, fetchrow_return=action)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/approvals/{action['id']}")
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]["call_preview"]
+    facts = {f["label"]: f["value"] for f in preview["facts"]}
+    assert facts["To"] == ", ".join(args["to"])
+    assert facts["Cc"] == ", ".join(args["cc"])
+    assert facts["Account"] == args["account"] and facts["Body"] == args["body"]
+    assert preview["displayed_call"]["args_digest"] == args_digest(args)
