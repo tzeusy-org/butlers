@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { format } from "date-fns";
 import { dayViewDoor } from "@/lib/calendar-doors";
@@ -79,6 +79,16 @@ function render(overrides: Partial<React.ComponentProps<typeof CalendarVerdictOp
     </MemoryRouter>,
   );
 }
+
+// The fixtures are dated around 27 Nov 2026, and "tomorrow" is judged against the clock. Pin it
+// (Date only, so timers and user events still run) to midday SGT the day before, for every test.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-26T04:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("CalendarVerdictOpener", () => {
   it("states a calm day only when the verdict is earned empty and every source is available", () => {
