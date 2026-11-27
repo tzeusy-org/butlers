@@ -121,6 +121,37 @@ jobs:
       # Review-comment coverage is best-effort (falls back to an empty set on
       # any API hiccup) so a GitHub API blip never blocks the mandatory
       # title/body/commit checks. PR-only: the inputs do not exist on other events.
+      - name: Prepare GNU PR metadata watchdog
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        run: |
+          gnu_version() {
+            local version
+            version=$(LC_ALL=C "$1" --version 2>/dev/null) || return 1
+            version=${version%%$'\n'*}
+            [[ "$version" == *' (GNU coreutils) '* ]] || return 1
+            printf '%s\n' "$version"
+          }
+
+          watchdog_dir=$(mktemp -d "${RUNNER_TEMP}/pr-metadata-watchdog.XXXXXX")
+          executable=/usr/bin/timeout
+          if ! version=$(gnu_version "$executable"); then
+            executable=/usr/bin/gnutimeout
+            if ! version=$(gnu_version "$executable"); then
+              # Extract only into this job's scratch space. Keep the system tools intact.
+              sudo apt-get update -q
+              (
+                cd "$watchdog_dir"
+                apt-get download gnu-coreutils
+                dpkg-deb --extract gnu-coreutils_*.deb package
+              )
+              executable="$watchdog_dir/package/usr/bin/gnutimeout"
+              version=$(gnu_version "$executable")
+            fi
+          fi
+          ln -s -- "$executable" "$watchdog_dir/timeout"
+          printf '%s\n' "$watchdog_dir" >> "$GITHUB_PATH"
+          printf 'pr_metadata_watchdog: %s\n' "$version"
+
       - name: Write PR title and body to files
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         env:
@@ -131,7 +162,9 @@ jobs:
           # the commit range below remains bound to this event's source head.
           # 97s retry budget; nominal 100s TERM + 3s KILL command envelope.
           # The step shell stays outside the helper's supervised process group.
-          if timeout --signal=TERM --kill-after=3s 100s \
+          if timeout_version=$(LC_ALL=C timeout --version 2>/dev/null) &&
+            [[ ${timeout_version%%$'\n'*} == *' (GNU coreutils) '* ]] &&
+            timeout --signal=TERM --kill-after=3s 100s \
             python3 scripts/fetch_pr_metadata.py \
               --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP" 2>/dev/null; then
             :
