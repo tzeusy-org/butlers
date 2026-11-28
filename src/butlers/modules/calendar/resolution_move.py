@@ -50,8 +50,8 @@ RESOLUTION_DECLINED_TEXT = (
 RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
     "changed_since_check": RESOLUTION_DECLINED_TEXT,
     "dependency_pending": (
-        "Move not applied: an earlier step of this plan that frees this slot has not been "
-        "decided yet. Decide it first, then plan the change again."
+        "Move waiting: an earlier step of this plan that frees this slot has not been applied "
+        "yet. This step runs on its own once that step applies."
     ),
     "dependency_not_applied": (
         "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
@@ -65,6 +65,15 @@ RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
         "was moved."
     ),
 }
+#: The closed code a deferred move reports (the executor audits it as the failure reason). A
+#: deferral is not a failure: the card stays approved and runs once its dependency settles.
+DEFERRED_ERROR = "dependency_pending: waiting for an earlier step of this plan"
+#: How long a dependent step may wait for its dependency (the card's own lifetime).
+DEPENDENCY_WAIT = timedelta(hours=48)
+#: Refusals that end a card for good: the gate is deterministic, so a retry meets the same one.
+_FINAL_REFUSALS = frozenset(
+    {"dependency_not_applied", "unbound", "changed_since_check", "changed_since_move"}
+)
 #: The request id prefix every parked resolution move carries.
 RESOLUTION_REQUEST_PREFIX = "resolve:"
 
@@ -239,11 +248,23 @@ def _command_outcome(command: Any) -> tuple[str, str | None] | None:
     return None
 
 
+def refusal_code_of(failure_reason: str | None) -> str | None:
+    """The closed refusal a move's failure audit reason names, else ``None``."""
+    if not isinstance(failure_reason, str):
+        return None
+    if failure_reason.startswith("dependency_pending"):
+        return "dependency_pending"
+    for code, text in RESOLUTION_DECLINED_TEXTS.items():
+        if failure_reason == text:
+            return code
+    return None
+
+
 def card_outcome(
     status: str | None,
     execution_result: Any,
     command: Any = None,
-    execution_failed: bool = False,
+    failure_reason: str | None = None,
 ) -> tuple[str, str | None]:
     """``(outcome, reason)`` of one approved card: ``applied``, ``pending``, ``declined`` or
     ``uncertain``.
@@ -258,18 +279,27 @@ def card_outcome(
     action-log row: failed is ``declined`` with its reason, uncertain stays ``uncertain`` and
     anything unsettled is ``pending``. A card the handler failed on (``execution_failed``: the
     executor's ``action_execution_failed`` audit event exists and no result was recorded, which is
-    how a move whose ``calendar_update_event`` returned an error ends) is ``uncertain`` with the
-    closed reason ``execution_failed``, never the error text. The executor still allows a retry, so
-    the card is neither applied nor finally declined: ``uncertain`` is the honest read, a later
-    success flips it to ``applied``, and dependents fail closed meanwhile (only ``applied``
-    counts). Anything else, including an execution that failed or reports no status, is
-    ``uncertain``: never ``applied``.
+    how a move whose ``calendar_update_event`` returned an error ends) reads off its audit
+    ``failure_reason``: a deferral (``dependency_pending``) is ``pending``, never a failure; a
+    refusal that ends the card (``dependency_not_applied``, ``unbound``, ``changed_since_check``,
+    ``changed_since_move``) is ``declined`` with that code (nothing re-runs these on its own, and a
+    manual Retry that later succeeds reads ``applied``, which is then true); anything else is
+    ``uncertain`` with the closed reason ``execution_failed``, never the error text. The executor
+    still allows a retry, so such a card is neither applied nor finally declined: ``uncertain`` is
+    the honest read, a later success flips it to ``applied``, and dependents fail closed meanwhile
+    (only ``applied`` counts). Anything else, including an execution that failed or reports no
+    status, is ``uncertain``: never ``applied``.
     """
     if status == "approved" and not _object(execution_result) and command is not None:
         settled = _command_outcome(command)
         if settled is not None:
             return settled
-    if status == "approved" and not _object(execution_result) and execution_failed:
+    if status == "approved" and not _object(execution_result) and failure_reason is not None:
+        code = refusal_code_of(failure_reason)
+        if code == "dependency_pending":
+            return "pending", None
+        if code in _FINAL_REFUSALS:
+            return "declined", code
         return "uncertain", "execution_failed"
     if status in ("pending", "approved"):
         return "pending", None
@@ -313,18 +343,97 @@ async def command_row_of(pool: Any, card_id: Any) -> dict[str, Any] | None:
     }
 
 
-async def execution_failed_of(pool: Any, card_id: Any) -> bool:
-    """Whether the approvals executor audited a handler failure for this card."""
+async def failure_reason_of(pool: Any, card_id: Any) -> str | None:
+    """The reason of the executor's latest ``action_execution_failed`` audit for this card.
+
+    ``None`` when the executor audited no failure; an empty string when it did but kept no reason.
+    """
     try:
-        found = await pool.fetchval(
-            "SELECT 1 FROM approval_events WHERE action_id = $1 "
-            "AND event_type = 'action_execution_failed' LIMIT 1",
+        row = await pool.fetchrow(
+            "SELECT reason FROM approval_events WHERE action_id = $1 "
+            "AND event_type = 'action_execution_failed' ORDER BY occurred_at DESC LIMIT 1",
             card_id if isinstance(card_id, uuid.UUID) else uuid.UUID(str(card_id)),
         )
     except Exception:
         logger.warning("resolution move: failure audit unreadable", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return row["reason"] or ""
+
+
+async def dependency_wait_over(pool: Any, action_id: Any) -> bool:
+    """Whether the card has already waited its whole lifetime (48 hours) for a dependency."""
+    try:
+        return bool(
+            await pool.fetchval(
+                "SELECT now() - requested_at > $2::interval FROM pending_actions WHERE id = $1",
+                action_id if isinstance(action_id, uuid.UUID) else uuid.UUID(str(action_id)),
+                DEPENDENCY_WAIT,
+            )
+        )
+    except Exception:
+        logger.warning("resolution move: card age unreadable", exc_info=True)
         return False
-    return bool(found)
+
+
+# Cards whose dependencies are all still undecided (and not yet 48 hours old) are filtered out here,
+# not in Python, so the oldest still-waiting cards can never fill the LIMIT and starve the rest.
+_DEFERRED_SQL = """
+SELECT p.id FROM pending_actions p
+JOIN calendar_action_log l
+  ON l.action_type = 'resolution_move' AND l.action_result->>'action_id' = p.id::text
+WHERE p.status = 'approved' AND p.execution_result IS NULL
+  AND CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
+           THEN jsonb_array_length(l.action_result->'depends_on') ELSE 0 END > 0
+  AND ($1::text IS NULL OR l.action_result->'depends_on' ? $1)
+  AND (p.requested_at < now() - $2::interval OR EXISTS (
+        SELECT 1
+          FROM jsonb_array_elements_text(
+                 CASE WHEN jsonb_typeof(l.action_result->'depends_on') = 'array'
+                      THEN l.action_result->'depends_on' ELSE '[]'::jsonb END) AS d(dep_id)
+          LEFT JOIN pending_actions dp ON dp.id::text = d.dep_id
+         WHERE dp.id IS NULL OR dp.status NOT IN ('pending', 'approved')))
+  AND (SELECT e.reason FROM approval_events e
+        WHERE e.action_id = p.id AND e.event_type = 'action_execution_failed'
+        ORDER BY e.occurred_at DESC LIMIT 1) LIKE 'dependency_pending%'
+ORDER BY p.requested_at
+LIMIT 50
+"""
+
+
+async def release_deferred(pool: Any, execute: Any, *, after: str | None = None) -> int:
+    """Re-run approved moves that were deferred behind a dependency that has now settled.
+
+    Only a card the owner already approved, still without a result and last deferred as
+    ``dependency_pending``, is touched; ``execute(card_id)`` is the approvals executor's own retry
+    (same lock, same gate, same bound call and etag), so nothing is recompiled or rebuilt. A
+    dependency that applied lets the card write; one that was rejected, expired, declined or never
+    applied makes the gate decline it ``dependency_not_applied``. A dependency still undecided
+    leaves the card waiting, until its 48-hour lifetime ends. ``after`` limits the sweep to the
+    dependents of one card. Returns how many cards were re-run.
+    """
+    try:
+        rows = await pool.fetch(_DEFERRED_SQL, after, DEPENDENCY_WAIT)
+    except Exception:
+        logger.warning("resolution move: deferred cards unreadable", exc_info=True)
+        return 0
+    ran = 0
+    for row in rows:
+        card_id = row["id"]
+        offer = await offer_for_card(pool, card_id)
+        depends = offer.get("depends_on") if offer else None
+        if not isinstance(depends, list) or not depends:
+            continue
+        state = await dependency_state(pool, depends)
+        if state == "pending" and not await dependency_wait_over(pool, card_id):
+            continue
+        try:
+            if await execute(card_id):
+                ran += 1
+        except Exception:
+            logger.warning("resolution move: deferred card re-run failed", exc_info=True)
+    return ran
 
 
 async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
@@ -350,10 +459,10 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     waiting = False
     for row in rows:
         command = None
-        failed = False
+        failed = None
         if row["status"] == "approved" and row.get("id") is not None:
             command = await command_row_of(pool, row["id"])
-            failed = await execution_failed_of(pool, row["id"])
+            failed = await failure_reason_of(pool, row["id"])
         outcome, _reason = card_outcome(row["status"], row["execution_result"], command, failed)
         if outcome == "pending":
             waiting = True
@@ -435,9 +544,12 @@ async def check_resolution_binding(
     depends = offer.get("depends_on")
     if isinstance(depends, list):
         state = await dependency_state(pool, depends)
+        if state == "pending" and await dependency_wait_over(pool, approval.action_id):
+            state = "failed"  # waited the card's whole lifetime: never run on a stale approval
         if state != "applied":
-            # Approved before the step it waits for was decided: nothing is written, and the
-            # owner plans the change again once the earlier card is settled.
+            # Not applied: nothing is written. A dependency still undecided defers the card (it
+            # stays approved and runs once the dependency applies); one that was rejected,
+            # expired, declined or waited too long ends it.
             reason = "dependency_pending" if state == "pending" else "dependency_not_applied"
             return ResolutionCheck(bound=True, refusal=reason)
     series_id = offer.get("series_event_id")

@@ -720,6 +720,10 @@ class SyncMixin:
                 await self._settle_orphaned_overlap_rows()  # pyright: ignore[reportAttributeAccessIssue]
             except Exception as exc:
                 logger.warning("Settling orphaned overlap rows failed: %s", exc)
+            try:
+                await self._sweep_deferred_plan_steps()  # pyright: ignore[reportAttributeAccessIssue]
+            except Exception as exc:
+                logger.warning("Sweeping deferred plan steps failed: %s", exc)
             # Push butler events to the Butlers Google Calendar after projection.
             try:
                 await self._push_internal_events_to_provider()

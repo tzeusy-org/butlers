@@ -31,7 +31,7 @@ from .plan_tools import compile_for_window
 from .resolution_move import (
     card_outcome,
     command_row_of,
-    execution_failed_of,
+    failure_reason_of,
     park_resolution_move,
 )
 from .response_park import park_response
@@ -86,10 +86,10 @@ async def step_outcome(pool: Any, receipt: dict[str, Any]) -> tuple[str, str | N
     if row is None:
         return "uncertain", "card_missing"
     command = None
-    failed = False
+    failed = None
     if row["status"] == "approved":
         command = await command_row_of(pool, receipt["action_id"])
-        failed = await execution_failed_of(pool, receipt["action_id"])
+        failed = await failure_reason_of(pool, receipt["action_id"])
     return card_outcome(row["status"], row["execution_result"], command, failed)
 
 

@@ -178,6 +178,11 @@ from .tools import register_proposal_tools, register_read_tools, register_sync_t
 _CALENDAR_REDISCOVERY_MIN_INTERVAL_S = 300.0
 
 
+#: The approved tools this module may re-run when it defers a plan step (never another module's).
+#: Only a move defers: a plan's respond steps are never anyone's dependency, so they are not here.
+_OWN_APPROVED_TOOLS = frozenset({"calendar_update_event"})
+
+
 class CalendarModule(
     MutationsMixin,
     InternalProjectionMixin,
@@ -215,6 +220,10 @@ class CalendarModule(
         self._internal_projection_task: asyncio.Task[None] | None = None
         self._force_sync_queue_task: asyncio.Task[None] | None = None
         self._force_sync_queue_wake = asyncio.Event()
+        #: The approvals executor's retry for one approved card (wired by the daemon), used only to
+        #: re-run a plan step that was deferred behind its dependency.
+        self._execute_approved_card: Any = None
+        self._release_tasks: set[asyncio.Task[None]] = set()
         self._force_sync_queue_lock = asyncio.Lock()
         # In-memory sync state cache (calendar_id → CalendarSyncState).
         self._sync_states: dict[str, CalendarSyncState] = {}
@@ -859,7 +868,51 @@ class CalendarModule(
             DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
         )
 
+    def set_approved_card_executor(self, execute: Any) -> None:
+        """Wire the approvals retry: ``await execute(card_id, tool_names=...) -> bool``."""
+        self._execute_approved_card = execute
+
+    async def _sweep_deferred_plan_steps(self, *, after: str | None = None) -> int:
+        """Re-run approved plan steps deferred behind a dependency that has since settled."""
+        pool = getattr(self._db, "pool", None)
+        if self._execute_approved_card is None or pool is None:
+            return 0
+        from .resolution_move import release_deferred
+
+        execute = self._execute_approved_card
+
+        async def execute_own(card_id: Any) -> bool:
+            # Only this module's own move and respond cards: never another module's approval.
+            return await execute(card_id, tool_names=_OWN_APPROVED_TOOLS)
+
+        return await release_deferred(pool, execute_own, after=after)
+
+    def schedule_dependent_release(self, card_id: Any) -> None:
+        """Soon after a plan step's write, release the steps that were waiting for it.
+
+        The step's own card is only marked executed after its handler returns, so the release waits
+        a moment, then sweeps the dependents of that one card. The periodic sweep is the backstop.
+        """
+        if self._execute_approved_card is None:
+            return
+
+        async def release() -> None:
+            for delay in (2, 10):
+                await asyncio.sleep(delay)
+                try:
+                    if await self._sweep_deferred_plan_steps(after=str(card_id)):
+                        return
+                except Exception:
+                    logger.warning("calendar: dependent release failed", exc_info=True)
+
+        task = asyncio.create_task(release(), name="calendar-plan-dependent-release")
+        self._release_tasks.add(task)
+        task.add_done_callback(self._release_tasks.discard)
+
     async def on_shutdown(self) -> None:
+        for release_task in list(self._release_tasks):
+            release_task.cancel()
+        self._release_tasks.clear()
         self._response_ready = False
         self._response_credential_entity_id = None
         await self._response_fence.close()

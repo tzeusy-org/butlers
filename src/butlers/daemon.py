@@ -2115,6 +2115,14 @@ class ButlerDaemon:
                     return raw_result
 
                 set_executor(_execute_approved_tool)
+                # A module that defers its own approved steps re-runs them through the same
+                # retry the dashboard uses; it can never approve, only re-run an approved card.
+                execute_card = getattr(approvals_module, "execute_approved_card", None)
+                if callable(execute_card):
+                    for peer in self._active_modules:
+                        wire = getattr(peer, "set_approved_card_executor", None)
+                        if callable(wire):
+                            wire(execute_card)
 
         # Fail closed before any gate wrapping happens: reject startup if the
         # approval config names a tool no module registered, or (when modules

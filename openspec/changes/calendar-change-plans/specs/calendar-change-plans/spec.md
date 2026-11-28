@@ -102,9 +102,15 @@ the digest differs. It SHALL return `pending` at once: every step that touches a
 the plan was compiled against, and only `no_park_undo` steps (Butlers blocks) MAY run directly. An
 approved card runs through the approvals executor as its own stored call, sent once. A changed etag
 SHALL decline that step (`changed_since_check`) and write nothing for it; a step whose dependency
-was not applied SHALL decline `dependency_not_applied`, and a step whose dependency is still
-undecided SHALL decline `dependency_pending` with the instruction to plan the change again once the
-owner has decided (a true deferred run is a separate follow-up, not part of this change). A declined
+was not applied SHALL decline `dependency_not_applied`, and a move whose dependency is still
+undecided SHALL be deferred, not declined: the executor leaves the approved card retryable and
+the move runs once its dependencies settle, so the owner is never asked to plan the change again.
+Only moves (`calendar_update_event`) defer; a respond step is never anyone's dependency. A deferral
+is audited as the executor's `action_execution_failed` with the closed text `dependency_pending:
+...` (logged at error level today; the core executor is unchanged) and writes no
+`calendar_action_log` receipt. A dependency that is approved but whose outcome is uncertain keeps
+the dependent waiting, not declined, and a card that has waited 48 hours on `pending_actions.
+requested_at` is declined `dependency_not_applied`. No standing rule auto-applies `calendar_respond`. A declined
 or uncertain step SHALL skip its dependents. A decline step SHALL be parked through the calendar
 module's own response coordinator, never auto-approved on the agent path. A rejected or expired card SHALL run no step for it and the plan SHALL record the
 outcome. Each step SHALL leave a `plan_step` row in `calendar_action_log` with the plan id, step

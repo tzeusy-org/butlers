@@ -340,3 +340,37 @@ async def test_an_unreadable_binding_with_a_resolve_request_id_is_unbound():
         reset_approval_execution_context(token)
 
     assert check.refusal == "unbound"
+
+
+async def test_a_move_whose_dependency_is_undecided_is_deferred_not_declined_or_recorded():
+    from butlers.modules.calendar.resolution_move import DEFERRED_ERROR
+
+    provider = _MovingProvider(event=_block(etag='"v0"'))
+    offer = {"action_id": "x", "etag": '"v0"', "depends_on": [str(uuid.uuid4())]}
+
+    with patch(
+        "butlers.modules.calendar.resolution_move.dependency_state",
+        new_callable=AsyncMock,
+        return_value="pending",
+    ):
+        result = await _approve(provider, offer=offer)
+
+    # an error dict keeps the card approved and retryable; the closed code reads as "waiting"
+    assert result["error"] == DEFERRED_ERROR and result["reason"] == "dependency_pending"
+    assert result["status"] != RESOLUTION_DECLINED
+    assert provider.update_calls == []
+
+
+async def test_a_move_whose_dependency_was_rejected_declines_for_good():
+    provider = _MovingProvider(event=_block(etag='"v0"'))
+    offer = {"action_id": "x", "etag": '"v0"', "depends_on": [str(uuid.uuid4())]}
+
+    with patch(
+        "butlers.modules.calendar.resolution_move.dependency_state",
+        new_callable=AsyncMock,
+        return_value="failed",
+    ):
+        result = await _approve(provider, offer=offer)
+
+    assert result["status"] == RESOLUTION_DECLINED and result["reason"] == "dependency_not_applied"
+    assert provider.update_calls == []

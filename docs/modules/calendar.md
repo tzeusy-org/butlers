@@ -75,10 +75,19 @@ it for the current names and signatures. The families:
   one approvals card per move step, each bound to the etag the plan saw and sent once; a step that
   uses a slot another step vacates declines `dependency_not_applied` unless that step applied. It
   returns `pending` with one receipt per step (outcome read off its card: `applied`, `pending`,
-  `declined`, `uncertain`, `skipped`; a move whose write the executor failed on reads `uncertain` with reason `execution_failed` (it stays retryable; a later success reads `applied`)) and records `plan` and `plan_step` rows in
+  `declined`, `uncertain`, `skipped`; a move the executor failed on reads off its audit: waiting for a dependency is `pending`, a known refusal such as `changed_since_check` is `declined`, and any other failure is `uncertain` with reason `execution_failed`) and records `plan` and `plan_step` rows in
   `calendar_action_log`; re-applying the same plan replays the receipts (only until a card executes; after that plan the change again) and parks only what has
-  none. A step whose dependency is still undecided declines `dependency_pending` and the owner
-  re-applies after deciding it. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
+  none. A step approved before its dependency is decided is deferred: nothing is written, its card stays
+  approved and reads `pending`, and it runs on its own once the dependency applies (the write releases
+  its dependents within seconds; the calendar module's periodic projection loop is the backstop). A
+  dependency that is rejected, expired, declined or never applied makes it decline
+  `dependency_not_applied`, and so does waiting out the card's own 48 hours. Only a card the owner
+  already approved is ever re-run, through the approvals executor's own retry, so the stored call,
+  etag and plan digest are never rebuilt. Only moves (`calendar_update_event`) are ever deferred or
+  re-run: a plan's respond steps are never anyone's dependency. A deferral is audited today as the
+  executor's `action_execution_failed` event whose reason is the closed text `dependency_pending: ...`
+  and is logged at error level by the executor; it is not a failure, and readers key off that
+  closed text (the core executor is unchanged). An invited meeting's decline parks `calendar_respond` for the owner through the module's own
   response preparer (`response_park.park_response`), so no MCP round trip and no second
   implementation (a crash mid-send reads `pending` until the executor retry settles it); it is undone from the dashboard's response-inverse flow, not by the plan undo. An approved move records the etag it left and the times
   it replaced; `calendar_undo_plan(plan_id)` then parks one approvals card per applied step, each

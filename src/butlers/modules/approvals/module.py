@@ -27,7 +27,7 @@ import html
 import json
 import logging
 import uuid
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Collection, Coroutine, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -324,6 +324,46 @@ class ApprovalsModule(Module):
         but remains `approved` until an owning dispatch path is available.
         """
         self._tool_executor = executor
+
+    async def execute_approved_card(
+        self, action_id: uuid.UUID, *, tool_names: Collection[str]
+    ) -> bool:
+        """Re-run one card the owner already approved and that has not yet executed.
+
+        The same executor path as Retry: it takes the per-action lock and the row lock, refuses
+        anything not still ``approved``, and runs the card's stored call unchanged. Returns whether
+        a run was attempted. The caller names the tools it owns and a card for any other tool is
+        refused, so a module can only re-run its own approved cards.
+        Used by a module to re-run a step it deferred, never to approve.
+        """
+        if self._tool_executor is None:
+            return False
+        row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action_id)
+        if row is None:
+            return False
+        action = PendingAction.from_row(row)
+        if action.tool_name not in tool_names:
+            return False
+        if action.status != ActionStatus.APPROVED or action.execution_result is not None:
+            return False
+        if is_goal_effect(row):
+            return False
+        _exec = self._tool_executor
+        _tname = action.tool_name
+
+        async def _tool_fn(**kwargs: Any) -> dict[str, Any]:
+            return await _exec(_tname, kwargs)
+
+        await execute_approved_action(
+            pool=self._db,
+            action_id=action_id,
+            tool_name=action.tool_name,
+            tool_args=action.tool_args,
+            tool_fn=_tool_fn,
+            decision_memory_writer=self._decision_memory_writer,
+            origin_butler=self._butler_name,
+        )
+        return True
 
     def set_approval_policy(self, policy: ApprovalConfig | None) -> None:
         """Set parsed approval policy metadata used for rule safety enforcement."""

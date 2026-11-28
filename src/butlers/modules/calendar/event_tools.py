@@ -43,6 +43,7 @@ from .party import gate_calendar_party_mutation
 from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
 from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
 from .resolution_move import (
+    DEFERRED_ERROR,
     ResolutionCheck,
     check_resolution_binding,
     record_applied_move,
@@ -651,6 +652,17 @@ def register_event_tools(
             )
             return declined_move
 
+        if resolution_check.refusal == "dependency_pending":
+            # Deferred, not declined: nothing is recorded, so the re-run after the dependency
+            # settles is a fresh attempt. The error text makes the executor keep the card
+            # approved (retryable); the closed code is what the audit reads as "waiting".
+            return {
+                "status": "deferred",
+                "reason": "dependency_pending",
+                "error": DEFERRED_ERROR,
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+            }
         if resolution_check.refusal is not None:
             return await decline_resolution(resolution_check.refusal)
 
@@ -979,6 +991,9 @@ def register_event_tools(
                     pre_start=existing_event.start_at.isoformat(),
                     pre_end=existing_event.end_at.isoformat(),
                 )
+                release = getattr(module, "schedule_dependent_release", None)
+                if callable(release):
+                    release(approved.action_id)
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()
         event = event.model_copy(
