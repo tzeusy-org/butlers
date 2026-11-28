@@ -12,7 +12,6 @@ const overlap = (id: string, start: string): ConflictIssue => ({
   summary: `Overlap ${id}`,
   severity: "warning",
   events: [{ entry_id: id, title: id, start_at: start, end_at: start, timezone: "UTC", status: "confirmed" }],
-  proposal_ids: [],
 });
 const debrief = (id: string, start: string, raised: string): PendingDebrief => ({
   debrief_id: id,

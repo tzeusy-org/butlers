@@ -53,7 +53,7 @@ function Harness({
     invitations: { rows: [invitation], complete: true },
     conflicts: {
       rows: [{ kind: "overlap", date: "2026-11-30", summary: "Planning overlaps lunch", severity: "warning",
-        proposal_ids: [], events: [{ entry_id: "c-1", title: "Lunch", start_at: "2026-11-30T11:00:00Z",
+        events: [{ entry_id: "c-1", title: "Lunch", start_at: "2026-11-30T11:00:00Z",
           end_at: "2026-11-30T12:00:00Z", timezone: "UTC", status: "confirmed" }] }],
       complete: !conflictsNotRead,
       notRead: conflictsNotRead,
