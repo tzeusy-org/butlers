@@ -177,6 +177,9 @@ _APPOINTMENTS_SQL = (
 """
 )
 
+#: The Health-booked appointments CTE (``appts``): the overlay reads the same source.
+APPOINTMENTS_SQL = _APPOINTMENTS_SQL
+
 _UPCOMING_SQL = (
     _APPOINTMENTS_SQL
     + """

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -28,20 +29,41 @@ from butlers.jobs.calendar_overlay import (
     overlay_key,
     run_relationship_calendar_overlay_contribution,
 )
-from butlers.testing.fake_pool import FakePool
-from tests.jobs.calendar_contribution_harness import ContributionStateStore, run_overlay_job
+from butlers.testing.briefing_clock import sgt_noon
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
+from tests.jobs.calendar_contribution_harness import (
+    ContributionStateStore,
+    patch_state,
+    run_overlay_job,
+)
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _owner_zone_is_sgt():
-    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+def _owner_zone_is_singapore():
+    """Scripted fake pools have no settings table: the owner zone is Singapore, not read from them."""
     from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
 
-    from butlers.jobs.briefing import SGT
+    zone = ZoneInfo("Asia/Singapore")
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)):
+        yield
 
-    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+
+@pytest.fixture(autouse=True)
+def _reconcile_is_a_clean_noop():
+    """Scripted fake pools have no calendar tables: stand in for a clean reconcile."""
+    from unittest.mock import patch
+
+    from butlers.modules.calendar import CalendarModule
+    from butlers.modules.calendar.domain_claims import ClaimReconcileResult
+
+    async def _clean(self, source_butler, claims, complete, window_start):
+        return ClaimReconcileResult([], [], [], [], [], [], complete)
+
+    with patch.object(CalendarModule, "reconcile_domain_claims", _clean):
         yield
 
 
@@ -300,3 +322,75 @@ async def test_no_llm_session_spawned():
     assert result["butler"] == "relationship"
     # Only important_dates + reminder (facts) queries were issued — no LLM fan-out.
     assert pool.fetch.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Domain time claims (bu-5ii4gj.13 S5)
+# ---------------------------------------------------------------------------
+
+
+def _with_ids(row: dict[str, Any], **ids: str) -> dict[str, Any]:
+    return {**row, **ids}
+
+
+async def test_a_shown_date_and_a_follow_up_each_claim_an_overlay_presence_keyed_by_record():
+    dates = [
+        _with_ids(_date("Alex", "Birthday", date(1990, 6, 23)), date_id="d-1"),
+        _with_ids(_date("Sam", "Birthday", date(1990, 6, 24), posture="quiet"), date_id="d-2"),
+        _with_ids(_date("Mem", "Birthday", date(1990, 6, 25), posture="memorial"), date_id="d-3"),
+    ]
+    reminders = [
+        _with_ids(
+            _reminder("Alex", "Call back", datetime(2026, 6, 24, 1, tzinfo=UTC)), fact_id="f-1"
+        )
+    ]
+
+    result, cap, _ = await _run(dates=dates, reminders=reminders)
+
+    claims = {
+        c["claim_key"]: c
+        for key, env in cap.store.items()
+        if key.startswith(OVERLAY_KEY_PREFIX)
+        for c in env["claims"]
+    }
+    # The quiet person's date claims nothing; the memorial birthday claims its remembrance.
+    assert set(claims) == {
+        "relationship:important_date:d-1",
+        "relationship:important_date:d-3",
+        "relationship:follow_up:f-1",
+    }
+    assert {c["presence"] for c in claims.values()} == {"overlay"}
+    assert claims["relationship:important_date:d-3"]["kind"] == "remembrance"
+    assert result["complete"] is True
+
+
+async def test_a_failed_follow_up_read_flags_the_envelopes_incomplete_and_keeps_them():
+    key = overlay_key("2026-06-23")
+    state = ContributionStateStore(
+        seed={key: {"butler": "relationship", "date": "2026-06-23", "entries": [], "claims": []}}
+    )
+    pool = fake_pool(fetch=AsyncMock(side_effect=[records([]), RuntimeError("facts unreadable")]))
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
+        patch_state("butlers.jobs.calendar_overlay", state),
+    ):
+        result = await run_relationship_calendar_overlay_contribution(pool, None)
+
+    assert result["complete"] is False
+    assert state.store[key]["complete"] is False and state.store[key]["claims"] == []
+
+
+async def test_no_saved_owner_zone_shows_the_date_but_claims_nothing():
+    from unittest.mock import AsyncMock, patch
+
+    dates = [_with_ids(_date("Alex", "Birthday", date(1990, 6, 23)), date_id="d-1")]
+    # The harness resolves the owner zone through briefing_day: "never saved" yields the fixed
+    # display fallback, which has no IANA name to claim in.
+    from butlers.jobs.briefing import SGT
+
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+        result, cap, _ = await _run(dates=dates)
+
+    env = cap.store[overlay_key("2026-06-23")]
+    assert [e["kind"] for e in env["entries"]] == ["birthday"] and env["claims"] == []
+    assert result["claims"] == {"skipped": "owner_zone_unsaved"}

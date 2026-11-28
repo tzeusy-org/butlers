@@ -151,7 +151,7 @@ Reconnection suggestions (by Dunbar urgency):
 - **`upcoming_dates`**: Check for birthdays/anniversaries
 - **`gift_list`**: Check for pending gift ideas
 - **`calendar_list_events`**: Check for pending follow-up events
-- **`calendar_create_event`**: Schedule follow-up events for reconnection
+- **`calendar_create_event`**: Schedule a one-off reconnection event the owner asks for (stored follow-up reminders already appear on the calendar overlay)
 - **`dunbar_tier_set`**: Set or clear manual tier overrides when computed tier seems wrong
 
 ## Edge Cases

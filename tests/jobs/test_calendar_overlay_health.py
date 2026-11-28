@@ -35,13 +35,28 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _owner_zone_is_sgt():
-    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+def _owner_zone_is_singapore():
+    """Scripted fake pools have no settings table: the owner zone is Singapore, not read from them."""
     from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
 
-    from butlers.jobs.briefing import SGT
+    zone = ZoneInfo("Asia/Singapore")
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)):
+        yield
 
-    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+
+@pytest.fixture(autouse=True)
+def _reconcile_is_a_clean_noop():
+    """Scripted fake pools have no calendar tables: stand in for a clean reconcile."""
+    from unittest.mock import patch
+
+    from butlers.modules.calendar import CalendarModule
+    from butlers.modules.calendar.domain_claims import ClaimReconcileResult
+
+    async def _clean(self, source_butler, claims, complete, window_start):
+        return ClaimReconcileResult([], [], [], [], [], [], complete)
+
+    with patch.object(CalendarModule, "reconcile_domain_claims", _clean):
         yield
 
 
@@ -59,14 +74,14 @@ def _appointment(
     *,
     valid_at: datetime,
     content: str | None = "Dental cleaning",
-    metadata: dict[str, Any] | None = None,
     appt_id: str = "33333333-3333-3333-3333-333333333333",
 ) -> dict[str, Any]:
+    """A Health-booked calendar event row (the appointment source, bu-rx0tyg)."""
     return {
-        "id": appt_id,
-        "content": content,
-        "valid_at": valid_at,
-        "metadata": metadata or {"location": "Smile Clinic", "provider": "Dr. Tan"},
+        "event_id": appt_id,
+        "title": content,
+        "starts_at": valid_at,
+        "ends_at": valid_at + timedelta(hours=1),
     }
 
 
@@ -126,23 +141,25 @@ async def test_appointment_routed_to_its_sgt_date():
     assert env["has_entries"] is True
     assert env["entries"][0]["kind"] == "appointment"
     assert env["entries"][0]["label"] == "Dental cleaning"
-    assert env["entries"][0]["meta"]["location"] == "Smile Clinic"
-    assert env["entries"][0]["meta"]["provider"] == "Dr. Tan"
-    assert env["entries"][0]["meta"]["appointment_id"]
+    assert env["entries"][0]["meta"]["appointment_id"] == "33333333-3333-3333-3333-333333333333"
     assert result["appointment_entries"] == 1
 
 
-async def test_appointment_title_prefers_metadata_title():
-    appts = [
-        _appointment(
-            valid_at=_sgt_noon(date_cls(2026, 6, 25)),
-            content=None,
-            metadata={"title": "Annual physical"},
-        )
-    ]
+async def test_an_untitled_appointment_reads_appointment():
+    appts = [_appointment(valid_at=_sgt_noon(date_cls(2026, 6, 25)), content=None)]
     _, cap, _ = await _run(appointments=appts)
     env = cap.store[overlay_key("2026-06-25")]
-    assert env["entries"][0]["label"] == "Annual physical"
+    assert env["entries"][0]["label"] == "Appointment"
+
+
+async def test_a_visit_claims_an_overlay_presence_keyed_by_its_event():
+    appts = [_appointment(valid_at=_sgt_noon(date_cls(2026, 6, 25)))]
+    result, cap, _ = await _run(appointments=appts)
+
+    claims = cap.store[overlay_key("2026-06-25")]["claims"]
+    assert [c["claim_key"] for c in claims] == ["health:visit:33333333-3333-3333-3333-333333333333"]
+    assert claims[0]["presence"] == "overlay" and claims[0]["kind"] == "appointment"
+    assert result["complete"] is True
 
 
 async def test_appointment_timezone_bucketing_uses_sgt_calendar_date():
@@ -310,3 +327,50 @@ async def test_no_llm_session_spawned():
     assert result["butler"] == "health"
     # Only appointment + medication queries were issued — no LLM, no other fan-out.
     assert pool.fetch.await_count == 2
+
+
+async def test_a_failed_medication_read_flags_the_envelopes_incomplete_and_keeps_them():
+    from unittest.mock import AsyncMock, patch
+
+    from butlers.testing.briefing_clock import sgt_noon
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.records import records
+    from tests.jobs.calendar_contribution_harness import patch_state
+
+    key = overlay_key("2026-06-23")
+    previous = {"butler": "health", "date": "2026-06-23", "entries": [{"kind": "x"}], "claims": []}
+    state = ContributionStateStore(seed={key: previous})
+    pool = fake_pool(fetch=AsyncMock(side_effect=[records([]), RuntimeError("facts unreadable")]))
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
+        patch_state("butlers.jobs.calendar_overlay", state),
+    ):
+        result = await run_health_calendar_overlay_contribution(pool, None)
+
+    assert result["complete"] is False
+    assert state.store[key]["complete"] is False and state.store[key]["entries"] == [{"kind": "x"}]
+
+
+async def test_a_health_without_the_calendar_tables_reads_no_appointments_and_stays_complete():
+    from unittest.mock import AsyncMock, patch
+
+    import asyncpg
+
+    from butlers.testing.briefing_clock import sgt_noon
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.records import records
+    from tests.jobs.calendar_contribution_harness import patch_state
+
+    state = ContributionStateStore()
+    pool = fake_pool(
+        fetch=AsyncMock(
+            side_effect=[asyncpg.UndefinedTableError("no calendar_events"), records([])]
+        )
+    )
+    with (
+        patch("butlers.jobs.briefing._now", return_value=sgt_noon(_TODAY)),
+        patch_state("butlers.jobs.calendar_overlay", state),
+    ):
+        result = await run_health_calendar_overlay_contribution(pool, None)
+
+    assert result["complete"] is True and result["appointment_entries"] == 0
