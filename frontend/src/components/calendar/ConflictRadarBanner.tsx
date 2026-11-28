@@ -4,22 +4,24 @@
  * A quiet banner shown atop the week/day grid when the conflicts scan
  * (`GET /api/calendar/workspace/conflicts`) finds issues in the visible window.
  * Collapsed, it shows a one-liner summarising issues by day; expanded, it lists
- * per-issue cards with the contributing event titles and — when a `pending` fix
- * proposal exists — Accept / Decline actions backed by the existing proposals
- * surface.
+ * per-issue cards with the contributing event titles and, for an overlap, the
+ * resolution options the scan compiled (bu-5ii4gj.11). Digits 1-9 pick the nth option of
+ * the first overlap that has options.
  *
  * Honest degraded mode: when the scan could not run (`available === false`) the
- * banner renders nothing at all (silent), never a misleading "all clear". It
- * also renders nothing on a clean window (no issues). A dismiss control hides it
- * for the current page session (client-only; reappears on reload).
+ * banner renders nothing at all (silent), never a misleading "all clear". It also renders
+ * nothing on a clean window. "Keep both" is an option like any other: it is recorded on the
+ * server, so it survives a reload and goes quiet until one of the two events changes.
  */
 
 import { useMemo, useState } from "react";
 import { format, parseISO } from "date-fns";
 
-import type { ConflictIssue } from "@/api/types.ts";
+import type { ConflictIssue, ResolutionOption } from "@/api/types.ts";
 import { FetchingDim } from "@/components/ui/fetching-dim";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { cn } from "@/lib/utils.ts";
+import { optionLabel } from "./conflict-option-label.ts";
 
 export interface ConflictRadarBannerProps {
   issues: ConflictIssue[];
@@ -31,12 +33,10 @@ export interface ConflictRadarBannerProps {
   isError?: boolean;
   /** Query error detail shown when the scan could not complete. */
   error?: Error | null;
-  /** Accept a pending fix proposal (existing proposals accept surface). */
-  onAcceptProposal?: (proposalId: string) => void;
-  /** Decline a pending fix proposal (existing proposals dismiss surface). */
-  onDismissProposal?: (proposalId: string) => void;
-  /** Whether a proposal accept or dismiss mutation is active. */
-  isProposalActionPending?: boolean;
+  /** Carry out one offered option of an overlap (the page binds the scan window and digest). */
+  onResolve?: (issue: ConflictIssue, option: ResolutionOption) => void;
+  /** Whether a resolve is in flight. */
+  isResolving?: boolean;
   className?: string;
 }
 
@@ -98,16 +98,17 @@ function summariseByDay(issues: ConflictIssue[]): string {
 
 function IssueCard({
   issue,
-  onAcceptProposal,
-  onDismissProposal,
-  isProposalActionPending,
+  firstShortcut,
+  onResolve,
+  isResolving,
 }: {
   issue: ConflictIssue;
-  onAcceptProposal?: (proposalId: string) => void;
-  onDismissProposal?: (proposalId: string) => void;
-  isProposalActionPending: boolean;
+  /** The digit of this issue's first option, or null when it carries no shortcuts. */
+  firstShortcut: number | null;
+  onResolve?: (issue: ConflictIssue, option: ResolutionOption) => void;
+  isResolving: boolean;
 }) {
-  const hasFix = issue.proposal_ids.length > 0;
+  const options = issue.options ?? [];
   return (
     <li
       className={cn(
@@ -140,36 +141,31 @@ function IssueCard({
           ))}
         </ul>
       )}
-      {hasFix ? (
-        <div className="mt-2 flex gap-2">
-          {issue.proposal_ids.map((proposalId) => (
-            <span key={proposalId} className="flex gap-1">
+      {options.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {options.map((option, index) => {
+            const digit = firstShortcut === null ? null : firstShortcut + index;
+            return (
               <button
+                key={option.id}
                 type="button"
-                disabled={isProposalActionPending}
-                className={cn(PILL, "border-fg bg-fg text-bg hover:opacity-90")}
-                onClick={() => onAcceptProposal?.(proposalId)}
-              >
-                Accept fix
-              </button>
-              <button
-                type="button"
-                disabled={isProposalActionPending}
+                disabled={isResolving}
+                data-option-kind={option.kind}
+                aria-keyshortcuts={digit !== null && digit <= 9 ? String(digit) : undefined}
                 className={cn(
                   PILL,
-                  "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
+                  option.kind === "keep_both"
+                    ? "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg"
+                    : "border-fg bg-fg text-bg hover:opacity-90",
                 )}
-                onClick={() => onDismissProposal?.(proposalId)}
+                onClick={() => onResolve?.(issue, option)}
               >
-                Decline
+                {digit !== null && digit <= 9 ? `${digit} · ` : ""}
+                {optionLabel(issue, option)}
               </button>
-            </span>
-          ))}
+            );
+          })}
         </div>
-      ) : (
-        <p className="mt-1 text-xs italic text-muted-foreground">
-          No suggested fix yet. The radar will propose one shortly.
-        </p>
       )}
     </li>
   );
@@ -181,15 +177,30 @@ export function ConflictRadarBanner({
   isFetching = false,
   isError = false,
   error = null,
-  onAcceptProposal,
-  onDismissProposal,
-  isProposalActionPending = false,
+  onResolve,
+  isResolving = false,
   className,
 }: ConflictRadarBannerProps) {
   const [expanded, setExpanded] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
 
   const summary = useMemo(() => summariseByDay(issues), [issues]);
+  // Digits 1-9 act on the first overlap that has options; its siblings carry no shortcuts.
+  const shortcutIssue = useMemo(
+    () => issues.find((i) => (i.options ?? []).length > 0) ?? null,
+    [issues],
+  );
+
+  // The one shared registry owns the editable-field and dialog suspension.
+  const shortcuts = useMemo<ShortcutBinding[]>(() => {
+    if (!expanded || !shortcutIssue || !onResolve || isResolving) return [];
+    return (shortcutIssue.options ?? []).slice(0, 9).map((option, index) => ({
+      key: String(index + 1),
+      display: [String(index + 1)],
+      description: `Radar: ${optionLabel(shortcutIssue, option)}`,
+      handler: () => onResolve(shortcutIssue, option),
+    }));
+  }, [expanded, shortcutIssue, onResolve, isResolving]);
+  useRegisterShortcut(shortcuts);
 
   if (isError) {
     return (
@@ -202,9 +213,8 @@ export function ConflictRadarBanner({
     );
   }
 
-  // Silent degraded mode and clean windows render nothing; a session dismiss
-  // hides the banner until the page reloads.
-  if (!available || issues.length === 0 || dismissed) return null;
+  // Silent degraded mode and clean windows render nothing.
+  if (!available || issues.length === 0) return null;
 
   const warningCount = issues.filter((i) => i.severity === "warning").length;
 
@@ -242,14 +252,6 @@ export function ConflictRadarBanner({
         >
           {expanded ? "Hide" : "Review"}
         </button>
-        <button
-          type="button"
-          aria-label="Dismiss conflict radar"
-          className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
-          onClick={() => setDismissed(true)}
-        >
-          ✕
-        </button>
       </div>
       {expanded && (
         <ul className="mt-2 flex flex-col gap-1.5">
@@ -257,9 +259,9 @@ export function ConflictRadarBanner({
             <IssueCard
               key={`${issue.kind}-${issue.date}-${index}`}
               issue={issue}
-              onAcceptProposal={onAcceptProposal}
-              onDismissProposal={onDismissProposal}
-              isProposalActionPending={isProposalActionPending}
+              firstShortcut={issue === shortcutIssue ? 1 : null}
+              onResolve={onResolve}
+              isResolving={isResolving}
             />
           ))}
         </ul>

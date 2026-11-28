@@ -397,8 +397,7 @@ export default function CalendarWorkspacePage() {
               issues={context.conflictIssues}
               available={context.conflictsAvailable}
               conflictsQuery={context.conflictsQuery}
-              acceptMutation={panels.acceptProposalMutation}
-              dismissMutation={panels.dismissProposalMutation}
+              scanWindow={{ start: queryStart, end: queryEnd }}
             />
           }
           timeGridRef={timeGridRef}

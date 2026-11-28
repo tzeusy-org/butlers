@@ -254,6 +254,17 @@ async def test_owner_response_rejects_injection_and_binds_actual_command_pool(ap
             assert (
                 await client.post("/api/calendar/workspace/respond", json=arguments)
             ).status_code == 200
+            # The card was decided before the dashboard's own approve: the race branch names why.
+            for decided in ("rejected", "expired"):
+                receipt, pending["status"] = None, decided
+                before_decisions = decision.await_count
+                raced = (
+                    await client.post("/api/calendar/workspace/respond", json=arguments)
+                ).json()
+                assert raced["data"]["status"] == "rejected"
+                assert raced["data"]["reason"] == f"response_approval_{decided}"
+                assert decision.await_count == before_decisions
+            pending["status"] = "pending"
             concurrent_inverse_claim = True
             late_claim = await client.post("/api/calendar/workspace/respond", json=arguments)
             assert late_claim.status_code == 200

@@ -2515,8 +2515,7 @@ export interface paths {
          *     Deterministic and read-only: queries the synced ``calendar_event_instances``
          *     / ``calendar_events`` tables (GIST(tstzrange)-served window) for overlaps,
          *     back-to-back density, and overloaded days — no provider API call, no LLM call
-         *     at request time. ``proposal_ids`` lists any ``pending`` fix proposals already
-         *     emitted for an overlap (empty until the fix-proposal session has run).
+         *     at request time.
          *
          *     Fails open: a DB fan-out failure yields ``issues_available=false`` with an
          *     empty issue list, never an HTTP 500. The window must satisfy
@@ -2547,8 +2546,9 @@ export interface paths {
          *     ``keep_both`` writes only the local acknowledgement: no provider call and no approval. A move
          *     parks an approvals card on the owning butler and writes nothing else (the owner decides it in
          *     the approvals surface). The overlap is re-read here and its digest compared, so neither can
-         *     attach to a changed overlap (409 ``issue_changed``). Response options are not accepted yet
-         *     (422).
+         *     attach to a changed overlap (409 ``issue_changed``). ``decline`` and ``tentative`` go through
+         *     the same gated ``calendar_respond`` path as the invitation card, with no email to the
+         *     organizer.
          */
         post: operations["resolve_workspace_conflict_api_calendar_workspace_conflicts_resolve_post"];
         delete?: never;
@@ -24339,8 +24339,10 @@ export interface components {
             options?: components["schemas"]["ResolutionOption"][];
             /** Options Reason */
             options_reason?: string | null;
-            /** Proposal Ids */
-            proposal_ids?: string[];
+            /** Owner Timezone */
+            owner_timezone?: string | null;
+            /** Pair Id */
+            pair_id?: string | null;
             /** Reasons */
             reasons?: string[];
             /**
@@ -24381,11 +24383,15 @@ export interface components {
             option_id: string;
             /** Pair Id */
             pair_id: string;
+            /** Response Outcome */
+            response_outcome?: string | null;
+            /** Response Reason */
+            response_reason?: string | null;
             /**
              * Status
              * @enum {string}
              */
-            status: "acknowledged" | "already_acknowledged" | "parked";
+            status: "acknowledged" | "already_acknowledged" | "parked" | "responded";
         };
         /**
          * ConflictScanResponse

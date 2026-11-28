@@ -115,7 +115,7 @@ OP GET /api/calendar/accounts 27d1cf4a2b27
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
 OP GET /api/calendar/workspace/changes 2712ce44dcbb
-OP GET /api/calendar/workspace/conflicts 6e4f58219019
+OP GET /api/calendar/workspace/conflicts a2ae62ab3af4
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
 OP GET /api/calendar/workspace/day-verdict a32ed78db2c6
@@ -525,7 +525,7 @@ OP POST /api/calendar/sources 826a2a3474a4
 OP POST /api/calendar/sources/role 1592dbfae1d6
 OP POST /api/calendar/workspace/butler-events fd45e6adb5e5
 OP POST /api/calendar/workspace/butler-events/preview 3bc6419a8ea8
-OP POST /api/calendar/workspace/conflicts/resolve c1611e86b28a
+OP POST /api/calendar/workspace/conflicts/resolve 34db905cbff2
 OP POST /api/calendar/workspace/organizer-decision 3b8795a8ac97
 OP POST /api/calendar/workspace/parse-quick-add 51365e18b667
 OP POST /api/calendar/workspace/proposals/{proposal_id}/accept 1ab95b13dccc
@@ -1943,9 +1943,9 @@ SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
-SCHEMA ConflictIssue 2f632120ea6c
+SCHEMA ConflictIssue 82f2f89a46a2
 SCHEMA ConflictResolveRequest 1cb59eaf9e12
-SCHEMA ConflictResolveResponse cf08bf3a9a1b
+SCHEMA ConflictResolveResponse 496d5a591fae
 SCHEMA ConflictScanResponse 92f9148f7a01
 SCHEMA ConflictScanWindow 6af1a276ab4b
 SCHEMA ConnectionModel 89d5a5b90eaf

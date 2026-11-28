@@ -61,7 +61,7 @@ function setEmptyInvitations() {
   } as unknown as ReturnType<typeof useCalendarInvitations>);
 }
 
-export function setConflictProposalIssue() {
+export function setConflictOptionsIssue() {
   vi.mocked(useCalendarConflicts).mockReturnValue({
     isLoading: false,
     isError: false,
@@ -84,7 +84,24 @@ export function setConflictProposalIssue() {
                 status: "confirmed",
               },
             ],
-            proposal_ids: ["proposal-1"],
+            issue_digest: "digest-1",
+            pair_id: "pair-1",
+            options: [
+              {
+                id: "decline:entry-1",
+                kind: "decline",
+                authority: "parked_per_event",
+                exact_call: { tool: "calendar_respond", args: { entry_id: "entry-1" } },
+                rationale_fields: { entry_id: "entry-1" },
+              },
+              {
+                id: "keep_both",
+                kind: "keep_both",
+                authority: "owner_submit",
+                exact_call: { tool: "acknowledge", args: { pair_id: "pair-1" } },
+                rationale_fields: {},
+              },
+            ],
           },
         ],
         scan_window: {
@@ -194,7 +211,7 @@ export function installCalendarPageHarness() {
     return container.querySelector('[data-testid="search"]')?.textContent ?? "";
   }
 
-  async function openConflictProposalActions() {
+  async function openConflictOptions() {
     const queryClient = renderPage("/calendar?view=user&range=week&anchor=2026-07-01");
 
     await act(async () => {
@@ -205,5 +222,5 @@ export function installCalendarPageHarness() {
     return queryClient;
   }
 
-  return { container, renderPage, getSearchText, openConflictProposalActions };
+  return { container, renderPage, getSearchText, openConflictOptions };
 }

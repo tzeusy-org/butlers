@@ -615,11 +615,16 @@ class ConflictResolveRequest(BaseModel):
 
 
 class ConflictResolveResponse(BaseModel):
-    status: Literal["acknowledged", "already_acknowledged", "parked"]
+    status: Literal["acknowledged", "already_acknowledged", "parked", "responded"]
     pair_id: str
     option_id: str
     #: The approvals card a move was parked as; the owner decides it in the approvals surface.
     action_id: UUID | None = None
+    #: A decline or tentative: how the owner's own ``calendar_respond`` settled (``applied``,
+    #: ``pending_approval``, ...), exactly as the invitation card reports it.
+    response_outcome: str | None = None
+    #: Why a response was rejected or expired (``response_approval_expired``, ...), else null.
+    response_reason: str | None = None
 
 
 class ConflictIssue(BaseModel):
@@ -631,9 +636,6 @@ class ConflictIssue(BaseModel):
     summary: str
     severity: ConflictSeverity
     events: list[ConflictEventRef] = Field(default_factory=list)
-    #: UUIDs of any ``pending`` fix proposals matching this issue (empty until
-    #: the LLM fix-proposal session has run for the window).
-    proposal_ids: list[str] = Field(default_factory=list)
     #: Overlap issues only: resolution options and the digest a resolve must echo back. Empty with
     #: ``options_reason='stale_source'`` when a calendar source is too stale to offer a move.
     options: list[ResolutionOption] = Field(default_factory=list)
@@ -642,6 +644,10 @@ class ConflictIssue(BaseModel):
     #: ``outside_declared_hours`` only: which declared limit the event breaks (``before_earliest``,
     #: ``after_latest``, ``off_day`` or ``no_meeting_block``). Empty for every other kind.
     reasons: list[str] = Field(default_factory=list)
+    #: Overlap issues: the id a resolve names (stable across resyncs).
+    pair_id: str | None = None
+    #: The owner zone the option slots were compiled in (an IANA name), for displaying them.
+    owner_timezone: str | None = None
 
 
 class ConflictScanWindow(BaseModel):

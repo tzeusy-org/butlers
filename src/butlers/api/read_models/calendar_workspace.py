@@ -1829,12 +1829,10 @@ async def query_calendar_conflicts(
 
     # Re-key each overlap's pair_id onto provider identity (bu-nd32y3). The detector's
     # pair id hashes instance ids, and the surviving instance of a provider event rotates
-    # between butler schemas on resync, so a proposal stored under it would detach. The
-    # instance-based id is kept as a legacy join key for proposals written before.
-    legacy_pair_ids: dict[int, str] = {}
+    # between butler schemas on resync, so anything keyed on it (an acknowledgement) would
+    # detach.
     for issue in issues:
         if issue.pair_id is not None and len(issue.events) == 2:
-            legacy_pair_ids[id(issue)] = str(issue.pair_id)
             issue.pair_id = overlap_pair_id(
                 *(identity_keys.get(e.entry_id, f"instance\x01{e.entry_id}") for e in issue.events)
             )
@@ -1868,20 +1866,6 @@ async def query_calendar_conflicts(
                 and acknowledged.get(str(i.pair_id), ("", ""))[1] == i.state_digest
             )
         ]
-
-    # Join pending proposals by the provider-identity pair id, or the legacy instance
-    # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a
-    # missing proposals table leaves proposal_ids empty rather than degrading the scan.
-    pending = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
-    by_source: dict[str, list[str]] = {}
-    for proposal in pending:
-        if proposal.source_event_id:
-            by_source.setdefault(proposal.source_event_id, []).append(str(proposal.proposal_id))
-    if by_source:
-        for issue in issues:
-            if issue.pair_id is not None:
-                keys = [str(issue.pair_id), legacy_pair_ids.get(id(issue))]
-                issue.proposal_ids = [pid for key in keys if key for pid in by_source.get(key, [])]
 
     # A partial events fan-out failure means we scanned an incomplete event set,
     # so a real conflict could be hidden — degrade honestly even though ``issues``

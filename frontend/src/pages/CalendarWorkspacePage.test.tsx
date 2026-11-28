@@ -4,16 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { toast } from "sonner";
 
-import {
-  useAcceptCalendarProposal,
-  useCalendarOverlays,
-  useDismissCalendarProposal,
-} from "@/hooks/use-calendar-workspace";
+import { ApiError } from "@/api/client.ts";
+import { useCalendarOverlays, useResolveCalendarConflict } from "@/hooks/use-calendar-workspace";
 import {
   findButton,
   installCalendarPageHarness,
   latestWorkspaceParams,
-  setConflictProposalIssue,
+  setConflictOptionsIssue,
 } from "@/test/calendar-page/harness";
 import {
   flush,
@@ -27,10 +24,10 @@ vi.mock("@/hooks/use-meeting-debriefs", async () =>
 vi.mock("@/hooks/use-calendar-workspace", async () =>
   (await import("@/test/calendar-page/mocks")).calendarWorkspaceHookMock(),
 );
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 describe("CalendarWorkspacePage", () => {
-  const { container, renderPage, getSearchText, openConflictProposalActions } =
+  const { container, renderPage, getSearchText, openConflictOptions } =
     installCalendarPageHarness();
 
   it("restores view/range from deep-link query state", () => {
@@ -49,155 +46,118 @@ describe("CalendarWorkspacePage", () => {
     expect(container.querySelector('[aria-label="Calendar verdict"]')).not.toBeNull();
   });
 
-  it("disables conflict proposal actions while accepting a fix", async () => {
-    vi.mocked(useAcceptCalendarProposal).mockReturnValue({
+  it("disables conflict options while a resolve is in flight", async () => {
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
       mutate: vi.fn(),
-      mutateAsync: vi.fn(),
       isPending: true,
-    } as unknown as ReturnType<typeof useAcceptCalendarProposal>);
-    setConflictProposalIssue();
-    await openConflictProposalActions();
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
 
-    expect(findButton("Accept fix")?.disabled).toBe(true);
-    expect(findButton("Decline")?.disabled).toBe(true);
+    expect(findButton("2 · Keep both")?.disabled).toBe(true);
   });
 
-  it("shows an error toast when accepting a conflict fix fails", async () => {
-    const acceptMutate = vi.fn(
-      (_vars: { proposalId: string }, options?: { onError?: (error: Error) => void }) => {
-        options?.onError?.(new Error("Proposal could not be accepted"));
+  it("posts the option with the digest and pair the owner saw, then announces it", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onSuccess?: (r: unknown) => void }) => {
+        options?.onSuccess?.({ data: { status: "acknowledged" } });
       },
     );
-    vi.mocked(useAcceptCalendarProposal).mockReturnValue({
-      mutate: acceptMutate,
-      mutateAsync: vi.fn(),
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
       isPending: false,
-    } as unknown as ReturnType<typeof useAcceptCalendarProposal>);
-    setConflictProposalIssue();
-    await openConflictProposalActions();
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
+
     await act(async () => {
-      findButton("Accept fix")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flush();
     });
 
-    expect(acceptMutate).toHaveBeenCalledWith(
-      { proposalId: "proposal-1" },
-      expect.objectContaining({ onError: expect.any(Function) }),
-    );
-    expect(toast.error).toHaveBeenCalledWith("Proposal could not be accepted");
-  });
-
-  it("announces and refreshes after accepting a conflict fix", async () => {
-    const acceptMutate = vi.fn(
-      (
-        _vars: { proposalId: string },
-        options?: { onSuccess?: () => void; onSettled?: () => void },
-      ) => {
-        options?.onSuccess?.();
-        options?.onSettled?.();
-      },
-    );
-    vi.mocked(useAcceptCalendarProposal).mockReturnValue({
-      mutate: acceptMutate,
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as unknown as ReturnType<typeof useAcceptCalendarProposal>);
-    setConflictProposalIssue();
-
-    const queryClient = await openConflictProposalActions();
-    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
-
-    await act(async () => {
-      findButton("Accept fix")?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-      await flush();
-    });
-
-    expect(acceptMutate).toHaveBeenCalledWith(
-      { proposalId: "proposal-1" },
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pair_id: "pair-1",
+        option_id: "keep_both",
+        issue_digest: "digest-1",
+      }),
       expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
     expect(toast.success).toHaveBeenCalledWith(
-      "Proposal accepted. Event added to the Butlers calendar.",
+      "Kept both. The radar stays quiet until one of them changes.",
     );
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["calendar-conflicts"],
-    });
   });
 
-  it("announces and refreshes after declining a conflict fix", async () => {
-    const dismissMutate = vi.fn(
-      (
-        _vars: { proposalId: string },
-        options?: { onSuccess?: () => void; onSettled?: () => void },
-      ) => {
-        options?.onSuccess?.();
-        options?.onSettled?.();
+  it("says so when the owner already rejected this response, not that it failed", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onSuccess?: (r: unknown) => void }) => {
+        options?.onSuccess?.({ data: { status: "responded", response_outcome: "rejected" } });
       },
     );
-    vi.mocked(useDismissCalendarProposal).mockReturnValue({
-      mutate: dismissMutate,
-      mutateAsync: vi.fn(),
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
       isPending: false,
-    } as unknown as ReturnType<typeof useDismissCalendarProposal>);
-    setConflictProposalIssue();
-
-    const queryClient = await openConflictProposalActions();
-    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
 
     await act(async () => {
-      findButton("Decline")?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flush();
     });
 
-    expect(dismissMutate).toHaveBeenCalledWith(
-      { proposalId: "proposal-1" },
-      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    expect(toast.info).toHaveBeenCalledWith(
+      "You already rejected this response. Nothing was sent.",
     );
-    expect(toast.success).toHaveBeenCalledWith("Proposal dismissed.");
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["calendar-conflicts"],
-    });
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("announces a failure when declining a conflict fix", async () => {
-    const dismissMutate = vi.fn(
-      (
-        _vars: { proposalId: string },
-        options?: { onError?: (error: Error) => void; onSettled?: () => void },
-      ) => {
-        options?.onError?.(new Error("Proposal could not be dismissed"));
-        options?.onSettled?.();
+  it("says a response card expired, not that the owner rejected it", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onSuccess?: (r: unknown) => void }) => {
+        options?.onSuccess?.({
+          data: {
+            status: "responded",
+            response_outcome: "rejected",
+            response_reason: "response_approval_expired",
+          },
+        });
       },
     );
-    vi.mocked(useDismissCalendarProposal).mockReturnValue({
-      mutate: dismissMutate,
-      mutateAsync: vi.fn(),
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
       isPending: false,
-    } as unknown as ReturnType<typeof useDismissCalendarProposal>);
-    setConflictProposalIssue();
-
-    const queryClient = await openConflictProposalActions();
-    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
 
     await act(async () => {
-      findButton("Decline")?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flush();
     });
 
-    expect(dismissMutate).toHaveBeenCalledWith(
-      { proposalId: "proposal-1" },
-      expect.objectContaining({ onError: expect.any(Function) }),
+    expect(toast.info).toHaveBeenCalledWith("That response card expired. Nothing was sent.");
+  });
+
+  it("tells the owner when the overlap changed under them", async () => {
+    const mutate = vi.fn(
+      (_vars: unknown, options?: { onError?: (error: Error) => void }) => {
+        options?.onError?.(new ApiError("issue_changed", "issue_changed", 409));
+      },
     );
-    expect(toast.error).toHaveBeenCalledWith("Proposal could not be dismissed");
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: ["calendar-conflicts"],
+    vi.mocked(useResolveCalendarConflict).mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResolveCalendarConflict>);
+    setConflictOptionsIssue();
+    await openConflictOptions();
+
+    await act(async () => {
+      findButton("2 · Keep both")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
     });
+
+    expect(toast.error).toHaveBeenCalledWith("That overlap changed. Review it again.");
   });
 
   // -------------------------------------------------------------------------

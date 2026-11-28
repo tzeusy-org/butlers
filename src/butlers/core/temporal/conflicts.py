@@ -109,9 +109,6 @@ class DetectedIssue:
     severity: ConflictSeverity
     events: list[ConflictEventRef] = field(default_factory=list)
     pair_id: UUID | None = None
-    #: UUIDs of ``pending`` fix proposals attached by the read-model's proposal
-    #: join. Empty until the LLM fix-proposal session has run for the window.
-    proposal_ids: list[str] = field(default_factory=list)
     #: Resolution options for an overlap and the digest that binds a resolve to them
     #: (bu-5ii4gj.11). Empty until the read model attaches them; ``options_reason`` says why a
     #: scan that could not compile any left them empty (``stale_source``).
@@ -130,6 +127,8 @@ class DetectedIssue:
     series_key: str | None = None
     #: How many occurrences in the scanned window break the same limit (1 for a single event).
     occurrences: int = 1
+    #: The owner zone the slots were compiled in (an IANA name), set with the options.
+    owner_timezone: str | None = None
 
 
 def overlap_pair_id(entry_id_a: str, entry_id_b: str) -> UUID:

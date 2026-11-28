@@ -21,7 +21,7 @@ it("keeps real HTTP invitation evidence, pagination and details honest through f
   const invitation = { entry_id: "invitation-1", title: "Provider invitation", start_at: "2026-07-01T09:00:00Z",
     end_at: "2026-07-01T10:00:00Z", timezone: "UTC", organizer: "Organizer", organizer_source: "event",
     butler_name: "general", conflict_issues: [{ kind: "overlap", date: "2026-07-01", summary: "Matched radar overlap",
-      severity: "warning", proposal_ids: [], events: [{ entry_id: "invitation-1", title: "Provider invitation",
+      severity: "warning", events: [{ entry_id: "invitation-1", title: "Provider invitation",
         start_at: "2026-07-01T09:00:00Z", end_at: "2026-07-01T10:00:00Z", timezone: "UTC", status: "confirmed" }] }] };
   const entry = { ...invitation, view: "user", source_type: "provider_event", source_key: "google:primary",
     event_id: "event-1", all_day: false, calendar_id: "primary", provider_event_id: "provider-1",

@@ -1,39 +1,51 @@
 /**
- * Conflict and overcommitment radar above the time grid, wired to the
- * proposal accept/dismiss mutations for its suggested fixes.
+ * Conflict and overcommitment radar above the time grid. An overlap's offered options
+ * (bu-5ii4gj.11) post to the resolve route bound to the digest the owner saw.
  */
 
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { ConflictRadarBanner } from "@/components/calendar/ConflictRadarBanner";
-import type {
-  useAcceptCalendarProposal,
-  useCalendarConflicts,
-  useDismissCalendarProposal,
-} from "@/hooks/use-calendar-workspace";
-import type { ConflictScanResponse } from "@/api/types.ts";
+import { optionLabel } from "@/components/calendar/conflict-option-label.ts";
+import { ApiError } from "@/api/client.ts";
+import { useResolveCalendarConflict } from "@/hooks/use-calendar-workspace";
+import type { useCalendarConflicts } from "@/hooks/use-calendar-workspace";
+import type { ConflictResolveResponse, ConflictScanResponse } from "@/api/types.ts";
 
 interface CalendarConflictRadarProps {
   issues: ConflictScanResponse["issues"];
   available: boolean;
   conflictsQuery: ReturnType<typeof useCalendarConflicts>;
-  acceptMutation: ReturnType<typeof useAcceptCalendarProposal>;
-  dismissMutation: ReturnType<typeof useDismissCalendarProposal>;
+  /** The scanned window: a resolve must name the one its digest was read under. */
+  scanWindow: { start: string; end: string };
+}
+
+function outcomeMessage(result: ConflictResolveResponse): string {
+  switch (result.status) {
+    case "acknowledged":
+    case "already_acknowledged":
+      return "Kept both. The radar stays quiet until one of them changes.";
+    case "parked":
+      return "Move sent for your approval.";
+    case "responded":
+      if (result.response_outcome === "rejected") {
+        return result.response_reason === "response_approval_expired"
+          ? "That response card expired. Nothing was sent."
+          : "You already rejected this response. Nothing was sent.";
+      }
+      return result.response_outcome === "pending_approval"
+        ? "Response sent for your approval."
+        : "Response recorded on your calendar.";
+  }
 }
 
 export function CalendarConflictRadar({
   issues,
   available,
   conflictsQuery,
-  acceptMutation,
-  dismissMutation,
+  scanWindow,
 }: CalendarConflictRadarProps) {
-  const queryClient = useQueryClient();
-  const refreshConflicts = () =>
-    queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] });
-  const messageOf = (error: unknown, fallback: string) =>
-    error instanceof Error ? error.message : fallback;
+  const resolve = useResolveCalendarConflict();
 
   return (
     <ConflictRadarBanner
@@ -43,27 +55,30 @@ export function CalendarConflictRadar({
       isError={conflictsQuery.isError}
       error={conflictsQuery.error instanceof Error ? conflictsQuery.error : null}
       className="mb-2"
-      isProposalActionPending={acceptMutation.isPending || dismissMutation.isPending}
-      onAcceptProposal={(proposalId) => {
-        acceptMutation.mutate(
-          { proposalId },
+      isResolving={resolve.isPending}
+      onResolve={(issue, option) => {
+        const digest = issue.issue_digest;
+        const pairId = issue.pair_id;
+        if (!digest || !pairId) return;
+        resolve.mutate(
           {
-            onSuccess: () =>
-              toast.success("Proposal accepted. Event added to the Butlers calendar."),
-            onError: (error) =>
-              toast.error(messageOf(error, "Failed to accept the proposed fix.")),
-            onSettled: refreshConflicts,
+            pair_id: pairId,
+            option_id: option.id,
+            issue_digest: digest,
+            start: scanWindow.start,
+            end: scanWindow.end,
           },
-        );
-      }}
-      onDismissProposal={(proposalId) => {
-        dismissMutation.mutate(
-          { proposalId },
           {
-            onSuccess: () => toast.success("Proposal dismissed."),
+            onSuccess: (response) =>
+              response.data.response_outcome === "rejected"
+                ? toast.info(outcomeMessage(response.data))
+                : toast.success(outcomeMessage(response.data)),
             onError: (error) =>
-              toast.error(messageOf(error, "Failed to dismiss the proposed fix.")),
-            onSettled: refreshConflicts,
+              toast.error(
+                error instanceof ApiError && error.status === 409
+                  ? "That overlap changed. Review it again."
+                  : `Could not ${optionLabel(issue, option).toLowerCase()}.`,
+              ),
           },
         );
       }}

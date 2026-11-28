@@ -6,14 +6,15 @@
  *  - renders ONLY when issues exist and the scan is available,
  *  - silent on degraded mode (available=false) and on a clean window,
  *  - expands to per-issue cards with contributing event titles,
- *  - Accept/Decline actions fire only when a pending proposal exists,
- *  - dismiss hides the banner for the session.
+ *  - an overlap's offered options render and resolve with the issue they belong to,
+ *  - digits 1-9 pick the nth option, and never while typing,
+ *  - there is no session dismiss: "keep both" is the recorded way to quiet an overlap.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import type { ConflictIssue } from "@/api/types.ts";
+import type { ConflictIssue, ResolutionOption } from "@/api/types.ts";
 
 import { ConflictRadarBanner } from "./ConflictRadarBanner.tsx";
 
@@ -43,10 +44,31 @@ function overlapIssue(overrides: Partial<ConflictIssue> = {}): ConflictIssue {
         status: "tentative",
       },
     ],
-    proposal_ids: [],
     ...overrides,
   };
 }
+
+function option(
+  kind: ResolutionOption["kind"],
+  rationale: Record<string, unknown> = {},
+): ResolutionOption {
+  return {
+    id: `${kind}:b`,
+    kind,
+    authority: "owner_submit",
+    exact_call: { tool: "x", args: { pair_id: "pair-1" } },
+    rationale_fields: rationale,
+  };
+}
+
+const OFFERED = {
+  issue_digest: "d1",
+  options: [
+    option("move_own", { entry_id: "b", slot_start: "2026-07-01T14:00:00Z" }),
+    option("decline", { entry_id: "b" }),
+    option("keep_both"),
+  ],
+};
 
 describe("ConflictRadarBanner", () => {
   it("renders a banner when issues exist in the window", () => {
@@ -96,95 +118,93 @@ describe("ConflictRadarBanner", () => {
     expect(screen.getByText("1:1")).toBeTruthy();
   });
 
-  it("shows Accept/Decline only when a pending proposal exists", () => {
-    const onAccept = vi.fn();
-    const onDismiss = vi.fn();
-    render(
-      <ConflictRadarBanner
-        issues={[overlapIssue({ proposal_ids: ["p1"] })]}
-        available
-        onAcceptProposal={onAccept}
-        onDismissProposal={onDismiss}
-      />,
-    );
+  it("renders each offered option and resolves it with its issue", () => {
+    const onResolve = vi.fn();
+    const issue = overlapIssue(OFFERED);
+    render(<ConflictRadarBanner issues={[issue]} available onResolve={onResolve} />);
     fireEvent.click(screen.getByText("Review"));
-    fireEvent.click(screen.getByText("Accept fix"));
-    expect(onAccept).toHaveBeenCalledWith("p1");
-    fireEvent.click(screen.getByText("Decline"));
-    expect(onDismiss).toHaveBeenCalledWith("p1");
+
+    fireEvent.click(screen.getByRole("button", { name: /Decline 1:1/ }));
+
+    expect(onResolve).toHaveBeenCalledWith(issue, OFFERED.options[1]);
+    expect(screen.getByRole("button", { name: /Keep both/ })).toBeTruthy();
   });
 
-  it("uses the neutral Dispatch commit treatment for accepting a fix", () => {
+  it("shows a move's slot in the zone it was compiled in, not the browser's", () => {
     render(
       <ConflictRadarBanner
-        issues={[overlapIssue({ proposal_ids: ["p1"] })]}
+        issues={[overlapIssue({ ...OFFERED, owner_timezone: "Asia/Tokyo" })]}
         available
       />,
     );
-
     fireEvent.click(screen.getByText("Review"));
-    const acceptFix = screen.getByRole("button", { name: "Accept fix" });
-
-    expect(acceptFix.getAttribute("type")).toBe("button");
-    expect(acceptFix.classList.contains("inline-flex")).toBe(true);
-    expect(acceptFix.classList.contains("items-center")).toBe(true);
-    expect(acceptFix.classList.contains("justify-center")).toBe(true);
-    expect(acceptFix.classList.contains("h-7")).toBe(true);
-    expect(acceptFix.classList.contains("rounded-[3px]")).toBe(true);
-    expect(acceptFix.classList.contains("border")).toBe(true);
-    expect(acceptFix.classList.contains("px-2.5")).toBe(true);
-    expect(acceptFix.classList.contains("font-mono")).toBe(true);
-    expect(acceptFix.classList.contains("text-[11px]")).toBe(true);
-    expect(acceptFix.classList.contains("leading-none")).toBe(true);
-    expect(acceptFix.classList.contains("transition-colors")).toBe(true);
-    expect(acceptFix.classList.contains("bg-fg")).toBe(true);
-    expect(acceptFix.classList.contains("text-bg")).toBe(true);
-    expect(acceptFix.classList.contains("border-fg")).toBe(true);
-    expect(acceptFix.classList.contains("focus-visible:ring-2")).toBe(true);
-    expect(acceptFix.classList.contains("focus-visible:ring-focus")).toBe(true);
-    expect(acceptFix.classList.contains("disabled:pointer-events-none")).toBe(true);
-    expect(acceptFix.classList.contains("disabled:opacity-40")).toBe(true);
-    expect(acceptFix.className).not.toMatch(
-      /\b(?:bg|text|border)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\b/,
-    );
+    // 14:00Z is 11 PM in Tokyo whatever zone the test machine is in.
+    expect(screen.getByRole("button", { name: /Move 1:1 to Jul 1, 11:00 PM/ })).toBeTruthy();
   });
 
-  it("disables proposal actions while a proposal mutation is pending", () => {
-    const onAccept = vi.fn();
-    const onDismiss = vi.fn();
-    render(
-      <ConflictRadarBanner
-        issues={[overlapIssue({ proposal_ids: ["p1"] })]}
-        available
-        isProposalActionPending
-        onAcceptProposal={onAccept}
-        onDismissProposal={onDismiss}
-      />,
-    );
-
-    fireEvent.click(screen.getByText("Review"));
-    const acceptFix = screen.getByRole("button", { name: "Accept fix" });
-    const decline = screen.getByRole("button", { name: "Decline" });
-
-    expect((acceptFix as HTMLButtonElement).disabled).toBe(true);
-    expect((decline as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(acceptFix);
-    fireEvent.click(decline);
-    expect(onAccept).not.toHaveBeenCalled();
-    expect(onDismiss).not.toHaveBeenCalled();
-  });
-
-  it("is informational (no fix button) when no proposal exists yet", () => {
-    render(<ConflictRadarBanner issues={[overlapIssue({ proposal_ids: [] })]} available />);
-    fireEvent.click(screen.getByText("Review"));
-    expect(screen.queryByText("Accept fix")).toBeNull();
-    expect(screen.getByText(/No suggested fix yet/i)).toBeTruthy();
-  });
-
-  it("dismiss hides the banner for the session", () => {
+  it("offers nothing to click when the scan compiled no options", () => {
     render(<ConflictRadarBanner issues={[overlapIssue()]} available />);
-    fireEvent.click(screen.getByLabelText("Dismiss conflict radar"));
-    expect(screen.queryByTestId("conflict-radar-banner")).toBeNull();
+    fireEvent.click(screen.getByText("Review"));
+    expect(screen.queryByRole("button", { name: /Keep both/ })).toBeNull();
+  });
+
+  it("digit keys pick the nth option of the first overlap with options", () => {
+    const onResolve = vi.fn();
+    const issue = overlapIssue(OFFERED);
+    render(<ConflictRadarBanner issues={[issue]} available onResolve={onResolve} />);
+    fireEvent.click(screen.getByText("Review"));
+
+    fireEvent.keyDown(window, { key: "3" });
+
+    expect(onResolve).toHaveBeenCalledWith(issue, OFFERED.options[2]);
+    fireEvent.keyDown(window, { key: "9" }); // no ninth option
+    expect(onResolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("digit keys do nothing while collapsed, typing, or resolving", () => {
+    const onResolve = vi.fn();
+    const issue = overlapIssue(OFFERED);
+    const { rerender } = render(
+      <div>
+        <input aria-label="note" />
+        <ConflictRadarBanner issues={[issue]} available onResolve={onResolve} />
+      </div>,
+    );
+    fireEvent.keyDown(window, { key: "1" }); // collapsed
+    fireEvent.click(screen.getByText("Review"));
+    fireEvent.keyDown(screen.getByLabelText("note"), { key: "1" }); // typing
+    expect(onResolve).not.toHaveBeenCalled();
+
+    rerender(
+      <div>
+        <input aria-label="note" />
+        <ConflictRadarBanner issues={[issue]} available onResolve={onResolve} isResolving />
+      </div>,
+    );
+    fireEvent.keyDown(window, { key: "1" });
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  it("disables the options while a resolve is in flight", () => {
+    const onResolve = vi.fn();
+    render(
+      <ConflictRadarBanner
+        issues={[overlapIssue(OFFERED)]}
+        available
+        isResolving
+        onResolve={onResolve}
+      />,
+    );
+    fireEvent.click(screen.getByText("Review"));
+    const keep = screen.getByRole("button", { name: /Keep both/ });
+    expect((keep as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(keep);
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  it("has no session dismiss: keeping both is recorded on the server instead", () => {
+    render(<ConflictRadarBanner issues={[overlapIssue()]} available />);
+    expect(screen.queryByLabelText("Dismiss conflict radar")).toBeNull();
   });
 
   it("names an event outside the declared meeting hours in the collapsed summary", () => {

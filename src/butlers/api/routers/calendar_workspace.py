@@ -1737,7 +1737,6 @@ async def get_workspace_invitations(
                 summary=issue.summary,
                 severity=issue.severity,
                 events=[ConflictEventRef(**vars(ref)) for ref in issue.events],
-                proposal_ids=list(issue.proposal_ids),
                 reasons=list(issue.reasons),
             )
             for issue in observed_issues
@@ -1819,8 +1818,7 @@ async def get_workspace_conflicts(
     Deterministic and read-only: queries the synced ``calendar_event_instances``
     / ``calendar_events`` tables (GIST(tstzrange)-served window) for overlaps,
     back-to-back density, and overloaded days — no provider API call, no LLM call
-    at request time. ``proposal_ids`` lists any ``pending`` fix proposals already
-    emitted for an overlap (empty until the fix-proposal session has run).
+    at request time.
 
     Fails open: a DB fan-out failure yields ``issues_available=false`` with an
     empty issue list, never an HTTP 500. The window must satisfy
@@ -1874,7 +1872,6 @@ async def get_workspace_conflicts(
                 )
                 for ref in issue.events
             ],
-            proposal_ids=list(issue.proposal_ids),
             options=[
                 ResolutionOption(
                     id=o.id,
@@ -1888,6 +1885,8 @@ async def get_workspace_conflicts(
             issue_digest=issue.issue_digest,
             options_reason=issue.options_reason,
             reasons=list(issue.reasons),
+            pair_id=str(issue.pair_id) if issue.pair_id is not None else None,
+            owner_timezone=issue.owner_timezone,
         )
         for issue in scan.issues
     ]
@@ -1970,6 +1969,46 @@ async def _park_resolution_move(
     )
 
 
+async def _respond_option(
+    db: DatabaseManager,
+    option: Any,
+    body: ConflictResolveRequest,
+    http_request: Request,
+    mgr: MCPClientManager,
+) -> ConflictResolveResponse:
+    """Carry out a decline or tentative option as the owner's own ``calendar_respond``."""
+    call = option.exact_call["args"]
+    try:
+        entry_id = UUID(str(call["entry_id"]))
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=409, detail="issue_changed") from None
+    # ``calendar_respond`` takes a UUID request id, so the option's ``resolve:`` string maps to one.
+    # It is seeded with the digest the owner saw: the same overlap state replays one command, but
+    # a decline after a re-accept (a changed state, a new digest) is a new command, never the old
+    # command's stale "applied".
+    request_id = uuid5(NAMESPACE_URL, f"{call['request_id']}:{body.issue_digest}")
+    outcome = await _respond_through_approval(
+        arguments={
+            "entry_id": str(entry_id),
+            "request_id": str(request_id),
+            "response_status": call["response_status"],
+            "send_updates": call.get("send_updates", "none"),
+        },
+        butler_name=await _response_owner(db, entry_id),
+        http_request=http_request,
+        mgr=mgr,
+        db=db,
+    )
+    return ConflictResolveResponse(
+        status="responded",
+        pair_id=body.pair_id,
+        option_id=option.id,
+        action_id=outcome.approval_id,
+        response_outcome=outcome.status,
+        response_reason=getattr(outcome, "reason", None),
+    )
+
+
 def _require_resolution_live() -> None:
     """Dark: the route does not exist yet, so it answers 404 before it validates its body."""
     if not resolution_options_live():
@@ -1983,6 +2022,8 @@ def _require_resolution_live() -> None:
 )
 async def resolve_workspace_conflict(
     body: ConflictResolveRequest,
+    http_request: Request,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
     *,
     db: Db,
 ) -> ApiResponse[ConflictResolveResponse]:
@@ -1991,8 +2032,9 @@ async def resolve_workspace_conflict(
     ``keep_both`` writes only the local acknowledgement: no provider call and no approval. A move
     parks an approvals card on the owning butler and writes nothing else (the owner decides it in
     the approvals surface). The overlap is re-read here and its digest compared, so neither can
-    attach to a changed overlap (409 ``issue_changed``). Response options are not accepted yet
-    (422).
+    attach to a changed overlap (409 ``issue_changed``). ``decline`` and ``tentative`` go through
+    the same gated ``calendar_respond`` path as the invitation card, with no email to the
+    organizer.
     """
     if body.end <= body.start:
         raise HTTPException(status_code=400, detail="end must be after start")
@@ -2020,6 +2062,8 @@ async def resolve_workspace_conflict(
         raise HTTPException(status_code=422, detail="unknown_option")
     if option.kind in ("move_block", "move_own"):
         return ApiResponse(data=await _park_resolution_move(db, issue, option, body))
+    if option.kind in ("decline", "tentative"):
+        return ApiResponse(data=await _respond_option(db, option, body, http_request, mgr))
     if option.kind != "keep_both":
         raise HTTPException(status_code=422, detail="option_not_supported")
     if not await record_conflict_acknowledgement(
@@ -3113,7 +3157,11 @@ async def _respond_through_approval(
                 "command_id": str(command_id),
             }
         elif pending["status"] in {"rejected", "expired"}:
-            result = {"status": "rejected", "command_id": str(command_id)}
+            result = {
+                "status": "rejected",
+                "command_id": str(command_id),
+                "reason": f"response_approval_{pending['status']}",
+            }
         else:
             if pending["status"] == "approved":
                 # Recovery dispatches only this existing, exact owning command.
@@ -3243,6 +3291,24 @@ async def decide_organizer(
     )
 
 
+async def _response_owner(db: DatabaseManager, entry_id: UUID) -> str:
+    """The one calendar butler that hosts ``entry_id``; anything else refuses to guess."""
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="response_owner_census_unavailable")
+    owners, failed = await db.fan_out_with_status(
+        "SELECT id FROM calendar_event_instances WHERE id=$1",
+        (entry_id,),
+        butler_names=targets,
+    )
+    matches = [name for name, rows in owners.items() if rows]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_owner_lookup_degraded")
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="response_owner_unverified")
+    return matches[0]
+
+
 @router.post("/respond", response_model=ApiResponse[CalendarRespondResponse])
 async def respond_to_invitation(
     body: CalendarRespondRequest,
@@ -3252,23 +3318,10 @@ async def respond_to_invitation(
     db: Db,
 ) -> ApiResponse[CalendarRespondResponse]:
     """Compose an authenticated owner decision with the exact owning gated tool."""
-    targets = db.configured_butlers_with_module("calendar")
-    if targets is None:
-        raise HTTPException(status_code=503, detail="response_owner_census_unavailable")
-    owners, failed = await db.fan_out_with_status(
-        "SELECT id FROM calendar_event_instances WHERE id=$1",
-        (body.entry_id,),
-        butler_names=targets,
-    )
-    matches = [name for name, rows in owners.items() if rows]
-    if failed:
-        raise HTTPException(status_code=503, detail="response_owner_lookup_degraded")
-    if len(matches) != 1:
-        raise HTTPException(status_code=409, detail="response_owner_unverified")
     return ApiResponse(
         data=await _respond_through_approval(
             arguments=body.model_dump(mode="json"),
-            butler_name=matches[0],
+            butler_name=await _response_owner(db, body.entry_id),
             http_request=http_request,
             mgr=mgr,
             db=db,

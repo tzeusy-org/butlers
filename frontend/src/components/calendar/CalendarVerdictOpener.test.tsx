@@ -295,7 +295,7 @@ describe("CalendarVerdictOpener", () => {
     const open = vi.fn();
     const more = vi.fn();
     const issue = { kind: "overlap" as const, date: "2026-07-01", summary: "Actual overlap",
-      severity: "warning" as const, proposal_ids: [], events: [{ entry_id: "invited", title: "Invitation",
+      severity: "warning" as const, events: [{ entry_id: "invited", title: "Invitation",
         start_at: "2026-07-01T09:00:00Z", end_at: "2026-07-01T10:00:00Z", timezone: "UTC", status: "confirmed" }] };
     const props = { dayVerdict: dayVerdict(), workspaceLoading: false,
       workspaceError: false, sourceFreshnessLoading: false, sourceFreshnessError: false,
@@ -325,7 +325,7 @@ describe("CalendarVerdictOpener", () => {
   it("labels an outside-hours flag on an invitation in words, not as a conflict", () => {
     const issue = { kind: "outside_declared_hours" as const, date: "2026-07-01",
       summary: "This event starts before your earliest meeting time", severity: "warning" as const,
-      proposal_ids: [], reasons: ["before_earliest"], events: [{ entry_id: "invited", title: "Invitation",
+      reasons: ["before_earliest"], events: [{ entry_id: "invited", title: "Invitation",
         start_at: "2026-07-01T07:00:00Z", end_at: "2026-07-01T08:00:00Z", timezone: "UTC", status: "confirmed" }] };
     const props = { dayVerdict: dayVerdict(), workspaceLoading: false,
       workspaceError: false, sourceFreshnessLoading: false, sourceFreshnessError: false,
