@@ -7,7 +7,6 @@ tools_required:
   - list_trips
   - trip_summary
   - update_itinerary
-  - calendar_create_event
   - memory_recall
   - memory_store_fact
 ---
@@ -108,11 +107,8 @@ Guide through outbound and return flight selection.
   - Suggest checking airline websites or aggregators (Kayak, Google Flights)
   - Note: "Once you've booked, send me the confirmation and I'll add it to your trip container."
 
-**Step 2.6: Calendar Block**
-- Create calendar block for each flight once booked:
-  - Outbound: `calendar_create_event(title="✈ [Departure] → [Arrival]", start_at=<departure_time>, end_at=<arrival_time>, description="PNR: [PNR] | Terminal: [terminal] | Gate: [gate, if known]")`
-  - Return: Similar format
-- Create 24-hour online check-in reminder (if airline supports it)
+**Step 2.6: Calendar**
+- Do not create calendar events for flights. Once the flight is recorded, the daily overlay job claims it: a block from departure to arrival and a check-in reminder 24 hours before departure. Tell the owner it will appear on the calendar at the next refresh.
 
 ### Phase 3: Accommodation Planning (5–10 min)
 
@@ -137,10 +133,8 @@ Guide through accommodation selection and booking.
   - Offer guidance: "Popular sites: Booking.com, Airbnb, hotels.com. I'd suggest filtering by location first (near attractions/transport), then price/reviews."
   - Note: "Once you book, send me the confirmation and I'll add it to your trip."
 
-**Step 3.4: Accommodation Calendar Block**
-- Create calendar block for each accommodation:
-  - `calendar_create_event(title="🏨 [Hotel Name]", start_at=<check_in_date>, end_at=<check_out_date>, description="Confirmation: [conf_num] | Address: [address] | Check-in: [time if known]")`
-- Note check-in time if provided (usually 15:00); set a reminder 2 hours before if specific time is known
+**Step 3.4: Accommodation Calendar**
+- Do not create calendar events for the stay. Once it is recorded, the daily overlay job marks the check-in and check-out days on the calendar. Note the check-in time if provided (usually 15:00) in the booking record.
 
 **Step 3.5: Gap Detection**
 - Check nights covered: Does accommodation match trip dates?

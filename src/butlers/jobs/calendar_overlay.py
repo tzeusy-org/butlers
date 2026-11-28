@@ -431,6 +431,20 @@ def finance_claims(
     return out
 
 
+async def _read_source(
+    pool: asyncpg.Pool, name: str, sql: str, *args: Any, butler: str
+) -> tuple[list[Any], bool]:
+    """Read one domain source; a failure is reported (``ok=False``) rather than raised.
+
+    The caller treats any failed source as a partial run: previous entries and claims stand.
+    """
+    try:
+        return list(await pool.fetch(sql, *args)), True
+    except Exception:
+        logger.warning("%s overlay: %s read failed; run is partial", butler, name, exc_info=True)
+        return [], False
+
+
 async def mark_overlay_envelopes_incomplete(
     pool: asyncpg.Pool, *, today: date_cls, lookahead_days: int
 ) -> int:
@@ -763,6 +777,250 @@ def _checkin_priority(days_until: int) -> str:
     return _departure_priority(days_until)
 
 
+#: Hours before a flight's departure that its online check-in reminder fires.
+CHECKIN_REMINDER_HOURS = 24
+#: Days before a visa or insurance expiry that its reminder fires.
+DOCUMENT_EXPIRY_REMINDER_DAYS = 30
+_RESERVATION_MINUTES = {"restaurant": 90, "car_rental": 60, "activity": 120, "tour": 120}
+_EXPIRING_DOCUMENT_TYPES = ("visa", "insurance")
+
+
+def _timed_claim(
+    *,
+    key: str,
+    version: str,
+    kind: str,
+    label: str,
+    priority: str,
+    presence: str,
+    start: datetime,
+    end: datetime | None,
+    zone: tzinfo,
+    ref: str,
+    owner_action: bool = False,
+) -> dict[str, Any]:
+    span: dict[str, Any] = {"start": start.isoformat(), "timezone": _zone_name(zone)}
+    if end is not None:
+        span["end"] = end.isoformat()
+    return {
+        "claim_key": key,
+        "record_version": version,
+        "kind": kind,
+        "label": clip_label(label),
+        "priority": priority,
+        "presence": presence,
+        "span": span,
+        "owner_action": owner_action,
+        "status": "active",
+        "door": {"route": "/travel", "ref": ref},
+    }
+
+
+def _day_claim(
+    *,
+    key: str,
+    version: str,
+    kind: str,
+    label: str,
+    priority: str,
+    presence: str,
+    day: date_cls,
+    zone: tzinfo,
+    ref: str,
+    owner_action: bool = False,
+) -> dict[str, Any]:
+    return {
+        "claim_key": key,
+        "record_version": version,
+        "kind": kind,
+        "label": clip_label(label),
+        "priority": priority,
+        "presence": presence,
+        "span": {"date": day.isoformat(), "timezone": _zone_name(zone)},
+        "owner_action": owner_action,
+        "status": "active",
+        "door": {"route": "/travel", "ref": ref},
+    }
+
+
+def travel_claims(
+    legs: list[Any],
+    accommodations: list[Any],
+    reservations: list[Any],
+    documents: list[Any],
+    *,
+    today: date_cls,
+    zone: tzinfo,
+    now: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    """Claims for legs, flight check-in reminders, stays, reservations and document expiry. Pure.
+
+    A leg blocks its departure-to-arrival time; a flight also claims an online check-in reminder
+    ``CHECKIN_REMINDER_HOURS`` before departure (omitted once that moment has passed). A stay
+    claims an all-day block for its check-in day and for its check-out day. A reservation with a
+    time blocks it for a type-dependent length. A visa or insurance expiry claims a reminder
+    ``DOCUMENT_EXPIRY_REMINDER_DAYS`` before it (an overlay-only claim once that has passed).
+    Rows without an id carry no claim. Returns claims keyed by owner-local record date.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+
+    def add(day: date_cls, claim: dict[str, Any]) -> None:
+        out.setdefault(day.isoformat(), []).append(claim)
+
+    def local_day(ts: datetime) -> date_cls:
+        return ts.astimezone(zone).date()
+
+    for row in legs:
+        ref = _row_id(row)
+        dep, arr = row["departure_at"], row["arrival_at"]
+        if ref is None or dep is None:
+            continue
+        origin = row["departure_city"] or "?"
+        dest = row["arrival_city"] or "?"
+        days_until = (local_day(dep) - today).days
+        version = _version(dep.isoformat(), arr.isoformat() if arr else "", origin, dest)
+        if arr is not None and arr > dep:
+            claim = _timed_claim(
+                key=f"travel:leg:{ref}",
+                version=version,
+                kind="leg",
+                label=f"{origin} → {dest}",
+                priority=_departure_priority(days_until),
+                presence="block",
+                start=dep,
+                end=arr,
+                zone=zone,
+                ref=ref,
+            )
+        else:
+            claim = _day_claim(
+                key=f"travel:leg:{ref}",
+                version=version,
+                kind="leg",
+                label=f"{origin} → {dest}",
+                priority=_departure_priority(days_until),
+                presence="overlay",
+                day=local_day(dep),
+                zone=zone,
+                ref=ref,
+            )
+        add(local_day(dep), claim)
+        remind_at = dep - timedelta(hours=CHECKIN_REMINDER_HOURS)
+        if row["type"] == "flight" and remind_at > now:
+            add(
+                local_day(dep),
+                _timed_claim(
+                    key=f"travel:leg_checkin:{ref}",
+                    version=_version(dep.isoformat()),
+                    kind="check_in_reminder",
+                    label=f"Check in: {origin} → {dest}",
+                    priority="high",
+                    presence="reminder",
+                    start=remind_at,
+                    end=None,
+                    zone=zone,
+                    ref=ref,
+                    owner_action=True,
+                ),
+            )
+
+    for row in accommodations:
+        ref = _row_id(row)
+        if ref is None:
+            continue
+        name = row["name"] or row["type"]
+        for which, kind, label in (
+            ("check_in", "check_in", f"Check-in: {name}"),
+            ("check_out", "check_out", f"Check-out: {name}"),
+        ):
+            ts = row[which]
+            if ts is None:
+                continue
+            day = local_day(ts)
+            add(
+                day,
+                _day_claim(
+                    key=f"travel:accommodation_{which}:{ref}",
+                    version=_version(ts.isoformat(), name),
+                    kind=kind,
+                    label=label,
+                    priority=_checkin_priority((day - today).days)
+                    if which == "check_in"
+                    else "low",
+                    # An all-day marker: a hotel day must not read as busy all day.
+                    presence="overlay",
+                    day=day,
+                    zone=zone,
+                    ref=ref,
+                ),
+            )
+
+    for row in reservations:
+        ref = _row_id(row)
+        at = row["datetime"]
+        if ref is None or at is None:
+            continue
+        minutes = _RESERVATION_MINUTES.get(row["type"], 120)
+        label = str(row["provider"] or row["type"]).strip() or str(row["type"])
+        add(
+            local_day(at),
+            _timed_claim(
+                key=f"travel:reservation:{ref}",
+                version=_version(at.isoformat(), row["type"], label),
+                kind="reservation",
+                label=label,
+                priority="medium",
+                presence="block",
+                start=at,
+                end=at + timedelta(minutes=minutes),
+                zone=zone,
+                ref=ref,
+            ),
+        )
+
+    for row in documents:
+        ref = _row_id(row)
+        expiry = row["expiry_date"]
+        if ref is None or expiry is None or row["type"] not in _EXPIRING_DOCUMENT_TYPES:
+            continue
+        label = f"{str(row['type']).capitalize()} expires"
+        remind_at = datetime.combine(
+            expiry - timedelta(days=DOCUMENT_EXPIRY_REMINDER_DAYS),
+            time(_REMINDER_HOUR),
+            tzinfo=zone,
+        )
+        version = _version(expiry.isoformat(), row["type"])
+        if remind_at > now:
+            claim = _timed_claim(
+                key=f"travel:document_expiry:{ref}",
+                version=version,
+                kind="document_expiry",
+                label=label,
+                priority="medium",
+                presence="reminder",
+                start=remind_at,
+                end=None,
+                zone=zone,
+                ref=ref,
+                owner_action=True,
+            )
+        else:
+            claim = _day_claim(
+                key=f"travel:document_expiry:{ref}",
+                version=version,
+                kind="document_expiry",
+                label=label,
+                priority="high",
+                presence="overlay",
+                day=expiry,
+                zone=zone,
+                ref=ref,
+                owner_action=True,
+            )
+        add(expiry, claim)
+    return out
+
+
 async def run_travel_calendar_overlay_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -799,10 +1057,13 @@ async def run_travel_calendar_overlay_contribution(
         UTC
     )
 
+    complete = True
     # --- Transport legs departing or arriving within the window ---
-    leg_rows = await pool.fetch(
+    leg_rows, ok = await _read_source(
+        pool,
+        "legs",
         """
-        SELECT l.type, l.carrier, l.departure_city, l.arrival_city,
+        SELECT l.id, l.type, l.carrier, l.departure_city, l.arrival_city,
                l.departure_at, l.arrival_at, l.pnr, l.seat, l.confirmation_number,
                t.name AS trip_name, t.id AS trip_id
         FROM travel.legs l
@@ -817,12 +1078,16 @@ async def run_travel_calendar_overlay_contribution(
         window_start,
         window_end,
         list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
     )
 
     # --- Accommodations checking in or out within the window ---
-    accom_rows = await pool.fetch(
+    complete &= ok
+    accom_rows, ok = await _read_source(
+        pool,
+        "accommodations",
         """
-        SELECT a.type, a.name, a.address, a.check_in, a.check_out,
+        SELECT a.id, a.type, a.name, a.address, a.check_in, a.check_out,
                a.confirmation_number, t.name AS trip_name, t.id AS trip_id
         FROM travel.accommodations a
         JOIN travel.trips t ON t.id = a.trip_id
@@ -836,7 +1101,46 @@ async def run_travel_calendar_overlay_contribution(
         window_start,
         window_end,
         list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
     )
+    complete &= ok
+
+    reservation_rows, ok = await _read_source(
+        pool,
+        "reservations",
+        """
+        SELECT r.id, r.type, r.provider, r.datetime
+        FROM travel.reservations r
+        JOIN travel.trips t ON t.id = r.trip_id
+        WHERE t.status = ANY($3::text[])
+          AND r.datetime >= $1 AND r.datetime < $2
+        ORDER BY r.datetime ASC
+        """,
+        window_start,
+        window_end,
+        list(_TRAVEL_ACTIVE_STATUSES),
+        butler="travel",
+    )
+    complete &= ok
+    document_rows, ok = await _read_source(
+        pool,
+        "documents",
+        """
+        SELECT d.id, d.type, d.expiry_date
+        FROM travel.documents d
+        JOIN travel.trips t ON t.id = d.trip_id
+        WHERE t.status = ANY($3::text[])
+          AND d.type = ANY($4::text[])
+          AND d.expiry_date >= $1 AND d.expiry_date <= $2
+        ORDER BY d.expiry_date ASC
+        """,
+        today,
+        today + timedelta(days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS + DOCUMENT_EXPIRY_REMINDER_DAYS),
+        list(_TRAVEL_ACTIVE_STATUSES),
+        list(_EXPIRING_DOCUMENT_TYPES),
+        butler="travel",
+    )
+    complete &= ok
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
     departure_count = arrival_count = check_in_count = check_out_count = 0
@@ -948,12 +1252,42 @@ async def run_travel_calendar_overlay_contribution(
             )
             check_out_count += 1
 
-    dates_written, total_entries = await write_overlay_envelopes(
+    claims_by_date = (
+        travel_claims(
+            leg_rows,
+            accom_rows,
+            reservation_rows,
+            document_rows,
+            today=today,
+            zone=zone,
+            now=_utcnow(),
+        )
+        if owner_zone_key(zone) is not None
+        else {}
+    )
+    if complete:
+        dates_written, total_entries = await write_overlay_envelopes(
+            pool,
+            butler="travel",
+            today=today,
+            lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
+            entries_by_date=entries_by_date,
+            claims_by_date=claims_by_date,
+        )
+    else:
+        dates_written = await mark_overlay_envelopes_incomplete(
+            pool, today=today, lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS
+        )
+        total_entries = 0
+    claim_result, complete = await settle_claims(
         pool,
         butler="travel",
+        claims=[c for day in claims_by_date.values() for c in day],
+        complete=complete,
+        window_start=window_start,
         today=today,
         lookahead_days=TRAVEL_OVERLAY_LOOKAHEAD_DAYS,
-        entries_by_date=entries_by_date,
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -981,6 +1315,8 @@ async def run_travel_calendar_overlay_contribution(
         "check_out_entries": check_out_count,
         "total_entries": total_entries,
         "pruned": pruned,
+        "complete": complete,
+        "claims": claim_result,
     }
 
 

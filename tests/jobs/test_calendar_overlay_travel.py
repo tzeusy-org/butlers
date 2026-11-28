@@ -116,6 +116,7 @@ async def _run(
         second=accommodations,
         seed=seed,
         today=_TODAY,
+        extra=([], []),  # reservations, documents
     )
 
 
@@ -329,8 +330,9 @@ def test_handler_registered_and_callable_no_spawner():
 async def test_no_llm_session_spawned():
     """The job path must not construct or invoke any LLM spawner."""
     # The handler takes only (pool, job_args); the strict pool refuses any read
-    # or write beyond the two queued source fetches.
+    # or write beyond the four queued source fetches.
     result, _, pool = await _run()
     assert result["butler"] == "travel"
-    # Only legs + accommodations queries were issued — no LLM, no other fan-out.
-    assert pool.fetch.await_count == 2
+    # Only the four source queries (legs, accommodations, reservations, documents) were issued:
+    # no LLM, no other fan-out.
+    assert pool.fetch.await_count == 4
