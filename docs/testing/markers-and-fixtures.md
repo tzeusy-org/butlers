@@ -30,6 +30,13 @@ read them there. The semantics that matter:
   so new DB tests do not need it and the existing marks are awaiting re-admission. The second waits
   on a timed thread primitive, needs a PostgreSQL statement or lock timeout to fire, or needs a live
   TLS certificate check, none of which works under a shifted clock. Everywhere else they run.
+- **Frontend clock shift.** The nightly `vitest-clock-shift` job runs the whole vitest suite with
+  `VITEST_CLOCK_SHIFT_DAYS` set to 60 and 180 (the frontend counterpart of the faketime legs).
+  `frontend/src/test/clock-shift.ts` adds that many days to `Date.now()` and `new Date()` while the
+  clock keeps advancing; a test that pins its own clock with `vi.setSystemTime` or fake timers is
+  unaffected. A test that fails only under the shift compares a fixed fixture date with the real
+  clock: pin its clock rather than moving the dates, or make the fixture relative to `Date.now()`.
+  `npm run check:clock-shift` runs a decoy that must pass unshifted and fail at +60d.
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 

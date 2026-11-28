@@ -13,6 +13,7 @@
     "knip": "knip",
     "preview": "vite preview --configLoader runner",
     "test": "vitest run --configLoader runner",
+    "check:clock-shift": "node scripts/check-clock-shift.mjs",
     "story:test": "vitest run --configLoader runner --reporter=verbose src/**/*.a11y.test.tsx",
     "test:e2e": "npm run typecheck:e2e && playwright test",
     "test:e2e:headed": "npm run typecheck:e2e && playwright test --headed",

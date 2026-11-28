@@ -459,6 +459,22 @@
       "sample_source": "bu-ejow5p.11 path-filtered k3d isolation check, not a required check",
       "review_uv_nominal_envelope_s": 0,
       "review_setup_placement": "k3d cluster create 180s, image build, then up to three Jobs per control (baseline, mutated, restored); 25min job provisional"
+    },
+    {
+      "workflow": ".github/workflows/nightly.yml",
+      "job": "vitest-clock-shift",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 25,
+      "retry_extra_s": 0,
+      "state": "provisional; new schedule-only job, no healthy whole-job observation yet (full vitest suite measured about 185s locally)",
+      "sample_source": "local vitest run at +60d, 2026-11-29",
+      "reviewed_job_name": "vitest-clock-shift",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "installed_timeout_minutes": 25
     }
   ],
   "tests": [
