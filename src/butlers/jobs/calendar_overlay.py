@@ -35,16 +35,18 @@ Design reference: openspec/changes/calendar-cross-domain-overlays/
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from datetime import UTC, datetime, timedelta, tzinfo
+import re
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from datetime import date as date_cls
 from typing import Any, NotRequired, TypedDict
 
 import asyncpg
 
 from butlers.core.entity_posture import ACTIVE, MEMORIAL
-from butlers.core.state import state_delete, state_list, state_set
-from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION
+from butlers.core.state import state_delete, state_get, state_list, state_set
+from butlers.core.temporal.domain_claims import CLAIM_SCHEMA_VERSION, clip_label
 from butlers.jobs.briefing import briefing_day, day_start_utc
 
 logger = logging.getLogger(__name__)
@@ -246,6 +248,281 @@ def _normalize_currency(raw: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: Local hour a reminder claim fires at.
+_REMINDER_HOUR = 9
+#: Days before a bill is due that its reminder fires.
+BILL_REMINDER_DAYS = 3
+#: Days before an auto-renewing subscription renews that its reminder fires.
+RENEWAL_REMINDER_DAYS = 7
+#: Days before a subscription's ``cancel_by`` that its reminder fires.
+CANCEL_BY_REMINDER_DAYS = 3
+
+
+def _version(*parts: Any) -> str:
+    """A short stable fingerprint of what a claim depends on (REQ ``record_version``)."""
+    return hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
+
+
+def _row_id(row: Any) -> str | None:
+    try:
+        value = row["id"]
+    except (KeyError, IndexError):
+        return None
+    return str(value) if value is not None else None
+
+
+def owner_zone_key(zone: tzinfo) -> str | None:
+    """The IANA name of a resolved owner zone, or None for the unsaved-zone fallback.
+
+    ``briefing_day`` returns the owner's saved ``ZoneInfo``; when no zone was ever saved it returns
+    a fixed-offset fallback with no IANA name. Claims name their zone, so they exist only for a
+    resolved one: a fallback is a display convention, not a zone the owner lives in.
+    """
+    key = getattr(zone, "key", None)
+    return key if isinstance(key, str) else None
+
+
+def _zone_name(zone: tzinfo) -> str:
+    """The IANA name a claim carries for ``zone`` (the caller has checked it is resolved)."""
+    key = owner_zone_key(zone)
+    if key is None:
+        raise ValueError("claims need a resolved owner zone; none is saved")
+    return key
+
+
+def _claim(
+    *,
+    key: str,
+    version: str,
+    kind: str,
+    label: str,
+    priority: str,
+    day: date_cls,
+    remind_days: int | None,
+    zone: tzinfo,
+    now: datetime,
+    ref: str,
+) -> dict[str, Any]:
+    """One claim: a reminder if its reminder moment is still ahead, else an overlay-only claim."""
+    zone_name = _zone_name(zone)
+    presence = "overlay"
+    span: dict[str, Any] = {"date": day.isoformat(), "timezone": zone_name}
+    if remind_days is not None:
+        at = datetime.combine(day - timedelta(days=remind_days), time(_REMINDER_HOUR), tzinfo=zone)
+        if at > now:
+            presence = "reminder"
+            span = {"start": at.isoformat(), "timezone": zone_name}
+    return {
+        "claim_key": key,
+        "record_version": version,
+        "kind": kind,
+        "label": clip_label(label),
+        "priority": priority,
+        "presence": presence,
+        "span": span,
+        "owner_action": True,
+        "status": "active",
+        "door": {"route": "/finance", "ref": ref},
+    }
+
+
+MAX_REMINDER_DAYS = 30
+
+
+def parse_reminder_days(content: Any) -> int | None:
+    """Days from a ``bill_reminder_preference`` fact; None if none is stated.
+
+    The preference is free text the owner's words were stored as: "5 days before due date" is 5,
+    "2 weeks" is 14 (``7*N``, capped at ``MAX_REMINDER_DAYS``). A bare number of days beyond the cap
+    is ignored (the default applies).
+    """
+    text = str(content or "")
+    weeks = re.search(r"(\d+)\s*(?:weeks?|wks?)\b", text, re.IGNORECASE)
+    if weeks is not None:
+        return min(7 * int(weeks.group(1)), MAX_REMINDER_DAYS)
+    match = re.search(r"\d+", text)
+    if match is None:
+        return None
+    days = int(match.group())
+    return days if 0 <= days <= MAX_REMINDER_DAYS else None
+
+
+def finance_claims(
+    bills: list[Any],
+    subscriptions: list[Any],
+    *,
+    today: date_cls,
+    zone: tzinfo,
+    now: datetime,
+    horizon: date_cls | None = None,
+    bill_days: int = BILL_REMINDER_DAYS,
+) -> dict[str, list[dict[str, Any]]]:
+    """Claims for pending bills, subscription renewals and ``cancel_by`` dates, by date. Pure.
+
+    A bill gets a reminder ``bill_days`` (the owner's ``bill_reminder_preference``, else
+    ``BILL_REMINDER_DAYS``) before it is due, an auto-renewing subscription
+    ``RENEWAL_REMINDER_DAYS`` before it renews, and a ``cancel_by`` date a reminder
+    ``CANCEL_BY_REMINDER_DAYS`` before it. A reminder whose moment has passed is an overlay-only
+    claim, so a late run never fires a reminder for the past. Rows without an id carry no claim.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in bills:
+        ref = _row_id(row)
+        if ref is None:
+            continue
+        due = row["due_date"]
+        overdue = row["status"] == "overdue" or due <= today
+        priority = "high" if overdue else "medium" if (due - today).days <= 3 else "low"
+        out.setdefault(due.isoformat(), []).append(
+            _claim(
+                key=f"finance:bill:{ref}",
+                version=_version(
+                    due, row["amount"], row["currency"], row["status"], row["payee"], bill_days
+                ),
+                kind="bill_due",
+                label=str(row["payee"]),
+                priority=priority,
+                day=due,
+                remind_days=bill_days,
+                zone=zone,
+                now=now,
+                ref=ref,
+            )
+        )
+    for row in subscriptions:
+        ref = _row_id(row)
+        if ref is None:
+            continue
+        renew = row["next_renewal"]
+        auto = bool(row["auto_renew"])
+        # A subscription is read for its cancel_by too, so its renewal may lie outside the window.
+        in_window = renew >= today and (horizon is None or renew <= horizon)
+        if in_window:
+            out.setdefault(renew.isoformat(), []).append(
+                _claim(
+                    key=f"finance:subscription:{ref}",
+                    version=_version(renew, row["amount"], row["currency"], auto, row["service"]),
+                    kind="subscription_renewal",
+                    label=str(row["service"]),
+                    priority="medium" if (renew - today).days <= 2 else "low",
+                    day=renew,
+                    remind_days=RENEWAL_REMINDER_DAYS if auto else None,
+                    zone=zone,
+                    now=now,
+                    ref=ref,
+                )
+            )
+        cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
+        if cancel_by is not None and today <= cancel_by:
+            out.setdefault(cancel_by.isoformat(), []).append(
+                _claim(
+                    key=f"finance:subscription_cancel_by:{ref}",
+                    version=_version(cancel_by, row["service"]),
+                    kind="subscription_cancel_by",
+                    label=f"Cancel {row['service']}",
+                    priority="high",
+                    day=cancel_by,
+                    remind_days=CANCEL_BY_REMINDER_DAYS,
+                    zone=zone,
+                    now=now,
+                    ref=ref,
+                )
+            )
+    return out
+
+
+async def mark_overlay_envelopes_incomplete(
+    pool: asyncpg.Pool, *, today: date_cls, lookahead_days: int
+) -> int:
+    """Flag the window's existing envelopes ``complete=false``, leaving everything else as it was.
+
+    Used when a producer could not read all its records: the previous entries and claims stand,
+    ``generated_at`` is untouched, and the read side names the butler as ``partial``.
+    """
+    marked = 0
+    for offset in range(lookahead_days + 1):
+        key = overlay_key((today + timedelta(days=offset)).isoformat())
+        existing = await state_get(pool, key)
+        if isinstance(existing, dict) and existing.get("complete") is not False:
+            await state_set(pool, key, {**existing, "complete": False})
+            marked += 1
+    return marked
+
+
+async def reconcile_claims_in_process(
+    pool: asyncpg.Pool,
+    *,
+    butler: str,
+    claims: list[dict[str, Any]],
+    complete: bool,
+    window_start: datetime,
+) -> dict[str, Any]:
+    """Reconcile claims into the butler's own calendar rows; never raises (the job must finish).
+
+    On success the result carries the per-outcome counts. On failure it carries
+    ``{"error": "<ExceptionName>"}``; the caller treats that as a partial run.
+    """
+    try:
+        from butlers.modules.calendar import CalendarModule
+
+        module = CalendarModule.for_pool(pool, butler_name=butler)
+        result = await module.reconcile_domain_claims(
+            butler, claims, complete, window_start=window_start
+        )
+    except Exception as exc:
+        logger.warning("%s calendar claims not reconciled", butler, exc_info=True)
+        return {"error": type(exc).__name__}
+    return {
+        "created": len(result.created),
+        "updated": len(result.updated),
+        "revived": len(result.revived),
+        "retracted": len(result.retracted),
+        "unchanged": len(result.unchanged),
+        "invalid": len(result.invalid),
+        "retraction_ran": result.retraction_ran,
+    }
+
+
+async def settle_claims(
+    pool: asyncpg.Pool,
+    *,
+    butler: str,
+    claims: list[dict[str, Any]],
+    complete: bool,
+    window_start: datetime,
+    today: date_cls,
+    lookahead_days: int,
+    zone: tzinfo,
+) -> tuple[dict[str, Any], bool]:
+    """Reconcile, and let a failed reconcile make the run partial.
+
+    With no owner zone saved there is no zone to name a claim in: no claim was built, nothing is
+    reconciled or retracted, and the previous calendar rows stand (``skipped`` says so).
+
+    Returns ``(claim_result, complete)``. When the reconcile raised, the window's envelopes are
+    flagged incomplete (their entries and ``generated_at`` stand) and ``complete`` is False, so the
+    overlay reads as partial instead of silently current while no claim reached the calendar.
+    """
+    if owner_zone_key(zone) is None:
+        return {"skipped": "owner_zone_unsaved"}, complete
+    claim_result = await reconcile_claims_in_process(
+        pool, butler=butler, claims=claims, complete=complete, window_start=window_start
+    )
+    if complete and "error" not in claim_result:
+        # An invalid claim, or a retraction that did not run (the projection tables are absent),
+        # means the calendar was not fully reconciled: the run is partial.
+        if claim_result.get("invalid"):
+            claim_result = {**claim_result, "error": "invalid_claims"}
+        elif not claim_result.get("retraction_ran"):
+            # Nothing was wrong with the claims, but retraction could not run (for example the
+            # projection tables are absent): the calendar is not fully reconciled.
+            claim_result = {**claim_result, "error": "retraction_skipped"}
+    if "error" in claim_result and complete:
+        await mark_overlay_envelopes_incomplete(pool, today=today, lookahead_days=lookahead_days)
+        complete = False
+    return claim_result, complete
+
+
 async def run_finance_calendar_overlay_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -267,37 +544,73 @@ async def run_finance_calendar_overlay_contribution(
     """
     del job_args
 
-    today, _zone = await briefing_day(pool)
+    today, zone = await briefing_day(pool)
     today_str = today.isoformat()
     horizon = today + timedelta(days=FINANCE_OVERLAY_LOOKAHEAD_DAYS)
 
-    # --- Bills due within the lookahead window ---
-    bills_rows = await pool.fetch(
-        """
-        SELECT payee, amount, currency, due_date, status, payment_method
-        FROM bills
-        WHERE status IN ('pending', 'overdue')
-          AND due_date >= $1
-          AND due_date <= $2
-        ORDER BY due_date ASC, amount DESC
-        """,
-        today,
-        horizon,
-    )
+    # A source that cannot be read makes the run partial: its previous entries and claims stand,
+    # the envelopes are flagged incomplete, and nothing is retracted.
+    complete = True
 
-    # --- Subscriptions renewing within the lookahead window ---
-    sub_rows = await pool.fetch(
-        """
-        SELECT service, amount, currency, next_renewal, auto_renew, frequency
-        FROM subscriptions
-        WHERE status = 'active'
-          AND next_renewal >= $1
-          AND next_renewal <= $2
-        ORDER BY next_renewal ASC, amount DESC
-        """,
-        today,
-        horizon,
-    )
+    # --- Bills due within the lookahead window ---
+    try:
+        bills_rows = await pool.fetch(
+            """
+            SELECT id, payee, amount, currency, due_date, status, payment_method
+            FROM bills
+            WHERE status IN ('pending', 'overdue')
+              AND due_date >= $1
+              AND due_date <= $2
+            ORDER BY due_date ASC, amount DESC
+            """,
+            today,
+            horizon,
+        )
+    except Exception:
+        logger.warning("finance overlay: bills read failed; run is partial", exc_info=True)
+        bills_rows, complete = [], False
+
+    # --- Subscriptions renewing, or reaching cancel_by, within the lookahead window ---
+    try:
+        sub_rows = await pool.fetch(
+            """
+            SELECT id, service, amount, currency, next_renewal, auto_renew, frequency, cancel_by
+            FROM subscriptions
+            WHERE status = 'active'
+              AND ((next_renewal >= $1 AND next_renewal <= $2)
+                   OR (cancel_by >= $1 AND cancel_by <= $2))
+            ORDER BY next_renewal ASC, amount DESC
+            """,
+            today,
+            horizon,
+        )
+    except Exception:
+        logger.warning("finance overlay: subscriptions read failed; run is partial", exc_info=True)
+        sub_rows, complete = [], False
+
+    # --- The owner's reminder preference (days before due); the default applies when unset ---
+    bill_days = BILL_REMINDER_DAYS
+    preference_failed = False
+    try:
+        pref = await pool.fetch(
+            """
+            SELECT content FROM facts
+            WHERE predicate = 'bill_reminder_preference' AND validity = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        preferred = parse_reminder_days(pref[0]["content"]) if pref else None
+        if preferred is not None:
+            bill_days = preferred
+    except asyncpg.UndefinedTableError:
+        pass  # a finance without the memory tables has no preference to honour
+    except Exception:
+        logger.warning(
+            "finance overlay: reminder preference read failed; run is partial", exc_info=True
+        )
+        complete = False
+        preference_failed = True
 
     entries_by_date: dict[str, list[OverlayEntry]] = {}
 
@@ -325,6 +638,8 @@ async def run_finance_calendar_overlay_contribution(
 
     for row in sub_rows:
         renew = row["next_renewal"]
+        if renew > horizon or renew < today:
+            continue  # selected for its cancel_by only
         date_str = renew.isoformat()
         days_until = (renew - today).days
         priority = "medium" if days_until <= 2 else "low"
@@ -341,12 +656,61 @@ async def run_finance_calendar_overlay_contribution(
         }
         entries_by_date.setdefault(date_str, []).append(entry)
 
-    dates_written, total_entries = await write_overlay_envelopes(
+    claims_by_date = (
+        finance_claims(
+            bills_rows,
+            sub_rows,
+            today=today,
+            zone=zone,
+            now=_utcnow(),
+            horizon=horizon,
+            bill_days=bill_days,
+        )
+        if owner_zone_key(zone) is not None
+        else {}
+    )
+    if preference_failed:
+        # The bill reminder's lead time is unknown this run: leave the bill rows as they are
+        # rather than reconciling them with the default.
+        claims_by_date = {
+            day: [c for c in claims if not c["claim_key"].startswith("finance:bill:")]
+            for day, claims in claims_by_date.items()
+        }
+    for row in sub_rows:
+        cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
+        if cancel_by is not None and today <= cancel_by <= horizon:
+            entries_by_date.setdefault(cancel_by.isoformat(), []).append(
+                {
+                    "kind": "subscription_cancel_by",
+                    "label": f"Cancel {row['service']}",
+                    "priority": "high",
+                    "meta": {},
+                }
+            )
+
+    if complete:
+        dates_written, total_entries = await write_overlay_envelopes(
+            pool,
+            butler="finance",
+            today=today,
+            lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
+            entries_by_date=entries_by_date,
+            claims_by_date=claims_by_date,
+        )
+    else:
+        dates_written = await mark_overlay_envelopes_incomplete(
+            pool, today=today, lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS
+        )
+        total_entries = 0
+    claim_result, complete = await settle_claims(
         pool,
         butler="finance",
+        claims=[c for day in claims_by_date.values() for c in day],
+        complete=complete,
+        window_start=day_start_utc(today, zone),
         today=today,
         lookahead_days=FINANCE_OVERLAY_LOOKAHEAD_DAYS,
-        entries_by_date=entries_by_date,
+        zone=zone,
     )
 
     pruned = await prune_old_overlay_contributions(pool, today=today_str)
@@ -370,6 +734,8 @@ async def run_finance_calendar_overlay_contribution(
         "subscription_renewal_entries": len(sub_rows),
         "total_entries": total_entries,
         "pruned": pruned,
+        "complete": complete,
+        "claims": claim_result,
     }
 
 
