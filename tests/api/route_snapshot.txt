@@ -115,7 +115,7 @@ OP GET /api/calendar/accounts 27d1cf4a2b27
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
 OP GET /api/calendar/workspace/changes 2712ce44dcbb
-OP GET /api/calendar/workspace/conflicts 6e4f58219019
+OP GET /api/calendar/workspace/conflicts a2ae62ab3af4
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
 OP GET /api/calendar/workspace/day-verdict a32ed78db2c6
@@ -1943,7 +1943,7 @@ SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
-SCHEMA ConflictIssue 2f632120ea6c
+SCHEMA ConflictIssue 82f2f89a46a2
 SCHEMA ConflictResolveRequest 1cb59eaf9e12
 SCHEMA ConflictResolveResponse 496d5a591fae
 SCHEMA ConflictScanResponse 92f9148f7a01
