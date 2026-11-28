@@ -1,7 +1,7 @@
 """public.calendar_rsvp_policies: owner-written RSVP policies, written only by a dashboard definer.
 
 Revision ID: core_388
-Revises: core_383
+Revises: core_387
 Create Date: 2026-11-27 10:00:00.000000
 
 openspec change ``calendar-invitation-docket`` (bu-5ii4gj.9 S1), REQ-calendar-invitation-docket-001.
@@ -33,7 +33,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_388"
-down_revision = "core_383"
+down_revision = "core_387"
 branch_labels = None
 depends_on = None
 
