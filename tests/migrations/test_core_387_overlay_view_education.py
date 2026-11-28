@@ -53,14 +53,14 @@ def _core(db_url: str, schema: str):
 
 
 def _migrated_butlers(postgres_container, schemas: tuple[str, ...]):
-    """A real migrated database with each butler schema at core_383 and an overlay key in it."""
+    """A real migrated database with each butler schema at core_386 and an overlay key in it."""
     db_url = create_migration_db(postgres_container, migration_db_name())
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     with engine.connect() as conn:
         for schema in schemas:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
     for schema in schemas:
-        command.upgrade(_core(db_url, schema), "core@core_383")
+        command.upgrade(_core(db_url, schema), "core@core_386")
     with engine.connect() as conn:
         for schema in schemas:
             conn.execute(
@@ -91,7 +91,7 @@ def test_education_overlay_keys_surface_after_upgrade_and_leave_on_downgrade(pos
         command.upgrade(core, "core@core_387")
         assert _view_butlers(engine) == ["education", "finance"]
 
-        command.downgrade(core, "core@core_383")
+        command.downgrade(core, "core@core_386")
         assert _view_butlers(engine) == ["finance"]
     finally:
         engine.dispose()
@@ -108,11 +108,11 @@ def test_the_view_keeps_education_until_the_last_schema_downgrades(postgres_cont
 
         # Every schema but travel steps back; travel still runs core_387, so education stays.
         for schema in _ALL[:-1]:
-            command.downgrade(_core(db_url, schema), "core@core_383")
+            command.downgrade(_core(db_url, schema), "core@core_386")
             assert _view_butlers(engine) == list(_ALL)
 
         # The last schema leaves: the view returns to the four earlier contributors.
-        command.downgrade(_core(db_url, "travel"), "core@core_383")
+        command.downgrade(_core(db_url, "travel"), "core@core_386")
         assert _view_butlers(engine) == ["finance", "health", "relationship", "travel"]
     finally:
         engine.dispose()
