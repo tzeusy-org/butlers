@@ -2321,6 +2321,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/rsvp-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Policies
+         * @description Every policy, revoked ones included, in evaluation order.
+         */
+        get: operations["list_policies_api_calendar_rsvp_policies_get"];
+        put?: never;
+        /** Create Policy */
+        post: operations["create_policy_api_calendar_rsvp_policies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/rsvp-policies/{policy_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Policy
+         * @description An edit raises the policy's version, so a card prepared under the old one is superseded.
+         */
+        patch: operations["update_policy_api_calendar_rsvp_policies__policy_id__patch"];
+        trace?: never;
+    };
+    "/api/calendar/rsvp-policies/{policy_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke Policy */
+        post: operations["revoke_policy_api_calendar_rsvp_policies__policy_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/sources": {
         parameters: {
             query?: never;
@@ -34665,6 +34723,40 @@ export interface components {
              */
             reason?: string;
         };
+        /** PolicyCreate */
+        PolicyCreate: {
+            /** Position */
+            position: number;
+            /** Predicates */
+            predicates: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Send Updates
+             * @enum {string}
+             */
+            send_updates: "all" | "externalOnly" | "none";
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "accepted" | "declined" | "tentative";
+        };
+        /** PolicyUpdate */
+        PolicyUpdate: {
+            /** Expected Version */
+            expected_version: number;
+            /** Position */
+            position?: number | null;
+            /** Predicates */
+            predicates?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Send Updates */
+            send_updates?: ("all" | "externalOnly" | "none") | null;
+            /** Verdict */
+            verdict?: ("accepted" | "declined" | "tentative") | null;
+        };
         /**
          * PredicateTab
          * @description A predicate tab enumerated from ``relationship.entity_predicate_registry``.
@@ -45720,6 +45812,125 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_CalendarAccountsResponse_"];
+                };
+            };
+        };
+    };
+    list_policies_api_calendar_rsvp_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__Any__"];
+                };
+            };
+        };
+    };
+    create_policy_api_calendar_rsvp_policies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_policy_api_calendar_rsvp_policies__policy_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_policy_api_calendar_rsvp_policies__policy_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                policy_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

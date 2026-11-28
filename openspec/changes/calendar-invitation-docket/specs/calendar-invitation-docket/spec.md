@@ -18,13 +18,18 @@ dashboard route, and only through SECURITY DEFINER functions owned by a NOLOGIN 
 granted to the dashboard's role alone (the `core_350` pattern). The dashboard SHALL read policies and ledger counts through SECURITY DEFINER read functions with the same EXECUTE grant, so the catalog test and the route agree. No `butler_*_rw` role SHALL hold
 INSERT, UPDATE or DELETE on the table, and SELECT SHALL be granted only to the one butler role that
 runs the docket job. No MCP tool and no prompt or session context SHALL present a policy to a model.
-An edit SHALL increment the policy's `version`; a revoked policy SHALL match nothing. A policy
+An edit SHALL name the `version` it was made from and SHALL be refused, changing nothing, when
+the policy has moved on since; an accepted edit SHALL increment the policy's `version`; a revoked policy SHALL match nothing. A policy
 preview against the owner's current invitations is later work, not part of this change.
 
 #### Scenario: The agent role cannot write a policy
 - **WHEN** a session running as a butler role attempts to insert, update or delete a policy row
 - **THEN** the database refuses it, the grants catalog shows no write privilege for any
   `butler_*_rw` role, and no registered MCP tool exposes a policy write
+
+#### Scenario: An edit from a stale version is refused
+- **WHEN** the owner submits an edit naming a `version` that is no longer the policy's current one
+- **THEN** the route answers 409, the policy is unchanged and its version does not rise
 
 #### Scenario: A free-text predicate is refused
 - **WHEN** the owner submits a policy with a predicate on event title or description

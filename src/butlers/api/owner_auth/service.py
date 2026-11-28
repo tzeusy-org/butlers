@@ -175,6 +175,20 @@ class OwnerAuthService:
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
 
+    async def rsvp_policy_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Owner RSVP policies (core_388); the definer rechecks session and CSRF at commit."""
+        if action not in {"list", "create", "update", "revoke"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.calendar_rsvp_policy_dashboard($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
     async def owner_channel_clauses(self) -> list[dict]:
         """The unrevoked clauses for the verified Telegram owner channel (read only)."""
         result = await self._owner_channel_call("SELECT dashboard_attention.owner_channel_list()")

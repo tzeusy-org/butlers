@@ -786,3 +786,21 @@ Each workspace entry carries `source_timezone`, the IANA zone the event was auth
 (`source_zone_from_payload`); internal and scheduler rows and zone-less provider events are `null`
 (unknown, never inferred, never a write-time default). The grid block, agenda row and detail panel show the event's own
 start time and place ("09:00 London") when that zone differs from the display zone at that instant.
+
+## Owner RSVP policies
+
+The owner writes standing invitation judgment once, as policies (bu-5ii4gj.9 S1 and S2; the docket
+that parks prepared answers follows in later slices). A policy is an ordered list of closed typed
+predicates plus a verdict and a `send_updates` choice: organizer verdict, organizer role, overlap
+with a focus or out-of-office block, conflict with an accepted event, outside declared hours,
+recurring, attendee count, lead time. An event title or description is never an input.
+
+- **Owner-only writes.** `/api/calendar/rsvp-policies` (list, create, patch, revoke) calls the
+  definer `public.calendar_rsvp_policy_dashboard`, which rechecks the owner's cookie session and CSRF
+  token at commit. No MCP tool reads or writes a policy and no butler role holds a grant on the
+  table; a policy is revoked, never deleted, and every edit raises its `version`.
+- **Deterministic evaluation.** `butlers.core.temporal.rsvp_policy.evaluate_policies` is a pure
+  function of verified facts: the first non-revoked match by position wins, matches that disagree on
+  verdict or `send_updates` prepare nothing and are all named, and an unknown fact never matches.
+- **Prepares, never sends.** A policy can only prepare an answer for the owner to approve; no
+  standing rule auto-applies `calendar_respond`.

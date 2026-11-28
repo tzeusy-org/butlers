@@ -112,6 +112,7 @@ OP GET /api/butlers/{name}/skills c3875e77d18d
 OP GET /api/butlers/{name}/state 1913d88d77d5
 OP GET /api/butlers/{name}/state/{key} 3274c3eb0d57
 OP GET /api/calendar/accounts 27d1cf4a2b27
+OP GET /api/calendar/rsvp-policies 2c963ce9fbc7
 OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
 OP GET /api/calendar/workspace/changes 2712ce44dcbb
@@ -467,6 +468,7 @@ OP GET /health 7c8fa7428b01
 OP PATCH /api/butlers/{name}/conversations/{conversation_id} 82dc61847395
 OP PATCH /api/butlers/{name}/runtime-config 885f8c98a0e0
 OP PATCH /api/butlers/{name}/schedules/{schedule_id}/toggle 59ab7d02bd56
+OP PATCH /api/calendar/rsvp-policies/{policy_id} 3d5ad9d3d251
 OP PATCH /api/chronicler/routines/{routine_id} 6ee8393b4640
 OP PATCH /api/finance/transactions/bulk-metadata bd527a3a73d2
 OP PATCH /api/home/atmosphere/location d380c5174b73
@@ -521,6 +523,8 @@ OP POST /api/butlers/{name}/schedules abf0fd1156b4
 OP POST /api/butlers/{name}/schedules/{schedule_id}/trigger 426e92cac18f
 OP POST /api/butlers/{name}/tick 65cfac2fe050
 OP POST /api/butlers/{name}/trigger 73b0bc420792
+OP POST /api/calendar/rsvp-policies e17094c54c52
+OP POST /api/calendar/rsvp-policies/{policy_id}/revoke c697b6034cad
 OP POST /api/calendar/sources 826a2a3474a4
 OP POST /api/calendar/sources/role 1592dbfae1d6
 OP POST /api/calendar/workspace/butler-events fd45e6adb5e5
@@ -843,6 +847,7 @@ ROUTE APIRoute GET '/api/butlers/{name}/skills' name=list_butler_skills op=list_
 ROUTE APIRoute GET '/api/butlers/{name}/state' name=list_state op=list_state_api_butlers__name__state_get tags=butlers,state schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/state/{key:path}' name=get_state op=get_state_api_butlers__name__state__key__get tags=butlers,state schema=True
 ROUTE APIRoute GET '/api/calendar/accounts' name=list_calendar_accounts op=list_calendar_accounts_api_calendar_accounts_get tags=calendar,accounts schema=True
+ROUTE APIRoute GET '/api/calendar/rsvp-policies' name=list_policies op=list_policies_api_calendar_rsvp_policies_get tags=calendar schema=True
 ROUTE APIRoute GET '/api/calendar/workspace' name=get_workspace op=get_workspace_api_calendar_workspace_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/audit' name=get_calendar_audit op=get_calendar_audit_api_calendar_workspace_audit_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/changes' name=get_workspace_changes op=get_workspace_changes_api_calendar_workspace_changes_get tags=calendar,workspace schema=True
@@ -1187,6 +1192,7 @@ ROUTE APIRoute GET '/ready' name=ready op=ready_ready_get tags=- schema=False
 ROUTE APIRoute PATCH '/api/butlers/{name}/conversations/{conversation_id}' name=update_conversation op=update_conversation_api_butlers__name__conversations__conversation_id__patch tags=conversations schema=True
 ROUTE APIRoute PATCH '/api/butlers/{name}/runtime-config' name=patch_runtime_config op=patch_runtime_config_api_butlers__name__runtime_config_patch tags=runtime-config schema=True
 ROUTE APIRoute PATCH '/api/butlers/{name}/schedules/{schedule_id}/toggle' name=toggle_schedule op=toggle_schedule_api_butlers__name__schedules__schedule_id__toggle_patch tags=butlers,schedules schema=True
+ROUTE APIRoute PATCH '/api/calendar/rsvp-policies/{policy_id}' name=update_policy op=update_policy_api_calendar_rsvp_policies__policy_id__patch tags=calendar schema=True
 ROUTE APIRoute PATCH '/api/chronicler/routines/{routine_id}' name=patch_chronicler_routine op=patch_chronicler_routine_api_chronicler_routines__routine_id__patch tags=chronicler schema=True
 ROUTE APIRoute PATCH '/api/finance/transactions/bulk-metadata' name=bulk_update_transactions op=bulk_update_transactions_api_finance_transactions_bulk_metadata_patch tags=finance schema=True
 ROUTE APIRoute PATCH '/api/home/atmosphere/location' name=update_atmosphere_location op=update_atmosphere_location_api_home_atmosphere_location_patch tags=home schema=True
@@ -1241,6 +1247,8 @@ ROUTE APIRoute POST '/api/butlers/{name}/schedules' name=create_schedule op=crea
 ROUTE APIRoute POST '/api/butlers/{name}/schedules/{schedule_id}/trigger' name=trigger_schedule op=trigger_schedule_api_butlers__name__schedules__schedule_id__trigger_post tags=butlers,schedules schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/tick' name=force_butler_tick op=force_butler_tick_api_butlers__name__tick_post tags=butlers schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/trigger' name=trigger_butler op=trigger_butler_api_butlers__name__trigger_post tags=butlers schema=True
+ROUTE APIRoute POST '/api/calendar/rsvp-policies' name=create_policy op=create_policy_api_calendar_rsvp_policies_post tags=calendar schema=True
+ROUTE APIRoute POST '/api/calendar/rsvp-policies/{policy_id}/revoke' name=revoke_policy op=revoke_policy_api_calendar_rsvp_policies__policy_id__revoke_post tags=calendar schema=True
 ROUTE APIRoute POST '/api/calendar/sources' name=toggle_calendar_source op=toggle_calendar_source_api_calendar_sources_post tags=calendar,accounts schema=True
 ROUTE APIRoute POST '/api/calendar/sources/role' name=set_calendar_source_role op=set_calendar_source_role_api_calendar_sources_role_post tags=calendar,accounts schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/butler-events' name=mutate_butler_event op=mutate_butler_event_api_calendar_workspace_butler_events_post tags=calendar,workspace schema=True
@@ -2421,6 +2429,8 @@ SCHEMA PermissionCell bdeee98f86ba
 SCHEMA PermissionSetResponse b92a72477a09
 SCHEMA PermissionUpdate 71fccb1a741d
 SCHEMA PermissionsMatrix 69eab06b0634
+SCHEMA PolicyCreate dd3193ac1721
+SCHEMA PolicyUpdate f0b7cf576aaf
 SCHEMA PreTripActionModel ca7f0085208b
 SCHEMA PredicateTab b88253f822af
 SCHEMA PreferenceEntry 2a25de211be4
