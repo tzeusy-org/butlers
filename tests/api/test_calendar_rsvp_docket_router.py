@@ -419,3 +419,21 @@ def test_the_batch_starts_no_card_it_could_not_finish_before_the_deadline(monkey
         }
     ]
     assert world.approve.await_count == 2
+
+
+def test_the_batch_deadline_counts_the_calendar_read(monkeypatch) -> None:
+    world = _World(monkeypatch)
+    first = world.add()
+    now = [0.0]
+    monkeypatch.setattr(route, "_clock", lambda: now[0])
+
+    async def slow_snapshot(*args, **kwargs):
+        now[0] += 200.0  # the calendar read eats most of the 255s budget
+        return world.snap
+
+    monkeypatch.setattr(docket, "take_snapshot", slow_snapshot)
+    data = world.submit(first).json()["data"]
+    assert approved_ids(data) == []
+    assert data["stopped"] is True
+    assert [r["reason"] for r in data["refused"]] == ["not_attempted"]
+    world.approve.assert_not_awaited()

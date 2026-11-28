@@ -330,6 +330,8 @@ async def submit_docket(
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[SubmitResult]:
     """Approve the ticked cards one by one; refuse and name any that changed."""
+    # The batch budget covers the calendar read too, so the clock starts at entry.
+    started = _clock()
     from butlers.api.audit_emit import authenticated_principal
     from butlers.api.routers.approvals import (
         _decision_actor_id,
@@ -350,7 +352,6 @@ async def submit_docket(
     results: list[CardOutcome] = []
     refused: list[SubmitRefusal] = []
     seen: set[UUID] = set()
-    started = _clock()
     for item in body.items:
         action_id = item.action_id
         if action_id in seen:
