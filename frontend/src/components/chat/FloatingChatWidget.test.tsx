@@ -801,7 +801,7 @@ describe("FloatingChatWidget — stream-failure recovery (bu-0ynlk.7)", () => {
           duration_ms: null,
           session_id: null,
           request_id: null,
-          created_at: "2027-01-01T00:00:00.000Z",
+          created_at: new Date(Date.now() + 60_000).toISOString(),
         },
       ],
     });

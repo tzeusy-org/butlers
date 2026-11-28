@@ -251,6 +251,44 @@ jobs:
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
+  vitest-clock-shift:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.exact_image_only }}
+    # bu-5ii4gj.22: the frontend counterpart of faketime-matrix. A vitest file whose fixture dates
+    # are fixed in the near future starts failing on main once the real clock passes them
+    # (#6242 CalendarVerdictOpener). frontend/src/test/clock-shift.ts adds
+    # VITEST_CLOCK_SHIFT_DAYS to Date.now() and new Date() for every test that has not pinned its
+    # own clock, so this surfaces the next one before it detonates. Schedule/dispatch only: it
+    # never gates PR merges. The decoy step proves the shift still catches an unpinned date test.
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shift_days: [60, 180]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.0"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Clock-shift decoy (an unpinned date test must fail when shifted)
+        working-directory: frontend
+        run: npm run check:clock-shift
+
+      - name: Frontend suite at +${{ matrix.shift_days }}d
+        working-directory: frontend
+        env:
+          VITEST_CLOCK_SHIFT_DAYS: ${{ matrix.shift_days }}
+        run: npm run test
+
   exact-image-sandbox:
     # Provisional cold source-build envelope; Codex alone measured 85 minutes.
     timeout-minutes: 330

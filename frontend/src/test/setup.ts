@@ -1,3 +1,4 @@
+import "./clock-shift";
 import { beforeEach } from "vitest";
 import { rememberOwnerCsrf } from "@/api/owner-session";
 
