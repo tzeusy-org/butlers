@@ -65,6 +65,12 @@ it for the current names and signatures. The families:
   calling butler.
 - **Planning** -- `calendar_find_free_slots` (read-only availability finder) and
   `calendar_propose_event` (stages a pending proposal for review without writing to the provider).
+  `calendar_plan_change` compiles one owner verb (`clear_window`, `shift_window`) over a window
+  into ordered steps with their exact calls, authority classes and `depends_on` (a step that uses a slot another step vacates) plus the events it skipped and
+  why. It is read-only and deterministic, reads this butler's own projection, and returns no
+  titles. A stale or partial source (`plan_unavailable`), an oversized window (over 25 hours or 16 steps) or an unknown owner zone
+  gives no steps and a reason. Applying a plan is a later, approval-bound slice
+  (`openspec/changes/calendar-change-plans`).
 - **Calendar and sync management** -- list calendars, set the primary calendar, check sync
   status, and force a sync cycle.
 

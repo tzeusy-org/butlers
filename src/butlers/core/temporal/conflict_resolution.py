@@ -77,6 +77,8 @@ class ResolutionEvent:
     #: ``<series id>_<original start>``). A move writes that instance, never the series, so it is
     #: sent with the instance's own etag and no ``recurrence_scope``.
     instance_event_id: str | None = None
+    #: The provider's status for the event (``confirmed``, ``tentative``, ``cancelled``), if known.
+    status: str | None = None
 
     @property
     def duration(self) -> timedelta:
