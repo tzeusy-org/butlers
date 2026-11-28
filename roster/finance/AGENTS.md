@@ -48,13 +48,11 @@ For detailed parameter tables, invoke the `tool-reference` skill.
 
 ## Calendar Usage
 
-- Use calendar tools for due-date reminders and subscription renewal scheduling.
+- Bills, subscription renewals and `cancel_by` dates reach the calendar on their own: the daily overlay job emits one claim per record and moves or retracts its calendar row with the record. Do not create calendar reminders or events for them.
 - Write butler-managed events to the shared butler calendar configured in `butler.toml`, not the user's primary calendar.
 - Default conflict behavior is `suggest`: propose alternative time slots when overlaps are detected.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
-- For bills: create a calendar reminder 3 days before `due_date` (configurable via user preference stored in memory).
-- For subscriptions: create a calendar reminder 7 days before `next_renewal` for auto-renewing services so the user can cancel if desired.
-- **Mirror dated reminders to calendar**: Any memory fact that carries a concrete `valid_at` date representing a future user-facing action (e.g. GIRO setup, payment due, transfer deadline, renewal cancellation window) MUST be accompanied by a `calendar_create_event` call anchored to that date. Storing the fact alone is insufficient; memory is not a reminder surface. This applies in passive/routed-message extraction mode as well: calendar writes to the butler's own calendar are a read-only-adjacent side effect, not a user-facing reply, and are permitted under routed-message safety.
+- **Mirror dated reminders to calendar**: Any memory fact that carries a concrete `valid_at` date representing a future user-facing action (e.g. GIRO setup, transfer deadline; not a bill, subscription renewal or `cancel_by` date, which are already claimed) MUST be accompanied by a `calendar_create_event` call anchored to that date. Storing the fact alone is insufficient; memory is not a reminder surface. This applies in passive/routed-message extraction mode as well: calendar writes to the butler's own calendar are a read-only-adjacent side effect, not a user-facing reply, and are permitted under routed-message safety.
 
 ## Interactive Response Mode
 

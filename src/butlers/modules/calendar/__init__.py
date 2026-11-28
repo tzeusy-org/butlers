@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic import BaseModel
@@ -241,6 +242,18 @@ class CalendarModule(
         # clobber the Butlers calendar id.  When set, it takes precedence over
         # ``_primary_calendar_id`` for the default-target role.
         self._default_target_calendar_id: str | None = None
+
+    @classmethod
+    def for_pool(cls, pool: Any, *, butler_name: str) -> CalendarModule:
+        """A module bound to ``butler_name``'s own pool, for in-process calls from its jobs.
+
+        It runs no startup and holds no provider: it serves only calls that touch the butler's own
+        rows, such as :meth:`reconcile_domain_claims`.
+        """
+        module = cls()
+        module._db = SimpleNamespace(pool=pool, db_schema=butler_name, db_name="butlers")
+        module._butler_name = butler_name
+        return module
 
     @property
     def config_schema(self) -> type[BaseModel]:

@@ -77,7 +77,12 @@ async def _run(
     seed: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ContributionStateStore, FakePool]:
     return await run_overlay_job(
-        run_finance_calendar_overlay_contribution, first=bills, second=subs, seed=seed, today=_TODAY
+        run_finance_calendar_overlay_contribution,
+        first=bills,
+        second=subs,
+        seed=seed,
+        today=_TODAY,
+        extra=([],),  # no stored reminder preference
     )
 
 
@@ -270,4 +275,4 @@ async def test_no_llm_session_spawned():
     result, _, pool = await _run()
     assert result["butler"] == "finance"
     # Only bills + subscriptions queries were issued — no LLM, no other fan-out.
-    assert pool.fetch.await_count == 2
+    assert pool.fetch.await_count == 3  # bills, subscriptions, the reminder preference
