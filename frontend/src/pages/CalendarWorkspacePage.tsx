@@ -12,6 +12,7 @@ import { useSearchParams } from "react-router";
 import { format } from "date-fns";
 
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
+import { CalendarDocketPanel } from "@/components/calendar/CalendarDocketPanel";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
 import { CalendarQuarantinePanel } from "@/components/calendar/CalendarQuarantinePanel";
 import { CalendarResponsePanelView } from "@/components/calendar/CalendarResponsePanel";
@@ -186,7 +187,7 @@ export default function CalendarWorkspacePage() {
     },
   });
   const dayBriefing = dayBriefingQuery.data?.data;
-  const canvasHidden = panels.activityOpen || panels.proposalsOpen;
+  const canvasHidden = panels.activityOpen || panels.proposalsOpen || panels.docketOpen;
 
   return (
     <div className="flex h-full flex-col overflow-hidden" data-shell-scroll-owner="route">
@@ -295,7 +296,11 @@ export default function CalendarWorkspacePage() {
         range={range}
         anchor={anchor}
         updateQuery={updateQuery}
-        panels={{ activity: panels.activityOpen, proposals: panels.proposalsOpen }}
+        panels={{
+          activity: panels.activityOpen,
+          proposals: panels.proposalsOpen,
+          docket: panels.docketOpen,
+        }}
         onTogglePanel={panels.togglePanel}
         selectedStatus={selectedStatus}
         selectedSourceType={selectedSourceType}
@@ -379,6 +384,20 @@ export default function CalendarWorkspacePage() {
             acceptMutation={panels.acceptProposalMutation}
             dismissMutation={panels.dismissProposalMutation}
             timezone={defaultTimezone}
+          />
+        </div>
+      ) : null}
+
+      {panels.docketOpen ? (
+        <div className="flex min-h-0 flex-1 flex-col pt-5">
+          <CalendarDocketPanel
+            docket={panels.docketQuery.data}
+            isLoading={panels.docketQuery.isLoading}
+            isError={panels.docketQuery.isError}
+            error={panels.docketQuery.error instanceof Error ? panels.docketQuery.error : null}
+            timezone={defaultTimezone}
+            onSubmit={panels.submitDocketMutation.mutateAsync}
+            submitting={panels.submitDocketMutation.isPending}
           />
         </div>
       ) : null}
