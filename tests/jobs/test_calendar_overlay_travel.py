@@ -35,13 +35,13 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _owner_zone_is_sgt():
-    """Scripted fake pools have no settings table: the owner zone is SGT, not read from them."""
+def _owner_zone_is_singapore():
+    """Scripted fake pools have no settings table: the owner zone is Singapore, not read from them."""
     from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
 
-    from butlers.jobs.briefing import SGT
-
-    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=SGT)):
+    zone = ZoneInfo("Asia/Singapore")
+    with patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)):
         yield
 
 
@@ -93,6 +93,7 @@ def _accom(
     trip_id: str = "22222222-2222-2222-2222-222222222222",
 ) -> dict[str, Any]:
     return {
+        "id": "33333333-3333-3333-3333-333333333333",
         "type": type_,
         "name": name,
         "address": "Shinjuku",
@@ -182,6 +183,10 @@ async def test_check_in_and_check_out_routed_to_their_dates():
 
     assert result["check_in_entries"] == 1
     assert result["check_out_entries"] == 1
+
+    # Each stay entry carries its claim key, so the workspace can offer a door to the stay.
+    assert ci_env["entries"][0]["claim_key"].startswith("travel:accommodation_check_in:")
+    assert co_env["entries"][0]["claim_key"].startswith("travel:accommodation_check_out:")
 
 
 async def test_timezone_bucketing_uses_sgt_calendar_date():

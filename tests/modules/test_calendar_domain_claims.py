@@ -42,7 +42,7 @@ def _claim(record: str = "b1", *, version="v1", presence="block", status="active
             "end": (_START + timedelta(hours=1)).isoformat(),
             "timezone": "Asia/Singapore",
         },
-        "door": {"route": "/finance/bills", "ref": record},
+        "door": {"route": "/butlers/finance", "ref": record},
     }
     base.update(over)
     return base

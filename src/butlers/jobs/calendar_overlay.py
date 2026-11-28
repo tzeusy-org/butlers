@@ -120,6 +120,35 @@ class OverlayEntry(_OverlayEntryRequired, total=False):
     """
 
     meta: dict[str, Any]
+    #: The domain time claim this entry shows (``<domain>:<kind>:<id>``), so the workspace can show
+    #: a record once when its claim also owns a calendar row, and offer a door to the record.
+    claim_key: str
+
+
+#: Where each producer's claim door lands: a route the dashboard declares in
+#: ``frontend/src/router-config.tsx`` (a test pins that). Finance, Travel and Relationship have no
+#: page of their own beyond their butler page; the others have a domain page. The claim's ``ref`` is
+#: carried as ``?ref=<id>`` for a page that can select a record.
+FINANCE_DOOR_ROUTE = "/butlers/finance"
+TRAVEL_DOOR_ROUTE = "/butlers/travel"
+RELATIONSHIP_DOOR_ROUTE = "/butlers/relationship"
+HEALTH_DOOR_ROUTE = "/health"
+EDUCATION_DOOR_ROUTE = "/education"
+DOOR_ROUTES: dict[str, str] = {
+    "finance": FINANCE_DOOR_ROUTE,
+    "travel": TRAVEL_DOOR_ROUTE,
+    "relationship": RELATIONSHIP_DOOR_ROUTE,
+    "health": HEALTH_DOOR_ROUTE,
+    "education": EDUCATION_DOOR_ROUTE,
+}
+
+
+def _with_claim(entry: OverlayEntry, key: str, row: Any) -> OverlayEntry:
+    """``entry`` tagged with the claim ``key`` built from the row's id (untagged without an id)."""
+    ref = _row_id(row)
+    if ref is not None:
+        entry["claim_key"] = f"{key}:{ref}"
+    return entry
 
 
 class OverlayContribution(TypedDict):
@@ -322,7 +351,7 @@ def _claim(
         "span": span,
         "owner_action": True,
         "status": "active",
-        "door": {"route": "/finance", "ref": ref},
+        "door": {"route": FINANCE_DOOR_ROUTE, "ref": ref},
     }
 
 
@@ -706,7 +735,7 @@ async def run_finance_calendar_overlay_contribution(
                 "payment_method": row["payment_method"],
             },
         }
-        entries_by_date.setdefault(date_str, []).append(entry)
+        entries_by_date.setdefault(date_str, []).append(_with_claim(entry, "finance:bill", row))
 
     for row in sub_rows:
         renew = row["next_renewal"]
@@ -726,7 +755,9 @@ async def run_finance_calendar_overlay_contribution(
                 "frequency": row["frequency"],
             },
         }
-        entries_by_date.setdefault(date_str, []).append(entry)
+        entries_by_date.setdefault(date_str, []).append(
+            _with_claim(entry, "finance:subscription", row)
+        )
 
     claims_by_date = (
         finance_claims(
@@ -752,12 +783,16 @@ async def run_finance_calendar_overlay_contribution(
         cancel_by = row["cancel_by"] if "cancel_by" in row.keys() else None  # noqa: SIM118
         if cancel_by is not None and today <= cancel_by <= horizon:
             entries_by_date.setdefault(cancel_by.isoformat(), []).append(
-                {
-                    "kind": "subscription_cancel_by",
-                    "label": f"Cancel {row['service']}",
-                    "priority": "high",
-                    "meta": {},
-                }
+                _with_claim(
+                    {
+                        "kind": "subscription_cancel_by",
+                        "label": f"Cancel {row['service']}",
+                        "priority": "high",
+                        "meta": {},
+                    },
+                    "finance:subscription_cancel_by",
+                    row,
+                )
             )
 
     dates_written, total_entries, claim_result, complete = await finish_contribution(
@@ -843,7 +878,7 @@ def _timed_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
-    route: str = "/travel",
+    route: str = TRAVEL_DOOR_ROUTE,
 ) -> dict[str, Any]:
     span: dict[str, Any] = {"start": start.isoformat(), "timezone": _zone_name(zone)}
     if end is not None:
@@ -874,7 +909,7 @@ def _day_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
-    route: str = "/travel",
+    route: str = TRAVEL_DOOR_ROUTE,
 ) -> dict[str, Any]:
     return {
         "claim_key": key,
@@ -1192,7 +1227,11 @@ async def run_travel_calendar_overlay_contribution(
     entries_by_date: dict[str, list[OverlayEntry]] = {}
     departure_count = arrival_count = check_in_count = check_out_count = 0
 
-    def _add(date_str: str, entry: OverlayEntry) -> None:
+    def _add(date_str: str, entry: OverlayEntry, *, leg: Any = None, stay: Any = None) -> None:
+        if leg is not None:
+            _with_claim(entry, "travel:leg", leg)
+        if stay is not None:
+            _with_claim(entry, f"travel:accommodation_{entry['kind']}", stay)
         entries_by_date.setdefault(date_str, []).append(entry)
 
     def _in_window(ts: datetime | None) -> bool:
@@ -1227,6 +1266,7 @@ async def run_travel_calendar_overlay_contribution(
                         "confirmation_number": row["confirmation_number"],
                     },
                 },
+                leg=row,
             )
             departure_count += 1
 
@@ -1250,6 +1290,7 @@ async def run_travel_calendar_overlay_contribution(
                         "pnr": row["pnr"],
                     },
                 },
+                leg=row,
             )
             arrival_count += 1
 
@@ -1276,6 +1317,7 @@ async def run_travel_calendar_overlay_contribution(
                         "confirmation_number": row["confirmation_number"],
                     },
                 },
+                stay=row,
             )
             check_in_count += 1
 
@@ -1296,6 +1338,7 @@ async def run_travel_calendar_overlay_contribution(
                         "check_out": row["check_out"].isoformat(),
                     },
                 },
+                stay=row,
             )
             check_out_count += 1
 
@@ -1405,6 +1448,7 @@ def _add_relationship_claim(
     priority: str,
     landing: date_cls,
     zone: tzinfo,
+    entry: OverlayEntry,
     owner_action: bool = False,
 ) -> None:
     """Add an overlay-presence claim for a relationship record (none when the row has no id).
@@ -1416,6 +1460,7 @@ def _add_relationship_claim(
     ref = _row_id(row, column)
     if ref is None or owner_zone_key(zone) is None:
         return
+    entry["claim_key"] = f"relationship:{key_kind}:{ref}"
     claims_by_date.setdefault(date_str, []).append(
         _day_claim(
             key=f"relationship:{key_kind}:{ref}",
@@ -1427,7 +1472,7 @@ def _add_relationship_claim(
             day=landing,
             zone=zone,
             ref=ref,
-            route="/relationship",
+            route=RELATIONSHIP_DOOR_ROUTE,
             owner_action=owner_action,
         )
     )
@@ -1576,14 +1621,13 @@ async def run_relationship_calendar_overlay_contribution(
         is_birthday = "birthday" in (raw_label or "").lower()
         posture = row["posture"]
         if posture == MEMORIAL and is_birthday:
-            entries_by_date.setdefault(date_str, []).append(
-                {
-                    "kind": "remembrance",
-                    "label": f"{row['name']}'s birthday (remembrance)",
-                    "priority": "low",
-                    "meta": {"person": row["name"], "month": row["month"], "day": row["day"]},
-                }
-            )
+            remembrance: OverlayEntry = {
+                "kind": "remembrance",
+                "label": f"{row['name']}'s birthday (remembrance)",
+                "priority": "low",
+                "meta": {"person": row["name"], "month": row["month"], "day": row["day"]},
+            }
+            entries_by_date.setdefault(date_str, []).append(remembrance)
             _add_relationship_claim(
                 claims_by_date,
                 date_str,
@@ -1596,6 +1640,7 @@ async def run_relationship_calendar_overlay_contribution(
                 priority="low",
                 landing=landing,
                 zone=zone,
+                entry=remembrance,
             )
             remembrance_count += 1
             continue
@@ -1627,6 +1672,7 @@ async def run_relationship_calendar_overlay_contribution(
             priority=entry["priority"],
             landing=landing,
             zone=zone,
+            entry=entry,
         )
         if is_birthday:
             birthday_count += 1
@@ -1664,6 +1710,7 @@ async def run_relationship_calendar_overlay_contribution(
             priority=entry["priority"],
             landing=landing,
             zone=zone,
+            entry=entry,
             owner_action=True,
         )
         follow_up_count += 1
@@ -1828,6 +1875,7 @@ async def run_health_calendar_overlay_contribution(
                 "label": title,
                 "priority": priority,
                 "meta": {"appointment_id": event_id, "starts_at": starts_at.isoformat()},
+                "claim_key": f"health:visit:{event_id}",
             },
         )
         # The visit already is a calendar event: its claim owns no row of its own (overlay
@@ -1845,7 +1893,7 @@ async def run_health_calendar_overlay_contribution(
                     end=ends_at,
                     zone=zone,
                     ref=event_id,
-                    route="/health",
+                    route=HEALTH_DOOR_ROUTE,
                 )
             )
         appointment_count += 1
@@ -1949,7 +1997,7 @@ def education_claims(
                 day=day,
                 zone=zone,
                 ref=day.isoformat(),
-                route="/education",
+                route=EDUCATION_DOOR_ROUTE,
             )
         )
     return out
@@ -2004,6 +2052,7 @@ async def run_education_calendar_overlay_contribution(
         day.isoformat(): [
             {
                 "kind": "reviews_due",
+                "claim_key": f"education:reviews:{day.isoformat()}",
                 "label": _reviews_label(count),
                 "priority": _reviews_priority(day, today),
                 "meta": {"count": count},

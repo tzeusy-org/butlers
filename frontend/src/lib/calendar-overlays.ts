@@ -60,6 +60,93 @@ export function overlayMetadata(entry: UnifiedCalendarEntry): OverlayMetadata {
   return { kind, priority, source_butler, meta, notCurrent };
 }
 
+/** The domain claim a calendar row (butler-lane event) was written for, when it has one. */
+export interface ClaimLink {
+  claimKey: string;
+  door: { route: string; ref: string | null } | null;
+}
+
+function doorOf(raw: unknown): ClaimLink["door"] {
+  if (!raw || typeof raw !== "object") return null;
+  const door = raw as Record<string, unknown>;
+  if (typeof door.route !== "string" || !door.route.startsWith("/")) return null;
+  return { route: door.route, ref: typeof door.ref === "string" ? door.ref : null };
+}
+
+/**
+ * The claim link of a calendar row or an overlay entry: a row carries it in its event metadata
+ * (`claim`), an overlay entry as `claim_key` / `claim_door`. Null when the entry has no claim.
+ */
+export function claimLinkOf(entry: UnifiedCalendarEntry): ClaimLink | null {
+  const md = entry.metadata ?? {};
+  if (isOverlayEntry(entry)) {
+    if (typeof md.claim_key !== "string" || !md.claim_key) return null;
+    return { claimKey: md.claim_key, door: doorOf(md.claim_door) };
+  }
+  const raw = md.event_metadata;
+  const claim =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>).claim : undefined;
+  if (!claim || typeof claim !== "object") return null;
+  const record = claim as Record<string, unknown>;
+  if (typeof record.claim_key !== "string" || !record.claim_key) return null;
+  return { claimKey: record.claim_key, door: doorOf(record.door) };
+}
+
+/** The in-app link for a claim door: its route, with the record id as `?ref=` when it has one. */
+export function claimDoorHref(door: NonNullable<ClaimLink["door"]>): string {
+  if (!door.ref) return door.route;
+  return `${door.route}?ref=${encodeURIComponent(door.ref)}`;
+}
+
+/** The owner-local date (`YYYY-MM-DD`) an ISO timestamp string was rendered in. */
+function localDay(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function addDays(day: string, n: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * The local days a calendar row covers: from its start day to its end day, the end day excluded
+ * when the row ends exactly at midnight (an all-day or overnight-to-midnight span).
+ */
+function daysCovered(row: UnifiedCalendarEntry): string[] {
+  const first = localDay(row.start_at);
+  const lastIso = row.end_at && row.end_at > row.start_at ? row.end_at : row.start_at;
+  let last = localDay(lastIso);
+  if (last > first && lastIso.slice(11, 19) === "00:00:00") last = addDays(last, -1);
+  const days: string[] = [];
+  for (let day = first; day <= last && days.length < 62; day = addDays(day, 1)) days.push(day);
+  return days;
+}
+
+/**
+ * Overlay entries minus those whose claim also owns a calendar row on the overlay entry's own day:
+ * a record shows once per day, as its row. A bill's D-3 reminder row hides nothing on the due
+ * date, where its marker stays. An overlay entry with no claim, or whose claim owns no row that
+ * day, is kept.
+ */
+export function dedupOverlaysAgainstRows(
+  overlays: UnifiedCalendarEntry[],
+  rows: UnifiedCalendarEntry[],
+): UnifiedCalendarEntry[] {
+  const owned = new Set<string>();
+  for (const row of rows) {
+    if (isOverlayEntry(row)) continue;
+    const link = claimLinkOf(row);
+    if (!link) continue;
+    for (const day of daysCovered(row)) owned.add(`${link.claimKey}|${day}`);
+  }
+  if (owned.size === 0) return overlays;
+  return overlays.filter((entry) => {
+    const link = claimLinkOf(entry);
+    return !link || !owned.has(`${link.claimKey}|${localDay(entry.start_at)}`);
+  });
+}
+
 /** Sort rank so high-priority overlays render first (lower = earlier). */
 export function overlayPriorityRank(priority: OverlayPriority | null): number {
   switch (priority) {

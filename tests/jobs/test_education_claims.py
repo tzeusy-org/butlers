@@ -109,6 +109,7 @@ async def test_only_due_reviews_of_active_maps_count_and_overdue_lands_on_today(
     next_env = await state_get(pool, job.overlay_key("2030-03-02"))
     assert [c["label"] for c in today_env["claims"]] == ["2 reviews due"]
     assert today_env["entries"][0]["meta"] == {"count": 2}
+    assert today_env["entries"][0]["claim_key"] == "education:reviews:2030-03-01"
     assert [c["label"] for c in next_env["claims"]] == ["1 review due"]
     assert result["complete"] is True and result["review_entries"] == 2
 

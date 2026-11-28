@@ -13,7 +13,6 @@ import {
   useCalendarOverlays,
   useDayVerdict,
 } from "@/hooks/use-calendar-workspace";
-import { overlaysByDay } from "@/lib/calendar-overlays";
 import { useLocalDayStart } from "@/pages/calendar/use-local-day";
 import type { CalendarRange } from "@/pages/calendar/workspace-model";
 
@@ -107,7 +106,6 @@ export function useCalendarContextData({
   );
   const hasDomainContext =
     !overlaysQuery.isError && (overlaysQuery.data?.data.has_domain_context ?? false);
-  const overlaysByDayMap = useMemo(() => overlaysByDay(overlayEntries), [overlayEntries]);
 
   // Day-briefing card ("tomorrow at a glance"): the precomputed overlay
   // contributions for tomorrow, grouped by butler/kind. Reads the same cached
@@ -150,7 +148,7 @@ export function useCalendarContextData({
     invitationSourcesDegraded,
     overlaysQuery,
     hasDomainContext,
-    overlaysByDayMap,
+    overlayEntries,
     briefingDate,
     dayBriefingQuery,
     dayVerdictQuery,

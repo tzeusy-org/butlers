@@ -73,6 +73,7 @@ _TODAY_STR = "2026-06-21"
 
 def _date(name: str, label: str, on: date, *, year: int | None = None, posture: str = "active"):
     return {
+        "date_id": f"d-{name}-{on.month}-{on.day}",
         "name": name,
         "label": label,
         "month": on.month,
@@ -83,7 +84,7 @@ def _date(name: str, label: str, on: date, *, year: int | None = None, posture: 
 
 
 def _reminder(name: str, label: str, trigger: datetime):
-    return {"name": name, "label": label, "trigger_at": trigger}
+    return {"fact_id": f"f-{name}", "name": name, "label": label, "trigger_at": trigger}
 
 
 async def _run(
@@ -138,6 +139,9 @@ async def test_birthday_and_important_date_routed_to_recurring_window_dates():
     assert result["birthday_entries"] == 1
     assert result["important_date_entries"] == 1
     assert result["total_entries"] == 2
+    # Both entries carry their claim key (door only: the record owns no calendar row).
+    assert bday_env["entries"][0]["claim_key"].startswith("relationship:important_date:")
+    assert anniv_env["entries"][0]["claim_key"].startswith("relationship:important_date:")
 
 
 @pytest.mark.parametrize(
@@ -195,6 +199,7 @@ async def test_follow_up_reminder_routed_to_due_date():
     assert env["entries"][0]["label"] == "Coffee catch-up"
     assert env["entries"][0]["meta"]["person"] == "Chris"
     assert env["entries"][0]["meta"]["overdue"] is False
+    assert env["entries"][0]["claim_key"].startswith("relationship:follow_up:")
     assert result["follow_up_entries"] == 1
 
 

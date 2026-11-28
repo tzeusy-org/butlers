@@ -297,7 +297,13 @@ async def test_the_job_reconciles_through_the_real_for_pool_module(db, monkeypat
     result = await job.run_finance_calendar_overlay_contribution(pool, None)
 
     assert "error" not in result["claims"] and result["claims"]["created"] == 1
-    assert len(await _rows(pool)) == 1
+    rows = await _rows(pool)
+    assert len(rows) == 1
+    # The overlay entry names the claim whose row it duplicates, so the workspace shows it once.
+    envelope = await state_get(pool, job.overlay_key("2030-03-10"))
+    assert [e["claim_key"] for e in envelope["entries"]] == [
+        rows[0]["origin_ref"].removeprefix("claim:")
+    ]
 
 
 @e2e

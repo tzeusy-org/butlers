@@ -189,6 +189,7 @@ def _overlay_row(
     generated_at: datetime | None = None,
     cadence_seconds: int = 86400,
     complete: bool | None = None,
+    claims: list[dict] | None = None,
 ) -> dict:
     """Build a ``calendar.v_overlay_contributions`` row (column + JSONB value).
 
@@ -209,6 +210,8 @@ def _overlay_row(
         value["cadence_seconds"] = cadence_seconds
     if complete is not None:
         value["complete"] = complete
+    if claims is not None:
+        value["claims"] = claims
     return {"butler": butler, "key": f"calendar/overlay/{date}", "value": value}
 
 
@@ -1134,6 +1137,43 @@ async def test_an_incomplete_envelope_is_named_partial_and_its_entries_marked(ap
     assert {f["butler"]: f["state"] for f in body["overlay_freshness"]}["finance"] == "partial"
     assert body["entries"][0]["metadata"]["partial"] is True
     assert "stale" not in body["entries"][0]["metadata"]
+
+
+async def test_an_overlay_entry_carries_its_claim_key_presence_and_door(app, monkeypatch):
+    _pin_overlay_now(monkeypatch)
+    entries = [
+        {
+            "kind": "bill_due",
+            "label": "Electric Co",
+            "priority": "high",
+            "meta": {},
+            "claim_key": "finance:bill:b1",
+        },
+        {"kind": "bill_due", "label": "Water", "priority": "low", "meta": {}},
+    ]
+    claims = [
+        {
+            "claim_key": "finance:bill:b1",
+            "presence": "reminder",
+            "door": {"route": "/butlers/finance", "ref": "b1"},
+        }
+    ]
+    row = _overlay_row(
+        butler="finance",
+        date="2026-02-22",
+        entries=entries,
+        claims=claims,
+        generated_at=_OVERLAY_NOW - timedelta(hours=1),
+    )
+    app, _, _ = _build_app(app, overlay_rows={"finance": [row]}, calendar_butlers=["finance"])
+
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+
+    by_title = {e["title"]: e["metadata"] for e in resp.json()["data"]["entries"]}
+    assert by_title["Electric Co"]["claim_key"] == "finance:bill:b1"
+    assert by_title["Electric Co"]["claim_presence"] == "reminder"
+    assert by_title["Electric Co"]["claim_door"] == {"route": "/butlers/finance", "ref": "b1"}
+    assert "claim_key" not in by_title["Water"] and "claim_door" not in by_title["Water"]
 
 
 async def test_an_envelope_with_no_generated_at_reads_as_stale(app, monkeypatch):
