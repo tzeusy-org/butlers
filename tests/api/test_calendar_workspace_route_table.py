@@ -61,6 +61,8 @@ KEPT = {
     ("/api/calendar/rsvp-policies", "post"),
     ("/api/calendar/rsvp-policies/{policy_id}", "patch"),
     ("/api/calendar/rsvp-policies/{policy_id}/revoke", "post"),
+    ("/api/calendar/rsvp-docket", "get"),
+    ("/api/calendar/rsvp-docket/submit", "post"),
 }
 
 

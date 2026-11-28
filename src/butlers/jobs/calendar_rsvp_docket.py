@@ -50,6 +50,7 @@ import os
 import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -283,17 +284,32 @@ def build_dossier(
     }
 
 
-def parse_marker(evidence: Any) -> dict[str, Any] | None:
-    """The docket marker of a parked card's evidence, or ``None`` when it is not a docket card."""
+def json_object(value: Any) -> dict[str, Any]:
+    """A JSON object column as a dict (asyncpg may hand it back as text)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def parse_evidence(evidence: Any) -> list[dict[str, Any]]:
+    """The evidence list of a parked card as dicts, ``[]`` when it is not one."""
     if isinstance(evidence, str):
         try:
             evidence = json.loads(evidence)
         except (ValueError, TypeError):
-            return None
+            return []
     if not isinstance(evidence, list):
-        return None
-    for item in evidence:
-        if isinstance(item, Mapping) and str(item.get("ref", "")).startswith(MARKER_PREFIX):
+        return []
+    return [dict(item) for item in evidence if isinstance(item, Mapping)]
+
+
+def parse_marker(evidence: Any) -> dict[str, Any] | None:
+    """The docket marker of a parked card's evidence, or ``None`` when it is not a docket card."""
+    for item in parse_evidence(evidence):
+        if str(item.get("ref", "")).startswith(MARKER_PREFIX):
             try:
                 marker = json.loads(item.get("note", ""))
             except (ValueError, TypeError):
@@ -534,6 +550,142 @@ async def run_calendar_rsvp_docket(
         return {"status": status, "complete": False, "prepared": 0}
 
 
+@dataclass
+class EntryState:
+    """One pending invitation the docket butler owns, with the facts read for it this pass."""
+
+    entry_id: str
+    row: Mapping[str, Any]
+    etag: str | None
+    evaluation: Evaluation | None
+    readable: bool
+
+
+@dataclass
+class Snapshot:
+    """One fresh read of the invitations and the facts the policies are judged on.
+
+    Shared by the job and the dashboard's batch submit, so both run the same pure evaluator over
+    the same reads. ``failure`` is set when the invitations themselves could not be read.
+    """
+
+    entries: dict[str, EntryState] = field(default_factory=dict)
+    owner_rows: Sequence[Mapping[str, Any]] = field(default_factory=list)
+    rows_available: bool = True
+    #: Every copy with its metadata, unfiltered, for reading the owner's own response.
+    response_rows: Sequence[Mapping[str, Any]] = field(default_factory=list)
+    responses_available: bool = True
+    truncated: bool = False
+    degraded: list[str] = field(default_factory=list)
+    unprepared: Counter = field(default_factory=Counter)
+    failure: str | None = None
+
+
+async def take_snapshot(
+    db: DatabaseManager,
+    pool: Any,
+    policies: Sequence[Policy],
+    *,
+    now: datetime,
+    lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+) -> Snapshot:
+    """Read the invitations and facts and evaluate the policies. Never raises on a failed read.
+
+    A degraded snapshot (any unreadable fact) evaluates nothing: every entry is unreadable.
+    """
+    snap = Snapshot()
+    end = now + timedelta(days=lookahead_days)
+    read = await query_calendar_invitations(db, start=now, end=end, limit=INVITATION_LIMIT)
+    if not read.status_available or read.failed_butlers:
+        # An invitation we could not see might be answered or moved.
+        snap.unprepared["invitations_unavailable"] += 1
+        snap.failure = "invitations_unavailable"
+        return snap
+    snap.truncated = len(read.rows) >= INVITATION_LIMIT
+    owner_rows, snap.rows_available = await query_owner_calendar_rows(db, start=now, end=end)
+    snap.owner_rows = owner_rows
+    snap.response_rows, snap.responses_available = await query_owner_response_rows(
+        db, start=now, end=end
+    )
+    if snap.truncated:
+        snap.degraded.append("invitations_truncated")
+    if not snap.rows_available or not snap.responses_available:
+        snap.degraded.append("calendar")
+    outside_known = True
+    prefs = None
+    try:
+        # TODO(bu-5ii4gj.9 S4): read through load_scheduling_preferences once #6226 lands.
+        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(pool))
+    except Exception:  # noqa: BLE001
+        outside_known = False
+        snap.degraded.append("declared_hours")
+
+    for row in read.rows:
+        entry_id = str(row["instance_id"])
+        if row.get("butler_name") != docket_butler() or row.get("writable") is not True:
+            continue  # another butler's entry: the docket never prepares an answer for it
+        etag = row.get("event_etag")
+        if snap.degraded:
+            snap.entries[entry_id] = EntryState(entry_id, row, etag, None, False)
+            snap.unprepared["facts_unreadable"] += 1
+            continue
+        metadata = _metadata(row.get("event_metadata"))
+        organizer = metadata.get("organizer")
+        roles = await read_organizer_roles(pool, organizer if isinstance(organizer, str) else None)
+        if roles is None:
+            snap.entries[entry_id] = EntryState(entry_id, row, etag, None, False)
+            snap.unprepared["organizer_unreadable"] += 1
+            continue
+        if not outside_known or prefs is None or not prefs.has_constraints:
+            outside: bool | None = False if outside_known else None
+        else:
+            outside = not prefs.allows(row["instance_starts_at"], row["instance_ends_at"])
+        facts = invitation_facts(
+            row,
+            now=now,
+            owner_rows=owner_rows,
+            outside_hours=outside,
+            organizer_roles=roles,
+        )
+        snap.entries[entry_id] = EntryState(
+            entry_id, row, etag, evaluate_policies(policies, facts), True
+        )
+    return snap
+
+
+def judge_card(
+    marker: Mapping[str, Any], snap: Snapshot, by_policy: Mapping[str, Policy]
+) -> tuple[str, str | None]:
+    """Judge one open docket card against a snapshot.
+
+    Returns ``("current", None)``, ``("stale", reason)`` with a closed reason, or
+    ``("unverifiable", why)`` when a fact it depends on could not be read (``why`` is
+    ``"calendar"`` for an unreadable calendar). An unverifiable card is neither confirmed nor
+    refuted: it stays as it is.
+    """
+    entry = snap.entries.get(str(marker.get("entry_id")))
+    policy = by_policy.get(str(marker.get("policy_id")))
+    revoked = policy is not None and policy.revoked_at is not None
+    version = policy.version if policy is not None else None
+    if entry is None:
+        # No longer a pending invitation (answered, moved or cancelled). Rejecting it needs the
+        # owner's own row to tell an answer from a move, so an unreadable calendar keeps it.
+        if snap.truncated or not snap.responses_available:
+            return "unverifiable", "calendar"
+        return "stale", "stale_event"
+    reason = fact_independent_reason(
+        marker, etag=entry.etag, policy_revoked=revoked, policy_version=version
+    )
+    if reason is not None:
+        return "stale", reason
+    if not entry.readable:
+        return "unverifiable", "facts"
+    reason = supersede_reason(
+        marker, evaluation=entry.evaluation, policy_revoked=revoked, etag=entry.etag
+    )
+    return ("stale", reason) if reason else ("current", None)
+
+
 async def _run(
     db: DatabaseManager,
     mgr: Any,
@@ -576,79 +728,35 @@ async def _run(
     if open_cards is None:
         return incomplete("open_cards_unavailable")
 
-    end = now + timedelta(days=lookahead_days)
-    read = await query_calendar_invitations(db, start=now, end=end, limit=INVITATION_LIMIT)
-    if not read.status_available or read.failed_butlers:
-        # An invitation we could not see might be answered or moved: prepare and reject nothing.
-        summary["unprepared"]["invitations_unavailable"] += 1
-        return incomplete("invitations_unavailable")
-    truncated = len(read.rows) >= INVITATION_LIMIT
-
-    owner_rows, rows_available = await query_owner_calendar_rows(db, start=now, end=end)
-    response_rows, responses_available = await query_owner_response_rows(db, start=now, end=end)
-    degraded: list[str] = []
-    if truncated:
-        degraded.append("invitations_truncated")
-    if not rows_available:
-        degraded.append("calendar")
-    outside_known = True
-    prefs = None
-    try:
-        # TODO(bu-5ii4gj.9 S4): read through load_scheduling_preferences once #6226 lands.
-        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(pool))
-    except Exception:  # noqa: BLE001
-        outside_known = False
-        degraded.append("declared_hours")
-    # A degraded tick prepares nothing new and rejects only for fact-independent reasons.
-    tick_degraded = bool(degraded)
-    if tick_degraded:
-        summary["degraded"] = degraded
+    snap = await take_snapshot(db, pool, policies, now=now, lookahead_days=lookahead_days)
+    if snap.failure is not None:
+        summary["unprepared"].update(snap.unprepared)
+        return incomplete(snap.failure)
+    summary["unprepared"].update(snap.unprepared)
+    if snap.degraded:
+        summary["degraded"] = snap.degraded
+        summary["complete"] = False
+    if snap.unprepared.get("organizer_unreadable"):
         summary["complete"] = False
 
-    # entry id -> (etag, evaluation, readable): readable means every fact for it was read.
-    current: dict[str, tuple[str | None, Evaluation | None, bool]] = {}
-    for row in read.rows:
-        entry_id = str(row["instance_id"])
-        if row.get("butler_name") != docket_butler() or row.get("writable") is not True:
-            continue  # another butler's entry: the docket never prepares an answer for it
-        etag = row.get("event_etag")
-        if tick_degraded:
-            current[entry_id] = (etag, None, False)
-            summary["unprepared"]["facts_unreadable"] += 1
+    for entry in snap.entries.values():
+        evaluation = entry.evaluation
+        if not entry.readable or evaluation is None:
             continue
-        metadata = _metadata(row.get("event_metadata"))
-        organizer = metadata.get("organizer")
-        roles = await read_organizer_roles(pool, organizer if isinstance(organizer, str) else None)
-        if roles is None:
-            current[entry_id] = (etag, None, False)
-            summary["unprepared"]["organizer_unreadable"] += 1
-            summary["complete"] = False
-            continue
-        if not outside_known or prefs is None or not prefs.has_constraints:
-            outside: bool | None = False if outside_known else None
-        else:
-            outside = not prefs.allows(row["instance_starts_at"], row["instance_ends_at"])
-        facts = invitation_facts(
-            row,
-            now=now,
-            owner_rows=owner_rows,
-            outside_hours=outside,
-            organizer_roles=roles,
-        )
-        evaluation = evaluate_policies(policies, facts)
-        current[entry_id] = (etag, evaluation, True)
-
         if evaluation.status == "disagree":
-            summary["disagreed"].append({"entry_id": entry_id, "policies": evaluation.disagreeing})
+            summary["disagreed"].append(
+                {"entry_id": entry.entry_id, "policies": evaluation.disagreeing}
+            )
             continue
         match = evaluation.prepared
         if match is None:
             summary["no_match"] += 1
             continue
+        row = entry.row
         request_id = docket_request_id(
             event_id=str(row["event_id"]),
             occurrence=row["instance_starts_at"].isoformat(),
-            etag=etag,
+            etag=entry.etag,
             policy_id=match.policy_id,
             policy_version=match.version,
             verdict=match.verdict,
@@ -660,12 +768,12 @@ async def _run(
         result = await _park(
             mgr,
             {
-                "entry_id": entry_id,
+                "entry_id": entry.entry_id,
                 "response_status": match.verdict,
                 "request_id": request_id,
                 "send_updates": match.send_updates,
             },
-            build_dossier(match, request_id=request_id, entry_id=entry_id, etag=etag),
+            build_dossier(match, request_id=request_id, entry_id=entry.entry_id, etag=entry.etag),
         )
         if result.get("status") == "pending_approval":
             summary["prepared"] += 1
@@ -683,38 +791,20 @@ async def _run(
     for card in open_cards:
         marker = card["marker"]
         entry_id = str(marker.get("entry_id"))
-        seen = current.get(entry_id)
-        policy = by_policy.get(str(marker.get("policy_id")))
-        revoked = policy is not None and policy.revoked_at is not None
-        version = policy.version if policy is not None else None
-        if seen is None:
-            # No longer a pending invitation (answered, moved or cancelled). Rejecting it needs the
-            # owner's own row to tell an answer from a move, so an unreadable calendar keeps it.
-            if truncated or not responses_available:
-                summary["unprepared"]["card_kept_unreadable"] += 1
+        kind, reason = judge_card(marker, snap, by_policy)
+        if kind == "unverifiable":
+            summary["unprepared"]["card_kept_unreadable"] += 1
+            if reason == "calendar":
                 summary["complete"] = False
-                continue
-            reason: str | None = "stale_event"
-        else:
-            etag, evaluation, readable = seen
-            reason = fact_independent_reason(
-                marker, etag=etag, policy_revoked=revoked, policy_version=version
-            )
-            if reason is None and not readable:
-                summary["unprepared"]["card_kept_unreadable"] += 1
-                continue
-            if reason is None:
-                reason = supersede_reason(
-                    marker, evaluation=evaluation, policy_revoked=revoked, etag=etag
-                )
-        if reason is None:
+            continue
+        if kind == "current" or reason is None:
             continue
         if await _reject(pool, card["id"], reason):
             summary["rejected"][reason] += 1
-            if reason == "stale_event" and seen is None:
-                # responses_available held above: the owner may have answered outside the card
+            if reason == "stale_event" and entry_id not in snap.entries:
+                # the owner may have answered outside the card: the only rejection that counts
                 outcome = ledger.answered_outcome(
-                    marker.get("verdict"), ledger.owner_response(response_rows, entry_id)
+                    marker.get("verdict"), ledger.owner_response(snap.response_rows, entry_id)
                 )
                 await _ledger(summary, pool, card["id"], marker, outcome)
 

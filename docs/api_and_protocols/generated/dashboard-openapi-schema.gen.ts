@@ -2321,6 +2321,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/rsvp-docket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Docket
+         * @description Every parked docket card with its exact call, judged against a fresh read.
+         */
+        get: operations["get_docket_api_calendar_rsvp_docket_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/rsvp-docket/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Docket
+         * @description Approve the ticked cards one by one; refuse and name any that changed.
+         */
+        post: operations["submit_docket_api_calendar_rsvp_docket_submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/rsvp-policies": {
         parameters: {
             query?: never;
@@ -18073,6 +18113,11 @@ export interface components {
             data: components["schemas"]["DisconnectStatus"];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[DocketResponse] */
+        ApiResponse_DocketResponse_: {
+            data: components["schemas"]["DocketResponse"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[DriftFacts] */
         ApiResponse_DriftFacts_: {
             data: components["schemas"]["DriftFacts"];
@@ -18901,6 +18946,11 @@ export interface components {
         /** ApiResponse[StoredFunctionFacts] */
         ApiResponse_StoredFunctionFacts_: {
             data: components["schemas"]["StoredFunctionFacts"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
+        /** ApiResponse[SubmitResult] */
+        ApiResponse_SubmitResult_: {
+            data: components["schemas"]["SubmitResult"];
             meta?: components["schemas"]["ApiMeta"];
         };
         /** ApiResponse[SyntheticFindingResponse] */
@@ -22961,6 +23011,23 @@ export interface components {
             owner: string;
             /** Version */
             version: number;
+        };
+        /**
+         * CardOutcome
+         * @description What the approve path did for one card. ``dispatched`` is false for a card that was approved
+         *     but not sent (``status`` stays ``approved``), so the page never reads it as done.
+         */
+        CardOutcome: {
+            /** Action Id */
+            action_id: string;
+            /** Dispatched */
+            dispatched: boolean;
+            /** Execution Failure */
+            execution_failure?: {
+                [key: string]: unknown;
+            } | null;
+            /** Status */
+            status: string;
         };
         /**
          * CareDuty
@@ -27123,6 +27190,19 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** DisagreeingPolicy */
+        DisagreeingPolicy: {
+            /** Id */
+            id: string;
+            /** Position */
+            position: number;
+            /** Send Updates */
+            send_updates: string;
+            /** Verdict */
+            verdict: string;
+            /** Version */
+            version: number;
+        };
         /**
          * DisconnectAccountResponse
          * @description Response for DELETE /api/oauth/google/accounts/<id>.
@@ -27357,6 +27437,78 @@ export interface components {
             normalized_merchant?: string | null;
             /** Total Amount */
             total_amount: string;
+        };
+        /** DocketCard */
+        DocketCard: {
+            /** Action Id */
+            action_id: string;
+            /** Args Digest */
+            args_digest: string;
+            /** Entry Id */
+            entry_id: string;
+            event?: components["schemas"]["DocketEvent"] | null;
+            /** Facts */
+            facts: components["schemas"]["DocketFact"][];
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Version */
+            policy_version: number;
+            /** Reason */
+            reason?: string | null;
+            /** Send Updates */
+            send_updates: string;
+            /** State */
+            state: string;
+            /** Verdict */
+            verdict: string;
+        };
+        /**
+         * DocketDisagreement
+         * @description An invitation whose matching policies disagree, so nothing was prepared for it.
+         */
+        DocketDisagreement: {
+            /** Entry Id */
+            entry_id: string;
+            event?: components["schemas"]["DocketEvent"] | null;
+            /** Policies */
+            policies: components["schemas"]["DisagreeingPolicy"][];
+        };
+        /** DocketEvent */
+        DocketEvent: {
+            /** Ends At */
+            ends_at?: string | null;
+            /** Starts At */
+            starts_at?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /** DocketFact */
+        DocketFact: {
+            /** Kind */
+            kind: string;
+            /** Note */
+            note: string;
+        };
+        /** DocketResponse */
+        DocketResponse: {
+            /** Cards */
+            cards: components["schemas"]["DocketCard"][];
+            /** Complete */
+            complete: boolean;
+            /** Degraded */
+            degraded: string[];
+            /** Disagreed */
+            disagreed?: components["schemas"]["DocketDisagreement"][];
+            /** Policy Agreement */
+            policy_agreement?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Unprepared */
+            unprepared: number;
+            /** Unprepared Reasons */
+            unprepared_reasons: {
+                [key: string]: number;
+            };
         };
         /**
          * DocumentModel
@@ -39926,6 +40078,43 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** SubmitItem */
+        SubmitItem: {
+            /**
+             * Action Id
+             * Format: uuid
+             */
+            action_id: string;
+            /** Args Digest */
+            args_digest: string;
+        };
+        /** SubmitRefusal */
+        SubmitRefusal: {
+            /** Action Id */
+            action_id: string;
+            /** Entry Id */
+            entry_id?: string | null;
+            event?: components["schemas"]["DocketEvent"] | null;
+            /** Reason */
+            reason: string;
+        };
+        /** SubmitRequest */
+        SubmitRequest: {
+            /** Items */
+            items: components["schemas"]["SubmitItem"][];
+        };
+        /** SubmitResult */
+        SubmitResult: {
+            /** Refused */
+            refused: components["schemas"]["SubmitRefusal"][];
+            /** Results */
+            results: components["schemas"]["CardOutcome"][];
+            /**
+             * Stopped
+             * @default false
+             */
+            stopped?: boolean;
+        };
         /**
          * SubscriptionEntry
          * @description One row of ``public.butler_subscriptions`` — a standing
@@ -45812,6 +46001,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_CalendarAccountsResponse_"];
+                };
+            };
+        };
+    };
+    get_docket_api_calendar_rsvp_docket_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_DocketResponse_"];
+                };
+            };
+        };
+    };
+    submit_docket_api_calendar_rsvp_docket_submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_SubmitResult_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

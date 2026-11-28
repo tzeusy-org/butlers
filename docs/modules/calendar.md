@@ -823,6 +823,19 @@ deterministic, model-free and dark until `BUTLERS_CALENDAR_RSVP_DOCKET=1`.
 - **Superseded cards.** Each run re-evaluates every open docket card and rejects the ones no longer
   current through the approvals system reject, with a closed reason (`stale_event`,
   `policy_changed`, `policy_revoked`, `policy_no_longer_matches`) and the receipt kept.
+- **Dashboard batch.** `GET /api/calendar/rsvp-docket` lists every parked docket answer with its exact
+  call (event, verdict, `send_updates`), the policy id and version, the matched facts and each
+  policy's agreement counts, beside how many invitations could not be evaluated (an empty docket with
+  a non-zero count is not clean). `POST /api/calendar/rsvp-docket/submit` takes the ticked cards,
+  re-runs the same evaluator over a fresh read, and approves each card individually through the
+  existing approve path, bound to the stored call and the digest shown. A card whose event etag or
+  policy version changed, that no longer matches, that cannot be re-checked, or that is no longer
+  pending is refused and named; the rest are applied. Unticked cards stay pending. Owner cookie
+  session only, never an API key. Each card reports its own `status`, `dispatched` and
+  `execution_failure`, so a card approved but not sent never reads as done. An unexpected failure
+  or a dispatch past the per-card timeout (75s) stops the batch: that card is `outcome_unknown`, the
+  rest `not_attempted`, and the cards already committed are returned. A batch also starts no card
+  it could not finish within 255s, so the response lands under the browser's header limit.
 - **Agreement ledger.** Each run records, once per card, what the owner did with a prepared answer
   (`approved_as_prepared`, `owner_rejected`, or, when the owner answered the invitation themself and
   that made the card stale, `answered_same` / `answered_elsewhere`) in `public.calendar_rsvp_ledger`
