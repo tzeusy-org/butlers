@@ -329,6 +329,27 @@ describe("CalendarDocketPanel", () => {
     );
   });
 
+  it("keeps the 'more waiting' line after the refetch drops the sent cards", async () => {
+    const many = Array.from({ length: 51 }, (_, i) =>
+      card({ action_id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}` }),
+    );
+    const props = { timezone: "UTC" } as const;
+    const onSubmit = vi.fn().mockImplementation(async () => {
+      // The refetch on settle: only the 51st card is still ready.
+      view.rerender(
+        <CalendarDocketPanel {...props} docket={docket({ cards: many.slice(50) })} onSubmit={onSubmit} />,
+      );
+      return NOTHING;
+    });
+    const view = render(<CalendarDocketPanel {...props} docket={docket({ cards: many })} onSubmit={onSubmit} />);
+    fireEvent.click(screen.getByRole("button", { name: "Tick first 50" }));
+    fireEvent.click(screen.getByTestId("docket-submit"));
+    expect((await screen.findByTestId("docket-result")).textContent).toContain(
+      "1 more is waiting for the next submit.",
+    );
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+  });
+
   it("unticking one of 50 frees the cap for the 51st", () => {
     const many = Array.from({ length: 51 }, (_, i) =>
       card({ action_id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}` }),

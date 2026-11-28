@@ -116,6 +116,8 @@ export function CalendarDocketPanel({
 }: CalendarDocketPanelProps) {
   const [tickedRaw, setTicked] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<DocketSubmitResult | null>(null);
+  // Cards left over by the submit's cap, counted before the refetch drops the sent ones.
+  const [waitingAfterSubmit, setWaitingAfterSubmit] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const headingId = useId();
 
@@ -146,8 +148,10 @@ export function CalendarDocketPanel({
       .map((card) => ({ action_id: card.action_id, args_digest: card.args_digest }));
     if (items.length === 0 || submitting) return;
     setSubmitError(null);
+    const leftBehind = Math.max(0, ready.length - DOCKET_MAX_SUBMIT);
     try {
       setResult(await onSubmit(items));
+      setWaitingAfterSubmit(leftBehind);
       setTicked(new Set());
     } catch {
       setResult(null);
@@ -183,7 +187,6 @@ export function CalendarDocketPanel({
   const tickedCount = ticked.size;
   // One submit carries at most DOCKET_MAX_SUBMIT cards; the rest wait for the next one.
   const tickAllCount = Math.min(ready.length, DOCKET_MAX_SUBMIT);
-  const waiting = Math.max(0, ready.length - DOCKET_MAX_SUBMIT);
 
   return (
     <section
@@ -325,7 +328,7 @@ export function CalendarDocketPanel({
         </ul>
       )}
 
-      {result ? <SubmitReport result={result} titles={titles} waiting={waiting} /> : null}
+      {result ? <SubmitReport result={result} titles={titles} waiting={waitingAfterSubmit} /> : null}
       {submitError ? (
         <p data-testid="docket-submit-error" role="alert" className="text-sm text-[var(--red-text)]">
           {submitError}
@@ -337,7 +340,7 @@ export function CalendarDocketPanel({
           {tickedCount === 0
             ? "Tick the answers to send. Unticked ones stay pending."
             : `${tickedCount} ticked`}
-          {waiting > 0 ? ` · up to ${DOCKET_MAX_SUBMIT} per submit` : ""}
+          {ready.length > DOCKET_MAX_SUBMIT ? ` · up to ${DOCKET_MAX_SUBMIT} per submit` : ""}
         </span>
         <button
           type="button"
