@@ -823,6 +823,11 @@ deterministic, model-free and dark until `BUTLERS_CALENDAR_RSVP_DOCKET=1`.
 - **Superseded cards.** Each run re-evaluates every open docket card and rejects the ones no longer
   current through the approvals system reject, with a closed reason (`stale_event`,
   `policy_changed`, `policy_revoked`, `policy_no_longer_matches`) and the receipt kept.
+- **Agreement ledger.** Each run records, once per card, what the owner did with a prepared answer
+  (`approved_as_prepared`, `owner_rejected`, or, when the owner answered the invitation themself and
+  that made the card stale, `answered_same` / `answered_elsewhere`) in `public.calendar_rsvp_ledger`
+  (core_390). System rejections and expiry record nothing. It is informational and is never read to
+  widen autonomy.
 - **Outages.** A read that failed prepares and rejects nothing, an unreadable fact never matches,
   and each card that could not be parked is counted `unprepared`, so an outage is never a clean
   docket. Policies that disagree prepare nothing and are named in the run summary.

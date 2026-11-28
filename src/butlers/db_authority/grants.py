@@ -244,6 +244,12 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
         "core_388/core_389: owner RSVP policies, written only by the dashboard definer; the "
         "docket job's butler (Relationship) reads; RLS fences a replay",
     ),
+    "calendar_rsvp_ledger": _replay_widened(
+        _NONE,
+        {},
+        "core_390: docket agreement ledger, written only by its recorder definer; the dashboard "
+        "reads counts through a definer; RLS fences a replay",
+    ),
     "security_answers": _replay_widened(
         _NONE,
         {_SWITCHBOARD: _SELECT},

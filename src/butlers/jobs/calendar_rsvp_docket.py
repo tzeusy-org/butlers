@@ -58,6 +58,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.read_models.calendar_workspace import (
     query_calendar_invitations,
     query_owner_calendar_rows,
+    query_owner_response_rows,
 )
 from butlers.config import list_butlers
 from butlers.core.job_health import mark_tick_incomplete, record_tick
@@ -71,6 +72,7 @@ from butlers.core.temporal.rsvp_policy import (
     evaluate_policies,
 )
 from butlers.core.temporal.scheduling import SchedulingPreferences, get_scheduling_preferences
+from butlers.jobs import calendar_rsvp_ledger as ledger
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.models import ActionStatus
 
@@ -86,6 +88,7 @@ INVITATION_LIMIT = 500
 # What ``calendar_respond`` returns for a replayed request id whose command already settled (the
 # statuses of calendar_response.py other than a freshly parked ``pending_approval``).
 _DECIDED_REPLAYS = frozenset({"approved", "rejected", "applied", "noop", "failed", "uncertain"})
+LEDGER_LOOKBACK_DAYS = 30
 _LOCK_KEY = "butlers:calendar_rsvp_docket"
 MARKER_PREFIX = "rsvp-docket:"
 REJECT_REASONS = ("stale_event", "policy_changed", "policy_revoked", "policy_no_longer_matches")
@@ -422,6 +425,44 @@ async def _open_cards(pool: Any) -> list[dict[str, Any]] | None:
     return cards
 
 
+async def _decided_cards(pool: Any, since: datetime) -> list[dict[str, Any]] | None:
+    """Docket cards the owner decided since ``since`` (their outcome goes in the ledger)."""
+    try:
+        rows = await pool.fetch(
+            "SELECT id, status, decided_by, evidence FROM pending_actions "
+            "WHERE tool_name = 'calendar_respond' "
+            "AND status IN ('approved', 'executed', 'rejected') AND decided_at >= $1",
+            since,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("rsvp docket: decided cards unreadable", exc_info=True)
+        return None
+    cards = []
+    for row in rows:
+        marker = parse_marker(row["evidence"])
+        if marker is not None:
+            cards.append(
+                {
+                    "id": row["id"],
+                    "marker": marker,
+                    "status": row["status"],
+                    "by": row["decided_by"],
+                }
+            )
+    return cards
+
+
+async def _ledger(summary: dict[str, Any], pool: Any, action_id: Any, marker: Any, outcome: Any):
+    if outcome is None:
+        return  # a system rejection, or an answer we cannot attribute to the owner
+    try:
+        if await ledger.record_outcome(pool, action_id=action_id, marker=marker, outcome=outcome):
+            summary["ledger"][outcome] += 1
+    except ledger.LedgerUnavailable:
+        summary["ledger_unavailable"] += 1
+        summary["complete"] = False
+
+
 async def _reject(pool: Any, action_id: Any, reason: str) -> bool:
     transition = await transition_pending_action(
         pool,
@@ -512,6 +553,8 @@ async def _run(
         "no_match": 0,
         "unprepared": Counter(),
         "rejected": Counter(),
+        "ledger": Counter(),
+        "ledger_unavailable": 0,
     }
 
     def incomplete(status: str) -> dict[str, Any]:
@@ -542,6 +585,7 @@ async def _run(
     truncated = len(read.rows) >= INVITATION_LIMIT
 
     owner_rows, rows_available = await query_owner_calendar_rows(db, start=now, end=end)
+    response_rows, responses_available = await query_owner_response_rows(db, start=now, end=end)
     degraded: list[str] = []
     if truncated:
         degraded.append("invitations_truncated")
@@ -646,7 +690,7 @@ async def _run(
         if seen is None:
             # No longer a pending invitation (answered, moved or cancelled). Rejecting it needs the
             # owner's own row to tell an answer from a move, so an unreadable calendar keeps it.
-            if truncated or not rows_available:
+            if truncated or not responses_available:
                 summary["unprepared"]["card_kept_unreadable"] += 1
                 summary["complete"] = False
                 continue
@@ -667,6 +711,20 @@ async def _run(
             continue
         if await _reject(pool, card["id"], reason):
             summary["rejected"][reason] += 1
+            if reason == "stale_event" and seen is None:
+                # responses_available held above: the owner may have answered outside the card
+                outcome = ledger.answered_outcome(
+                    marker.get("verdict"), ledger.owner_response(response_rows, entry_id)
+                )
+                await _ledger(summary, pool, card["id"], marker, outcome)
+
+    decided = await _decided_cards(pool, now - timedelta(days=LEDGER_LOOKBACK_DAYS))
+    if decided is None:
+        summary["ledger_unavailable"] += 1
+        summary["complete"] = False
+    for card in decided or []:
+        outcome = ledger.decided_outcome(card["status"], card["by"])
+        await _ledger(summary, pool, card["id"], card["marker"], outcome)
     return summary
 
 

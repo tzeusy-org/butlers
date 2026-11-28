@@ -94,7 +94,9 @@ def _fake_lock():
 
 
 class _Env:
-    def __init__(self, monkeypatch, *, policies, rows, owner_rows=None, open_cards=None):
+    def __init__(
+        self, monkeypatch, *, policies, rows, owner_rows=None, open_cards=None, response_rows=None
+    ):
         self.park = AsyncMock(
             return_value={"status": "pending_approval", "action_id": str(uuid4())}
         )
@@ -106,11 +108,28 @@ class _Env:
         monkeypatch.setattr(job, "docket_butler_configured", lambda: True)
         monkeypatch.setattr(job, "read_policies", AsyncMock(return_value=policies))
         monkeypatch.setattr(job, "_open_cards", AsyncMock(return_value=open_cards or []))
+        self.decided = []
+        monkeypatch.setattr(job, "_decided_cards", AsyncMock(side_effect=lambda *a: self.decided))
+        self.record = AsyncMock(return_value=True)
+        monkeypatch.setattr(job.ledger, "record_outcome", self.record)
         monkeypatch.setattr(job, "query_calendar_invitations", AsyncMock(return_value=self.read))
         monkeypatch.setattr(
             job,
             "query_owner_calendar_rows",
             AsyncMock(return_value=(owner_rows if owner_rows is not None else [_focus()], True)),
+        )
+        self.response_rows = response_rows
+        monkeypatch.setattr(
+            job,
+            "query_owner_response_rows",
+            AsyncMock(
+                return_value=(
+                    response_rows
+                    if response_rows is not None
+                    else (owner_rows if owner_rows is not None else [_focus()]),
+                    True,
+                )
+            ),
         )
         monkeypatch.setattr(job, "get_scheduling_preferences", AsyncMock(return_value=None))
         monkeypatch.setattr(job, "read_organizer_roles", AsyncMock(return_value=frozenset()))
@@ -397,6 +416,7 @@ async def test_unreadable_calendar_facts_never_reject_a_card_and_never_match(mon
         open_cards=[{"id": uuid4(), "marker": marker}],
     )
     monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+    monkeypatch.setattr(job, "query_owner_response_rows", AsyncMock(return_value=([], False)))
     summary = await env.run()
     assert summary["complete"] is False and summary["degraded"] == ["calendar"]
     env.park.assert_not_awaited()  # an unknown fact never matches
@@ -512,6 +532,7 @@ async def test_a_partial_calendar_read_keeps_the_card_and_parks_the_lower_policy
         open_cards=[{"id": card_id, "marker": marker}],
     )
     monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+    monkeypatch.setattr(job, "query_owner_response_rows", AsyncMock(return_value=([], False)))
     summary = await env.run()
     env.reject.assert_not_awaited()  # not policy_no_longer_matches, not policy_changed
     env.park.assert_not_awaited()  # b would win on a partial read; it must not be prepared
@@ -550,6 +571,7 @@ async def test_a_degraded_tick_still_rejects_for_fact_independent_reasons(monkey
             open_cards=[{"id": card_id, "marker": marker}],
         )
         monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+        monkeypatch.setattr(job, "query_owner_response_rows", AsyncMock(return_value=([], False)))
         await env.run()
         assert env.reject.await_args.args[1:] == (card_id, reason), reason
         env.park.assert_not_awaited()
@@ -561,6 +583,7 @@ async def test_a_vanished_entry_is_kept_while_the_calendar_cannot_be_read(monkey
         monkeypatch, policies=[_policy()], rows=[], open_cards=[{"id": uuid4(), "marker": marker}]
     )
     monkeypatch.setattr(job, "query_owner_calendar_rows", AsyncMock(return_value=([], False)))
+    monkeypatch.setattr(job, "query_owner_response_rows", AsyncMock(return_value=([], False)))
     summary = await env.run()
     env.reject.assert_not_awaited()
     assert summary["unprepared"]["card_kept_unreadable"] == 1
@@ -601,3 +624,75 @@ def test_the_replay_set_is_exactly_what_calendar_respond_can_return() -> None:
     )
     assert "pending_approval" in returned
     assert job._DECIDED_REPLAYS == returned - {"pending_approval"}
+
+
+async def _open_card_for(monkeypatch, row):
+    first = _Env(monkeypatch, policies=[_policy()], rows=[row])
+    await first.run()
+    return job.parse_marker(first.park.await_args.args[2]["_evidence"])
+
+
+async def test_an_owner_decision_is_recorded_and_a_system_rejection_is_not(monkeypatch) -> None:
+    marker = await _open_card_for(monkeypatch, _row())
+    env = _Env(monkeypatch, policies=[_policy()], rows=[])
+    env.decided = [
+        {"id": uuid4(), "marker": marker, "status": "approved", "by": "human:dashboard:rest-api"},
+        {"id": uuid4(), "marker": marker, "status": "rejected", "by": "human:dashboard:rest-api"},
+        {"id": uuid4(), "marker": marker, "status": "rejected", "by": job.DOCKET_ACTOR},
+    ]
+    summary = await env.run()
+    outcomes = [c.kwargs["outcome"] for c in env.record.await_args_list]
+    assert outcomes == ["approved_as_prepared", "owner_rejected"]
+    assert summary["ledger"] == {"approved_as_prepared": 1, "owner_rejected": 1}
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"), [("declined", "answered_same"), ("accepted", "answered_elsewhere")]
+)
+async def test_an_answer_outside_the_card_is_recorded_when_it_made_the_card_stale(
+    monkeypatch, status, outcome
+) -> None:
+    row = _row()
+    marker = await _open_card_for(monkeypatch, row)
+    answered = {
+        "instance_id": row["instance_id"],
+        "instance_starts_at": START,
+        "instance_ends_at": START + timedelta(hours=1),
+        "event_metadata": {"attendees": [{"self": True, "response_status": status}]},
+    }
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[],
+        owner_rows=[],  # the filtered time read drops a self-declined row ...
+        response_rows=[answered],  # ... the unfiltered response read does not
+        open_cards=[{"id": uuid4(), "marker": marker}],
+    )
+    await env.run()
+    assert env.reject.await_args.args[2] == "stale_event"
+    assert [c.kwargs["outcome"] for c in env.record.await_args_list] == [outcome]
+
+
+async def test_a_card_that_went_stale_without_an_owner_answer_records_nothing(monkeypatch) -> None:
+    row = _row()
+    marker = await _open_card_for(monkeypatch, row)
+    env = _Env(
+        monkeypatch,
+        policies=[_policy()],
+        rows=[],
+        owner_rows=[],
+        open_cards=[{"id": uuid4(), "marker": marker}],
+    )
+    await env.run()
+    env.record.assert_not_awaited()
+
+
+async def test_a_ledger_outage_is_counted_and_never_makes_a_clean_run(monkeypatch) -> None:
+    marker = await _open_card_for(monkeypatch, _row())
+    env = _Env(monkeypatch, policies=[_policy()], rows=[])
+    env.decided = [
+        {"id": uuid4(), "marker": marker, "status": "approved", "by": "human:dashboard:rest-api"}
+    ]
+    env.record.side_effect = job.ledger.LedgerUnavailable
+    summary = await env.run()
+    assert summary["ledger_unavailable"] == 1 and summary["complete"] is False
