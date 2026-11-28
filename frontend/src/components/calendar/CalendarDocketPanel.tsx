@@ -277,7 +277,7 @@ export function CalendarDocketPanel({
                   <input
                     id={checkId}
                     type="checkbox"
-                    className="mt-1 size-4 shrink-0 accent-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                    className="mt-1 size-4 shrink-0 accent-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                     checked={ticked.has(card.action_id)}
                     disabled={
                       !approvable ||
