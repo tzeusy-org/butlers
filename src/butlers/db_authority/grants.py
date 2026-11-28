@@ -192,6 +192,7 @@ _OWNER_ONLY = "private to its NOLOGIN owner; reached only through definer interf
 _PERCEPTION_OWNER = "perception_owner only: FORCE RLS, every other grant revoked at install"
 _CONNECTOR = "connector_writer"
 _CONCIERGE = "butler_concierge_rw"
+_RELATIONSHIP = "butler_relationship_rw"
 _SELECT = frozenset({"SELECT"})
 
 # core_239 removes DELETE from the fleet, but a fresh database leaves connector_writer DML;
@@ -239,9 +240,9 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
     ),
     "calendar_rsvp_policies": _replay_widened(
         _NONE,
-        {},
-        "core_388: owner RSVP policies, written and read only by the dashboard definer; RLS with "
-        "no policy fences a replay (the docket job's read grant comes with the job)",
+        {_RELATIONSHIP: _SELECT},
+        "core_388/core_389: owner RSVP policies, written only by the dashboard definer; the "
+        "docket job's butler (Relationship) reads; RLS fences a replay",
     ),
     "security_answers": _replay_widened(
         _NONE,

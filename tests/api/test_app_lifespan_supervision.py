@@ -155,6 +155,25 @@ def _spy_on_supervisor(monkeypatch) -> list[tuple[str, asyncio.Task]]:
     return calls
 
 
+async def test_rsvp_docket_loop_is_dark_unless_switched_on(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_CALENDAR_RSVP_DOCKET", raising=False)
+    _install_common_mocks(monkeypatch, call_counts={})
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert "calendar_rsvp_docket" not in {name for name, _ in calls}
+
+
+async def test_rsvp_docket_loop_is_wired_when_switched_on(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.setenv("BUTLERS_CALENDAR_RSVP_DOCKET", "1")
+    _install_common_mocks(monkeypatch, call_counts={})
+    monkeypatch.setattr(api_app, "run_calendar_rsvp_docket_loop", AsyncMock())
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert "calendar_rsvp_docket" in {name for name, _ in calls}
+
+
 # Spec: REQ-core-fleet-events-006
 @pytest.mark.parametrize("bridge_start_failure", [False, True])
 async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(

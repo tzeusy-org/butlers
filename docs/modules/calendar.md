@@ -804,3 +804,25 @@ recurring, attendee count, lead time. An event title or description is never an 
   verdict or `send_updates` prepare nothing and are all named, and an unknown fact never matches.
 - **Prepares, never sends.** A policy can only prepare an answer for the owner to approve; no
   standing rule auto-applies `calendar_respond`.
+
+### The invitation docket job
+
+`butlers.jobs.calendar_rsvp_docket` (bu-5ii4gj.9 S3) turns policies into prepared answers. It is
+deterministic, model-free and dark until `BUTLERS_CALENDAR_RSVP_DOCKET=1`.
+
+- **Where.** A loop in the dashboard process, because focus blocks and accepted events live in
+  other butlers' schemas. It belongs to Relationship, the butler whose calendar module holds the
+  response fence: it reads policies through Relationship's pool (the one role with SELECT, core_389),
+  parks each card by calling Relationship's gated `calendar_respond`, refuses to run unless
+  Relationship is a configured response owner, and prepares nothing for another butler's entry.
+- **Single flight.** Each tick holds a transaction advisory lock on Relationship's pool, so a second
+  replica or a restart overlap does nothing. A park that fails or times out is counted `unprepared`.
+- **One card per answer.** The request id is a digest of event, occurrence, etag, policy id and
+  version, verdict and `send_updates`, so a rerun parks nothing new. The dossier names the policy,
+  its version and each matched fact, never event text.
+- **Superseded cards.** Each run re-evaluates every open docket card and rejects the ones no longer
+  current through the approvals system reject, with a closed reason (`stale_event`,
+  `policy_changed`, `policy_revoked`, `policy_no_longer_matches`) and the receipt kept.
+- **Outages.** A read that failed prepares and rejects nothing, an unreadable fact never matches,
+  and each card that could not be parked is counted `unprepared`, so an outage is never a clean
+  docket. Policies that disagree prepare nothing and are named in the run summary.

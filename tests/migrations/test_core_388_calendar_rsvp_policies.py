@@ -114,9 +114,10 @@ def test_only_the_dashboard_auth_role_reaches_the_definer(dbs) -> None:
         ).scalar_one()
 
 
-def test_no_runtime_role_reads_or_writes_the_table(dbs) -> None:
+def test_no_runtime_role_writes_the_table_and_only_relationship_reads_it(dbs) -> None:
     create(dbs)
     for role in [*runtime_roles(), API]:
+        reads = role == "butler_relationship_rw"  # core_389 grants the docket butler SELECT
         for sql in (
             "SELECT count(*) FROM public.calendar_rsvp_policies",
             "INSERT INTO public.calendar_rsvp_policies (position, predicates, verdict, "
@@ -124,6 +125,8 @@ def test_no_runtime_role_reads_or_writes_the_table(dbs) -> None:
             "UPDATE public.calendar_rsvp_policies SET verdict = 'accepted'",
             "DELETE FROM public.calendar_rsvp_policies",
         ):
+            if reads and sql.startswith("SELECT"):
+                continue
             with pytest.raises(DBAPIError):
                 with dbs["admin"].begin() as c:
                     c.execute(text(f'SET LOCAL ROLE "{role}"'))

@@ -1692,6 +1692,36 @@ async def query_calendar_invitations(
     )
 
 
+async def query_owner_calendar_rows(
+    db: DatabaseManager, *, start: datetime, end: datetime
+) -> tuple[list[dict[str, Any]], bool]:
+    """The owner's own deduped calendar rows in ``[start, end)``, and whether the read was whole.
+
+    The same collapse the radar and the grid use (provider-identity dedup, the persisted strategy
+    and keep-separate pins), restricted to the owner's own time. Rows are returned as dicts with the
+    workspace columns, so a caller can judge overlap with an event type or the owner's answer. A
+    failed or partial read returns ``available=False``: the caller must not treat the rows as the
+    whole calendar.
+    """
+    try:
+        rows, failed = await query_calendar_workspace(db, view="user", start=start, end=end)
+    except Exception:
+        logger.warning("query_owner_calendar_rows workspace fan-out failed", exc_info=True)
+        return [], False
+    flattened = [shallow_asdict(row) for row in rows]
+    flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+    rules, rules_read = await _read_dedup_rules(db)
+    pins, pins_read = await _read_keep_separate_keys(db)
+    deduped, _ = _dedup_workspace_rows(flattened, strategy=rules.match_strategy, keep_separate=pins)
+    owned = [
+        row
+        for row in deduped
+        if row.get("all_day") is not True
+        and counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
+    ]
+    return owned, not failed and rules_read and pins_read
+
+
 async def query_calendar_conflicts(
     db: DatabaseManager,
     *,

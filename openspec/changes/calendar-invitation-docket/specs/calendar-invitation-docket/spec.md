@@ -168,20 +168,40 @@ affected invitation and SHALL record a counted `unprepared` row with its reason;
 how many invitations were left unprepared and SHALL NOT present an empty or partial docket as
 complete.
 
+A tick in which any fact could not be read (organizer roles, the owner's calendar, declared hours, or
+invitations past the read limit) SHALL be degraded: it SHALL park nothing new, and it SHALL reject a
+card only for a reason that needs no unreadable fact (the event's etag changed, or the card's own
+policy was revoked or re-versioned). An entry whose facts were unreadable SHALL keep its card, never
+be rejected `policy_changed`, `policy_no_longer_matches` or `stale_event` on a guess, and SHALL be
+counted `unprepared`.
+
 #### Scenario: A provider outage is shown
 - **WHEN** the snapshot for an invitation cannot be read
 - **THEN** no card is parked, one `unprepared` row is counted, and the docket says so
 
-### Requirement: The Docket Runs In Exactly One Butler
+#### Scenario: A degraded tick keeps cards it cannot re-check
+- **WHEN** the owner's calendar or an organizer's roles cannot be read while a card is open
+- **THEN** the card stays pending, nothing new is parked, and the entry is counted `unprepared`
+
+### Requirement: The Docket Runs For Exactly One Butler
 
 ID: REQ-calendar-invitation-docket-008
 Source: bu-5ii4gj.9 (invitation docket)
 Scope: v1-mandatory
 
 The `calendar_rsvp_docket` job is calendar-module logic, not Messenger or Relationship domain logic.
-Exactly one butler SHALL run it: the one whose calendar module owns the owner's primary calendar and
-its response fence. The job SHALL refuse to run in any other butler.
+It runs in the dashboard process, which alone reads the whole fleet's calendar, on behalf of exactly
+one butler: the one whose calendar module owns the owner's primary calendar and its response fence
+(Relationship). It SHALL read policies as that butler's database role (the only runtime role granted
+SELECT), park a card only through that butler's gated `calendar_respond`, and refuse to run when that
+butler is not a configured response owner. It SHALL never prepare an answer for another butler's
+entry. At most one tick SHALL run at a time across every dashboard process, so a restart overlap or a
+second replica cannot park the same card twice.
 
-#### Scenario: A second butler refuses
-- **WHEN** the job is invoked in a butler that does not own the primary calendar's response fence
+#### Scenario: A butler that does not own the fence is refused
+- **WHEN** the job runs and the docket butler is not a configured response owner, or an entry belongs to another butler
 - **THEN** it refuses and parks nothing
+
+#### Scenario: A second concurrent tick parks nothing
+- **WHEN** a tick starts while another tick holds the docket's single-flight lock
+- **THEN** it returns without reading or parking anything
