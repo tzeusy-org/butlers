@@ -1,23 +1,25 @@
 /**
  * The calendar Needs-you queue: one ordered list over the reads the page already makes
- * (invitations, overlap issues, proposals, pending debriefs), and which kinds are unknown.
+ * (invitations, overlap issues, proposals, pending debriefs, organizer-made changes), and which kinds are unknown.
  * Pure: no query, no endpoint, no stored state.
  */
 
 import type {
+  CalendarChange,
   CalendarInvitationEntry,
   ConflictIssue,
   PendingDebrief,
   UnifiedCalendarEntry,
 } from "@/api/types";
 
-export type NeedsYouKind = "invitation" | "conflict" | "proposal" | "debrief";
+export type NeedsYouKind = "invitation" | "conflict" | "proposal" | "debrief" | "change";
 
 export const KIND_LABEL: Record<NeedsYouKind, string> = {
   invitation: "invitations",
   conflict: "overlaps",
   proposal: "proposals",
   debrief: "debriefs",
+  change: "changes",
 };
 
 export interface NeedsYouItem {
@@ -31,6 +33,8 @@ export interface NeedsYouItem {
   raisedAt: string | null;
   /** The calendar entry the owner opens as evidence, when there is one. */
   entryId: string | null;
+  /** The change itself, for a `change` item: its before and after. */
+  change: CalendarChange | null;
 }
 
 /** One kind's read: its rows and whether they are the complete set. */
@@ -46,6 +50,7 @@ export interface NeedsYouInputs {
   conflicts: NeedsYouSource<ConflictIssue>;
   proposals: NeedsYouSource<UnifiedCalendarEntry>;
   debriefs: NeedsYouSource<PendingDebrief>;
+  changes: NeedsYouSource<CalendarChange>;
 }
 
 export interface NeedsYouQueue {
@@ -95,6 +100,7 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
       startsAt: entry.start_at,
       raisedAt: null,
       entryId: entry.entry_id,
+      change: null,
     });
   }
   for (const issue of inputs.conflicts.rows) {
@@ -108,6 +114,7 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
       startsAt: first.start_at,
       raisedAt: null,
       entryId: first.entry_id,
+      change: null,
     });
   }
   for (const entry of inputs.proposals.rows) {
@@ -118,6 +125,7 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
       startsAt: entry.start_at,
       raisedAt: null,
       entryId: null,
+      change: null,
     });
   }
   for (const debrief of inputs.debriefs.rows) {
@@ -128,6 +136,18 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
       startsAt: debrief.occurrence_start,
       raisedAt: debrief.prompted_at,
       entryId: null,
+      change: null,
+    });
+  }
+  for (const change of inputs.changes.rows) {
+    items.push({
+      id: `change:${change.event_id}:${change.observed_at}`,
+      kind: "change",
+      title: change.title ?? "An event",
+      startsAt: change.new_start_at ?? change.prior_start_at,
+      raisedAt: change.observed_at,
+      entryId: change.entry_id,
+      change,
     });
   }
   items.sort(compareNeedsYou);
@@ -139,7 +159,7 @@ export function buildNeedsYouQueue(inputs: NeedsYouInputs): NeedsYouQueue {
   }
   if (!inputs.proposals.complete) unknownKinds.push("proposal");
   if (!inputs.debriefs.complete) unknownKinds.push("debrief");
-  // The changes feed (N3) is not a counted kind yet: the panel states that, and no "+" is owed to it.
+  if (!inputs.changes.complete) unknownKinds.push("change");
   return { items, unknownKinds, overlapsNotRead: inputs.conflicts.notRead === true };
 }
 

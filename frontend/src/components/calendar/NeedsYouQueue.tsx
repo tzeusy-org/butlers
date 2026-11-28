@@ -4,6 +4,7 @@ import type { CalendarInvitationEntry } from "@/api/types";
 import type { InvitationResponses } from "@/components/calendar/use-invitation-responses";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
+import { describeChange } from "@/pages/calendar/change-text";
 import {
   KIND_LABEL,
   needsYouCountText,
@@ -16,6 +17,7 @@ const KIND_NAME: Record<NeedsYouItem["kind"], string> = {
   conflict: "Overlap",
   proposal: "Proposal",
   debrief: "Debrief",
+  change: "Changed",
 };
 
 function receiptText(status: string | undefined): string | null {
@@ -40,6 +42,10 @@ export interface NeedsYouQueueProps {
   queue: Queue;
   invitations: readonly CalendarInvitationEntry[];
   responses: InvitationResponses;
+  timezone: string;
+  /** The owner's account addresses were unreadable: changes may include their own edits. */
+  changesMayIncludeOwn?: boolean;
+  onMarkChangesSeen: () => void;
   onOpenEntry: (entryId: string, kind: NeedsYouItem["kind"]) => void;
   onAcceptProposal: (proposalId: string) => void;
   onDismissProposal: (proposalId: string) => void;
@@ -50,6 +56,9 @@ export function NeedsYouQueue({
   queue,
   invitations,
   responses,
+  timezone,
+  changesMayIncludeOwn = false,
+  onMarkChangesSeen,
   onOpenEntry,
   onAcceptProposal,
   onDismissProposal,
@@ -142,7 +151,9 @@ export function NeedsYouQueue({
           This list may be longer than shown.
         </p>
       ) : null}
-      <p className="text-xs text-muted-foreground">Moved-under-you changes are not tracked yet.</p>
+      {changesMayIncludeOwn ? (
+        <p className="text-xs text-muted-foreground">Changes may include your own edits.</p>
+      ) : null}
       {queue.overlapsNotRead ? (
         <p className="text-xs text-muted-foreground">Overlaps are checked in day and week views.</p>
       ) : null}
@@ -164,13 +175,29 @@ export function NeedsYouQueue({
                 <span className="w-20 shrink-0 text-xs text-muted-foreground">
                   {KIND_NAME[item.kind]}
                 </span>
-                <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {item.title}
+                  {item.change ? (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {describeChange(item.change, timezone)}
+                    </span>
+                  ) : null}
+                </span>
                 {receipt ? <span className="text-xs text-muted-foreground">{receipt}</span> : null}
               </button>
             </li>
           );
         })}
       </ul>
+      {queue.items.some((item) => item.kind === "change") ? (
+        <button
+          type="button"
+          className="mt-2 text-xs underline decoration-border underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          onClick={onMarkChangesSeen}
+        >
+          Mark changes seen
+        </button>
+      ) : null}
       <ListTriageFooterHint bindings={hints} />
     </section>
   );
