@@ -1590,6 +1590,31 @@ export interface ConflictIssue {
   issue_digest?: string | null;
   /** Why `options` is empty (`stale_source`), else null. */
   options_reason?: string | null;
+  /** Overlap issues: the id a resolve names. */
+  pair_id?: string | null;
+  /** The owner zone the option slots were compiled in (IANA), for displaying them. */
+  owner_timezone?: string | null;
+}
+
+/** Body of POST /api/calendar/workspace/conflicts/resolve. */
+export interface ConflictResolveRequest {
+  pair_id: string;
+  option_id: string;
+  issue_digest: string;
+  start: string;
+  end: string;
+}
+
+export interface ConflictResolveResponse {
+  status: "acknowledged" | "already_acknowledged" | "parked" | "responded";
+  pair_id: string;
+  option_id: string;
+  /** The approvals card a move was parked as; the owner decides it in the approvals surface. */
+  action_id?: string | null;
+  /** A decline or tentative: how the owner's own response settled (`applied`, ...). */
+  response_outcome?: string | null;
+  /** Why a response was rejected or expired (`response_approval_expired`, ...), else null. */
+  response_reason?: string | null;
 }
 
 export interface ResolutionOption {

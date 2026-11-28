@@ -44,6 +44,7 @@ import {
 } from "@/pages/calendar/use-calendar-url-state";
 import { useCalendarWorkspaceData } from "@/pages/calendar/use-calendar-workspace-data";
 import { usePendingMeetingDebriefs } from "@/hooks/use-meeting-debriefs";
+import { useConflictResolution } from "@/pages/calendar/use-conflict-resolution";
 import { useNeedsYouQueue } from "@/pages/calendar/use-needs-you-queue";
 import { useChangesSeenCursor } from "@/pages/calendar/use-changes-seen-cursor";
 import { useCalendarChanges } from "@/hooks/use-calendar-workspace";
@@ -169,6 +170,7 @@ export default function CalendarWorkspacePage() {
   });
   const changesCursor = useChangesSeenCursor();
   const changesQuery = useCalendarChanges(changesCursor.since);
+  const conflictResolution = useConflictResolution({ start: queryStart, end: queryEnd });
   const needsYou = useNeedsYouQueue({
     invitations: {
       rows: context.invitations,
@@ -283,6 +285,10 @@ export default function CalendarWorkspacePage() {
         responses={responses}
         timezone={timezone}
         changesMayIncludeOwn={changesQuery.data?.data.owners_complete === false}
+        conflicts={context.conflictIssues}
+        onResolveConflict={conflictResolution.resolve}
+        isResolvingConflict={conflictResolution.isResolving}
+        conflictReceipts={conflictResolution.receipts}
         onMarkChangesSeen={changesCursor.markSeen}
         onOpenEntry={(entryId, kind) => {
           void selection.openInvitation(entryId, kind === "invitation" ? "Invitation details" : "Event details");

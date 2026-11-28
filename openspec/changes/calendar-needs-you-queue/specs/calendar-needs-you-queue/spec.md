@@ -58,7 +58,7 @@ SHALL be suspended while focus is in an editable field or an open dialog, SHALL 
 sheet and the footer hint, and SHALL each have a command-palette form acting on the same selected
 item. For an invitation `a`, `d` and `u` (unsure) SHALL accept, decline and tentatively accept it through the
 existing invitation response path and show its receipt; for a proposal `a` SHALL accept and `d`
-SHALL dismiss it through the existing proposal mutations. No key the queue binds SHALL shadow a key the calendar page already binds (`t` jumps to today, the arrows step the range, `c` and the search key keep their meaning), and no key SHALL be registered twice on the page. A key whose action is not available for the
+SHALL dismiss it through the existing proposal mutations. For an overlap whose scan offered options and bound a digest to it, `1` to `9` SHALL carry out the nth offered option the route accepts (numbered over those only, so labels stay contiguous; an option kind the route refuses, such as `ask_organizer`, gets no key), `m` the first accepted move option and `x` keep both, each through the resolve route bound to the digest the owner saw and the window it was scanned in; `x` is recorded on the server (the keep-both acknowledgement store), so it SHALL survive a reload, and its receipt SHALL show on the item. The queue SHALL keep no dismissal of its own. No key the queue binds SHALL shadow a key the calendar page already binds (`t` jumps to today, the arrows step the range, `c` and the search key keep their meaning), and no key SHALL be registered twice on the page. A key whose action is not available for the
 selected item SHALL be unbound, not a silent no-op. A response to an invitation that reaches another
 person SHALL keep the existing approval behaviour: the queue never sends one itself.
 
@@ -71,6 +71,16 @@ person SHALL keep the existing approval behaviour: the queue never sends one its
 
 - **WHEN** an invitation is selected and `t` is pressed
 - **THEN** the page SHALL jump to today and no response SHALL be sent
+
+#### Scenario: Resolving an overlap by key
+
+- **WHEN** an overlap with options is selected and `2` is pressed
+- **THEN** the resolve route SHALL be called once with the second option, the issue digest and the scanned window
+
+#### Scenario: Dismissing an overlap
+
+- **WHEN** an overlap is selected and `x` is pressed
+- **THEN** keep both SHALL be recorded through the resolve route, its receipt SHALL show on the item, the resolve keys SHALL leave with it, and the queue SHALL hold no local dismissal
 
 #### Scenario: A verb that does not apply is not bound
 
