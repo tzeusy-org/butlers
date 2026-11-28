@@ -2009,8 +2009,14 @@ async def update_calendar_proposal_status(
 
 
 #: The butlers that contribute overlay envelopes. Mirrors ``_SPECIALIST_SCHEMAS`` in migration
-#: core_140 (the view's UNION terms): a new contributor must change both.
-OVERLAY_CONTRIBUTORS: tuple[str, ...] = ("finance", "health", "relationship", "travel")
+#: core_387 (the view's UNION terms, widened from core_140): a new contributor must change both.
+OVERLAY_CONTRIBUTORS: tuple[str, ...] = (
+    "education",
+    "finance",
+    "health",
+    "relationship",
+    "travel",
+)
 #: Cadence assumed for an envelope that does not state one.
 _DEFAULT_OVERLAY_CADENCE_SECONDS = 24 * 60 * 60
 #: An envelope older than this many cadences is stale.

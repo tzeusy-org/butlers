@@ -1058,6 +1058,16 @@ async def _run_finance_calendar_overlay_contribution_job(
     return await run_finance_calendar_overlay_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_education_calendar_overlay_contribution_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run education butler calendar overlay contribution job (deterministic, zero LLM)."""
+    from butlers.jobs.calendar_overlay import run_education_calendar_overlay_contribution
+
+    return await run_education_calendar_overlay_contribution(pool=pool, job_args=job_args)
+
+
 async def _run_finance_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2529,6 +2539,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
             "mind_map_staleness_abandonment": _run_education_mind_map_staleness_job,
             "daily_briefing_contribution": _run_education_briefing_contribution_job,
+            "calendar_overlay_contribution": _run_education_calendar_overlay_contribution_job,
             **_retention_pruner_job_handlers("education"),
         },
         "chronicler": {

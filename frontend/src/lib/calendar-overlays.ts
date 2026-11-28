@@ -117,6 +117,8 @@ export function overlayButlerAccent(sourceButler: string | null): string {
       return "border-categorical-3/40 text-categorical-3";
     case "health":
       return "border-categorical-4/40 text-categorical-4";
+    case "education":
+      return "border-categorical-5/40 text-categorical-5";
     default:
       return "border-[var(--border)] text-[var(--mfg)]";
   }
@@ -177,6 +179,8 @@ export function overlayKindGlyph(kind: string): string {
       return "+";
     case "medication_reminder":
       return "℞";
+    case "reviews_due":
+      return "↺";
     default:
       return "•";
   }

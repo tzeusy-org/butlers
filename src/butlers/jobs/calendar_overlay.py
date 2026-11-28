@@ -1908,3 +1908,138 @@ async def run_health_calendar_overlay_contribution(
         "complete": complete,
         "claims": claim_result,
     }
+
+
+# ---------------------------------------------------------------------------
+# Education job (bu-5ii4gj.13 S5b)
+# ---------------------------------------------------------------------------
+
+EDUCATION_OVERLAY_LOOKAHEAD_DAYS = 7
+
+
+def _reviews_label(count: int) -> str:
+    return f"{count} {'review' if count == 1 else 'reviews'} due"
+
+
+def _reviews_priority(day: date_cls, today: date_cls) -> str:
+    return "medium" if day <= today else "low"
+
+
+def education_claims(
+    due_by_date: dict[date_cls, int], *, today: date_cls, zone: tzinfo
+) -> dict[str, list[dict[str, Any]]]:
+    """One aggregated "N reviews due" claim per owner-local day. Pure.
+
+    Reviews are the learner's own queue and arrive in their own flow, so the claim is an overlay
+    presence: it gives the day a stable key (``education:reviews:<date>``) and a door, and owns no
+    calendar row. Reviews already overdue count toward today.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for day, count in sorted(due_by_date.items()):
+        if count <= 0:
+            continue
+        out.setdefault(day.isoformat(), []).append(
+            _day_claim(
+                key=f"education:reviews:{day.isoformat()}",
+                version=_version(day, count),
+                kind="reviews_due",
+                label=_reviews_label(count),
+                priority=_reviews_priority(day, today),
+                presence="overlay",
+                day=day,
+                zone=zone,
+                ref=day.isoformat(),
+                route="/education",
+            )
+        )
+    return out
+
+
+async def run_education_calendar_overlay_contribution(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Education butler calendar overlay contribution job (deterministic, zero LLM).
+
+    Counts the spaced-repetition reviews falling due on each owner-local day of the lookahead
+    window (overdue reviews count toward today) across active mind maps, and writes a
+    ``reviews_due`` entry and an overlay-presence claim per day that has any. A failed read makes
+    the run partial: the envelopes are flagged incomplete and nothing is rewritten.
+    """
+    del job_args
+
+    today, zone = await briefing_day(pool)
+    today_str = today.isoformat()
+    local_midnight = datetime(today.year, today.month, today.day, tzinfo=zone)
+    window_end = (local_midnight + timedelta(days=EDUCATION_OVERLAY_LOOKAHEAD_DAYS + 1)).astimezone(
+        UTC
+    )
+
+    rows, complete = await _read_source(
+        pool,
+        "reviews",
+        """
+        SELECT n.next_review_at
+        FROM education.mind_map_nodes n
+        JOIN education.mind_maps mm ON mm.id = n.mind_map_id
+        WHERE n.next_review_at < $1
+          AND mm.status = 'active'
+          AND n.mastery_status NOT IN ('mastered', 'unseen')
+        """,
+        window_end,
+        butler="education",
+    )
+
+    due_by_date: dict[date_cls, int] = {}
+    for row in rows:
+        day = max(date_cls.fromisoformat(_local_date_str(row["next_review_at"], zone)), today)
+        due_by_date[day] = due_by_date.get(day, 0) + 1
+
+    claims_by_date = (
+        education_claims(due_by_date, today=today, zone=zone)
+        if owner_zone_key(zone) is not None
+        else {}
+    )
+    entries_by_date: dict[str, list[OverlayEntry]] = {
+        day.isoformat(): [
+            {
+                "kind": "reviews_due",
+                "label": _reviews_label(count),
+                "priority": _reviews_priority(day, today),
+                "meta": {"count": count},
+            }
+        ]
+        for day, count in sorted(due_by_date.items())
+        if count > 0
+    }
+
+    dates_written, total_entries, claim_result, complete = await finish_contribution(
+        pool,
+        butler="education",
+        today=today,
+        lookahead_days=EDUCATION_OVERLAY_LOOKAHEAD_DAYS,
+        entries_by_date=entries_by_date,
+        claims_by_date=claims_by_date,
+        complete=complete,
+        window_start=day_start_utc(today, zone),
+        zone=zone,
+    )
+    pruned = await prune_old_overlay_contributions(pool, today=today_str)
+
+    logger.info(
+        "Education calendar overlay contribution: date=%s dates_written=%d reviews=%d pruned=%d",
+        today_str,
+        dates_written,
+        len(rows),
+        pruned,
+    )
+    return {
+        "butler": "education",
+        "date": today_str,
+        "dates_written": dates_written,
+        "review_entries": len(entries_by_date),
+        "total_entries": total_entries,
+        "pruned": pruned,
+        "complete": complete,
+        "claims": claim_result,
+    }
