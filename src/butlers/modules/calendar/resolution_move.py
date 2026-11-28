@@ -240,7 +240,10 @@ def _command_outcome(command: Any) -> tuple[str, str | None] | None:
 
 
 def card_outcome(
-    status: str | None, execution_result: Any, command: Any = None
+    status: str | None,
+    execution_result: Any,
+    command: Any = None,
+    execution_failed: bool = False,
 ) -> tuple[str, str | None]:
     """``(outcome, reason)`` of one approved card: ``applied``, ``pending``, ``declined`` or
     ``uncertain``.
@@ -253,13 +256,21 @@ def card_outcome(
     reason; ``noop`` (the response already stood) counts as ``applied``. An ``approved`` card the
     executor never finished (its handler raised) is read off ``command``, the response's own
     action-log row: failed is ``declined`` with its reason, uncertain stays ``uncertain`` and
-    anything unsettled is ``pending``. Anything else,
-    including an execution that failed or reports no status, is ``uncertain``: never ``applied``.
+    anything unsettled is ``pending``. A card the handler failed on (``execution_failed``: the
+    executor's ``action_execution_failed`` audit event exists and no result was recorded, which is
+    how a move whose ``calendar_update_event`` returned an error ends) is ``uncertain`` with the
+    closed reason ``execution_failed``, never the error text. The executor still allows a retry, so
+    the card is neither applied nor finally declined: ``uncertain`` is the honest read, a later
+    success flips it to ``applied``, and dependents fail closed meanwhile (only ``applied``
+    counts). Anything else, including an execution that failed or reports no status, is
+    ``uncertain``: never ``applied``.
     """
     if status == "approved" and not _object(execution_result) and command is not None:
         settled = _command_outcome(command)
         if settled is not None:
             return settled
+    if status == "approved" and not _object(execution_result) and execution_failed:
+        return "uncertain", "execution_failed"
     if status in ("pending", "approved"):
         return "pending", None
     if status in ("rejected", "expired", "cancelled", "abandoned"):
@@ -302,6 +313,20 @@ async def command_row_of(pool: Any, card_id: Any) -> dict[str, Any] | None:
     }
 
 
+async def execution_failed_of(pool: Any, card_id: Any) -> bool:
+    """Whether the approvals executor audited a handler failure for this card."""
+    try:
+        found = await pool.fetchval(
+            "SELECT 1 FROM approval_events WHERE action_id = $1 "
+            "AND event_type = 'action_execution_failed' LIMIT 1",
+            card_id if isinstance(card_id, uuid.UUID) else uuid.UUID(str(card_id)),
+        )
+    except Exception:
+        logger.warning("resolution move: failure audit unreadable", exc_info=True)
+        return False
+    return bool(found)
+
+
 async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     """``applied``, ``pending`` or ``failed`` for the cards a step depends on.
 
@@ -325,9 +350,11 @@ async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
     waiting = False
     for row in rows:
         command = None
+        failed = False
         if row["status"] == "approved" and row.get("id") is not None:
             command = await command_row_of(pool, row["id"])
-        outcome, _reason = card_outcome(row["status"], row["execution_result"], command)
+            failed = await execution_failed_of(pool, row["id"])
+        outcome, _reason = card_outcome(row["status"], row["execution_result"], command, failed)
         if outcome == "pending":
             waiting = True
         elif outcome != "applied":

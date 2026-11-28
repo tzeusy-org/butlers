@@ -28,7 +28,12 @@ from butlers.core.temporal.change_plans import Plan, PlanStep
 
 from .invitation_guard import pool_of
 from .plan_tools import compile_for_window
-from .resolution_move import card_outcome, command_row_of, park_resolution_move
+from .resolution_move import (
+    card_outcome,
+    command_row_of,
+    execution_failed_of,
+    park_resolution_move,
+)
 from .response_park import park_response
 
 if TYPE_CHECKING:
@@ -81,9 +86,11 @@ async def step_outcome(pool: Any, receipt: dict[str, Any]) -> tuple[str, str | N
     if row is None:
         return "uncertain", "card_missing"
     command = None
+    failed = False
     if row["status"] == "approved":
         command = await command_row_of(pool, receipt["action_id"])
-    return card_outcome(row["status"], row["execution_result"], command)
+        failed = await execution_failed_of(pool, receipt["action_id"])
+    return card_outcome(row["status"], row["execution_result"], command, failed)
 
 
 def _call_args(step: PlanStep) -> dict[str, Any]:
