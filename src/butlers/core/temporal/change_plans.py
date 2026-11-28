@@ -72,6 +72,8 @@ class PlanStep:
     reason: str
     #: Indices of the steps whose vacated slot this step uses; it only runs if they were applied.
     depends_on: tuple[int, ...] = ()
+    #: The series' provider id when the step moves one occurrence of a recurring event.
+    series_event_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +330,7 @@ def compile_plan(
                 if kind == "clear_window"
                 else "shifted with the window",
                 tuple(sorted(position[d] for d in deps[event.entry_id])),
+                event.provider_event_id if event.recurring else None,
             )
         )
 

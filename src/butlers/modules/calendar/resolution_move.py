@@ -16,9 +16,10 @@ card text names no event title: the event may be a third party's.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -48,6 +49,17 @@ RESOLUTION_DECLINED_TEXT = (
 #: approvals executor record a failed execution, so the card never reads as executed.
 RESOLUTION_DECLINED_TEXTS: dict[str, str] = {
     "changed_since_check": RESOLUTION_DECLINED_TEXT,
+    "dependency_pending": (
+        "Move not applied: an earlier step of this plan that frees this slot has not been "
+        "decided yet. Decide it first, then plan the change again."
+    ),
+    "dependency_not_applied": (
+        "Move not applied: an earlier step of this plan that frees this slot was not applied, so "
+        "nothing was moved."
+    ),
+    "changed_since_move": (
+        "Move not undone: the event changed after the plan moved it, so it was left as it is."
+    ),
     "unbound": (
         "Move not applied: this request has no recorded check against the calendar, so nothing "
         "was moved."
@@ -123,6 +135,9 @@ async def park_resolution_move(
     authority: str,
     zone: tzinfo | None = None,
     series_event_id: str | None = None,
+    depends_on: Sequence[uuid.UUID] = (),
+    stale_reason: str | None = None,
+    summary: str | None = None,
 ) -> tuple[uuid.UUID, bool]:
     """Park the move's card and bind it to ``etag``; returns ``(action_id, created)``.
 
@@ -140,7 +155,7 @@ async def park_resolution_move(
             action_id=uuid.uuid4(),
             tool_name="calendar_update_event",
             tool_args=args,
-            agent_summary=resolution_card_summary(call_args, zone),
+            agent_summary=summary or resolution_card_summary(call_args, zone),
             requested_at=now,
             expires_at=now + RESOLUTION_CARD_TTL,
             why=RESOLUTION_CARD_WHY,
@@ -159,6 +174,10 @@ async def park_resolution_move(
                 "etag": etag,
                 # Set for one occurrence of a series: ``etag`` is then the series' etag.
                 **({"series_event_id": series_event_id} if series_event_id else {}),
+                # A plan step that uses a slot another step vacates runs only if those applied.
+                **({"depends_on": [str(a) for a in depends_on]} if depends_on else {}),
+                # An undo declines ``changed_since_move``, not ``changed_since_check``.
+                **({"stale_reason": stale_reason} if stale_reason else {}),
             },
         )
         return admission.action_id, not admission.duplicate
@@ -174,8 +193,6 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
         )
         result = row["action_result"] if row is not None else None
         if isinstance(result, str):
-            import json
-
             result = json.loads(result)
     except asyncpg.UndefinedTableError:
         return None
@@ -189,6 +206,156 @@ async def offer_for_card(pool: Any, action_id: uuid.UUID) -> dict[str, Any] | No
     return result
 
 
+#: The ``result.status`` of an approved update or response that really changed the calendar.
+_WROTE_STATUSES = frozenset({"updated", "applied", "noop"})  # noop: the response already stood
+
+
+def _object(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _command_outcome(command: Any) -> tuple[str, str | None] | None:
+    """The settled outcome of a response's coordinator command row, or ``None`` while in flight.
+
+    ``command`` is ``{"action_status", "action_result", "phase"}``. The approvals executor leaves a
+    card ``approved`` with no ``execution_result`` when the handler raised, so the command row,
+    which the response coordinator finishes itself, is the only record of how that response ended.
+    """
+    row = _object(command)
+    result = _object(row.get("action_result"))
+    reported = result.get("status") or row.get("action_status")
+    if reported in ("applied", "noop"):
+        return "applied", None
+    if reported == "failed":
+        reason = result.get("reason")
+        return "declined", reason if isinstance(reason, str) else "response_failed"
+    if reported == "uncertain" or row.get("phase") == "uncertain":
+        return "uncertain", "response_uncertain"
+    return None
+
+
+def card_outcome(
+    status: str | None, execution_result: Any, command: Any = None
+) -> tuple[str, str | None]:
+    """``(outcome, reason)`` of one approved card: ``applied``, ``pending``, ``declined`` or
+    ``uncertain``.
+
+    ``applied`` only when the executor ran it, succeeded, and the call itself reports that it
+    wrote (``updated`` or ``applied``). A card still waiting is ``pending``; one the owner rejected
+    or that expired, a move that declined (``resolution_declined``) and a move onto a busy slot
+    (``conflict``, the card's own ``fail`` policy), a response the provider rejected (``failed``)
+    and one whose event changed under it (``response_version_changed``) are ``declined`` with the
+    reason; ``noop`` (the response already stood) counts as ``applied``. An ``approved`` card the
+    executor never finished (its handler raised) is read off ``command``, the response's own
+    action-log row: failed is ``declined`` with its reason, uncertain stays ``uncertain`` and
+    anything unsettled is ``pending``. Anything else,
+    including an execution that failed or reports no status, is ``uncertain``: never ``applied``.
+    """
+    if status == "approved" and not _object(execution_result) and command is not None:
+        settled = _command_outcome(command)
+        if settled is not None:
+            return settled
+    if status in ("pending", "approved"):
+        return "pending", None
+    if status in ("rejected", "expired", "cancelled", "abandoned"):
+        return "declined", f"card_{status}"
+    result = _object(execution_result)
+    if status != "executed":
+        return "uncertain", "card_state_unknown"
+    inner = _object(result.get("result"))
+    reported = inner.get("status")
+    if result.get("success") is True and reported in _WROTE_STATUSES:
+        return "applied", None
+    if reported == RESOLUTION_DECLINED:
+        reason = inner.get("reason")
+        return "declined", reason if isinstance(reason, str) else "move_not_applied"
+    if reported == "conflict":
+        return "declined", "destination_busy"
+    if reported == "failed":
+        reason = inner.get("reason")
+        return "declined", reason if isinstance(reason, str) else "response_failed"
+    return "uncertain", "execution_not_confirmed"
+
+
+async def command_row_of(pool: Any, card_id: Any) -> dict[str, Any] | None:
+    """The response coordinator's action-log row for an approved card (same id), or ``None``."""
+    try:
+        row = await pool.fetchrow(
+            "SELECT action_status, action_result, action_payload->>'phase' AS phase "
+            "FROM calendar_action_log WHERE id = $1",
+            card_id if isinstance(card_id, uuid.UUID) else uuid.UUID(str(card_id)),
+        )
+    except Exception:
+        logger.warning("resolution move: command row unreadable", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return {
+        "action_status": row["action_status"],
+        "action_result": row["action_result"],
+        "phase": row["phase"],
+    }
+
+
+async def dependency_state(pool: Any, action_ids: Sequence[str]) -> str:
+    """``applied``, ``pending`` or ``failed`` for the cards a step depends on.
+
+    ``applied`` only when every card was approved and really wrote. ``pending`` when none failed
+    but some are still waiting for the owner. Anything unreadable, declined, uncertain, rejected
+    or expired is ``failed``: it fails closed.
+    """
+    if not action_ids:
+        return "applied"
+    try:
+        ids = [uuid.UUID(a) for a in action_ids]
+        rows = await pool.fetch(
+            "SELECT id, status, execution_result FROM pending_actions WHERE id = ANY($1::uuid[])",
+            ids,
+        )
+    except Exception:
+        logger.warning("resolution move: dependencies could not be read", exc_info=True)
+        return "failed"
+    if len(rows) != len(ids):
+        return "failed"
+    waiting = False
+    for row in rows:
+        command = None
+        if row["status"] == "approved" and row.get("id") is not None:
+            command = await command_row_of(pool, row["id"])
+        outcome, _reason = card_outcome(row["status"], row["execution_result"], command)
+        if outcome == "pending":
+            waiting = True
+        elif outcome != "applied":
+            return "failed"
+    return "pending" if waiting else "applied"
+
+
+async def record_applied_move(
+    pool: Any, action_id: uuid.UUID, *, etag_after: str | None, pre_start: str, pre_end: str
+) -> None:
+    """Best effort: keep what an applied move left, so a plan's undo is bound to it.
+
+    Only times and the new etag are stored, never event text. A failed write loses the undo for
+    that step (it is then not offered), never the move.
+    """
+    if not etag_after:
+        return
+    try:
+        await pool.execute(
+            "UPDATE calendar_action_log SET action_result = action_result || $2::jsonb "
+            "WHERE action_type = 'resolution_move' AND action_result->>'action_id' = $1",
+            str(action_id),
+            {"etag_after": etag_after, "pre_start": pre_start, "pre_end": pre_end},
+        )
+    except Exception:
+        logger.warning("resolution move: etag_after could not be recorded", exc_info=True)
+
+
 def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | None:
     """``None`` when the move may write, else why it declines (nothing is written).
 
@@ -197,7 +364,8 @@ def resolution_refusal(offer: Mapping[str, Any], event: CalendarEvent) -> str | 
     bound = offer.get("etag")
     if isinstance(bound, str) and bound and event.etag == bound:
         return None
-    return "changed_since_check"
+    reason = offer.get("stale_reason")
+    return reason if reason in RESOLUTION_DECLINED_TEXTS else "changed_since_check"
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +405,14 @@ async def check_resolution_binding(
     if offer is None:
         marked = isinstance(request_id, str) and request_id.startswith(RESOLUTION_REQUEST_PREFIX)
         return ResolutionCheck(refusal="unbound" if marked else None)
+    depends = offer.get("depends_on")
+    if isinstance(depends, list):
+        state = await dependency_state(pool, depends)
+        if state != "applied":
+            # Approved before the step it waits for was decided: nothing is written, and the
+            # owner plans the change again once the earlier card is settled.
+            reason = "dependency_pending" if state == "pending" else "dependency_not_applied"
+            return ResolutionCheck(bound=True, refusal=reason)
     series_id = offer.get("series_event_id")
     if isinstance(series_id, str) and series_id:
         series: CalendarEvent | None

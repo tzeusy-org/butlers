@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
@@ -122,7 +123,15 @@ def plan_payload(plan: Plan, window: tuple[datetime, datetime]) -> dict[str, Any
     }
 
 
-async def plan_change(
+@dataclass(frozen=True)
+class CompiledPlan:
+    plan: Plan
+    window: tuple[datetime, datetime]
+    #: The owner's IANA zone name (None for a shift that never needed it).
+    zone: str | None
+
+
+async def compile_for_window(
     module: CalendarModule,
     *,
     kind: Literal["clear_window", "shift_window"],
@@ -130,8 +139,8 @@ async def plan_change(
     window_end: datetime,
     shift_minutes: int | None = None,
     now: datetime | None = None,
-) -> dict[str, Any]:
-    """Compile a plan from this butler's projection. Read-only."""
+) -> CompiledPlan | dict[str, Any]:
+    """Compile a plan from this butler's projection, or a refusal payload. Read-only."""
     if window_start.tzinfo is None or window_end.tzinfo is None:
         return _refused("window_must_be_timezone_aware")
     if window_end <= window_start:
@@ -198,7 +207,30 @@ async def plan_change(
         stale_source=_sources_stale(sources, moment),
         working_hours=hours,
     )
-    return plan_payload(plan, window)
+    return CompiledPlan(plan, window, str(zone_name) if zone_name else None)
+
+
+async def plan_change(
+    module: CalendarModule,
+    *,
+    kind: Literal["clear_window", "shift_window"],
+    window_start: datetime,
+    window_end: datetime,
+    shift_minutes: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Compile a plan from this butler's projection. Read-only."""
+    compiled = await compile_for_window(
+        module,
+        kind=kind,
+        window_start=window_start,
+        window_end=window_end,
+        shift_minutes=shift_minutes,
+        now=now,
+    )
+    if isinstance(compiled, dict):
+        return compiled
+    return plan_payload(compiled.plan, compiled.window)
 
 
 def register_plan_tools(
@@ -229,3 +261,51 @@ def register_plan_tools(
             window_end=window_end,
             shift_minutes=shift_minutes,
         )
+
+
+def register_plan_apply_tools(
+    module: CalendarModule, mcp: Any, _tool: Callable[..., Any], butler_name: str
+) -> None:
+    from .plan_apply import apply_plan
+    from .plan_undo import undo_plan
+
+    @_tool("core")
+    async def calendar_apply_plan(
+        plan_id: str,
+        plan_digest: str,
+        kind: Literal["clear_window", "shift_window"],
+        window_start: datetime,
+        window_end: datetime,
+        shift_minutes: int | None = None,
+    ) -> dict[str, Any]:
+        """Apply a compiled plan by parking one approvals card per move step. Returns ``pending``.
+
+        The plan is compiled again and refused (``plan_changed``, nothing written) unless its id and
+        digest still match. Nothing runs until the owner approves each card, and a card declines if
+        its event changed since the plan or a step it depends on was not applied. Re-applying the
+        same plan replays the recorded receipts and parks only the steps that have none. This resume
+        works only until a card executes: an executed move changes the events, so the plan then
+        compiles differently (``plan_changed``) and the change is planned again. An invited
+        meeting's decline parks ``calendar_respond`` for the owner like any other response.
+        """
+        return await apply_plan(
+            module,
+            butler_name,
+            plan_id=plan_id,
+            plan_digest=plan_digest,
+            kind=kind,
+            window_start=window_start,
+            window_end=window_end,
+            shift_minutes=shift_minutes,
+        )
+
+    @_tool("core")
+    async def calendar_undo_plan(plan_id: str) -> dict[str, Any]:
+        """Undo an applied plan: one approvals card per reversal. Returns ``pending``.
+
+        Only steps whose move really applied are reversed, each bound to the version that step
+        left: a card declines (``changed_since_move``, nothing written) if its event changed since.
+        Declined, pending, skipped and uncertain steps are never reversed. Calling it again
+        returns the cards already parked.
+        """
+        return await undo_plan(module, butler_name, plan_id=plan_id)

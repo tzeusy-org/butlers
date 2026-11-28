@@ -45,6 +45,7 @@ from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, 
 from .resolution_move import (
     ResolutionCheck,
     check_resolution_binding,
+    record_applied_move,
     resolution_declined_result,
 )
 
@@ -965,6 +966,18 @@ def register_event_tools(
                     "calendar replan undo could not record the moved etag (event_id=%s)",
                     normalized_event_id,
                     exc_info=True,
+                )
+        if resolution:
+            approved = get_approval_execution_context(
+                tool_name="calendar_update_event", tool_args=overlap_args
+            )
+            if approved is not None:
+                await record_applied_move(
+                    pool_of(module),
+                    approved.action_id,
+                    etag_after=event.etag,
+                    pre_start=existing_event.start_at.isoformat(),
+                    pre_end=existing_event.end_at.isoformat(),
                 )
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()

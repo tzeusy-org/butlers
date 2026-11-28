@@ -69,8 +69,21 @@ it for the current names and signatures. The families:
   into ordered steps with their exact calls, authority classes and `depends_on` (a step that uses a slot another step vacates) plus the events it skipped and
   why. It is read-only and deterministic, reads this butler's own projection, and returns no
   titles. A stale or partial source (`plan_unavailable`), an oversized window (over 25 hours or 16 steps) or an unknown owner zone
-  gives no steps and a reason. Applying a plan is a later, approval-bound slice
-  (`openspec/changes/calendar-change-plans`).
+  gives no steps and a reason.
+  `calendar_apply_plan(plan_id, plan_digest, kind, window_start, window_end, shift_minutes)`
+  re-compiles the plan, refuses `plan_changed` (writing nothing) if the digest differs, and parks
+  one approvals card per move step, each bound to the etag the plan saw and sent once; a step that
+  uses a slot another step vacates declines `dependency_not_applied` unless that step applied. It
+  returns `pending` with one receipt per step (outcome read off its card: `applied`, `pending`,
+  `declined`, `uncertain`, `skipped`) and records `plan` and `plan_step` rows in
+  `calendar_action_log`; re-applying the same plan replays the receipts (only until a card executes; after that plan the change again) and parks only what has
+  none. A step whose dependency is still undecided declines `dependency_pending` and the owner
+  re-applies after deciding it. An invited meeting's decline parks `calendar_respond` for the owner through the module's own
+  response preparer (`response_park.park_response`), so no MCP round trip and no second
+  implementation (a crash mid-send reads `pending` until the executor retry settles it); it is undone from the dashboard's response-inverse flow, not by the plan undo. An approved move records the etag it left and the times
+  it replaced; `calendar_undo_plan(plan_id)` then parks one approvals card per applied step, each
+  bound to that recorded etag (`changed_since_move` if the event changed since), and never reverses
+  a declined, pending, skipped or uncertain step (`openspec/changes/calendar-change-plans`).
 - **Calendar and sync management** -- list calendars, set the primary calendar, check sync
   status, and force a sync cycle.
 

@@ -158,7 +158,7 @@ from .models import _resolve_all_day_flag as _resolve_all_day_flag
 from .mutations import MutationsMixin
 from .oauth import _extract_google_credential_value as _extract_google_credential_value
 from .oauth import _GoogleOAuthCredentials as _GoogleOAuthCredentials
-from .plan_tools import register_plan_tools
+from .plan_tools import register_plan_apply_tools, register_plan_tools
 from .projection import ProjectionMixin
 from .provider import CalendarProvider as CalendarProvider
 from .recurrence import RecurrenceMixin
@@ -1236,6 +1236,7 @@ class CalendarModule(
         register_response_tools(self, mcp, _tool, butler_name)
         register_read_tools(self, mcp, _tool, butler_name)
         register_plan_tools(self, mcp, _tool, butler_name)
+        register_plan_apply_tools(self, mcp, _tool, butler_name)
         register_event_tools(self, mcp, _tool, butler_name)
         register_butler_event_tools(self, mcp, _tool, butler_name)
         register_sync_tools(self, mcp, _tool, butler_name)
