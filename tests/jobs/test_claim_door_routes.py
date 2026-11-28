@@ -47,7 +47,7 @@ def test_the_claims_the_producers_build_use_those_routes():
             day=day,
             zone=zone,
             ref="x",
-            route=job.DOOR_ROUTES["education"],
+            route=job.EDUCATION_DOOR_ROUTE,
         ),
         job._timed_claim(
             key="travel:leg:x",

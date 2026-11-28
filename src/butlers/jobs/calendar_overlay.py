@@ -129,12 +129,17 @@ class OverlayEntry(_OverlayEntryRequired, total=False):
 #: ``frontend/src/router-config.tsx`` (a test pins that). Finance, Travel and Relationship have no
 #: page of their own beyond their butler page; the others have a domain page. The claim's ``ref`` is
 #: carried as ``?ref=<id>`` for a page that can select a record.
+FINANCE_DOOR_ROUTE = "/butlers/finance"
+TRAVEL_DOOR_ROUTE = "/butlers/travel"
+RELATIONSHIP_DOOR_ROUTE = "/butlers/relationship"
+HEALTH_DOOR_ROUTE = "/health"
+EDUCATION_DOOR_ROUTE = "/education"
 DOOR_ROUTES: dict[str, str] = {
-    "finance": "/butlers/finance",
-    "travel": "/butlers/travel",
-    "relationship": "/butlers/relationship",
-    "health": "/health",
-    "education": "/education",
+    "finance": FINANCE_DOOR_ROUTE,
+    "travel": TRAVEL_DOOR_ROUTE,
+    "relationship": RELATIONSHIP_DOOR_ROUTE,
+    "health": HEALTH_DOOR_ROUTE,
+    "education": EDUCATION_DOOR_ROUTE,
 }
 
 
@@ -346,7 +351,7 @@ def _claim(
         "span": span,
         "owner_action": True,
         "status": "active",
-        "door": {"route": DOOR_ROUTES["finance"], "ref": ref},
+        "door": {"route": FINANCE_DOOR_ROUTE, "ref": ref},
     }
 
 
@@ -873,7 +878,7 @@ def _timed_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
-    route: str = DOOR_ROUTES["travel"],
+    route: str = TRAVEL_DOOR_ROUTE,
 ) -> dict[str, Any]:
     span: dict[str, Any] = {"start": start.isoformat(), "timezone": _zone_name(zone)}
     if end is not None:
@@ -904,7 +909,7 @@ def _day_claim(
     zone: tzinfo,
     ref: str,
     owner_action: bool = False,
-    route: str = DOOR_ROUTES["travel"],
+    route: str = TRAVEL_DOOR_ROUTE,
 ) -> dict[str, Any]:
     return {
         "claim_key": key,
@@ -1467,7 +1472,7 @@ def _add_relationship_claim(
             day=landing,
             zone=zone,
             ref=ref,
-            route=DOOR_ROUTES["relationship"],
+            route=RELATIONSHIP_DOOR_ROUTE,
             owner_action=owner_action,
         )
     )
@@ -1888,7 +1893,7 @@ async def run_health_calendar_overlay_contribution(
                     end=ends_at,
                     zone=zone,
                     ref=event_id,
-                    route=DOOR_ROUTES["health"],
+                    route=HEALTH_DOOR_ROUTE,
                 )
             )
         appointment_count += 1
@@ -1992,7 +1997,7 @@ def education_claims(
                 day=day,
                 zone=zone,
                 ref=day.isoformat(),
-                route=DOOR_ROUTES["education"],
+                route=EDUCATION_DOOR_ROUTE,
             )
         )
     return out
